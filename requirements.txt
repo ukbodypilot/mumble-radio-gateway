@@ -1,0 +1,14 @@
+# Python dependencies for Mumble Radio Gateway
+# Install with: pip3 install -r requirements.txt --break-system-packages
+
+# USB HID interface for AIOC PTT control
+hidapi>=0.14.0
+
+# Mumble protocol implementation
+pymumble-py3>=1.0.0
+
+# Audio I/O
+pyaudio>=0.2.13
+
+# Audio processing and numerical operations
+numpy>=1.24.0

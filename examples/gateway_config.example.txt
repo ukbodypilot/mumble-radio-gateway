@@ -1,0 +1,483 @@
+# ============================================================================
+# MUMBLE RADIO GATEWAY - CONFIGURATION FILE
+# ============================================================================
+# 
+# This file configures the Mumble-to-Radio gateway via AIOC.
+# All parameters have safe defaults and detailed explanations.
+# 
+# Quick Start:
+#   1. Set MUMBLE_SERVER to your server IP
+#   2. Adjust VERBOSE_LOGGING (true for diagnostics, false for quiet operation)
+#   3. Most other settings can stay at defaults
+#
+# For troubleshooting, see the diagnostic sections at the bottom.
+# ============================================================================
+
+# ============================================================================
+# MUMBLE SERVER CONNECTION
+# ============================================================================
+
+# Mumble server IP address or hostname
+# Example: 192.168.1.100 or mumble.example.com
+MUMBLE_SERVER = 192.168.2.126
+
+# Mumble server port
+# Default: 64738 (standard Mumble port)
+MUMBLE_PORT = 64738
+
+# Username to display on the Mumble server
+# This name will be visible to other Mumble users
+MUMBLE_USERNAME = RadioGateway
+
+# Password for the Mumble server
+# Leave empty if no password required
+MUMBLE_PASSWORD = 
+
+# Channel to join on connection
+# Leave empty to stay in root channel
+# Example: General/Radio or just Radio
+MUMBLE_CHANNEL = 
+
+# ============================================================================
+# AUDIO QUALITY & BUFFER SETTINGS
+# ============================================================================
+
+# Audio sample rate in Hz
+# 48000 = CD quality (matches Mumble default, recommended)
+# 24000 = Good quality (lower bandwidth)
+# 16000 = Basic quality
+# 8000  = Phone quality (minimal bandwidth)
+# Default: 48000
+AUDIO_RATE = 48000
+
+# Audio chunk size in samples (CRITICAL FOR STABILITY)
+# Controls latency vs stability tradeoff
+# ┌─────────┬─────────┬──────────────────────────────┐
+# │ Samples │ Latency │ Use Case                     │
+# ├─────────┼─────────┼──────────────────────────────┤
+# │  480    │  10ms   │ Lowest latency (may dropout) │
+# │  960    │  20ms   │ Low latency                  │
+# │ 1920    │  40ms   │ Balanced                     │
+# │ 2400    │  50ms   │ Stable (recommended)         │
+# │ 4800    │ 100ms   │ Maximum stability            │
+# └─────────┴─────────┴──────────────────────────────┘
+# If you get -9999 errors, increase this value
+# Default: 2400
+AUDIO_CHUNK_SIZE = 2400
+
+# Number of audio channels
+# 1 = Mono (recommended for radio)
+# 2 = Stereo (not needed for radio)
+AUDIO_CHANNELS = 1
+
+# Audio bit depth
+# 16 = Standard (recommended, don't change)
+# 24 = Higher quality (rarely needed)
+AUDIO_BITS = 16
+
+# ============================================================================
+# MUMBLE AUDIO CODEC SETTINGS
+# ============================================================================
+
+# Mumble audio quality (bitrate in bits per second)
+# Note: This is informational - actual bitrate is controlled by Mumble's codec
+# Higher = better quality but more bandwidth
+# 40000 = high quality, 72000 = very high, 96000 = maximum
+# Recommended: 72000 for radio use
+MUMBLE_BITRATE = 72000
+
+# Enable/disable Opus codec VBR (Variable Bit Rate)
+# true = adapts bitrate based on audio complexity (recommended)
+# false = constant bitrate
+MUMBLE_VBR = true
+
+# Mumble jitter buffer size in milliseconds
+# Lower = less latency but may cause audio dropouts on poor networks
+# Higher = more latency but smoother audio
+# Recommended: 10-20ms for LAN, 30-50ms for internet
+MUMBLE_JITTER_BUFFER = 20
+
+# ============================================================================
+# PTT (PUSH-TO-TALK) CONTROL - Mumble → Radio
+# ============================================================================
+
+# AIOC PTT channel selection
+# 3 = PTT1 (usually front panel connector)
+# 4 = PTT2 (usually rear panel connector)
+# Default: 3
+AIOC_PTT_CHANNEL = 3
+
+# PTT release delay (seconds)
+# How long to hold PTT after Mumble audio stops
+# ┌─────────┬────────────────────────────────┐
+# │ Value   │ Effect                         │
+# ├─────────┼────────────────────────────────┤
+# │ 0.1-0.2 │ Fast release (may clip end)    │
+# │ 0.3-0.5 │ Balanced (recommended)         │
+# │ 0.6-1.0 │ Long tail (prevents clipping)  │
+# └─────────┴────────────────────────────────┘
+# Too short = cuts off end of transmissions
+# Too long = delayed return to receive mode
+# Default: 0.3
+PTT_RELEASE_DELAY = 0.3
+
+# PTT activation delay (seconds)
+# Delay before keying PTT when Mumble audio arrives
+# Allows radio to settle before transmitting
+# Most radios: 0.0 (immediate)
+# Slow radios: 0.05-0.1 (if radio needs setup time)
+# Default: 0.0
+PTT_ACTIVATION_DELAY = 0.0
+
+# ============================================================================
+# AIOC DEVICE SETTINGS
+# ============================================================================
+
+# AIOC USB Vendor ID (don't change unless using different device)
+AIOC_VID = 0x1209
+
+# AIOC USB Product ID (don't change unless using different device)
+AIOC_PID = 0x7388
+
+# Force specific audio device index (leave as -1 for auto-detect)
+# Use -1 to automatically find AIOC audio device
+# Or specify device index number if auto-detect fails
+AIOC_INPUT_DEVICE = -1
+AIOC_OUTPUT_DEVICE = -1
+
+# ============================================================================
+# AUDIO PROCESSING SETTINGS
+# ============================================================================
+
+# Enable automatic gain control (AGC)
+# Automatically adjusts input volume levels
+# Recommended: false for radio (radio has its own gain control)
+ENABLE_AGC = false
+
+# Enable noise suppression on Radio→Mumble path
+# Reduces background noise and hiss from radio RF before sending to Mumble
+# Recommended: true to clean up noisy radio audio
+ENABLE_NOISE_SUPPRESSION = true
+
+# Noise suppression method: spectral, wiener, or none
+# spectral = Spectral subtraction (built-in, fast, good quality)
+# wiener = Wiener filtering (more aggressive, may affect voice)
+# none = Disable (use if you have external processing)
+# Recommended: spectral
+NOISE_SUPPRESSION_METHOD = none
+
+# Noise suppression strength (0.0 to 1.0)
+# Higher = more aggressive noise removal but may affect voice quality
+# 0.3 = light (preserve voice quality)
+# 0.5 = moderate (balanced)
+# 0.7 = strong (aggressive noise removal)
+# Recommended: 0.5 to 0.7 for noisy radio signals
+NOISE_SUPPRESSION_STRENGTH = 0.2
+
+# Enable noise gate on Radio→Mumble path
+# Mutes audio below a threshold to eliminate radio hiss/static
+# Recommended: true for cleaner Mumble transmission
+ENABLE_NOISE_GATE = true
+
+# Noise gate threshold in dB (-60 to 0)
+# Radio audio quieter than this will be muted
+# -40 = only very quiet noise filtered
+# -30 = moderate filtering  
+# -20 = aggressive filtering (may cut weak radio signals)
+# Recommended: -35 to -30 for radio
+NOISE_GATE_THRESHOLD = -35
+
+# Noise gate attack time in milliseconds
+# How quickly gate opens when signal exceeds threshold
+# Lower = more responsive but may click
+# Recommended: 5 to 20ms
+NOISE_GATE_ATTACK = 10
+
+# Noise gate release time in milliseconds  
+# How quickly gate closes when signal drops below threshold
+# Lower = faster cutoff but may sound choppy
+# Higher = smoother but may let more noise through
+# Recommended: 50 to 200ms
+NOISE_GATE_RELEASE = 100
+
+# Enable high-pass filter on Radio→Mumble path
+# Removes low-frequency rumble and hum from radio
+# Recommended: true
+ENABLE_HIGHPASS_FILTER = false
+
+# High-pass filter cutoff frequency in Hz
+# Frequencies below this are attenuated
+# 80 = remove very low rumble only
+# 150 = remove low rumble and some hum
+# 200 = remove more bass (clearer but thinner voice)
+# Recommended: 100 to 150 for radio voice
+HIGHPASS_CUTOFF_FREQ = 120
+
+# Enable echo cancellation
+# Prevents feedback loops
+# Recommended: false for radio (not needed in radio gateway)
+ENABLE_ECHO_CANCELLATION = false
+
+# Input volume multiplier (1.0 = no change, 2.0 = double volume, 0.5 = half volume)
+# Adjust if radio audio is too quiet or too loud going to Mumble
+INPUT_VOLUME = 0.5
+
+# Output volume multiplier (1.0 = no change, 2.0 = double volume, 0.5 = half volume)
+# Adjust if Mumble audio is too quiet or too loud going to radio
+OUTPUT_VOLUME = 1.0
+
+# ============================================================================
+# ADVANCED MUMBLE SETTINGS
+# ============================================================================
+
+# Mumble loop rate in seconds
+# How often Mumble processes audio packets
+# Lower = less latency but more CPU
+# Recommended: 0.01 (10ms) for low latency
+MUMBLE_LOOP_RATE = 0.01
+
+# Enable stereo audio in Mumble (requires Mumble 1.3+)
+# Recommended: false for radio (radio is mono)
+MUMBLE_STEREO = false
+
+# Reconnect automatically if disconnected from server
+# Recommended: true
+MUMBLE_RECONNECT = true
+
+# Enable debug logging
+# Shows detailed Mumble protocol messages
+# Recommended: false (only enable for troubleshooting)
+MUMBLE_DEBUG = false
+
+# ============================================================================
+# NETWORK SETTINGS
+# ============================================================================
+
+# TCP connection timeout in seconds
+NETWORK_TIMEOUT = 10
+
+# Enable TCP no-delay (disables Nagle's algorithm for lower latency)
+# Recommended: true
+TCP_NODELAY = true
+
+# ============================================================================
+# SYSTEM & DIAGNOSTIC SETTINGS
+# ============================================================================
+
+# Verbose logging mode
+# Controls startup and diagnostic message verbosity
+# ┌───────┬────────────────────────────────────────┐
+# │ Value │ Output                                 │
+# ├───────┼────────────────────────────────────────┤
+# │ true  │ Detailed startup, device enumeration,  │
+# │       │ audio config, status legend            │
+# │ false │ Minimal startup (5 lines), clean UI    │
+# └───────┴────────────────────────────────────────┘
+# Recommendation: false for daily use, true for troubleshooting
+# Default: true
+VERBOSE_LOGGING = false
+
+# Diagnostic mode (detailed error information)
+# Shows full error stack traces and system diagnostics
+# when audio stream failures occur
+# true  = Full diagnostic output (for troubleshooting)
+# false = Brief error messages only
+# Default: true
+DIAGNOSTIC_MODE = false
+
+# Status update interval (seconds)
+# How often to refresh the status line showing:
+#   [Status] M:✓ PTT:-- VAD:-- -45dB TX:[--] RX:[--]
+# ┌─────────┬──────────────────────────────┐
+# │ Value   │ Effect                       │
+# ├─────────┼──────────────────────────────┤
+# │ 0       │ No status updates            │
+# │ 1-2     │ Fast updates (more CPU)      │
+# │ 3-5     │ Balanced (recommended)       │
+# │ 10+     │ Slow updates (less CPU)      │
+# └─────────┴──────────────────────────────┘
+# Default: 2
+STATUS_UPDATE_INTERVAL = 2
+
+# ============================================================================
+# BUFFER MANAGEMENT SETTINGS
+# ============================================================================
+
+# Maximum Mumble output buffer size in seconds
+# If buffer exceeds this, audio chunks are dropped to prevent delay buildup
+# Lower = tighter latency but may drop more audio
+# Higher = more tolerance but may accumulate delay
+# 0 = disable buffer management (NOT recommended - delay will grow over time)
+# Recommended: 1.5 to 3 seconds
+MAX_MUMBLE_BUFFER_SECONDS = 1.0
+
+# Enable buffer management diagnostics
+# Shows when audio chunks are dropped due to buffer being full
+# Recommended: true to understand if delay is being managed
+BUFFER_MANAGEMENT_VERBOSE = true
+
+# ============================================================================
+# VOICE ACTIVITY DETECTION (VAD) - Radio → Mumble
+# ============================================================================
+# VAD prevents sending silence to Mumble, which:
+#   • Eliminates buffer accumulation and delay buildup
+#   • Reduces bandwidth by ~90% (only sends active transmissions)
+#   • Provides cleaner audio (no constant noise floor)
+#   • Prevents Mumble users from hearing continuous static
+
+# Enable Voice Activity Detection
+# true  = Only send audio when radio signal detected (HIGHLY RECOMMENDED)
+# false = Send continuous audio stream (will cause buffer issues)
+# Default: true
+ENABLE_VAD = true
+
+# VAD threshold (dB)
+# Audio quieter than this is considered silence
+# ┌─────────┬──────────────────────────────────┐
+# │ Value   │ Behavior                         │
+# ├─────────┼──────────────────────────────────┤
+# │ -45     │ Very sensitive (may send noise)  │
+# │ -40     │ Sensitive                        │
+# │ -35     │ Moderate (recommended)           │
+# │ -30     │ Less sensitive                   │
+# │ -25     │ Only strong signals              │
+# └─────────┴──────────────────────────────────┘
+# Tune this while watching the status line dB reading
+# Default: -33
+VAD_THRESHOLD = -35
+
+# VAD attack time (milliseconds)
+# How quickly VAD opens when signal appears
+# Lower = more responsive, Higher = smoother
+# Range: 10-50ms
+# Default: 20
+VAD_ATTACK = 20
+
+# VAD release time (milliseconds)
+# How long to keep transmitting after signal drops
+# Prevents cutting off the end of transmissions
+# Range: 200-500ms
+# Default: 300
+VAD_RELEASE = 300
+
+# VAD minimum transmission duration (milliseconds)
+# Ignores very short bursts (static pops, clicks)
+# Range: 100-300ms
+# Default: 150
+VAD_MIN_DURATION = 150
+
+# ============================================================================
+# STREAM HEALTH MANAGEMENT (USB/ALSA Stability)
+# ============================================================================
+# The AIOC uses a CM108 chipset which has known ALSA driver issues.
+# Proactive stream restarts prevent the dreaded "-9999 Unanticipated host error"
+# Restarts only occur when the radio is idle (no active transmission)
+
+# Proactive stream restart interval (seconds)
+# Periodically restarts the audio stream to prevent crashes
+# ┌─────────┬────────────────────────────────┐
+# │ Value   │ Effect                         │
+# ├─────────┼────────────────────────────────┤
+# │ 0       │ Disabled (may get -9999 errors)│
+# │ 30      │ Very safe (more interruptions) │
+# │ 60      │ Balanced (recommended)         │
+# │ 120     │ Less safe (fewer interruptions)│
+# │ 300     │ Minimal (for stable systems)   │
+# └─────────┴────────────────────────────────┘
+# Default: 60
+STREAM_RESTART_INTERVAL = 120
+
+# Minimum idle time before allowing restart (seconds)
+# Prevents restarting during active transmissions
+# Radio must be silent for this long before restart occurs
+# Range: 3-10 seconds
+# Default: 3
+STREAM_RESTART_IDLE_TIME = 5
+
+# ============================================================================
+# VOX (VOICE OPERATED SWITCH) SETTINGS - Radio → Mumble
+# ============================================================================
+
+# Enable VOX for Radio → Mumble transmission
+# When enabled, audio is only sent to Mumble when radio is receiving a signal
+# This prevents sending constant silence and eliminates buffer accumulation
+# Recommended: true (eliminates most buffer issues)
+ENABLE_VOX = true
+
+# VOX threshold in dB
+# Audio louder than this triggers transmission to Mumble
+# Lower = more sensitive (may transmit on noise)
+# Higher = less sensitive (may miss weak signals)
+# -50 = very sensitive (picks up background noise)
+# -40 = moderate (good for most radios)
+# -30 = less sensitive (only strong signals)
+# Recommended: -40 to -35
+VOX_THRESHOLD = -40
+
+# VOX attack time in milliseconds
+# How quickly VOX activates when signal detected
+# Lower = faster response but may click
+# Recommended: 20 to 100ms
+VOX_ATTACK_TIME = 50
+
+# VOX release time in milliseconds
+# How long to keep transmitting after signal drops below threshold
+# Lower = cuts off quickly (may clip end of transmissions)
+# Higher = smoother but may transmit extra tail
+# Recommended: 300 to 800ms for radio
+# VOX release time in milliseconds
+# How long to keep transmitting after signal drops below threshold
+# Lower = cuts off quickly (may clip end of transmissions)
+# Higher = smoother but may transmit extra tail
+# Recommended: 300 to 800ms for radio
+VOX_RELEASE_TIME = 500
+
+# ============================================================================
+# TROUBLESHOOTING GUIDE
+# ============================================================================
+#
+# Common Issues and Solutions:
+#
+# 1. AUDIO DROPOUTS / -9999 ERRORS
+#    • Increase AUDIO_CHUNK_SIZE (try 4800)
+#    • Decrease STREAM_RESTART_INTERVAL (try 60)
+#    • Try different USB port
+#    • Check USB power supply
+#
+# 2. DELAY BUILDING UP OVER TIME
+#    • Ensure ENABLE_VAD = true
+#    • Reduce MAX_MUMBLE_BUFFER_SECONDS
+#    • Check VAD_THRESHOLD is appropriate for your radio
+#
+# 3. CUTTING OFF END OF TRANSMISSIONS
+#    • Increase PTT_RELEASE_DELAY (try 0.5)
+#    • Increase VAD_RELEASE (try 400-500)
+#
+# 4. TOO MUCH NOISE GOING TO MUMBLE
+#    • Lower VAD_THRESHOLD (try -30)
+#    • Enable ENABLE_NOISE_GATE = true
+#    • Increase NOISE_GATE_THRESHOLD
+#    • Enable ENABLE_HIGHPASS_FILTER = true
+#
+# 5. MISSING WEAK SIGNALS
+#    • Lower VAD_THRESHOLD (try -38)
+#    • Increase INPUT_VOLUME
+#    • Disable or reduce NOISE_GATE_THRESHOLD
+#
+# 6. MUMBLE USERS COMPLAIN ABOUT AUDIO QUALITY
+#    • Increase MUMBLE_BITRATE (try 96000)
+#    • Check INPUT_VOLUME (should be 0.5-1.5)
+#    • Verify AUDIO_RATE = 48000
+#
+# Status Line Legend (when VERBOSE_LOGGING = false):
+#   [✓/⚠/✗]  = Audio capture status (ACTIVE/IDLE/STOPPED)
+#   M:✓/✗    = Mumble connected/disconnected
+#   PTT:ON/-- = Push-to-talk active/inactive
+#   VAD:🔊/-- = Voice detection active/silent
+#   -XXdB    = Current audio level (tune VAD_THRESHOLD based on this)
+#   TX:[bar] = Mumble → Radio audio level
+#   RX:[bar] = Radio → Mumble audio level
+#   R:n      = Stream restart count (shows if >0)
+#
+# For more help, check the session transcripts or enable VERBOSE_LOGGING.
+# ============================================================================
