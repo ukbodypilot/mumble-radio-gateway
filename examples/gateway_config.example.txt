@@ -10,6 +10,14 @@
 #   2. Adjust VERBOSE_LOGGING (true for diagnostics, false for quiet operation)
 #   3. Most other settings can stay at defaults
 #
+# Keyboard Controls (runtime adjustments):
+#   't' = Toggle TX mute (Mumble → Radio)
+#   'r' = Toggle RX mute (Radio → Mumble)
+#   'm' = Global mute/unmute (both directions)
+#   'v' = Toggle VAD on/off
+#   ',' = Decrease RX volume (Radio → Mumble)
+#   '.' = Increase RX volume (Radio → Mumble)
+#
 # For troubleshooting, see the diagnostic sections at the bottom.
 # ============================================================================
 
@@ -265,17 +273,18 @@ TCP_NODELAY = true
 # ============================================================================
 
 # Verbose logging mode
-# Controls startup and diagnostic message verbosity
+# Controls startup messages, diagnostics, and ALSA warnings
 # ┌───────┬────────────────────────────────────────┐
 # │ Value │ Output                                 │
 # ├───────┼────────────────────────────────────────┤
 # │ true  │ Detailed startup, device enumeration,  │
-# │       │ audio config, status legend            │
-# │ false │ Minimal startup (5 lines), clean UI    │
+# │       │ audio config, status legend, ALSA msgs │
+# │ false │ Minimal startup (5 lines), clean UI,   │
+# │       │ ALSA warnings suppressed               │
 # └───────┴────────────────────────────────────────┘
 # Recommendation: false for daily use, true for troubleshooting
 # Default: true
-VERBOSE_LOGGING = false
+VERBOSE_LOGGING = true
 
 # Diagnostic mode (detailed error information)
 # Shows full error stack traces and system diagnostics
@@ -283,7 +292,7 @@ VERBOSE_LOGGING = false
 # true  = Full diagnostic output (for troubleshooting)
 # false = Brief error messages only
 # Default: true
-DIAGNOSTIC_MODE = false
+DIAGNOSTIC_MODE = true
 
 # Status update interval (seconds)
 # How often to refresh the status line showing:
@@ -469,15 +478,20 @@ VOX_RELEASE_TIME = 500
 #    • Check INPUT_VOLUME (should be 0.5-1.5)
 #    • Verify AUDIO_RATE = 48000
 #
-# Status Line Legend (when VERBOSE_LOGGING = false):
-#   [✓/⚠/✗]  = Audio capture status (ACTIVE/IDLE/STOPPED)
-#   M:✓/✗    = Mumble connected/disconnected
+# Status Line Legend:
+#   [✓/⚠/✗]   = Audio capture status (ACTIVE/IDLE/STOPPED)
+#   M:✓/✗     = Mumble connected/disconnected
 #   PTT:ON/-- = Push-to-talk active/inactive
-#   VAD:🔊/-- = Voice detection active/silent
-#   -XXdB    = Current audio level (tune VAD_THRESHOLD based on this)
-#   TX:[bar] = Mumble → Radio audio level
-#   RX:[bar] = Radio → Mumble audio level
-#   R:n      = Stream restart count (shows if >0)
+#   VAD:✗/🔊/-- = VAD disabled/active/silent
+#   -XXdB     = Current audio level (tune VAD_THRESHOLD based on this)
+#   TX:[bar]  = Mumble → Radio audio level (or [---MUTE---] if muted)
+#   RX:[bar]  = Radio → Mumble audio level (or [---MUTE---] if muted)
+#   Vol:X.Xx  = RX volume multiplier (adjustable with , and . keys)
+#   R:n       = Stream restart count (shows if >0)
+#
+# Keyboard Controls (press during operation):
+#   't' = Toggle TX mute    |  'r' = Toggle RX mute    | 'm' = Global mute
+#   'v' = Toggle VAD on/off |  ',' = Volume down       | '.' = Volume up
 #
 # For more help, check the session transcripts or enable VERBOSE_LOGGING.
 # ============================================================================
