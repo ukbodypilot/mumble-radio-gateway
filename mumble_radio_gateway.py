@@ -232,20 +232,17 @@ class MumbleRadioGateway:
     
     def format_level_bar(self, level, muted=False):
         """Format audio level as a visual bar (0-100 scale)"""
-        # Show MUTE if muted
+        # Show MUTE if muted (fixed width)
         if muted:
-            return "[---MUTE---]  M"
+            return "[---MUTE---]  M "
         
         # Create a 10-character bar graph
         bar_length = 10
         filled = int((level / 100.0) * bar_length)
         
-        # Different colors based on level
-        if level < 5:
-            return "[----------]  0%"
-        else:
-            bar = '█' * filled + '-' * (bar_length - filled)
-            return f"[{bar}] {level:2d}%"
+        # Always use 3-character percentage field (right-aligned)
+        bar = '█' * filled + '-' * (bar_length - filled)
+        return f"[{bar}] {level:3d}%"
     
     def apply_highpass_filter(self, pcm_data):
         """Apply high-pass filter to remove low-frequency rumble"""
@@ -730,26 +727,31 @@ class MumbleRadioGateway:
     
     def find_aioc_audio_device(self):
         """Find AIOC audio device index"""
-        # Suppress ALSA warnings temporarily
+        # Suppress ALSA warnings if not in verbose mode
         import os
         import sys
         
-        # Save stderr
-        stderr_fd = sys.stderr.fileno()
-        saved_stderr = os.dup(stderr_fd)
-        
-        try:
-            # Redirect stderr to /dev/null
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(devnull, stderr_fd)
-            os.close(devnull)
+        # Only suppress if not verbose
+        if not self.config.VERBOSE_LOGGING:
+            # Save stderr
+            stderr_fd = sys.stderr.fileno()
+            saved_stderr = os.dup(stderr_fd)
             
+            try:
+                # Redirect stderr to /dev/null
+                devnull = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(devnull, stderr_fd)
+                os.close(devnull)
+                
+                p = pyaudio.PyAudio()
+                
+            finally:
+                # Restore stderr
+                os.dup2(saved_stderr, stderr_fd)
+                os.close(saved_stderr)
+        else:
+            # Verbose mode - show ALSA messages
             p = pyaudio.PyAudio()
-            
-        finally:
-            # Restore stderr
-            os.dup2(saved_stderr, stderr_fd)
-            os.close(saved_stderr)
         
         aioc_input_index = None
         aioc_output_index = None
@@ -802,7 +804,22 @@ class MumbleRadioGateway:
             if self.config.AIOC_INPUT_DEVICE < 0 or self.config.AIOC_OUTPUT_DEVICE < 0:
                 print("  Using default audio device instead")
         
-        self.pyaudio_instance = pyaudio.PyAudio()
+        # Suppress ALSA warnings during PyAudio initialization if not verbose
+        if not self.config.VERBOSE_LOGGING:
+            import os
+            import sys
+            stderr_fd = sys.stderr.fileno()
+            saved_stderr = os.dup(stderr_fd)
+            try:
+                devnull = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(devnull, stderr_fd)
+                os.close(devnull)
+                self.pyaudio_instance = pyaudio.PyAudio()
+            finally:
+                os.dup2(saved_stderr, stderr_fd)
+                os.close(saved_stderr)
+        else:
+            self.pyaudio_instance = pyaudio.PyAudio()
         
         # Determine format based on bit depth
         if self.config.AUDIO_BITS == 16:
@@ -1384,30 +1401,33 @@ class MumbleRadioGateway:
                     if char == 't':
                         # Toggle TX mute (Mumble → Radio)
                         self.tx_muted = not self.tx_muted
-                        status = "MUTED" if self.tx_muted else "UNMUTED"
-                        print(f"\n[Keyboard] TX (Mumble → Radio) {status}")
                     
                     elif char == 'r':
                         # Toggle RX mute (Radio → Mumble)
                         self.rx_muted = not self.rx_muted
-                        status = "MUTED" if self.rx_muted else "UNMUTED"
-                        print(f"\n[Keyboard] RX (Radio → Mumble) {status}")
                     
                     elif char == 'm':
                         # Global mute toggle
-                        # If both are unmuted, mute both
-                        # If one or both are muted, mute both
-                        # If both are muted, unmute both
                         if self.tx_muted and self.rx_muted:
                             # Both muted → unmute both
                             self.tx_muted = False
                             self.rx_muted = False
-                            print(f"\n[Keyboard] GLOBAL UNMUTE (TX and RX)")
                         else:
                             # One or both unmuted → mute both
                             self.tx_muted = True
                             self.rx_muted = True
-                            print(f"\n[Keyboard] GLOBAL MUTE (TX and RX)")
+                    
+                    elif char == 'v':
+                        # Toggle VAD on/off
+                        self.config.ENABLE_VAD = not self.config.ENABLE_VAD
+                    
+                    elif char == ',':
+                        # Decrease RX volume (Radio → Mumble)
+                        self.config.INPUT_VOLUME = max(0.1, self.config.INPUT_VOLUME - 0.1)
+                    
+                    elif char == '.':
+                        # Increase RX volume (Radio → Mumble)
+                        self.config.INPUT_VOLUME = min(3.0, self.config.INPUT_VOLUME + 0.1)
                 
                 time.sleep(0.05)
         
@@ -1461,7 +1481,14 @@ class MumbleRadioGateway:
                 # Print status
                 mumble_status = "✓" if self.mumble else "✗"
                 ptt_status = "ON" if self.ptt_active else "--"
-                vad_status = "🔊" if self.vad_active else "--"
+                
+                # VAD status: X when disabled, 🔊 when active, -- when silent
+                if not self.config.ENABLE_VAD:
+                    vad_status = "✗"  # VAD disabled
+                elif self.vad_active:
+                    vad_status = "🔊"  # VAD enabled and signal detected
+                else:
+                    vad_status = "--"  # VAD enabled but silent
                 
                 # Format audio levels with bar graphs
                 # Note: From radio's perspective:
@@ -1479,10 +1506,14 @@ class MumbleRadioGateway:
                 # Add diagnostics if there have been restarts
                 diag = f" R:{self.stream_restart_count}" if self.stream_restart_count > 0 else ""
                 
-                # Show VAD level in dB if enabled
-                vad_info = f" {self.vad_envelope:.0f}dB" if self.config.ENABLE_VAD else ""
+                # Show VAD level in dB if enabled (fixed width: always 5 chars like " -28dB" or "    ")
+                vad_info = f" {self.vad_envelope:3.0f}dB" if self.config.ENABLE_VAD else "     "
                 
-                print(f"\r[{status}] M:{mumble_status} PTT:{ptt_status} VAD:{vad_status}{vad_info} TX:{radio_tx_bar} RX:{radio_rx_bar}{diag}    ", end="", flush=True)
+                # Show RX volume (Radio → Mumble gain) - always 3 chars for number
+                vol_info = f" Vol:{self.config.INPUT_VOLUME:3.1f}x"
+                
+                # Extra padding to clear any orphaned text when line shortens
+                print(f"\r[{status}] M:{mumble_status} PTT:{ptt_status} VAD:{vad_status}{vad_info} TX:{radio_tx_bar} RX:{radio_rx_bar}{vol_info}{diag}     ", end="", flush=True)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -1549,7 +1580,9 @@ class MumbleRadioGateway:
             print(f"  Stream Health: No auto-restart (may experience -9999 errors)")
         
         print("Press Ctrl+C to exit")
-        print("Keyboard Controls: 't' = TX mute, 'r' = RX mute, 'm' = Global mute/unmute")
+        print("Keyboard Controls:")
+        print("  't' = TX mute | 'r' = RX mute | 'm' = Global mute | 'v' = Toggle VAD")
+        print("  ',' = Vol down | '.' = Vol up")
         print("=" * 60)
         print()
         
@@ -1559,9 +1592,10 @@ class MumbleRadioGateway:
             print("  [✓/⚠/✗]  = Audio capture status (ACTIVE/IDLE/STOPPED)")
             print("  M:✓/✗    = Mumble connected/disconnected")
             print("  PTT:ON/-- = Push-to-talk active/inactive")
-            print("  VAD:🔊/-- = Voice detection active/silent (dB = current level)")
+            print("  VAD:✗/🔊/-- = VAD disabled/active/silent (dB = current level)")
             print("  TX:[bar] = Mumble → Radio audio level")
             print("  RX:[bar] = Radio → Mumble audio level")
+            print("  Vol:X.Xx = RX volume multiplier (Radio → Mumble gain)")
             print("  R:n      = Stream restart count (only if >0)")
             print()
         
