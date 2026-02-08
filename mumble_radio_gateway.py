@@ -11,6 +11,7 @@ import time
 import signal
 import threading
 from struct import Struct
+import select  # For non-blocking keyboard input
 
 # Check for required libraries
 try:
@@ -191,6 +192,10 @@ class MumbleRadioGateway:
         self.last_successful_read = time.time()
         self.stream_age = 0  # How long current stream has been alive
         
+        # Mute controls (keyboard toggle)
+        self.tx_muted = False  # Mute Mumble → Radio (press 't')
+        self.rx_muted = False  # Mute Radio → Mumble (press 'r')
+        
         # Audio processing state
         self.noise_profile = None  # For spectral subtraction
         self.gate_envelope = 0.0  # For noise gate smoothing
@@ -225,8 +230,12 @@ class MumbleRadioGateway:
         except Exception:
             return 0
     
-    def format_level_bar(self, level):
+    def format_level_bar(self, level, muted=False):
         """Format audio level as a visual bar (0-100 scale)"""
+        # Show MUTE if muted
+        if muted:
+            return "[---MUTE---]  M"
+        
         # Create a 10-character bar graph
         bar_length = 10
         filled = int((level / 100.0) * bar_length)
@@ -578,7 +587,8 @@ class MumbleRadioGateway:
             self.set_ptt_state(True)
         
         # Play sound to AIOC output (to radio mic input)
-        if self.output_stream:
+        # But only if TX is not muted
+        if self.output_stream and not self.tx_muted:
             try:
                 # Apply output volume
                 pcm = soundchunk.pcm
@@ -1041,6 +1051,10 @@ class MumbleRadioGateway:
                         # This is the key to preventing buffer accumulation!
                         continue
                     
+                    # Check RX mute - if muted, don't send to Mumble
+                    if self.rx_muted:
+                        continue
+                    
                     # Send to Mumble with buffer management to prevent delay buildup
                     if self.mumble and self.config.MAX_MUMBLE_BUFFER_SECONDS > 0:
                         # Check if Mumble's buffer is too full
@@ -1343,6 +1357,67 @@ class MumbleRadioGateway:
             if self.config.VERBOSE_LOGGING:
                 print(f"  ✗ Failed to restart PyAudio: {type(e).__name__}: {e}")
     
+    def keyboard_listener_loop(self):
+        """Listen for keyboard input to toggle mute states"""
+        import sys
+        import tty
+        import termios
+        
+        # Save terminal settings
+        try:
+            old_settings = termios.tcgetattr(sys.stdin)
+        except:
+            # Not running in a terminal, can't capture keyboard
+            if self.config.VERBOSE_LOGGING:
+                print("  [Warning] Keyboard controls not available (not in terminal)")
+            return
+        
+        try:
+            # Set terminal to raw mode for character-by-character input
+            tty.setcbreak(sys.stdin.fileno())
+            
+            while self.running:
+                # Check if input is available (non-blocking)
+                if select.select([sys.stdin], [], [], 0.1)[0]:
+                    char = sys.stdin.read(1).lower()
+                    
+                    if char == 't':
+                        # Toggle TX mute (Mumble → Radio)
+                        self.tx_muted = not self.tx_muted
+                        status = "MUTED" if self.tx_muted else "UNMUTED"
+                        print(f"\n[Keyboard] TX (Mumble → Radio) {status}")
+                    
+                    elif char == 'r':
+                        # Toggle RX mute (Radio → Mumble)
+                        self.rx_muted = not self.rx_muted
+                        status = "MUTED" if self.rx_muted else "UNMUTED"
+                        print(f"\n[Keyboard] RX (Radio → Mumble) {status}")
+                    
+                    elif char == 'm':
+                        # Global mute toggle
+                        # If both are unmuted, mute both
+                        # If one or both are muted, mute both
+                        # If both are muted, unmute both
+                        if self.tx_muted and self.rx_muted:
+                            # Both muted → unmute both
+                            self.tx_muted = False
+                            self.rx_muted = False
+                            print(f"\n[Keyboard] GLOBAL UNMUTE (TX and RX)")
+                        else:
+                            # One or both unmuted → mute both
+                            self.tx_muted = True
+                            self.rx_muted = True
+                            print(f"\n[Keyboard] GLOBAL MUTE (TX and RX)")
+                
+                time.sleep(0.05)
+        
+        finally:
+            # Restore terminal settings
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+            except:
+                pass
+    
     def status_monitor_loop(self):
         """Monitor PTT release timeout and audio transmit status"""
         status_check_interval = self.config.STATUS_UPDATE_INTERVAL
@@ -1392,8 +1467,14 @@ class MumbleRadioGateway:
                 # Note: From radio's perspective:
                 #   - rx_audio_level = Mumble → Radio (Radio TX)
                 #   - tx_audio_level = Radio → Mumble (Radio RX)
-                radio_tx_bar = self.format_level_bar(self.rx_audio_level)
-                radio_rx_bar = self.format_level_bar(self.tx_audio_level)
+                radio_tx_bar = self.format_level_bar(self.rx_audio_level, muted=self.tx_muted)
+                
+                # RX bar: Show 0% if VAD is blocking (not actually transmitting to Mumble)
+                # Only show level when VAD is active (actually sending to Mumble)
+                if self.config.ENABLE_VAD and not self.vad_active:
+                    radio_rx_bar = self.format_level_bar(0, muted=self.rx_muted)  # Not transmitting = 0%
+                else:
+                    radio_rx_bar = self.format_level_bar(self.tx_audio_level, muted=self.rx_muted)
                 
                 # Add diagnostics if there have been restarts
                 diag = f" R:{self.stream_restart_count}" if self.stream_restart_count > 0 else ""
@@ -1468,6 +1549,7 @@ class MumbleRadioGateway:
             print(f"  Stream Health: No auto-restart (may experience -9999 errors)")
         
         print("Press Ctrl+C to exit")
+        print("Keyboard Controls: 't' = TX mute, 'r' = RX mute, 'm' = Global mute/unmute")
         print("=" * 60)
         print()
         
@@ -1490,6 +1572,10 @@ class MumbleRadioGateway:
         # Start status monitor thread (handles PTT timeout and status reporting)
         status_thread = threading.Thread(target=self.status_monitor_loop, daemon=True)
         status_thread.start()
+        
+        # Start keyboard listener thread
+        keyboard_thread = threading.Thread(target=self.keyboard_listener_loop, daemon=True)
+        keyboard_thread.start()
         
         # Main loop
         try:
