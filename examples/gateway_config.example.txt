@@ -10,13 +10,12 @@
 #   2. Adjust VERBOSE_LOGGING (true for diagnostics, false for quiet operation)
 #   3. Most other settings can stay at defaults
 #
-# Keyboard Controls (runtime adjustments):
-#   't' = Toggle TX mute (Mumble → Radio)
-#   'r' = Toggle RX mute (Radio → Mumble)
-#   'm' = Global mute/unmute (both directions)
-#   'v' = Toggle VAD on/off
-#   ',' = Decrease RX volume (Radio → Mumble)
-#   '.' = Increase RX volume (Radio → Mumble)
+# Keyboard Controls (runtime adjustments without restarting):
+#   MUTE:    't' = TX | 'r' = RX | 'm' = Global mute/unmute
+#   AUDIO:   'v' = VAD toggle | ',' = Volume down | '.' = Volume up
+#   PROCESS: 'n' = Noise gate | 'f' = High-pass filter | 'a' = AGC
+#            's' = Spectral suppression | 'w' = Wiener suppression
+#            'e' = Echo cancellation | 'x' = Stream restart on/off
 #
 # For troubleshooting, see the diagnostic sections at the bottom.
 # ============================================================================
@@ -487,11 +486,14 @@ VOX_RELEASE_TIME = 500
 #   TX:[bar]  = Mumble → Radio audio level (or [---MUTE---] if muted)
 #   RX:[bar]  = Radio → Mumble audio level (or [---MUTE---] if muted)
 #   Vol:X.Xx  = RX volume multiplier (adjustable with , and . keys)
+#   [N,F,A,S,W,E,X] = Audio processing flags (only shown when enabled):
+#                     N=Noise Gate | F=HPF | A=AGC | S=Spectral | W=Wiener
+#                     E=Echo Cancel | X=Stream Restart OFF
 #   R:n       = Stream restart count (shows if >0)
 #
-# Keyboard Controls (press during operation):
-#   't' = Toggle TX mute    |  'r' = Toggle RX mute    | 'm' = Global mute
-#   'v' = Toggle VAD on/off |  ',' = Volume down       | '.' = Volume up
+# Keyboard Controls (press during operation - no restart needed):
+#   MUTE:    't'=TX | 'r'=RX | 'm'=Global  |  AUDIO: 'v'=VAD | ','=Vol- | '.'=Vol+
+#   PROCESS: 'n'=Gate | 'f'=HPF | 'a'=AGC | 's'=Spectral | 'w'=Wiener | 'e'=Echo | 'x'=Restart
 #
 # For more help, check the session transcripts or enable VERBOSE_LOGGING.
 # ============================================================================

@@ -579,8 +579,9 @@ class MumbleRadioGateway:
         # Update last sound time
         self.last_sound_time = time.time()
         
-        # Key PTT if not already active
-        if not self.ptt_active:
+        # Key PTT if not already active AND TX is not muted
+        # Don't key the radio if we're muted - that would broadcast silence!
+        if not self.ptt_active and not self.tx_muted:
             self.set_ptt_state(True)
         
         # Play sound to AIOC output (to radio mic input)
@@ -1428,6 +1429,49 @@ class MumbleRadioGateway:
                     elif char == '.':
                         # Increase RX volume (Radio → Mumble)
                         self.config.INPUT_VOLUME = min(3.0, self.config.INPUT_VOLUME + 0.1)
+                    
+                    elif char == 'n':
+                        # Toggle noise gate
+                        self.config.ENABLE_NOISE_GATE = not self.config.ENABLE_NOISE_GATE
+                    
+                    elif char == 'f':
+                        # Toggle high-pass filter
+                        self.config.ENABLE_HIGHPASS_FILTER = not self.config.ENABLE_HIGHPASS_FILTER
+                    
+                    elif char == 'a':
+                        # Toggle AGC
+                        self.config.ENABLE_AGC = not self.config.ENABLE_AGC
+                    
+                    elif char == 's':
+                        # Toggle spectral noise suppression
+                        if self.config.ENABLE_NOISE_SUPPRESSION and self.config.NOISE_SUPPRESSION_METHOD == 'spectral':
+                            # Currently on with spectral → turn off
+                            self.config.ENABLE_NOISE_SUPPRESSION = False
+                        else:
+                            # Turn on with spectral
+                            self.config.ENABLE_NOISE_SUPPRESSION = True
+                            self.config.NOISE_SUPPRESSION_METHOD = 'spectral'
+                    
+                    elif char == 'w':
+                        # Toggle Wiener noise suppression
+                        if self.config.ENABLE_NOISE_SUPPRESSION and self.config.NOISE_SUPPRESSION_METHOD == 'wiener':
+                            # Currently on with wiener → turn off
+                            self.config.ENABLE_NOISE_SUPPRESSION = False
+                        else:
+                            # Turn on with wiener
+                            self.config.ENABLE_NOISE_SUPPRESSION = True
+                            self.config.NOISE_SUPPRESSION_METHOD = 'wiener'
+                    
+                    elif char == 'e':
+                        # Toggle echo cancellation
+                        self.config.ENABLE_ECHO_CANCELLATION = not self.config.ENABLE_ECHO_CANCELLATION
+                    
+                    elif char == 'x':
+                        # Toggle proactive stream restart
+                        if self.config.STREAM_RESTART_INTERVAL > 0:
+                            self.config.STREAM_RESTART_INTERVAL = 0  # Disable
+                        else:
+                            self.config.STREAM_RESTART_INTERVAL = 60  # Enable (60s default)
                 
                 time.sleep(0.05)
         
@@ -1446,9 +1490,11 @@ class MumbleRadioGateway:
         while self.running:
             current_time = time.time()
             
-            # Check PTT timeout
+            # Check PTT timeout or if TX is muted
             if self.ptt_active:
-                if current_time - self.last_sound_time > self.config.PTT_RELEASE_DELAY:
+                # Release PTT if timeout OR if TX is muted
+                # (Don't keep PTT keyed when muted!)
+                if current_time - self.last_sound_time > self.config.PTT_RELEASE_DELAY or self.tx_muted:
                     self.set_ptt_state(False)
             
             # Periodic status check and reporting (only if enabled)
@@ -1512,8 +1558,22 @@ class MumbleRadioGateway:
                 # Show RX volume (Radio → Mumble gain) - always 3 chars for number
                 vol_info = f" Vol:{self.config.INPUT_VOLUME:3.1f}x"
                 
+                # Show audio processing status (compact single-letter flags)
+                # Only show what's enabled to keep line compact
+                proc_flags = []
+                if self.config.ENABLE_NOISE_GATE: proc_flags.append("N")
+                if self.config.ENABLE_HIGHPASS_FILTER: proc_flags.append("F")
+                if self.config.ENABLE_AGC: proc_flags.append("A")
+                if self.config.ENABLE_NOISE_SUPPRESSION:
+                    if self.config.NOISE_SUPPRESSION_METHOD == 'spectral': proc_flags.append("S")
+                    elif self.config.NOISE_SUPPRESSION_METHOD == 'wiener': proc_flags.append("W")
+                if self.config.ENABLE_ECHO_CANCELLATION: proc_flags.append("E")
+                if self.config.STREAM_RESTART_INTERVAL == 0: proc_flags.append("X")  # X shows restart is OFF
+                
+                proc_info = f" [{','.join(proc_flags)}]" if proc_flags else ""
+                
                 # Extra padding to clear any orphaned text when line shortens
-                print(f"\r[{status}] M:{mumble_status} PTT:{ptt_status} VAD:{vad_status}{vad_info} TX:{radio_tx_bar} RX:{radio_rx_bar}{vol_info}{diag}     ", end="", flush=True)
+                print(f"\r[{status}] M:{mumble_status} PTT:{ptt_status} VAD:{vad_status}{vad_info} TX:{radio_tx_bar} RX:{radio_rx_bar}{vol_info}{proc_info}{diag}     ", end="", flush=True)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -1581,8 +1641,8 @@ class MumbleRadioGateway:
         
         print("Press Ctrl+C to exit")
         print("Keyboard Controls:")
-        print("  't' = TX mute | 'r' = RX mute | 'm' = Global mute | 'v' = Toggle VAD")
-        print("  ',' = Vol down | '.' = Vol up")
+        print("  Mute: 't'=TX | 'r'=RX | 'm'=Global  |  Audio: 'v'=VAD | ','=Vol- | '.'=Vol+")
+        print("  Proc: 'n'=Gate | 'f'=HPF | 'a'=AGC | 's'=Spectral | 'w'=Wiener | 'e'=Echo | 'x'=Restart")
         print("=" * 60)
         print()
         
@@ -1596,6 +1656,7 @@ class MumbleRadioGateway:
             print("  TX:[bar] = Mumble → Radio audio level")
             print("  RX:[bar] = Radio → Mumble audio level")
             print("  Vol:X.Xx = RX volume multiplier (Radio → Mumble gain)")
+            print("  [N,F,A,S,W,E,X] = Processing: N=NoiseGate F=HPF A=AGC S=Spectral W=Wiener E=Echo X=Restart-OFF")
             print("  R:n      = Stream restart count (only if >0)")
             print()
         
