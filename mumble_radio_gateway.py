@@ -196,6 +196,9 @@ class MumbleRadioGateway:
         self.tx_muted = False  # Mute Mumble → Radio (press 't')
         self.rx_muted = False  # Mute Radio → Mumble (press 'r')
         
+        # Manual PTT control (keyboard toggle)
+        self.manual_ptt_mode = False  # Manual PTT control (press 'p')
+        
         # Audio processing state
         self.noise_profile = None  # For spectral subtraction
         self.gate_envelope = 0.0  # For noise gate smoothing
@@ -230,11 +233,27 @@ class MumbleRadioGateway:
         except Exception:
             return 0
     
-    def format_level_bar(self, level, muted=False):
-        """Format audio level as a visual bar (0-100 scale)"""
-        # Show MUTE if muted (fixed width)
+    def format_level_bar(self, level, muted=False, color='green'):
+        """Format audio level as a visual bar (0-100 scale) with optional color
+        
+        Args:
+            level: Audio level 0-100
+            muted: Whether this channel is muted
+            color: 'green' for RX, 'red' for TX
+        """
+        # ANSI color codes
+        YELLOW = '\033[93m'
+        GREEN = '\033[92m'
+        RED = '\033[91m'
+        WHITE = '\033[97m'
+        RESET = '\033[0m'
+        
+        # Choose bar color
+        bar_color = GREEN if color == 'green' else RED
+        
+        # Show MUTE if muted (fixed width, colored)
         if muted:
-            return "[---MUTE---]  M "
+            return f"{WHITE}[{bar_color}---MUTE---{WHITE}]{RESET}  {bar_color}M{RESET} "
         
         # Create a 10-character bar graph
         bar_length = 10
@@ -242,7 +261,7 @@ class MumbleRadioGateway:
         
         # Always use 3-character percentage field (right-aligned)
         bar = '█' * filled + '-' * (bar_length - filled)
-        return f"[{bar}] {level:3d}%"
+        return f"{WHITE}[{bar_color}{bar}{WHITE}]{RESET} {YELLOW}{level:3d}%{RESET}"
     
     def apply_highpass_filter(self, pcm_data):
         """Apply high-pass filter to remove low-frequency rumble"""
@@ -581,7 +600,8 @@ class MumbleRadioGateway:
         
         # Key PTT if not already active AND TX is not muted
         # Don't key the radio if we're muted - that would broadcast silence!
-        if not self.ptt_active and not self.tx_muted:
+        # Also don't auto-key if manual PTT mode is active
+        if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
             self.set_ptt_state(True)
         
         # Play sound to AIOC output (to radio mic input)
@@ -1472,6 +1492,12 @@ class MumbleRadioGateway:
                             self.config.STREAM_RESTART_INTERVAL = 0  # Disable
                         else:
                             self.config.STREAM_RESTART_INTERVAL = 60  # Enable (60s default)
+                    
+                    elif char == 'p':
+                        # Toggle manual PTT mode
+                        self.manual_ptt_mode = not self.manual_ptt_mode
+                        # Immediately apply the PTT state
+                        self.set_ptt_state(self.manual_ptt_mode)
                 
                 time.sleep(0.05)
         
@@ -1491,9 +1517,10 @@ class MumbleRadioGateway:
             current_time = time.time()
             
             # Check PTT timeout or if TX is muted
-            if self.ptt_active:
+            if self.ptt_active and not self.manual_ptt_mode:
                 # Release PTT if timeout OR if TX is muted
                 # (Don't keep PTT keyed when muted!)
+                # But don't release if in manual PTT mode
                 if current_time - self.last_sound_time > self.config.PTT_RELEASE_DELAY or self.tx_muted:
                     self.set_ptt_state(False)
             
@@ -1511,52 +1538,70 @@ class MumbleRadioGateway:
                 # Check audio transmit status
                 time_since_last_capture = current_time - self.last_audio_capture_time
                 
+                # ANSI color codes
+                YELLOW = '\033[93m'
+                GREEN = '\033[92m'
+                RED = '\033[91m'
+                ORANGE = '\033[33m'
+                WHITE = '\033[97m'
+                GRAY = '\033[90m'
+                RESET = '\033[0m'
+                
+                # Format status with color-coded symbols
                 if self.audio_capture_active and time_since_last_capture < 2.0:
-                    status = "✓ ACTIVE"
+                    status_label = "ACTIVE"
+                    status_symbol = f"{GREEN}✓{RESET}"
                 elif time_since_last_capture < 10.0:
-                    status = "⚠ IDLE"
+                    status_label = "IDLE"
+                    status_symbol = f"{ORANGE}⚠{RESET}"
                 else:
-                    status = "✗ STOPPED"
+                    status_label = "STOPPED"
+                    status_symbol = f"{RED}✗{RESET}"
                     # Attempt recovery
                     if self.config.VERBOSE_LOGGING:
-                        print(f"\n{status}")
+                        print(f"\n{WHITE}{status_label}:{RESET} {status_symbol}")
                         print("  Attempting to restart audio input...")
                     self.restart_audio_input()
                     continue
                 
                 # Print status
-                mumble_status = "✓" if self.mumble else "✗"
-                ptt_status = "ON" if self.ptt_active else "--"
+                # Status symbols with colors
+                mumble_status = f"{GREEN}✓{RESET}" if self.mumble else f"{RED}✗{RESET}"
+                # PTT status: Show 'M-ON' or 'M--' when in manual mode
+                if self.manual_ptt_mode:
+                    ptt_status = f"{YELLOW}M-{GREEN}ON{RESET}" if self.ptt_active else f"{YELLOW}M-{GRAY}--{RESET}"
+                else:
+                    ptt_status = f"{GREEN}ON{RESET}" if self.ptt_active else f"{GRAY}--{RESET}"
                 
                 # VAD status: X when disabled, 🔊 when active, -- when silent
                 if not self.config.ENABLE_VAD:
-                    vad_status = "✗"  # VAD disabled
+                    vad_status = f"{RED}✗{RESET}"  # VAD disabled (red X)
                 elif self.vad_active:
-                    vad_status = "🔊"  # VAD enabled and signal detected
+                    vad_status = f"{GREEN}🔊{RESET}"  # VAD enabled and signal detected (green speaker)
                 else:
-                    vad_status = "--"  # VAD enabled but silent
+                    vad_status = f"{GRAY}--{RESET}"  # VAD enabled but silent (gray)
                 
                 # Format audio levels with bar graphs
                 # Note: From radio's perspective:
-                #   - rx_audio_level = Mumble → Radio (Radio TX)
-                #   - tx_audio_level = Radio → Mumble (Radio RX)
-                radio_tx_bar = self.format_level_bar(self.rx_audio_level, muted=self.tx_muted)
+                #   - rx_audio_level = Mumble → Radio (Radio TX) - RED
+                #   - tx_audio_level = Radio → Mumble (Radio RX) - GREEN
+                radio_tx_bar = self.format_level_bar(self.rx_audio_level, muted=self.tx_muted, color='red')
                 
                 # RX bar: Show 0% if VAD is blocking (not actually transmitting to Mumble)
                 # Only show level when VAD is active (actually sending to Mumble)
                 if self.config.ENABLE_VAD and not self.vad_active:
-                    radio_rx_bar = self.format_level_bar(0, muted=self.rx_muted)  # Not transmitting = 0%
+                    radio_rx_bar = self.format_level_bar(0, muted=self.rx_muted, color='green')  # Not transmitting = 0%
                 else:
-                    radio_rx_bar = self.format_level_bar(self.tx_audio_level, muted=self.rx_muted)
+                    radio_rx_bar = self.format_level_bar(self.tx_audio_level, muted=self.rx_muted, color='green')
                 
-                # Add diagnostics if there have been restarts
-                diag = f" R:{self.stream_restart_count}" if self.stream_restart_count > 0 else ""
+                # Add diagnostics if there have been restarts (white label, yellow number)
+                diag = f" {WHITE}R:{YELLOW}{self.stream_restart_count}{RESET}" if self.stream_restart_count > 0 else ""
                 
-                # Show VAD level in dB if enabled (fixed width: always 5 chars like " -28dB" or "    ")
-                vad_info = f" {self.vad_envelope:3.0f}dB" if self.config.ENABLE_VAD else "     "
+                # Show VAD level in dB if enabled (white label, yellow numbers, fixed width: always 5 chars like " -28dB" or "    ")
+                vad_info = f" {YELLOW}{self.vad_envelope:3.0f}{RESET}{WHITE}dB{RESET}" if self.config.ENABLE_VAD else "     "
                 
-                # Show RX volume (Radio → Mumble gain) - always 3 chars for number
-                vol_info = f" Vol:{self.config.INPUT_VOLUME:3.1f}x"
+                # Show RX volume (white label, yellow number, always 3 chars for number)
+                vol_info = f" {WHITE}Vol:{YELLOW}{self.config.INPUT_VOLUME:3.1f}{RESET}{WHITE}x{RESET}"
                 
                 # Show audio processing status (compact single-letter flags)
                 # Only show what's enabled to keep line compact
@@ -1570,10 +1615,10 @@ class MumbleRadioGateway:
                 if self.config.ENABLE_ECHO_CANCELLATION: proc_flags.append("E")
                 if self.config.STREAM_RESTART_INTERVAL == 0: proc_flags.append("X")  # X shows restart is OFF
                 
-                proc_info = f" [{','.join(proc_flags)}]" if proc_flags else ""
+                proc_info = f" {WHITE}[{YELLOW}{','.join(proc_flags)}{WHITE}]{RESET}" if proc_flags else ""
                 
                 # Extra padding to clear any orphaned text when line shortens
-                print(f"\r[{status}] M:{mumble_status} PTT:{ptt_status} VAD:{vad_status}{vad_info} TX:{radio_tx_bar} RX:{radio_rx_bar}{vol_info}{proc_info}{diag}     ", end="", flush=True)
+                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{vol_info}{proc_info}{diag}     ", end="", flush=True)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -1643,6 +1688,7 @@ class MumbleRadioGateway:
         print("Keyboard Controls:")
         print("  Mute: 't'=TX | 'r'=RX | 'm'=Global  |  Audio: 'v'=VAD | ','=Vol- | '.'=Vol+")
         print("  Proc: 'n'=Gate | 'f'=HPF | 'a'=AGC | 's'=Spectral | 'w'=Wiener | 'e'=Echo | 'x'=Restart")
+        print("  PTT:  'p'=Manual PTT Toggle (override auto-PTT)")
         print("=" * 60)
         print()
         
@@ -1651,7 +1697,7 @@ class MumbleRadioGateway:
             print("Status Line Legend:")
             print("  [✓/⚠/✗]  = Audio capture status (ACTIVE/IDLE/STOPPED)")
             print("  M:✓/✗    = Mumble connected/disconnected")
-            print("  PTT:ON/-- = Push-to-talk active/inactive")
+            print("  PTT:ON/M-ON/-- = Push-to-talk (auto/manual-on/off)")
             print("  VAD:✗/🔊/-- = VAD disabled/active/silent (dB = current level)")
             print("  TX:[bar] = Mumble → Radio audio level")
             print("  RX:[bar] = Radio → Mumble audio level")
