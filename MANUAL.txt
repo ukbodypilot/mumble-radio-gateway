@@ -1,0 +1,462 @@
+================================================================================
+MUMBLE RADIO GATEWAY - USER GUIDE
+================================================================================
+
+VERSION: 2.0 (with Manual PTT Toggle and Stream Health Management)
+Last Updated: February 2026
+
+================================================================================
+OVERVIEW
+================================================================================
+
+The Mumble Radio Gateway bridges a radio (via AIOC - All-In-One Cable) with
+a Mumble voice chat server. It provides:
+
+- Automatic PTT control (Mumble audio → Radio TX)
+- Voice Activity Detection (Radio RX → Mumble)
+- Real-time audio processing (noise reduction, filtering)
+- Manual PTT override capability
+- Configurable stream health management
+- Live status monitoring with keyboard controls
+
+================================================================================
+KEYBOARD CONTROLS (Runtime)
+================================================================================
+
+MUTE CONTROLS
+-------------
+  t = Toggle TX Mute (Mumble → Radio)
+      Mutes audio going TO the radio
+  
+  r = Toggle RX Mute (Radio → Mumble)
+      Mutes audio coming FROM the radio
+  
+  m = Global Mute Toggle
+      Mutes BOTH directions at once
+
+AUDIO CONTROLS
+--------------
+  v = Toggle VAD (Voice Activity Detection)
+      ON = Only transmit when radio signal detected
+      OFF = Continuous transmission to Mumble
+  
+  , = Decrease RX Volume (Radio → Mumble)
+      Makes radio audio quieter in Mumble (0.1x steps)
+  
+  . = Increase RX Volume (Radio → Mumble)
+      Makes radio audio louder in Mumble (0.1x steps)
+
+AUDIO PROCESSING
+----------------
+  n = Toggle Noise Gate
+      Cuts low-level noise below threshold
+  
+  f = Toggle High-Pass Filter (HPF)
+      Removes rumble and low-frequency hum
+  
+  a = Toggle AGC (Automatic Gain Control)
+      Normalizes audio volume automatically
+  
+  s = Toggle Spectral Noise Suppression
+      Removes background noise using spectral subtraction
+  
+  w = Toggle Wiener Noise Suppression
+      Removes background noise using Wiener filtering
+  
+  e = Toggle Echo Cancellation
+      Experimental echo removal
+  
+  x = Toggle Stream Health Management
+      Enables/disables automatic stream restart
+
+PTT CONTROL
+-----------
+  p = Toggle Manual PTT Mode
+      ON = PTT stays keyed until you press 'p' again
+      OFF = Automatic PTT based on Mumble audio
+      
+      Use cases:
+      - Long transmissions where you want continuous PTT
+      - Testing radio without Mumble audio
+      - Override automatic PTT behavior
+
+================================================================================
+STATUS LINE INDICATORS
+================================================================================
+
+The status line shows real-time information:
+
+ACTIVE: ✓ M:✓ PTT:M-ON VAD:🔊 -28dB TX:[████] RX:[██] Vol:1.0x [N,F,S,X] R:2
+
+Breakdown:
+----------
+ACTIVE/IDLE/STOPPED
+  ✓ = Audio capture working
+  ⚠ = Audio idle
+  ✗ = Audio stopped (will auto-restart)
+
+M:✓/✗
+  Mumble connection status
+  ✓ = Connected
+  ✗ = Disconnected
+
+PTT:ON/M-ON/M--/--
+  Push-to-talk status
+  ON = Auto PTT active
+  M-ON = Manual PTT active (keyed)
+  M-- = Manual PTT mode (not keyed)
+  -- = PTT inactive
+
+VAD:🔊/--/✗
+  Voice Activity Detection status
+  🔊 = Signal detected (transmitting to Mumble)
+  -- = VAD enabled but silent
+  ✗ = VAD disabled
+  -XXdB = Current audio level in decibels
+
+TX:[bar]
+  Mumble → Radio audio level
+  Red bar showing transmitted audio strength
+
+RX:[bar]
+  Radio → Mumble audio level
+  Green bar showing received audio strength
+  Shows 0% when VAD is blocking (not transmitting)
+
+Vol:X.Xx
+  RX volume multiplier
+  Current gain for Radio → Mumble audio
+
+[N,F,A,S,W,E,X]
+  Processing flags (only enabled features shown)
+  N = Noise Gate
+  F = High-pass Filter
+  A = AGC
+  S = Spectral noise suppression
+  W = Wiener noise suppression
+  E = Echo cancellation
+  X = Stream Health DISABLED (missing X = enabled)
+
+R:n
+  Stream restart count
+  Only shown if > 0
+  Indicates how many times streams have been restarted
+
+================================================================================
+CONFIGURATION FILE: gateway_config.txt
+================================================================================
+
+The gateway reads configuration from gateway_config.txt in the same directory
+as the script. All settings can be customized.
+
+KEY SETTINGS
+------------
+
+Mumble Server:
+  MUMBLE_SERVER = 192.168.2.126
+  MUMBLE_PORT = 64738
+  MUMBLE_USERNAME = RadioGateway
+  MUMBLE_PASSWORD = 
+  MUMBLE_CHANNEL = 
+
+Audio:
+  AUDIO_RATE = 48000
+  AUDIO_CHUNK_SIZE = 2400
+  INPUT_VOLUME = 1.0
+  OUTPUT_VOLUME = 1.0
+
+AIOC Device:
+  AIOC_VID = 0x1209
+  AIOC_PID = 0x7388
+  AIOC_PTT_CHANNEL = 3
+
+PTT Timing:
+  PTT_RELEASE_DELAY = 0.3
+  PTT_ACTIVATION_DELAY = 0.0
+
+Voice Activity Detection (VAD):
+  ENABLE_VAD = True
+  VAD_THRESHOLD = -33
+  VAD_ATTACK = 20
+  VAD_RELEASE = 300
+  VAD_MIN_DURATION = 150
+
+Audio Processing:
+  ENABLE_NOISE_SUPPRESSION = True
+  NOISE_SUPPRESSION_METHOD = spectral
+  ENABLE_NOISE_GATE = True
+  NOISE_GATE_THRESHOLD = -32
+  ENABLE_HIGHPASS_FILTER = True
+  HIGHPASS_CUTOFF_FREQ = 120
+  ENABLE_AGC = False
+  ENABLE_ECHO_CANCELLATION = False
+
+Stream Health Management:
+  ENABLE_STREAM_HEALTH = False
+  STREAM_RESTART_INTERVAL = 60
+  STREAM_RESTART_IDLE_TIME = 3
+
+Logging:
+  VERBOSE_LOGGING = True
+  STATUS_UPDATE_INTERVAL = 5
+
+See gateway_config.txt for complete list of all parameters.
+
+================================================================================
+RECENT CHANGES (v2.0)
+================================================================================
+
+NEW FEATURE: Manual PTT Toggle ('p' key)
+-----------------------------------------
+- Press 'p' to manually key/unkey the radio
+- Overrides automatic PTT behavior
+- Status line shows "M-ON" or "M--" when in manual mode
+- Useful for long transmissions or testing
+
+NEW FEATURE: Stream Health Configuration
+-----------------------------------------
+- Added ENABLE_STREAM_HEALTH parameter to config file
+- Default is DISABLED (was enabled in previous versions)
+- Prevents -9999 ALSA errors by proactively restarting streams
+- Can enable in config file or toggle with 'x' key at runtime
+- When disabled, streams only restart on actual errors
+
+IMPROVEMENTS:
+- Clearer status messages for stream health
+- Better documentation in config file
+- Updated status legend and help text
+- Status display shows stream health state with [X] flag
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+PROBLEM: Audio capture shows "STOPPED" or frequent restarts
+SOLUTION: 
+  - Increase AUDIO_CHUNK_SIZE to 4800 or higher
+  - Enable Stream Health: ENABLE_STREAM_HEALTH = True
+  - Try different USB port
+  - Check USB cable quality
+
+PROBLEM: -9999 Unanticipated host error
+SOLUTION:
+  - Enable Stream Health Management in config file
+  - Increase AUDIO_CHUNK_SIZE
+  - Check system load (high CPU can cause this)
+  - Verify AIOC is on a dedicated USB controller
+
+PROBLEM: Audio too quiet or too loud
+SOLUTION:
+  - Adjust INPUT_VOLUME (Radio → Mumble)
+  - Adjust OUTPUT_VOLUME (Mumble → Radio)
+  - Use ',' and '.' keys to adjust at runtime
+
+PROBLEM: Too much background noise transmitted to Mumble
+SOLUTION:
+  - Enable VAD (press 'v' or set ENABLE_VAD = True)
+  - Adjust VAD_THRESHOLD (lower = less sensitive)
+  - Enable Noise Gate (press 'n')
+  - Adjust NOISE_GATE_THRESHOLD
+
+PROBLEM: Radio audio sounds muffled or distorted
+SOLUTION:
+  - Disable High-Pass Filter (press 'f')
+  - Try different NOISE_SUPPRESSION_METHOD (spectral vs wiener)
+  - Disable noise suppression (press 's' or 'w')
+  - Check OUTPUT_VOLUME (might be clipping)
+
+PROBLEM: PTT not releasing or sticking
+SOLUTION:
+  - If in Manual PTT mode, press 'p' to release
+  - Adjust PTT_RELEASE_DELAY
+  - Check TX mute status (press 't' to unmute)
+
+PROBLEM: Mumble disconnects frequently
+SOLUTION:
+  - Check network connection
+  - Increase NETWORK_TIMEOUT
+  - Verify MUMBLE_RECONNECT = True
+  - Check Mumble server logs
+
+PROBLEM: Gateway won't start - "Not a git repository" error
+SOLUTION:
+  - This error is NORMAL and can be ignored
+  - It's from the keyboard control system checking terminal type
+  - Gateway will continue starting normally
+
+================================================================================
+PERFORMANCE TIPS
+================================================================================
+
+For Low Latency:
+  - Use smaller AUDIO_CHUNK_SIZE (1200-2400)
+  - Reduce PTT_RELEASE_DELAY
+  - Set TCP_NODELAY = True
+  - Disable unnecessary audio processing
+
+For Stability:
+  - Use larger AUDIO_CHUNK_SIZE (4800+)
+  - Enable ENABLE_STREAM_HEALTH = True
+  - Use dedicated USB port for AIOC
+  - Reduce system load
+
+For Best Audio Quality:
+  - Enable ENABLE_NOISE_SUPPRESSION = True
+  - Enable ENABLE_NOISE_GATE = True
+  - Enable ENABLE_HIGHPASS_FILTER = True
+  - Adjust thresholds based on environment
+  - Use NOISE_SUPPRESSION_METHOD = spectral
+
+For Minimal Processing:
+  - Disable all audio processing features
+  - Use raw audio pass-through
+  - Good for testing or high-quality audio sources
+
+================================================================================
+SYSTEM REQUIREMENTS
+================================================================================
+
+Hardware:
+  - AIOC (All-In-One Cable) USB audio device
+  - Radio with audio input/output
+  - Computer with USB port
+  - Network connection to Mumble server
+
+Software:
+  - Python 3.x
+  - pymumble_py3 library
+  - hidapi library
+  - pyaudio library
+  - Linux (Ubuntu/Debian recommended)
+
+Installation:
+  pip3 install hidapi --break-system-packages
+  pip3 install pymumble_py3
+  sudo apt-get install python3-pyaudio
+
+================================================================================
+AUDIO FLOW
+================================================================================
+
+Mumble → Radio (TX Path):
+  1. Audio received from Mumble server
+  2. PTT automatically activated (unless in Manual PTT mode)
+  3. Audio sent to AIOC output → Radio mic input
+  4. PTT released after configured delay (unless in Manual PTT mode)
+  5. TX mute can block this entire path
+
+Radio → Mumble (RX Path):
+  1. Audio captured from Radio audio output → AIOC input
+  2. Audio processing applied (noise gate, filters, etc.)
+  3. VAD checks if signal is present
+  4. If VAD active, audio sent to Mumble server
+  5. If VAD inactive, audio dropped (prevents buffer buildup)
+  6. RX mute can block this entire path
+
+================================================================================
+VAD (Voice Activity Detection) EXPLAINED
+================================================================================
+
+VAD is critical for preventing audio buffer buildup in Mumble!
+
+How it works:
+  - Monitors incoming radio audio levels
+  - Only transmits to Mumble when signal detected
+  - Drops silence/noise to prevent latency buildup
+
+Settings:
+  VAD_THRESHOLD: How loud signal must be (in dB)
+    - Lower = more sensitive (transmits more)
+    - Higher = less sensitive (transmits less)
+    - Recommended: -33 to -40 dB
+
+  VAD_ATTACK: How fast VAD opens (ms)
+    - Lower = faster response
+    - Higher = slower, smoother opening
+
+  VAD_RELEASE: How long to stay open after signal stops (ms)
+    - Lower = cuts off quickly
+    - Higher = stays open longer (good for choppy audio)
+
+  VAD_MIN_DURATION: Minimum transmission length (ms)
+    - Prevents very short spurious transmissions
+
+Status Indicator:
+  🔊 = Signal detected, transmitting to Mumble
+  -- = VAD enabled but silent
+  ✗ = VAD disabled (continuous transmission)
+
+================================================================================
+STREAM HEALTH MANAGEMENT EXPLAINED
+================================================================================
+
+What it does:
+  - Proactively restarts audio streams before they fail
+  - Helps prevent -9999 ALSA errors
+  - Only restarts when radio is idle (not transmitting)
+
+When to enable:
+  - You experience -9999 errors
+  - Audio streams freeze or become unresponsive
+  - Long-running sessions (hours)
+  - USB audio issues
+
+When to disable:
+  - System is stable with no errors
+  - You prefer manual control
+  - Short sessions
+  - Don't want automatic restarts
+
+Configuration:
+  ENABLE_STREAM_HEALTH = True/False
+  STREAM_RESTART_INTERVAL = 60 (seconds between restarts)
+  STREAM_RESTART_IDLE_TIME = 3 (seconds idle before restart)
+
+Runtime Toggle:
+  Press 'x' to enable/disable
+  Status line shows [X] when disabled
+
+================================================================================
+MANUAL PTT MODE EXPLAINED
+================================================================================
+
+What it does:
+  - Allows manual control of radio PTT
+  - Overrides automatic PTT behavior
+  - PTT stays active until you press 'p' again
+
+How to use:
+  1. Press 'p' to enter Manual PTT mode
+  2. PTT immediately activates (radio transmits)
+  3. Talk on Mumble (or don't - radio will transmit regardless)
+  4. Press 'p' again to release PTT and return to auto mode
+
+Use cases:
+  - Long transmissions where you want continuous PTT
+  - Testing radio transmitter without Mumble audio
+  - Override automatic PTT behavior for any reason
+  - Emergencies where you need guaranteed PTT
+
+Status Indicator:
+  M-ON = Manual mode, PTT active
+  M-- = Manual mode, PTT inactive
+  ON = Auto mode, PTT active
+  -- = Auto mode, PTT inactive
+
+Notes:
+  - Manual PTT still respects TX mute setting
+  - If TX is muted, manual PTT won't activate radio
+  - Automatic PTT timeout does not apply in manual mode
+
+================================================================================
+SUPPORT & DOCUMENTATION
+================================================================================
+
+For the latest version and documentation, check the project repository.
+
+Configuration file: gateway_config.txt (in same directory as script)
+Change log: See MANUAL_PTT_CHANGES.md and STREAM_HEALTH_CHANGES.md
+
+================================================================================
+END OF USER GUIDE
+================================================================================
