@@ -67,10 +67,10 @@ class Config:
             'AIOC_INPUT_DEVICE': -1,
             'AIOC_OUTPUT_DEVICE': -1,
             'ENABLE_AGC': False,
-            'ENABLE_NOISE_SUPPRESSION': True,
-            'NOISE_SUPPRESSION_METHOD': 'spectral',
+            'ENABLE_NOISE_SUPPRESSION': False,
+            'NOISE_SUPPRESSION_METHOD': 'none',
             'NOISE_SUPPRESSION_STRENGTH': 0.6,
-            'ENABLE_NOISE_GATE': True,
+            'ENABLE_NOISE_GATE': False,
             'NOISE_GATE_THRESHOLD': -32,
             'NOISE_GATE_ATTACK': 10,
             'NOISE_GATE_RELEASE': 100,
@@ -86,14 +86,15 @@ class Config:
             'NETWORK_TIMEOUT': 10,
             'TCP_NODELAY': True,
             'VERBOSE_LOGGING': True,
-            'STATUS_UPDATE_INTERVAL': 5,
-            'MAX_MUMBLE_BUFFER_SECONDS': 2.0,
-            'BUFFER_MANAGEMENT_VERBOSE': True,
+            'STATUS_UPDATE_INTERVAL': 2,
+            'MAX_MUMBLE_BUFFER_SECONDS': 1.0,
+            'BUFFER_MANAGEMENT_VERBOSE': False,
             'ENABLE_VAD': True,
             'VAD_THRESHOLD': -33,
             'VAD_ATTACK': 20,
             'VAD_RELEASE': 300,
             'VAD_MIN_DURATION': 150,
+            'ENABLE_STREAM_HEALTH': False,
             'STREAM_RESTART_INTERVAL': 60,
             'STREAM_RESTART_IDLE_TIME': 3,
             'ENABLE_VOX': True,
@@ -1011,7 +1012,8 @@ class MumbleRadioGateway:
                     time_since_vad_active = current_time - self.last_vox_active_time if hasattr(self, 'last_vox_active_time') else 999
                     
                     # Check if we should do proactive restart
-                    if (self.config.STREAM_RESTART_INTERVAL > 0 and 
+                    if (self.config.ENABLE_STREAM_HEALTH and 
+                        self.config.STREAM_RESTART_INTERVAL > 0 and 
                         time_since_creation > self.config.STREAM_RESTART_INTERVAL):
                         
                         # Only restart if radio has been idle for the required time
@@ -1487,11 +1489,11 @@ class MumbleRadioGateway:
                         self.config.ENABLE_ECHO_CANCELLATION = not self.config.ENABLE_ECHO_CANCELLATION
                     
                     elif char == 'x':
-                        # Toggle proactive stream restart
-                        if self.config.STREAM_RESTART_INTERVAL > 0:
-                            self.config.STREAM_RESTART_INTERVAL = 0  # Disable
-                        else:
-                            self.config.STREAM_RESTART_INTERVAL = 60  # Enable (60s default)
+                        # Toggle proactive stream health management
+                        self.config.ENABLE_STREAM_HEALTH = not self.config.ENABLE_STREAM_HEALTH
+                        # If enabling, set interval to 60s if it's 0
+                        if self.config.ENABLE_STREAM_HEALTH and self.config.STREAM_RESTART_INTERVAL == 0:
+                            self.config.STREAM_RESTART_INTERVAL = 60
                     
                     elif char == 'p':
                         # Toggle manual PTT mode
@@ -1613,7 +1615,7 @@ class MumbleRadioGateway:
                     if self.config.NOISE_SUPPRESSION_METHOD == 'spectral': proc_flags.append("S")
                     elif self.config.NOISE_SUPPRESSION_METHOD == 'wiener': proc_flags.append("W")
                 if self.config.ENABLE_ECHO_CANCELLATION: proc_flags.append("E")
-                if self.config.STREAM_RESTART_INTERVAL == 0: proc_flags.append("X")  # X shows restart is OFF
+                if not self.config.ENABLE_STREAM_HEALTH: proc_flags.append("X")  # X shows stream health is OFF
                 
                 proc_info = f" {WHITE}[{YELLOW}{','.join(proc_flags)}{WHITE}]{RESET}" if proc_flags else ""
                 
@@ -1679,10 +1681,10 @@ class MumbleRadioGateway:
             print(f"  Voice Activity Detection: OFF (continuous transmission)")
         
         # Show stream health management
-        if self.config.STREAM_RESTART_INTERVAL > 0:
+        if self.config.ENABLE_STREAM_HEALTH and self.config.STREAM_RESTART_INTERVAL > 0:
             print(f"  Stream Health: Auto-restart every {self.config.STREAM_RESTART_INTERVAL}s (when idle {self.config.STREAM_RESTART_IDLE_TIME}s+)")
         else:
-            print(f"  Stream Health: No auto-restart (may experience -9999 errors)")
+            print(f"  Stream Health: DISABLED (may experience -9999 errors if streams get stuck)")
         
         print("Press Ctrl+C to exit")
         print("Keyboard Controls:")
@@ -1702,7 +1704,7 @@ class MumbleRadioGateway:
             print("  TX:[bar] = Mumble → Radio audio level")
             print("  RX:[bar] = Radio → Mumble audio level")
             print("  Vol:X.Xx = RX volume multiplier (Radio → Mumble gain)")
-            print("  [N,F,A,S,W,E,X] = Processing: N=NoiseGate F=HPF A=AGC S=Spectral W=Wiener E=Echo X=Restart-OFF")
+            print("  [N,F,A,S,W,E,X] = Processing: N=NoiseGate F=HPF A=AGC S=Spectral W=Wiener E=Echo X=StreamHealth-OFF")
             print("  R:n      = Stream restart count (only if >0)")
             print()
         
