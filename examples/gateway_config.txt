@@ -27,7 +27,7 @@
 
 # Mumble server IP address or hostname
 # Example: 192.168.1.100 or mumble.example.com
-MUMBLE_SERVER = 192.168.2.126
+MUMBLE_SERVER = 192.168.2.128
 
 # Mumble server port
 # Default: 64738 (standard Mumble port)
@@ -66,12 +66,14 @@ AUDIO_RATE = 48000
 # │  480    │  10ms   │ Lowest latency (may dropout) │
 # │  960    │  20ms   │ Low latency                  │
 # │ 1920    │  40ms   │ Balanced                     │
-# │ 2400    │  50ms   │ Stable (recommended)         │
-# │ 4800    │ 100ms   │ Maximum stability            │
+# │ 2400    │  50ms   │ Stable                       │
+# │ 4800    │ 100ms   │ High stability               │
+# │ 9600    │ 200ms   │ Maximum stability (default)  │
 # └─────────┴─────────┴──────────────────────────────┘
+# Larger values = smoother file playback, more latency
 # If you get -9999 errors, increase this value
-# Default: 2400
-AUDIO_CHUNK_SIZE = 2400
+# Default: 9600 (200ms buffer for smooth file playback)
+AUDIO_CHUNK_SIZE = 9600
 
 # Number of audio channels
 # 1 = Mono (recommended for radio)
@@ -455,6 +457,278 @@ VOX_ATTACK_TIME = 50
 VOX_RELEASE_TIME = 500
 
 # ============================================================================
+# FILE PLAYBACK SETTINGS (Phase 2)
+# ============================================================================
+
+# Enable audio file playback
+# true  = Allow playing audio files (MP3, OGG, FLAC, M4A, WAV)
+# false = Disable file playback
+# Requires: pip install soundfile --break-system-packages
+#           sudo apt-get install libsndfile1
+# Optional: pip install resampy --break-system-packages (better resampling quality)
+# Without soundfile: WAV files only (built-in support)
+# Default: false
+ENABLE_PLAYBACK = true
+
+# Directory containing audio files
+# Can be absolute path or relative to script location
+# Examples: /home/user/audio/ or ./audio/
+# Default: ./audio/
+PLAYBACK_DIRECTORY = ./audio/
+
+# Periodic station ID interval in seconds
+# How often to automatically play station_id file (key 0)
+# The gateway will automatically find station_id.mp3/.wav/.ogg/.flac/.m4a
+# ┌─────────┬────────────────────────────────┐
+# │ Value   │ Frequency                      │
+# ├─────────┼────────────────────────────────┤
+# │ 0       │ Disabled (manual only)         │
+# │ 300     │ Every 5 minutes                │
+# │ 600     │ Every 10 minutes (recommended) │
+# │ 1800    │ Every 30 minutes               │
+# │ 3600    │ Every hour                     │
+# └─────────┴────────────────────────────────┘
+# Note: Announcement only plays when radio is idle (no active VAD)
+# Default: 0 (disabled)
+PLAYBACK_ANNOUNCEMENT_INTERVAL = 0
+
+# ============================================================================
+# FILE PLAYBACK FEATURES (Phase 2)
+# ============================================================================
+#
+# Status Line Indicators:
+#   When ENABLE_PLAYBACK=true, ten colored status indicators appear:
+#   [0][1][2][3][4][5][6][7][8][9]
+#   
+#   [0] = station_id (auto-detected, any extension)
+#   [1-9] = announcement1-9 (any extension)
+#   
+#   Colors:
+#   • White  = File not found
+#   • Green  = File ready to play
+#   • Red    = Currently playing/transmitting
+#
+# Keyboard Controls:
+#   '0' = Play station_id (auto-detected)
+#   '1' = Play announcement1
+#   '2' = Play announcement2
+#   '3' = Play announcement3
+#   '4' = Play announcement4
+#   '5' = Play announcement5
+#   '6' = Play announcement6
+#   '7' = Play announcement7
+#   '8' = Play announcement8
+#   '9' = Play announcement9
+#
+# Audio Routing:
+#   • File playback → Radio TX (with PTT)
+#   • Radio RX → Mumble (as usual)
+#   • When file plays, PTT activates automatically
+#   • File playback at 100% volume (not mixed with radio)
+#
+# Supported Audio Formats (with soundfile):
+#   • MP3 - Most common, small file size, good quality
+#   • OGG - Open source, small file size
+#   • FLAC - Lossless quality, larger files
+#   • M4A - Apple/AAC format
+#   • WAV - Uncompressed, instant loading, large files
+#
+# Audio File Requirements:
+#   The gateway automatically converts files to the correct format.
+#   Original file can be any sample rate, mono/stereo, any bit depth.
+#   Gateway converts to: 48000 Hz, Mono, 16-bit
+#
+# Installing soundfile for multi-format support (Python 3.13 compatible):
+#   pip install soundfile --break-system-packages
+#   sudo apt-get install libsndfile1
+#   pip install resampy --break-system-packages  # Optional, for better quality
+#
+# Verify installation:
+#   python3 -c "import soundfile; print('soundfile works!')"
+#
+# Directory Structure Example:
+#   ./audio/
+#     ├── announcement1.mp3     # Triggered with '1' key
+#     ├── announcement2.ogg     # Triggered with '2' key
+#     └── station_id.mp3        # Triggered with '3' key or periodic
+#
+# How It Works:
+#   • Files are queued and played in order
+#   • Playback triggers PTT automatically
+#   • Radio audio continues to Mumble (RX path)
+#   • File playback goes to radio (TX path)
+#   • Periodic announcements only when radio is idle
+#   • Files are loaded into memory (not streamed)
+#   • All conversion happens automatically at load time
+#
+# Troubleshooting:
+#
+#   • "No module named 'soundfile'":
+#     pip install soundfile --break-system-packages
+#
+#   • "Error opening file: Format not recognised":
+#     sudo apt-get install libsndfile1
+#
+#   • White [1][2][3] indicators:
+#     Files not found - check file names and paths
+#     ls -la ./audio/
+#
+#   • File plays but no TX output:
+#     Already fixed in Phase 2 - file audio routes to radio TX
+#
+#   • File too quiet:
+#     Already fixed in Phase 2 - file plays at 100% volume
+#
+# Creating Compatible Files:
+#
+#   With soundfile installed, ANY format works! Just drop files in ./audio/
+#
+#   If you need to convert manually:
+#     ffmpeg -i input.mp3 -ar 48000 -ac 1 output.wav
+#
+#   Using Audacity:
+#     File → Export → Export as MP3 or WAV
+#     Set to Mono, 48000 Hz
+#
+#   Text-to-Speech (espeak):
+#     espeak -w temp.wav "This is W1XYZ repeater"
+#     ffmpeg -i temp.wav -ar 48000 -ac 1 station_id.mp3
+#
+# Configuration Examples:
+#
+#   1. Station ID every 10 minutes:
+#      ENABLE_PLAYBACK = true
+#      PLAYBACK_DIRECTORY = ./audio/
+#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 600
+#      # Place station_id.mp3 (or .wav/.ogg/.flac/.m4a) in ./audio/
+#
+#   2. Manual announcements only (no periodic):
+#      ENABLE_PLAYBACK = true
+#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 0
+#      # Press 0-9 to manually trigger files
+#
+#   3. Custom directory with multiple announcements:
+#      PLAYBACK_DIRECTORY = /home/user/radio_audio/
+#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 1800
+#      # Files: station_id.ogg, announcement1-9.mp3
+#
+# Performance:
+#   • Memory: ~50-100 KB per loaded file (uncompressed in RAM)
+#   • CPU: Conversion happens once at load time
+#   • Playback: Zero CPU (just memory copy)
+#
+# ============================================================================
+
+# ============================================================================
+# FILE PLAYBACK USAGE NOTES
+# ============================================================================
+#
+# Supported Audio Formats (with pydub):
+#   • MP3 - Most common, small file size, good quality
+#   • OGG - Open source, small file size
+#   • FLAC - Lossless quality, larger files
+#   • M4A - Apple/AAC format
+#   • WAV - Uncompressed, instant loading, large files
+#
+# Audio File Requirements:
+#   The gateway automatically converts files to the correct format.
+#   Original file can be any sample rate, mono/stereo, any bit depth.
+#   Gateway converts to: 48000 Hz, Mono, 16-bit
+#
+# Installing pydub for MP3/OGG/FLAC support:
+#   pip install pydub --break-system-packages
+#   sudo apt-get install ffmpeg  # Required by pydub
+#
+# Directory Structure Example:
+#   ./audio/
+#     ├── station_id.mp3        # Key 0 (auto-detected, periodic)
+#     ├── announcement1.mp3     # Key 1
+#     ├── announcement2.ogg     # Key 2
+#     ├── announcement3.wav     # Key 3
+#     ├── announcement4.flac    # Key 4
+#     ├── announcement5.m4a     # Key 5
+#     ├── announcement6.mp3     # Key 6
+#     ├── announcement7.wav     # Key 7
+#     ├── announcement8.ogg     # Key 8
+#     └── announcement9.mp3     # Key 9
+#
+# Keyboard Controls (during operation):
+#   '0' = Play station_id (auto-detected, any extension)
+#   '1' = Play announcement1 (any extension)
+#   '2' = Play announcement2
+#   '3' = Play announcement3
+#   '4' = Play announcement4
+#   '5' = Play announcement5
+#   '6' = Play announcement6
+#   '7' = Play announcement7
+#   '8' = Play announcement8
+#   '9' = Play announcement9
+#
+# How It Works:
+#   • Files are queued and played in order
+#   • Playback triggers PTT automatically
+#   • File playback at full volume (not mixed with radio)
+#   • Radio RX continues to Mumble (separate path)
+#   • Periodic station ID only when radio is idle
+#   • Files are loaded into memory (not streamed)
+#
+# Creating Compatible Files:
+#
+#   Using ffmpeg (convert any format):
+#     ffmpeg -i input.mp3 -ar 48000 -ac 1 -sample_fmt s16 output.wav
+#     ffmpeg -i input.ogg -ar 48000 -ac 1 output.mp3
+#
+#   Using Audacity:
+#     1. File → Export → Export as WAV or MP3
+#     2. For WAV: PCM signed 16-bit, 48000 Hz, Mono
+#     3. For MP3: 128 kbps or higher, Mono
+#
+#   Text-to-Speech (espeak):
+#     espeak -w temp.wav "This is W1XYZ repeater"
+#     ffmpeg -i temp.wav -ar 48000 -ac 1 station_id.mp3
+#
+# Configuration Examples:
+#
+#   1. Station ID every 10 minutes (MP3):
+#      ENABLE_PLAYBACK = true
+#      PLAYBACK_DIRECTORY = ./audio/
+#      PLAYBACK_ANNOUNCEMENT_FILE = station_id.mp3
+#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 600
+#
+#   2. Manual announcements only:
+#      ENABLE_PLAYBACK = true
+#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 0
+#      (Press 1, 2, or 3 to play files manually)
+#
+#   3. Custom directory with OGG files:
+#      PLAYBACK_DIRECTORY = /home/user/radio_audio/
+#      PLAYBACK_ANNOUNCEMENT_FILE = id.ogg
+#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 1800
+#
+# Troubleshooting:
+#
+#   • "File not found":
+#     Check PLAYBACK_DIRECTORY path and verify file exists
+#     ls -la ./audio/
+#
+#   • "MP3 not supported without pydub":
+#     Install pydub: pip install pydub --break-system-packages
+#     Or convert to WAV: ffmpeg -i file.mp3 -ar 48000 -ac 1 file.wav
+#
+#   • No audio output:
+#     Check ENABLE_PLAYBACK = true
+#     Press keyboard shortcuts (1, 2, 3) to test
+#     Check file is in correct directory
+#
+#   • Wrong speed or pitch:
+#     With pydub: Automatically fixed
+#     Without pydub: Convert to 48000 Hz WAV
+#
+#   • File too quiet/loud:
+#     Adjust in audio editor before using
+#     Or normalize: ffmpeg -i in.mp3 -filter:a "volume=0.8" out.mp3
+#
+# ============================================================================
 # TROUBLESHOOTING GUIDE
 # ============================================================================
 #
@@ -507,6 +781,19 @@ VOX_RELEASE_TIME = 500
 #    • Overrides automatic PTT behavior
 #    • Useful for long transmissions or testing
 #
+# 9. FILE PLAYBACK NOT WORKING (Phase 2)
+#    • Check ENABLE_PLAYBACK = true in config
+#    • Verify files exist: ls -la ./audio/
+#    • For MP3/OGG: Install pydub (pip install pydub --break-system-packages)
+#    • Press '1', '2', or '3' to manually trigger playback
+#    • Check verbose logging for error messages
+#
+# 10. PERIODIC ANNOUNCEMENT NOT PLAYING (Phase 2)
+#    • Check PLAYBACK_ANNOUNCEMENT_INTERVAL > 0
+#    • Check PLAYBACK_ANNOUNCEMENT_FILE is set and exists
+#    • Radio must be idle (no active VAD) for announcement to play
+#    • Wait for the interval to elapse (e.g., 600s = 10 minutes)
+#
 # Status Line Legend:
 #   [✓/⚠/✗]   = Audio capture status (ACTIVE/IDLE/STOPPED)
 #   M:✓/✗     = Mumble connected/disconnected
@@ -528,6 +815,7 @@ VOX_RELEASE_TIME = 500
 #   PROCESS: 'n'=Gate | 'f'=HPF | 'a'=AGC | 's'=Spectral | 'w'=Wiener
 #            'e'=Echo | 'x'=Stream Health
 #   PTT:     'p'=Manual PTT Toggle
+#   PLAY:    '1'=Ann1 | '2'=Ann2 | '3'=StationID (if ENABLE_PLAYBACK=true)
 #
 # For more help, check the README.txt file or enable VERBOSE_LOGGING.
 # ============================================================================

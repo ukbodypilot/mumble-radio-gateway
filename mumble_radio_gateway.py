@@ -53,7 +53,7 @@ class Config:
             'MUMBLE_PASSWORD': '',
             'MUMBLE_CHANNEL': '',
             'AUDIO_RATE': 48000,
-            'AUDIO_CHUNK_SIZE': 2400,
+            'AUDIO_CHUNK_SIZE': 9600,
             'AUDIO_CHANNELS': 1,
             'AUDIO_BITS': 16,
             'MUMBLE_BITRATE': 72000,
@@ -285,17 +285,23 @@ class FilePlaybackSource(AudioSource):
         self.file_position = 0
         self.playlist = []  # Queue of files to play
         
-        # Periodic announcement
+        # Periodic announcement - auto-detect station_id file
         self.last_announcement_time = 0
-        self.announcement_file = config.PLAYBACK_ANNOUNCEMENT_FILE if hasattr(config, 'PLAYBACK_ANNOUNCEMENT_FILE') else None
         self.announcement_interval = config.PLAYBACK_ANNOUNCEMENT_INTERVAL if hasattr(config, 'PLAYBACK_ANNOUNCEMENT_INTERVAL') else 0
         self.announcement_directory = config.PLAYBACK_DIRECTORY if hasattr(config, 'PLAYBACK_DIRECTORY') else './audio/'
         
-        # File status tracking for status line indicators
+        # File status tracking for status line indicators (0-9 = 10 files)
         self.file_status = {
+            '0': {'exists': False, 'playing': False, 'path': None},  # station_id
             '1': {'exists': False, 'playing': False, 'path': None},
             '2': {'exists': False, 'playing': False, 'path': None},
-            '3': {'exists': False, 'playing': False, 'path': None}
+            '3': {'exists': False, 'playing': False, 'path': None},
+            '4': {'exists': False, 'playing': False, 'path': None},
+            '5': {'exists': False, 'playing': False, 'path': None},
+            '6': {'exists': False, 'playing': False, 'path': None},
+            '7': {'exists': False, 'playing': False, 'path': None},
+            '8': {'exists': False, 'playing': False, 'path': None},
+            '9': {'exists': False, 'playing': False, 'path': None}
         }
         self.check_file_availability()
     
@@ -303,35 +309,21 @@ class FilePlaybackSource(AudioSource):
         """Check if announcement files exist"""
         import os
         
-        # Check announcement1
+        # Check station_id (key 0) - auto-detect
         for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
-            path = os.path.join(self.announcement_directory, f'announcement1{ext}')
+            path = os.path.join(self.announcement_directory, f'station_id{ext}')
             if os.path.exists(path):
-                self.file_status['1']['exists'] = True
-                self.file_status['1']['path'] = path
+                self.file_status['0']['exists'] = True
+                self.file_status['0']['path'] = path
                 break
         
-        # Check announcement2
-        for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
-            path = os.path.join(self.announcement_directory, f'announcement2{ext}')
-            if os.path.exists(path):
-                self.file_status['2']['exists'] = True
-                self.file_status['2']['path'] = path
-                break
-        
-        # Check station ID / announcement file
-        if self.announcement_file:
-            path = os.path.join(self.announcement_directory, self.announcement_file)
-            if os.path.exists(path):
-                self.file_status['3']['exists'] = True
-                self.file_status['3']['path'] = path
-        else:
-            # Try default station_id
+        # Check announcements 1-9
+        for i in range(1, 10):
             for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
-                path = os.path.join(self.announcement_directory, f'station_id{ext}')
+                path = os.path.join(self.announcement_directory, f'announcement{i}{ext}')
                 if os.path.exists(path):
-                    self.file_status['3']['exists'] = True
-                    self.file_status['3']['path'] = path
+                    self.file_status[str(i)]['exists'] = True
+                    self.file_status[str(i)]['path'] = path
                     break
     
     def get_file_status_string(self):
@@ -343,7 +335,8 @@ class FilePlaybackSource(AudioSource):
         RESET = '\033[0m'
         
         status_str = ""
-        for key in ['1', '2', '3']:
+        # Show all 10 slots: 1-9 then 0 (station_id at end)
+        for key in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']:
             if self.file_status[key]['playing']:
                 # Red when playing
                 status_str += f"{RED}[{key}]{RESET}"
@@ -411,12 +404,14 @@ class FilePlaybackSource(AudioSource):
             # Determine which file number this is for status tracking
             filename = os.path.basename(filepath)
             file_key = None
-            if 'announcement1' in filename:
-                file_key = '1'
-            elif 'announcement2' in filename:
-                file_key = '2'
-            elif 'station_id' in filename or (self.announcement_file and self.announcement_file in filename):
-                file_key = '3'
+            if 'station_id' in filename:
+                file_key = '0'
+            else:
+                # Check for announcement1-9
+                for i in range(1, 10):
+                    if f'announcement{i}' in filename:
+                        file_key = str(i)
+                        break
             
             # Try soundfile first (best option for Python 3.13)
             try:
@@ -553,7 +548,8 @@ class FilePlaybackSource(AudioSource):
     
     def check_periodic_announcement(self):
         """Check if it's time for a periodic announcement"""
-        if not self.announcement_file or self.announcement_interval <= 0:
+        # Use auto-detected station_id file (key 0)
+        if self.announcement_interval <= 0 or not self.file_status['0']['exists']:
             return
         
         current_time = time.time()
@@ -566,10 +562,13 @@ class FilePlaybackSource(AudioSource):
         if elapsed >= self.announcement_interval:
             # Check if radio is idle
             if not self.gateway.vad_active:
-                self.queue_file(self.announcement_file)
-                self.last_announcement_time = current_time
-                if self.gateway.config.VERBOSE_LOGGING:
-                    print(f"\n[Playback] Periodic announcement triggered (every {self.announcement_interval}s)")
+                # Queue the station_id file
+                station_id_path = self.file_status['0']['path']
+                if station_id_path:
+                    self.queue_file(station_id_path)
+                    self.last_announcement_time = current_time
+                    if self.gateway.config.VERBOSE_LOGGING:
+                        print(f"\n[Playback] Periodic station ID triggered (every {self.announcement_interval}s)")
     
     def get_audio(self, chunk_size):
         """Get audio chunk from file playback"""
@@ -603,12 +602,14 @@ class FilePlaybackSource(AudioSource):
             # Mark file as not playing
             if self.current_file:
                 filename = os.path.basename(self.current_file)
-                if 'announcement1' in filename:
-                    self.file_status['1']['playing'] = False
-                elif 'announcement2' in filename:
-                    self.file_status['2']['playing'] = False
-                elif 'station_id' in filename or (self.announcement_file and self.announcement_file in filename):
-                    self.file_status['3']['playing'] = False
+                if 'station_id' in filename:
+                    self.file_status['0']['playing'] = False
+                else:
+                    # Check announcement1-9
+                    for i in range(1, 10):
+                        if f'announcement{i}' in filename:
+                            self.file_status[str(i)]['playing'] = False
+                            break
             
             self.current_file = None
             self.file_data = None
@@ -1579,11 +1580,11 @@ class MumbleRadioGateway:
                 rate=self.config.AUDIO_RATE,
                 output=True,
                 output_device_index=output_idx,
-                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE
+                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4  # 4x buffer for smooth playback
             )
             if self.config.VERBOSE_LOGGING:
-                latency_ms = (self.config.AUDIO_CHUNK_SIZE / self.config.AUDIO_RATE) * 1000
-                print(f"✓ Audio output configured ({latency_ms:.1f}ms latency)")
+                latency_ms = (self.config.AUDIO_CHUNK_SIZE * 4 / self.config.AUDIO_RATE) * 1000
+                print(f"✓ Audio output configured ({latency_ms:.1f}ms buffer)")
             else:
                 print("✓ Audio configured")
             
@@ -1689,7 +1690,7 @@ class MumbleRadioGateway:
                                 rate=self.config.AUDIO_RATE,
                                 output=True,
                                 output_device_index=output_idx,
-                                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE
+                                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4  # Larger buffer for smoother output
                             )
                             
                             self.input_stream = self.pyaudio_instance.open(
@@ -1698,7 +1699,7 @@ class MumbleRadioGateway:
                                 rate=self.config.AUDIO_RATE,
                                 input=True,
                                 input_device_index=input_idx,
-                                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE
+                                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4  # Larger buffer for smoother output
                             )
                             
                             print("✓ Audio initialized successfully after USB reset")
@@ -1950,9 +1951,25 @@ class MumbleRadioGateway:
                                         samples = array.array('h', [int(s * self.config.OUTPUT_VOLUME) for s in samples])
                                         pcm = samples.tobytes()
                                     
-                                    self.output_stream.write(pcm)
+                                    # Write to output stream
+                                    # Use exception_on_overflow=False to handle buffer issues gracefully
+                                    try:
+                                        self.output_stream.write(pcm, exception_on_overflow=False)
+                                    except TypeError:
+                                        # Older PyAudio doesn't support exception_on_overflow parameter
+                                        self.output_stream.write(pcm)
+                                    
+                                    # Small sleep to let audio subsystem process
+                                    # Helps prevent stuttering on slower systems
+                                    time.sleep(0.001)  # 1ms
+                                    
                                     if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                                         print(f"\n[Debug] Sent {len(pcm)} bytes to radio TX output")
+                                except IOError as io_err:
+                                    # Handle output buffer issues
+                                    if self.config.VERBOSE_LOGGING and consecutive_errors == 0:
+                                        print(f"\n[Warning] Output stream buffer issue: {io_err}")
+                                    # Don't count as critical error - just skip this chunk
                                 except Exception as tx_err:
                                     if self.config.VERBOSE_LOGGING:
                                         print(f"\n[Error] Failed to send to radio TX: {tx_err}")
@@ -2311,7 +2328,7 @@ class MumbleRadioGateway:
                     rate=self.config.AUDIO_RATE,
                     output=True,
                     output_device_index=output_idx,
-                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE
+                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4  # Larger buffer for smoother output
                 )
             
             if input_idx is not None:
@@ -2321,7 +2338,7 @@ class MumbleRadioGateway:
                     rate=self.config.AUDIO_RATE,
                     input=True,
                     input_device_index=input_idx,
-                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE
+                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4  # Larger buffer for smoother output
                 )
             
             if self.config.VERBOSE_LOGGING:
@@ -2435,43 +2452,24 @@ class MumbleRadioGateway:
                         # Immediately apply the PTT state
                         self.set_ptt_state(self.manual_ptt_mode)
                     
-                    elif char == '1':
-                        # Play announcement 1
+                    elif char in '0123456789':
+                        # Play announcement 0-9
                         if self.playback_source:
-                            if self.config.VERBOSE_LOGGING:
-                                print("\n[Keyboard] Key '1' pressed - queueing announcement1")
-                            # Try multiple extensions
-                            for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
-                                if self.playback_source.queue_file(f"announcement1{ext}"):
-                                    break
-                        else:
-                            if self.config.VERBOSE_LOGGING:
-                                print("\n[Keyboard] File playback not enabled")
-                    
-                    elif char == '2':
-                        # Play announcement 2
-                        if self.playback_source:
-                            if self.config.VERBOSE_LOGGING:
-                                print("\n[Keyboard] Key '2' pressed - queueing announcement2")
-                            # Try multiple extensions
-                            for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
-                                if self.playback_source.queue_file(f"announcement2{ext}"):
-                                    break
-                        else:
-                            if self.config.VERBOSE_LOGGING:
-                                print("\n[Keyboard] File playback not enabled")
-                    
-                    elif char == '3':
-                        # Play announcement 3 (typically station ID)
-                        if self.playback_source:
-                            if self.config.VERBOSE_LOGGING:
-                                print("\n[Keyboard] Key '3' pressed - queueing station ID")
-                            if self.playback_source.announcement_file:
-                                self.playback_source.queue_file(self.playback_source.announcement_file)
-                            else:
-                                # Try multiple extensions for default station_id
+                            if char == '0':
+                                # Station ID
+                                if self.config.VERBOSE_LOGGING:
+                                    print("\n[Keyboard] Key '0' pressed - queueing station_id")
+                                # Try multiple extensions for station_id
                                 for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
                                     if self.playback_source.queue_file(f"station_id{ext}"):
+                                        break
+                            else:
+                                # Announcements 1-9
+                                if self.config.VERBOSE_LOGGING:
+                                    print(f"\n[Keyboard] Key '{char}' pressed - queueing announcement{char}")
+                                # Try multiple extensions
+                                for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
+                                    if self.playback_source.queue_file(f"announcement{char}{ext}"):
                                         break
                         else:
                             if self.config.VERBOSE_LOGGING:
@@ -2545,19 +2543,20 @@ class MumbleRadioGateway:
                 # Print status
                 # Status symbols with colors
                 mumble_status = f"{GREEN}✓{RESET}" if self.mumble else f"{RED}✗{RESET}"
-                # PTT status: Show 'M-ON' or 'M--' when in manual mode
+                # PTT status: Always 4 chars wide for alignment
                 if self.manual_ptt_mode:
                     ptt_status = f"{YELLOW}M-{GREEN}ON{RESET}" if self.ptt_active else f"{YELLOW}M-{GRAY}--{RESET}"
                 else:
-                    ptt_status = f"{GREEN}ON{RESET}" if self.ptt_active else f"{GRAY}--{RESET}"
+                    # Pad normal mode to 4 chars to match manual mode width
+                    ptt_status = f"  {GREEN}ON{RESET}" if self.ptt_active else f"  {GRAY}--{RESET}"
                 
-                # VAD status: X when disabled, 🔊 when active, -- when silent
+                # VAD status: Always 2 chars wide for alignment
                 if not self.config.ENABLE_VAD:
-                    vad_status = f"{RED}✗{RESET}"  # VAD disabled (red X)
+                    vad_status = f"{RED}✗ {RESET}"  # VAD disabled (red X + space) - 2 chars
                 elif self.vad_active:
-                    vad_status = f"{GREEN}🔊{RESET}"  # VAD enabled and signal detected (green speaker)
+                    vad_status = f"{GREEN}🔊{RESET}"  # VAD active (green speaker) - 2 chars (emoji width)
                 else:
-                    vad_status = f"{GRAY}--{RESET}"  # VAD enabled but silent (gray)
+                    vad_status = f"{GRAY}--{RESET}"  # VAD silent (gray) - 2 chars
                 
                 # Format audio levels with bar graphs
                 # Note: From radio's perspective:
@@ -2673,7 +2672,7 @@ class MumbleRadioGateway:
         print("  Proc: 'n'=Gate | 'f'=HPF | 'a'=AGC | 's'=Spectral | 'w'=Wiener | 'e'=Echo | 'x'=Restart")
         print("  PTT:  'p'=Manual PTT Toggle (override auto-PTT)")
         if self.config.ENABLE_PLAYBACK:
-            print("  Play: '1'=Ann1 | '2'=Ann2 | '3'=StationID")
+            print("  Play: '1-9'=Announcements | '0'=StationID")
         print("=" * 60)
         print()
         
