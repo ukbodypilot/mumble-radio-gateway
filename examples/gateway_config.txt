@@ -519,6 +519,7 @@ PLAYBACK_ANNOUNCEMENT_INTERVAL = 0
 #   '7' = Play announcement7
 #   '8' = Play announcement8
 #   '9' = Play announcement9
+#   '-' = Stop current playback (interrupt/clear queue)
 #
 # Audio Routing:
 #   • File playback → Radio TX (with PTT)
@@ -663,6 +664,7 @@ PLAYBACK_ANNOUNCEMENT_INTERVAL = 0
 #   '7' = Play announcement7
 #   '8' = Play announcement8
 #   '9' = Play announcement9
+#   '-' = Stop playback (interrupt current file, clear queue)
 #
 # How It Works:
 #   • Files are queued and played in order

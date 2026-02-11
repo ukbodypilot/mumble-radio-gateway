@@ -382,6 +382,33 @@ class FilePlaybackSource(AudioSource):
         filepath = self.playlist.pop(0)
         return self.load_file(filepath)
     
+    def stop_playback(self):
+        """Stop current playback and clear queue"""
+        import os
+        
+        # Mark current file as not playing
+        if self.current_file:
+            filename = os.path.basename(self.current_file)
+            if 'station_id' in filename:
+                self.file_status['0']['playing'] = False
+            else:
+                # Check announcement1-9
+                for i in range(1, 10):
+                    if f'announcement{i}' in filename:
+                        self.file_status[str(i)]['playing'] = False
+                        break
+        
+        # Clear current playback
+        self.current_file = None
+        self.file_data = None
+        self.file_position = 0
+        
+        # Clear queue
+        self.playlist.clear()
+        
+        if self.gateway.config.VERBOSE_LOGGING:
+            print("\n[Playback] ✓ Stopped playback and cleared queue")
+    
     def load_file(self, filepath):
         """Load an audio file for playback (supports WAV, MP3, OGG, FLAC, M4A via soundfile)"""
         try:
@@ -1653,9 +1680,9 @@ class MumbleRadioGateway:
                     
                     # Show keyboard controls
                     print("  Keyboard controls:")
-                    print("    '1' = Play announcement1.mp3 (or .wav, .ogg, etc.)")
-                    print("    '2' = Play announcement2.mp3")
-                    print("    '3' = Play station ID")
+                    print("    '1-9' = Play announcement1-9 (any extension)")
+                    print("    '0' = Play station_id (auto-detected)")
+                    print("    '-' = Stop current playback")
                     
                 except Exception as playback_err:
                     print(f"⚠ Warning: Could not initialize playback source: {playback_err}")
@@ -2455,22 +2482,34 @@ class MumbleRadioGateway:
                     elif char in '0123456789':
                         # Play announcement 0-9
                         if self.playback_source:
-                            if char == '0':
-                                # Station ID
-                                if self.config.VERBOSE_LOGGING:
+                            if self.config.VERBOSE_LOGGING:
+                                if char == '0':
                                     print("\n[Keyboard] Key '0' pressed - queueing station_id")
-                                # Try multiple extensions for station_id
-                                for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
-                                    if self.playback_source.queue_file(f"station_id{ext}"):
-                                        break
-                            else:
-                                # Announcements 1-9
-                                if self.config.VERBOSE_LOGGING:
+                                else:
                                     print(f"\n[Keyboard] Key '{char}' pressed - queueing announcement{char}")
-                                # Try multiple extensions
-                                for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
-                                    if self.playback_source.queue_file(f"announcement{char}{ext}"):
-                                        break
+                            
+                            # Use the stored path from file_status
+                            stored_path = self.playback_source.file_status[char]['path']
+                            if stored_path:
+                                # File exists, queue it directly
+                                self.playback_source.queue_file(stored_path)
+                            else:
+                                # File not found
+                                if self.config.VERBOSE_LOGGING:
+                                    if char == '0':
+                                        print(f"\n[Playback] station_id file not found in {self.playback_source.announcement_directory}")
+                                    else:
+                                        print(f"\n[Playback] announcement{char} file not found in {self.playback_source.announcement_directory}")
+                        else:
+                            if self.config.VERBOSE_LOGGING:
+                                print("\n[Keyboard] File playback not enabled")
+                    
+                    elif char == '-':
+                        # Stop playback
+                        if self.playback_source:
+                            if self.config.VERBOSE_LOGGING:
+                                print("\n[Keyboard] Key '-' pressed - stopping playback")
+                            self.playback_source.stop_playback()
                         else:
                             if self.config.VERBOSE_LOGGING:
                                 print("\n[Keyboard] File playback not enabled")
@@ -2672,7 +2711,7 @@ class MumbleRadioGateway:
         print("  Proc: 'n'=Gate | 'f'=HPF | 'a'=AGC | 's'=Spectral | 'w'=Wiener | 'e'=Echo | 'x'=Restart")
         print("  PTT:  'p'=Manual PTT Toggle (override auto-PTT)")
         if self.config.ENABLE_PLAYBACK:
-            print("  Play: '1-9'=Announcements | '0'=StationID")
+            print("  Play: '1-9'=Announcements | '0'=StationID | '-'=Stop")
         print("=" * 60)
         print()
         
