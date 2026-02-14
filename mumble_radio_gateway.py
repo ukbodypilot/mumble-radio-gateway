@@ -106,6 +106,24 @@ class Config:
             'PLAYBACK_DIRECTORY': './audio/',
             'PLAYBACK_ANNOUNCEMENT_FILE': '',
             'PLAYBACK_ANNOUNCEMENT_INTERVAL': 0,  # seconds, 0 = disabled
+            # EchoLink Integration (Phase 3B)
+            'ENABLE_ECHOLINK': False,
+            'ECHOLINK_RX_PIPE': '/tmp/echolink_rx',
+            'ECHOLINK_TX_PIPE': '/tmp/echolink_tx',
+            'ECHOLINK_TO_MUMBLE': True,
+            'ECHOLINK_TO_RADIO': False,
+            'RADIO_TO_ECHOLINK': True,
+            'MUMBLE_TO_ECHOLINK': False,
+            # Streaming Output (Phase 3A)
+            'ENABLE_STREAM_OUTPUT': False,
+            'STREAM_SERVER': 'localhost',
+            'STREAM_PORT': 8000,
+            'STREAM_PASSWORD': 'hackme',
+            'STREAM_MOUNT': '/radio',
+            'STREAM_NAME': 'Radio Gateway',
+            'STREAM_DESCRIPTION': 'Radio to Mumble Gateway',
+            'STREAM_BITRATE': 64,
+            'STREAM_FORMAT': 'mp3',
         }
         
         # Set defaults
@@ -684,6 +702,215 @@ class FilePlaybackSource(AudioSource):
             return f"{self.name}: {len(self.playlist)} queued"
         else:
             return f"{self.name}: Idle"
+
+
+class EchoLinkSource(AudioSource):
+    """EchoLink audio input via TheLinkBox IPC"""
+    def __init__(self, config, gateway):
+        super().__init__("EchoLink", config)
+        self.gateway = gateway
+        self.priority = 2  # After Radio (1), before Files (0)
+        self.ptt_control = False  # EchoLink doesn't trigger radio PTT
+        self.volume = 1.0
+        
+        # IPC state
+        self.rx_pipe = None
+        self.tx_pipe = None
+        self.connected = False
+        self.last_audio_time = 0
+        
+        # Try to setup IPC
+        if config.ENABLE_ECHOLINK:
+            self.setup_ipc()
+    
+    def setup_ipc(self):
+        """Setup named pipes for TheLinkBox IPC"""
+        import os
+        import errno
+        
+        try:
+            rx_path = self.config.ECHOLINK_RX_PIPE
+            tx_path = self.config.ECHOLINK_TX_PIPE
+            
+            # Create named pipes if they don't exist
+            for pipe_path in [rx_path, tx_path]:
+                if not os.path.exists(pipe_path):
+                    try:
+                        os.mkfifo(pipe_path)
+                        if self.gateway.config.VERBOSE_LOGGING:
+                            print(f"  Created FIFO: {pipe_path}")
+                    except OSError as e:
+                        if e.errno != errno.EEXIST:
+                            raise
+            
+            # Open pipes (non-blocking mode)
+            import fcntl
+            
+            # RX pipe (read from TheLinkBox)
+            self.rx_pipe = open(rx_path, 'rb', buffering=0)
+            flags = fcntl.fcntl(self.rx_pipe, fcntl.F_GETFL)
+            fcntl.fcntl(self.rx_pipe, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+            
+            # TX pipe (write to TheLinkBox)
+            self.tx_pipe = open(tx_path, 'wb', buffering=0)
+            flags = fcntl.fcntl(self.tx_pipe, fcntl.F_GETFL)
+            fcntl.fcntl(self.tx_pipe, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+            
+            self.connected = True
+            if self.gateway.config.VERBOSE_LOGGING:
+                print(f"  ✓ EchoLink IPC connected via named pipes")
+                print(f"    RX: {rx_path}")
+                print(f"    TX: {tx_path}")
+            
+        except Exception as e:
+            print(f"  ⚠ EchoLink IPC setup failed: {e}")
+            print(f"    Make sure TheLinkBox is running and configured")
+            self.connected = False
+    
+    def get_audio(self, chunk_size):
+        """Get audio from EchoLink via named pipe"""
+        if not self.connected or not self.rx_pipe:
+            return None, False
+        
+        try:
+            chunk_bytes = chunk_size * self.config.AUDIO_CHANNELS * 2  # 16-bit
+            data = self.rx_pipe.read(chunk_bytes)
+            
+            if data and len(data) == chunk_bytes:
+                self.last_audio_time = time.time()
+                
+                # Apply volume
+                if self.volume != 1.0:
+                    import array
+                    samples = array.array('h', data)
+                    samples = array.array('h', [int(s * self.volume) for s in samples])
+                    data = samples.tobytes()
+                
+                return data, False  # No PTT control
+            else:
+                return None, False
+                
+        except BlockingIOError:
+            # No data available (non-blocking read)
+            return None, False
+        except Exception as e:
+            if self.gateway.config.VERBOSE_LOGGING:
+                print(f"\n[EchoLink] Read error: {e}")
+            return None, False
+    
+    def send_audio(self, audio_data):
+        """Send audio to EchoLink via named pipe"""
+        if not self.connected or not self.tx_pipe:
+            return
+        
+        try:
+            self.tx_pipe.write(audio_data)
+            self.tx_pipe.flush()
+        except BlockingIOError:
+            # Pipe full, skip this chunk
+            pass
+        except Exception as e:
+            if self.gateway.config.VERBOSE_LOGGING:
+                print(f"\n[EchoLink] Write error: {e}")
+    
+    def is_active(self):
+        """EchoLink is active if we've received audio recently"""
+        if not self.connected:
+            return False
+        return (time.time() - self.last_audio_time) < 2.0
+    
+    def cleanup(self):
+        """Close IPC connections"""
+        if self.rx_pipe:
+            try:
+                self.rx_pipe.close()
+            except:
+                pass
+        if self.tx_pipe:
+            try:
+                self.tx_pipe.close()
+            except:
+                pass
+
+
+class StreamOutputSource:
+    """Stream audio output to named pipe for Darkice"""
+    def __init__(self, config, gateway):
+        self.config = config
+        self.gateway = gateway
+        self.connected = False
+        self.pipe = None
+        
+        # Try to open pipe if enabled
+        if config.ENABLE_STREAM_OUTPUT:
+            self.setup_stream()
+    
+    def setup_stream(self):
+        """Open named pipe for Darkice"""
+        import os
+        
+        try:
+            pipe_path = '/tmp/darkice_audio'
+            
+            # Create pipe if it doesn't exist
+            if not os.path.exists(pipe_path):
+                os.mkfifo(pipe_path)
+                os.chmod(pipe_path, 0o666)
+                if self.gateway.config.VERBOSE_LOGGING:
+                    print(f"  Created pipe: {pipe_path}")
+            
+            # Open pipe for writing (non-blocking)
+            import fcntl
+            self.pipe = open(pipe_path, 'wb', buffering=0)
+            
+            # Make non-blocking
+            fd = self.pipe.fileno()
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+            
+            self.connected = True
+            
+            if self.gateway.config.VERBOSE_LOGGING:
+                print(f"  ✓ Streaming via Darkice pipe")
+                print(f"    Pipe: {pipe_path}")
+                print(f"    Format: PCM 48kHz mono 16-bit")
+                print(f"    Make sure Darkice is running:")
+                print(f"      darkice -c /etc/darkice.cfg")
+                
+        except Exception as e:
+            print(f"  ⚠ Darkice pipe setup failed: {e}")
+            print(f"    Install: sudo apt-get install darkice")
+            print(f"    Configure: /etc/darkice.cfg")
+            print(f"    Start: darkice -c /etc/darkice.cfg")
+            self.connected = False
+    
+    def send_audio(self, audio_data):
+        """Send raw PCM audio to Darkice via pipe"""
+        if not self.connected or not self.pipe:
+            return
+        
+        try:
+            self.pipe.write(audio_data)
+                
+        except BlockingIOError:
+            # Pipe full - skip this chunk
+            pass
+        except BrokenPipeError:
+            if self.gateway.config.VERBOSE_LOGGING:
+                print(f"\n[Stream] Darkice pipe broken - Darkice may have stopped")
+            self.connected = False
+        except Exception as e:
+            if self.gateway.config.VERBOSE_LOGGING:
+                print(f"\n[Stream] Pipe error: {e}")
+            self.connected = False
+    
+    def cleanup(self):
+        """Close pipe"""
+        if self.pipe:
+            try:
+                self.pipe.close()
+            except:
+                pass
 
 
 class AudioMixer:
@@ -1690,6 +1917,50 @@ class MumbleRadioGateway:
             else:
                 self.playback_source = None
             
+            # Initialize EchoLink source if enabled (Phase 3B)
+            if self.config.ENABLE_ECHOLINK:
+                try:
+                    print("Initializing EchoLink integration...")
+                    self.echolink_source = EchoLinkSource(self.config, self)
+                    if self.echolink_source.connected:
+                        self.mixer.add_source(self.echolink_source)
+                        print("✓ EchoLink source added to mixer")
+                        print("  Audio routing:")
+                        if self.config.ECHOLINK_TO_MUMBLE:
+                            print("    EchoLink → Mumble: ON")
+                        if self.config.ECHOLINK_TO_RADIO:
+                            print("    EchoLink → Radio TX: ON")
+                        if self.config.RADIO_TO_ECHOLINK:
+                            print("    Radio RX → EchoLink: ON")
+                        if self.config.MUMBLE_TO_ECHOLINK:
+                            print("    Mumble → EchoLink: ON")
+                    else:
+                        print("  ✗ EchoLink IPC not available")
+                        print("    Make sure TheLinkBox is running")
+                        self.echolink_source = None
+                except Exception as echolink_err:
+                    print(f"⚠ Warning: Could not initialize EchoLink: {echolink_err}")
+                    self.echolink_source = None
+            else:
+                self.echolink_source = None
+            
+            # Initialize Icecast streaming if enabled (Phase 3A)
+            if self.config.ENABLE_STREAM_OUTPUT:
+                try:
+                    print("Connecting to Icecast server...")
+                    self.stream_output = StreamOutputSource(self.config, self)
+                    if self.stream_output.connected:
+                        print("✓ Icecast streaming active")
+                        print(f"  Listen at: http://{self.config.STREAM_SERVER}:{self.config.STREAM_PORT}{self.config.STREAM_MOUNT}")
+                    else:
+                        print("  ✗ Icecast connection failed")
+                        self.stream_output = None
+                except Exception as stream_err:
+                    print(f"⚠ Warning: Could not initialize streaming: {stream_err}")
+                    self.stream_output = None
+            else:
+                self.stream_output = None
+            
             return True
             
         except Exception as e:
@@ -1937,7 +2208,16 @@ class MumbleRadioGateway:
                         data, ptt_required, active_sources = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
                         
                         if data is None:
-                            # No audio from any source
+                            # No audio from any source - send silence to keep stream alive
+                            silence = b'\x00' * (self.config.AUDIO_CHUNK_SIZE * 2)  # 16-bit silence
+                            
+                            # Send silence to stream to keep connection alive
+                            if self.stream_output and self.stream_output.connected:
+                                try:
+                                    self.stream_output.send_audio(silence)
+                                except Exception as stream_err:
+                                    pass  # Ignore errors on silence
+                            
                             self.audio_capture_active = False
                             time.sleep(0.01)
                             continue
@@ -2001,7 +2281,19 @@ class MumbleRadioGateway:
                                     if self.config.VERBOSE_LOGGING:
                                         print(f"\n[Error] Failed to send to radio TX: {tx_err}")
                             
-                            # Skip sending to Mumble - this is TX audio, not RX
+                            # PTT audio (file playback/announcements) goes ONLY to Radio TX
+                            # Stream will hear it when it comes back through Radio RX
+                            # DO NOT send PTT audio directly to stream!
+                            
+                            # EchoLink can optionally receive PTT audio directly
+                            if self.echolink_source and self.config.RADIO_TO_ECHOLINK:
+                                try:
+                                    self.echolink_source.send_audio(data)
+                                except Exception as el_err:
+                                    if self.config.VERBOSE_LOGGING:
+                                        print(f"\n[EchoLink] Send error: {el_err}")
+                            
+                            # Skip sending to Mumble and Stream - this is TX audio, not RX
                             continue
                         
                         # No PTT required (radio RX) - send to Mumble as usual
@@ -2100,6 +2392,29 @@ class MumbleRadioGateway:
                         print(f"\n[Error] Failed to send to Mumble: {send_err}")
                         import traceback
                         traceback.print_exc()
+                    
+                    # Send audio to EchoLink if enabled (Phase 3B)
+                    if self.echolink_source and self.config.RADIO_TO_ECHOLINK:
+                        try:
+                            self.echolink_source.send_audio(data)
+                        except Exception as el_err:
+                            if self.config.VERBOSE_LOGGING:
+                                print(f"\n[EchoLink] Send error: {el_err}")
+                    
+                    # Send audio to Icecast stream if enabled (Phase 3A)
+                    if self.stream_output and self.stream_output.connected:
+                        try:
+                            if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                                print(f"\n[Debug] Sending {len(data)} bytes to Icecast stream")
+                            self.stream_output.send_audio(data)
+                        except Exception as stream_err:
+                            if self.config.VERBOSE_LOGGING:
+                                print(f"\n[Stream] Send error: {stream_err}")
+                    elif self.config.VERBOSE_LOGGING and self.mixer.call_count % 100 == 1:
+                        if not self.stream_output:
+                            print(f"\n[Debug] stream_output is None")
+                        elif not self.stream_output.connected:
+                            print(f"\n[Debug] stream_output not connected")
                         
                 except Exception as e:
                     consecutive_errors += 1
@@ -2760,6 +3075,15 @@ class MumbleRadioGateway:
         
         # Give threads time to finish current operations
         time.sleep(0.2)
+        
+        # Close stream output pipe first (before stopping other things)
+        if hasattr(self, 'stream_output') and self.stream_output:
+            try:
+                self.stream_output.cleanup()
+                if self.config.VERBOSE_LOGGING:
+                    print("  Stream output closed")
+            except:
+                pass
         
         # Release PTT
         if self.ptt_active:

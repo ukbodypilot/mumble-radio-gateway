@@ -2,822 +2,345 @@
 # MUMBLE RADIO GATEWAY - CONFIGURATION FILE
 # ============================================================================
 # 
-# This file configures the Mumble-to-Radio gateway via AIOC.
-# All parameters have safe defaults and detailed explanations.
+# Bidirectional audio gateway between Mumble VoIP and radio via AIOC
 # 
+# Features:
+#   • Mumble ↔ Radio audio bridging with auto-PTT
+#   • File playback system (announcements/station ID)
+#   • Broadcastify streaming (optional)
+#   • EchoLink integration (optional)
+#   • Audio processing (noise gate, AGC, filters)
+#
 # Quick Start:
-#   1. Set MUMBLE_SERVER to your server IP
-#   2. Adjust VERBOSE_LOGGING (true for diagnostics, false for quiet operation)
-#   3. Most other settings can stay at defaults
+#   1. Set MUMBLE_SERVER to your server IP/hostname
+#   2. Set ENABLE_STREAM_OUTPUT = true for Broadcastify streaming
+#   3. Most other settings have sensible defaults
 #
-# Keyboard Controls (runtime adjustments without restarting):
-#   MUTE:    't' = TX | 'r' = RX | 'm' = Global mute/unmute
-#   AUDIO:   'v' = VAD toggle | ',' = Volume down | '.' = Volume up
-#   PROCESS: 'n' = Noise gate | 'f' = High-pass filter | 'a' = AGC
-#            's' = Spectral suppression | 'w' = Wiener suppression
-#            'e' = Echo cancellation | 'x' = Stream health on/off
-#   PTT:     'p' = Manual PTT toggle (override auto-PTT)
-#
-# For troubleshooting, see the diagnostic sections at the bottom.
+# Keyboard Controls (runtime):
+#   MUTE:    't' = TX | 'r' = RX | 'm' = Global
+#   AUDIO:   'v' = VAD | ',' = Vol- | '.' = Vol+
+#   PROCESS: 'n' = Gate | 'f' = HPF | 'a' = AGC | 's' = Spectral
+#            'w' = Wiener | 'e' = Echo | 'x' = Stream health
+#   PTT:     'p' = Manual PTT toggle
+#   PLAY:    '1-9' = Announcements | '0' = Station ID | '-' = Stop
 # ============================================================================
 
 # ============================================================================
-# MUMBLE SERVER CONNECTION
+# CORE: MUMBLE SERVER CONNECTION
 # ============================================================================
 
 # Mumble server IP address or hostname
-# Example: 192.168.1.100 or mumble.example.com
+# Examples: 192.168.1.100, mumble.example.com
 MUMBLE_SERVER = 192.168.2.128
 
 # Mumble server port
 # Default: 64738 (standard Mumble port)
 MUMBLE_PORT = 64738
 
-# Username to display on the Mumble server
-# This name will be visible to other Mumble users
+# Username displayed on Mumble
 MUMBLE_USERNAME = RadioGateway
 
-# Password for the Mumble server
-# Leave empty if no password required
+# Server password (leave empty if none)
 MUMBLE_PASSWORD = 
 
-# Channel to join on connection
-# Leave empty to stay in root channel
-# Example: General/Radio or just Radio
+# Channel to join (leave empty for root channel)
+# Examples: Radio, General/Radio
 MUMBLE_CHANNEL = 
 
-# ============================================================================
-# AUDIO QUALITY & BUFFER SETTINGS
-# ============================================================================
-
-# Audio sample rate in Hz
-# 48000 = CD quality (matches Mumble default, recommended)
-# 24000 = Good quality (lower bandwidth)
-# 16000 = Basic quality
-# 8000  = Phone quality (minimal bandwidth)
-# Default: 48000
-AUDIO_RATE = 48000
-
-# Audio chunk size in samples (CRITICAL FOR STABILITY)
-# Controls latency vs stability tradeoff
-# ┌─────────┬─────────┬──────────────────────────────┐
-# │ Samples │ Latency │ Use Case                     │
-# ├─────────┼─────────┼──────────────────────────────┤
-# │  480    │  10ms   │ Lowest latency (may dropout) │
-# │  960    │  20ms   │ Low latency                  │
-# │ 1920    │  40ms   │ Balanced                     │
-# │ 2400    │  50ms   │ Stable                       │
-# │ 4800    │ 100ms   │ High stability               │
-# │ 9600    │ 200ms   │ Maximum stability (default)  │
-# └─────────┴─────────┴──────────────────────────────┘
-# Larger values = smoother file playback, more latency
-# If you get -9999 errors, increase this value
-# Default: 9600 (200ms buffer for smooth file playback)
-AUDIO_CHUNK_SIZE = 9600
-
-# Number of audio channels
-# 1 = Mono (recommended for radio)
-# 2 = Stereo (not needed for radio)
-AUDIO_CHANNELS = 1
-
-# Audio bit depth
-# 16 = Standard (recommended, don't change)
-# 24 = Higher quality (rarely needed)
-AUDIO_BITS = 16
-
-# ============================================================================
-# MUMBLE AUDIO CODEC SETTINGS
-# ============================================================================
-
-# Mumble audio quality (bitrate in bits per second)
-# Note: This is informational - actual bitrate is controlled by Mumble's codec
-# Higher = better quality but more bandwidth
-# 40000 = high quality, 72000 = very high, 96000 = maximum
-# Recommended: 72000 for radio use
+# Audio bitrate in bits/second
+# 40000 = good | 72000 = high (recommended) | 96000 = maximum
 MUMBLE_BITRATE = 72000
 
-# Enable/disable Opus codec VBR (Variable Bit Rate)
-# true = adapts bitrate based on audio complexity (recommended)
-# false = constant bitrate
+# Enable Opus Variable Bit Rate
+# true = adapts quality based on audio (recommended)
 MUMBLE_VBR = true
 
-# Mumble jitter buffer size in milliseconds
-# Lower = less latency but may cause audio dropouts on poor networks
-# Higher = more latency but smoother audio
-# Recommended: 10-20ms for LAN, 30-50ms for internet
-MUMBLE_JITTER_BUFFER = 20
-
 # ============================================================================
-# PTT (PUSH-TO-TALK) CONTROL - Mumble → Radio
+# CORE: RADIO INTERFACE (AIOC)
 # ============================================================================
 
-# AIOC PTT channel selection
-# 3 = PTT1 (usually front panel connector)
-# 4 = PTT2 (usually rear panel connector)
-# Default: 3
-AIOC_PTT_CHANNEL = 3
-
-# PTT release delay (seconds)
-# How long to hold PTT after Mumble audio stops
-# ┌─────────┬────────────────────────────────┐
-# │ Value   │ Effect                         │
-# ├─────────┼────────────────────────────────┤
-# │ 0.1-0.2 │ Fast release (may clip end)    │
-# │ 0.3-0.5 │ Balanced (recommended)         │
-# │ 0.6-1.0 │ Long tail (prevents clipping)  │
-# └─────────┴────────────────────────────────┘
-# Too short = cuts off end of transmissions
-# Too long = delayed return to receive mode
-# Note: Not used when Manual PTT mode is active (press 'p' key)
-# Default: 0.3
-PTT_RELEASE_DELAY = 0.3
-
-# PTT activation delay (seconds)
-# Delay before keying PTT when Mumble audio arrives
-# Allows radio to settle before transmitting
-# Most radios: 0.0 (immediate)
-# Slow radios: 0.05-0.1 (if radio needs setup time)
-# Default: 0.0
-PTT_ACTIVATION_DELAY = 0.0
-
-# ============================================================================
-# AIOC DEVICE SETTINGS
-# ============================================================================
-
-# AIOC USB Vendor ID (don't change unless using different device)
+# AIOC USB device identifiers
+# Default values work for most AIOC devices
 AIOC_VID = 0x1209
-
-# AIOC USB Product ID (don't change unless using different device)
 AIOC_PID = 0x7388
 
-# Force specific audio device index (leave as -1 for auto-detect)
-# Use -1 to automatically find AIOC audio device
-# Or specify device index number if auto-detect fails
-AIOC_INPUT_DEVICE = -1
-AIOC_OUTPUT_DEVICE = -1
+# Audio device names (auto-detected if empty)
+# Leave blank unless you have multiple AIOC devices
+AIOC_INPUT_DEVICE = 
+AIOC_OUTPUT_DEVICE = 
+
+# GPIO channel for PTT control
+# 2 = CM108 GPIO2 (standard AIOC configuration)
+AIOC_PTT_CHANNEL = 2
 
 # ============================================================================
-# AUDIO PROCESSING SETTINGS
+# CORE: AUDIO QUALITY & BUFFERING
 # ============================================================================
 
-# Enable automatic gain control (AGC)
-# Automatically adjusts input volume levels
-# Recommended: false for radio (radio has its own gain control)
-ENABLE_AGC = false
+# Sample rate in Hz
+# 48000 = CD quality (recommended, matches Mumble)
+AUDIO_RATE = 48000
 
-# Enable noise suppression on Radio→Mumble path
-# Reduces background noise and hiss from radio RF before sending to Mumble
-# Recommended: true to clean up noisy radio audio
-ENABLE_NOISE_SUPPRESSION = false
+# Channels: 1 = Mono (recommended for radio)
+AUDIO_CHANNELS = 1
 
-# Noise suppression method: spectral, wiener, or none
-# spectral = Spectral subtraction (built-in, fast, good quality)
-# wiener = Wiener filtering (more aggressive, may affect voice)
-# none = Disable (use if you have external processing)
-# Recommended: spectral
-NOISE_SUPPRESSION_METHOD = none
+# Bit depth: 16 = Standard (don't change)
+AUDIO_BITS = 16
 
-# Noise suppression strength (0.0 to 1.0)
-# Higher = more aggressive noise removal but may affect voice quality
-# 0.3 = light (preserve voice quality)
-# 0.5 = moderate (balanced)
-# 0.7 = strong (aggressive noise removal)
-# Recommended: 0.5 to 0.7 for noisy radio signals
-NOISE_SUPPRESSION_STRENGTH = 0.6
-
-# Enable noise gate on Radio→Mumble path
-# Mutes audio below a threshold to eliminate radio hiss/static
-# Recommended: true for cleaner Mumble transmission
-ENABLE_NOISE_GATE = false
-
-# Noise gate threshold in dB (-60 to 0)
-# Radio audio quieter than this will be muted
-# -40 = only very quiet noise filtered
-# -30 = moderate filtering  
-# -20 = aggressive filtering (may cut weak radio signals)
-# Recommended: -35 to -30 for radio
-NOISE_GATE_THRESHOLD = -32
-
-# Noise gate attack time in milliseconds
-# How quickly gate opens when signal exceeds threshold
-# Lower = more responsive but may click
-# Recommended: 5 to 20ms
-NOISE_GATE_ATTACK = 10
-
-# Noise gate release time in milliseconds  
-# How quickly gate closes when signal drops below threshold
-# Lower = faster cutoff but may sound choppy
-# Higher = smoother but may let more noise through
-# Recommended: 50 to 200ms
-NOISE_GATE_RELEASE = 100
-
-# Enable high-pass filter on Radio→Mumble path
-# Removes low-frequency rumble, hum, and handling noise
-# Strongly recommended for radio use
-ENABLE_HIGHPASS_FILTER = false
-
-# High-pass filter cutoff frequency in Hz
-# Audio below this frequency is attenuated
-# 80 = Very gentle (keeps more bass)
-# 120 = Moderate (recommended for radio)
-# 200 = Aggressive (removes more low end)
-# Default: 120
-HIGHPASS_CUTOFF_FREQ = 120
-
-# Enable echo cancellation (EXPERIMENTAL)
-# Attempts to remove echo/feedback between radio RX and TX
-# May affect audio quality - only enable if you have echo problems
-# Recommended: false (most radios don't need this)
-ENABLE_ECHO_CANCELLATION = false
+# Audio chunk size (samples) - CRITICAL FOR STABILITY
+# Controls latency vs stability tradeoff:
+#   480 =  10ms - Lowest latency (may have dropouts)
+#   960 =  20ms - Low latency
+#  1920 =  40ms - Balanced
+#  2400 =  50ms - Stable
+#  4800 = 100ms - High stability
+#  9600 = 200ms - Maximum stability (recommended for file playback)
+# Larger = smoother playback, more latency
+# If you get -9999 errors, increase this
+AUDIO_CHUNK_SIZE = 9600
 
 # ============================================================================
-# VOLUME CONTROL
+# CORE: AUDIO LEVELS
 # ============================================================================
 
-# Input volume multiplier (Radio → Mumble)
-# Adjusts volume of radio audio going TO Mumble
-# Can also adjust at runtime with ',' and '.' keys
-# ┌─────────┬────────────────────────────────┐
-# │ Value   │ Effect                         │
-# ├─────────┼────────────────────────────────┤
-# │ 0.5     │ Quieter (50% volume)           │
-# │ 1.0     │ Normal (no change)             │
-# │ 1.5     │ Louder (150% volume)           │
-# │ 2.0+    │ Much louder (may distort)      │
-# └─────────┴────────────────────────────────┘
-# Recommended: 0.8 to 1.2
+# Radio RX → Mumble volume multiplier
+# 0.5 = half volume | 1.0 = unity (default) | 2.0 = double
+# Adjust if radio audio is too quiet/loud in Mumble
 INPUT_VOLUME = 1.0
 
-# Output volume multiplier (Mumble → Radio)
-# Adjusts volume of Mumble audio going TO radio
-# Range: 0.1 to 3.0
-# Recommended: 0.8 to 1.2
+# Mumble → Radio TX volume multiplier
+# Adjust if Mumble audio is too quiet/loud on radio
 OUTPUT_VOLUME = 1.0
 
 # ============================================================================
-# NETWORK & CONNECTION SETTINGS
+# CORE: PTT (PUSH-TO-TALK) CONTROL
 # ============================================================================
 
-# Network connection timeout in seconds
-# How long to wait for network operations before giving up
-# Default: 10
-NETWORK_TIMEOUT = 10
+# Delay before activating PTT after audio detected (seconds)
+# Gives time for squelch tail to settle
+PTT_ACTIVATION_DELAY = 0.0
 
-# Enable TCP no-delay (Nagle's algorithm disable)
-# Reduces network latency by sending packets immediately
-# Recommended: true for real-time voice
-TCP_NODELAY = true
-
-# Enable Mumble loop rate (seconds)
-# How often the Mumble library processes events
-# Lower = more responsive but more CPU
-# Default: 0.01 (100 Hz)
-MUMBLE_LOOP_RATE = 0.02
-
-# Enable Mumble stereo mode
-# true = stereo audio, false = mono
-# Recommended: false for radio (radio is mono)
-MUMBLE_STEREO = false
-
-# Auto-reconnect to Mumble on disconnect
-# true = automatically reconnect if connection lost
-# false = exit on disconnect
-# Recommended: true for unattended operation
-MUMBLE_RECONNECT = true
-
-# Enable Mumble debug messages
-# Shows detailed Mumble protocol information
-# Only enable if troubleshooting Mumble connection issues
-MUMBLE_DEBUG = false
+# Delay before releasing PTT after audio stops (seconds)
+# Prevents cutting off end of transmissions
+PTT_RELEASE_DELAY = 0.5
 
 # ============================================================================
-# LOGGING & STATUS DISPLAY
+# FEATURE: VOICE ACTIVITY DETECTION (VAD)
 # ============================================================================
 
-# Enable verbose logging
-# true = Show detailed diagnostic messages
-# false = Quiet operation (only errors and status line)
-# Recommended: true for setup/troubleshooting, false for production
-VERBOSE_LOGGING = false
-
-# Status update interval (seconds)
-# How often to refresh the status line showing:
-#   [Status] M:✓ PTT:-- VAD:-- -45dB TX:[--] RX:[--]
-# ┌─────────┬──────────────────────────────┐
-# │ Value   │ Effect                       │
-# ├─────────┼──────────────────────────────┤
-# │ 0       │ No status updates            │
-# │ 1-2     │ Fast updates (more CPU)      │
-# │ 3-5     │ Balanced (recommended)       │
-# │ 10+     │ Slow updates (less CPU)      │
-# └─────────┴──────────────────────────────┘
-# Default: 5
-STATUS_UPDATE_INTERVAL = 5
-
-# ============================================================================
-# BUFFER MANAGEMENT SETTINGS
-# ============================================================================
-
-# Maximum Mumble output buffer size in seconds
-# If buffer exceeds this, audio chunks are dropped to prevent delay buildup
-# Lower = tighter latency but may drop more audio
-# Higher = more tolerance but may accumulate delay
-# 0 = disable buffer management (NOT recommended - delay will grow over time)
-# Recommended: 1.5 to 3 seconds
-MAX_MUMBLE_BUFFER_SECONDS = 1.0
-
-# Enable buffer management diagnostics
-# Shows when audio chunks are dropped due to buffer being full
-# Recommended: true to understand if delay is being managed
-BUFFER_MANAGEMENT_VERBOSE = false
-
-# ============================================================================
-# VOICE ACTIVITY DETECTION (VAD) - Radio → Mumble
-# ============================================================================
-# VAD prevents sending silence to Mumble, which:
-#   • Eliminates buffer accumulation and delay buildup
-#   • Reduces bandwidth by ~90% (only sends active transmissions)
-#   • Provides cleaner audio (no constant noise floor)
-#   • Prevents Mumble users from hearing continuous static
-
-# Enable Voice Activity Detection
-# true  = Only send audio when radio signal detected (HIGHLY RECOMMENDED)
-# false = Send continuous audio stream (will cause buffer issues)
-# Default: true
+# Enable VAD for Radio RX → Mumble
+# true = only send to Mumble when radio signal detected
+# false = always send (may transmit noise/carrier)
 ENABLE_VAD = true
 
-# VAD threshold (dB)
-# Audio quieter than this is considered silence
-# ┌─────────┬──────────────────────────────────┐
-# │ Value   │ Behavior                         │
-# ├─────────┼──────────────────────────────────┤
-# │ -45     │ Very sensitive (may send noise)  │
-# │ -40     │ Sensitive                        │
-# │ -35     │ Moderate (recommended)           │
-# │ -30     │ Less sensitive                   │
-# │ -25     │ Only strong signals              │
-# └─────────┴──────────────────────────────────┘
-# Tune this while watching the status line dB reading
-# Default: -33
+# VAD threshold in dBFS (more negative = more sensitive)
+# -40 = very sensitive | -33 = balanced | -25 = less sensitive
 VAD_THRESHOLD = -33
 
-# VAD attack time (milliseconds)
-# How quickly VAD opens when signal appears
-# Lower = more responsive, Higher = smoother
-# Range: 10-50ms
-# Default: 20
-VAD_ATTACK = 20
-
-# VAD release time (milliseconds)
-# How long to keep transmitting after signal drops
-# Prevents cutting off the end of transmissions
-# Range: 200-500ms
-# Default: 300
-VAD_RELEASE = 300
-
-# VAD minimum transmission duration (milliseconds)
-# Ignores very short bursts (static pops, clicks)
-# Range: 100-300ms
-# Default: 150
-VAD_MIN_DURATION = 150
+# VAD timing
+VAD_ATTACK = 0.02   # How fast to activate (seconds)
+VAD_RELEASE = 0.3   # How long to hold after silence (seconds)
+VAD_MIN_DURATION = 0.1  # Minimum transmission length (seconds)
 
 # ============================================================================
-# STREAM HEALTH MANAGEMENT (USB/ALSA Stability)
-# ============================================================================
-# The AIOC uses a CM108 chipset which has known ALSA driver issues.
-# Proactive stream restarts prevent the dreaded "-9999 Unanticipated host error"
-# Restarts only occur when the radio is idle (no active transmission)
-
-# Enable automatic stream health management
-# true  = Proactively restart streams to prevent -9999 errors
-# false = Only restart on actual errors (default, recommended for stable systems)
-# ┌───────┬──────────────────────────────────────┐
-# │ Value │ When to Use                          │
-# ├───────┼──────────────────────────────────────┤
-# │ false │ Stable systems, no -9999 errors     │
-# │ true  │ Experiencing -9999 errors or freezes│
-# └───────┴──────────────────────────────────────┘
-# You can toggle this at runtime with the 'x' key
-# Default: false
-ENABLE_STREAM_HEALTH = false
-
-# Proactive stream restart interval (seconds)
-# Periodically restarts the audio stream to prevent crashes
-# Only used when ENABLE_STREAM_HEALTH = true
-# ┌─────────┬────────────────────────────────┐
-# │ Value   │ Effect                         │
-# ├─────────┼────────────────────────────────┤
-# │ 0       │ Disabled (uses error-based only)│
-# │ 30      │ Very safe (more interruptions) │
-# │ 60      │ Balanced (recommended)         │
-# │ 120     │ Less safe (fewer interruptions)│
-# │ 300     │ Minimal (for stable systems)   │
-# └─────────┴────────────────────────────────┘
-# Default: 60 (when enabled)
-STREAM_RESTART_INTERVAL = 60
-
-# Minimum idle time before allowing restart (seconds)
-# Prevents restarting during active transmissions
-# Radio must be silent for this long before restart occurs
-# Range: 3-10 seconds
-# Default: 3
-STREAM_RESTART_IDLE_TIME = 3
-
-# ============================================================================
-# VOX (VOICE OPERATED SWITCH) SETTINGS - Radio → Mumble
+# FEATURE: VOX (VOICE-OPERATED SWITCH)
 # ============================================================================
 
-# Enable VOX for Radio → Mumble transmission
-# When enabled, audio is only sent to Mumble when radio is receiving a signal
-# This prevents sending constant silence and eliminates buffer accumulation
-# Recommended: true (eliminates most buffer issues)
-ENABLE_VOX = true
+# Enable VOX for Radio RX → Mumble
+# Alternative to VAD, based on audio level threshold
+ENABLE_VOX = false
 
-# VOX threshold in dB
-# Audio louder than this triggers transmission to Mumble
-# Lower = more sensitive (may transmit on noise)
-# Higher = less sensitive (may miss weak signals)
-# -50 = very sensitive (picks up background noise)
-# -40 = moderate (good for most radios)
-# -30 = less sensitive (only strong signals)
-# Recommended: -40 to -35
-VOX_THRESHOLD = -40
+# VOX threshold in dBFS
+VOX_THRESHOLD = -30
 
-# VOX attack time in milliseconds
-# How quickly VOX activates when signal detected
-# Lower = faster response but may click
-# Recommended: 20 to 100ms
-VOX_ATTACK_TIME = 50
-
-# VOX release time in milliseconds
-# How long to keep transmitting after signal drops below threshold
-# Lower = cuts off quickly (may clip end of transmissions)
-# Higher = smoother but may transmit extra tail
-# Recommended: 300 to 800ms for radio
-VOX_RELEASE_TIME = 500
+# VOX timing
+VOX_ATTACK_TIME = 0.05   # How fast to activate
+VOX_RELEASE_TIME = 0.5   # How long to hold after silence
 
 # ============================================================================
-# FILE PLAYBACK SETTINGS (Phase 2)
+# FEATURE: AUDIO PROCESSING
 # ============================================================================
 
-# Enable audio file playback
-# true  = Allow playing audio files (MP3, OGG, FLAC, M4A, WAV)
-# false = Disable file playback
-# Requires: pip install soundfile --break-system-packages
-#           sudo apt-get install libsndfile1
-# Optional: pip install resampy --break-system-packages (better resampling quality)
-# Without soundfile: WAV files only (built-in support)
-# Default: false
+# Noise Gate - removes low-level background noise
+ENABLE_NOISE_GATE = true
+NOISE_GATE_THRESHOLD = -40    # dBFS threshold
+NOISE_GATE_ATTACK = 0.01      # Attack time (seconds)
+NOISE_GATE_RELEASE = 0.1      # Release time (seconds)
+
+# High-Pass Filter - removes low-frequency rumble
+ENABLE_HIGHPASS_FILTER = true
+HIGHPASS_CUTOFF_FREQ = 300    # Hz (300 = good for voice)
+
+# Automatic Gain Control - normalizes audio levels
+ENABLE_AGC = true
+
+# Noise Suppression - advanced noise reduction
+ENABLE_NOISE_SUPPRESSION = true
+NOISE_SUPPRESSION_METHOD = spectral  # spectral or wiener
+NOISE_SUPPRESSION_STRENGTH = 0.5     # 0.0 to 1.0
+
+# Echo Cancellation - reduces feedback
+ENABLE_ECHO_CANCELLATION = false
+
+# ============================================================================
+# FEATURE: FILE PLAYBACK (Announcements & Station ID)
+# ============================================================================
+
+# Enable file playback system
+# Allows triggering audio files with keys 0-9
 ENABLE_PLAYBACK = true
 
 # Directory containing audio files
-# Can be absolute path or relative to script location
-# Examples: /home/user/audio/ or ./audio/
-# Default: ./audio/
-PLAYBACK_DIRECTORY = ./audio/
-
-# Periodic station ID interval in seconds
-# How often to automatically play station_id file (key 0)
-# The gateway will automatically find station_id.mp3/.wav/.ogg/.flac/.m4a
-# ┌─────────┬────────────────────────────────┐
-# │ Value   │ Frequency                      │
-# ├─────────┼────────────────────────────────┤
-# │ 0       │ Disabled (manual only)         │
-# │ 300     │ Every 5 minutes                │
-# │ 600     │ Every 10 minutes (recommended) │
-# │ 1800    │ Every 30 minutes               │
-# │ 3600    │ Every hour                     │
-# └─────────┴────────────────────────────────┘
-# Note: Announcement only plays when radio is idle (no active VAD)
-# Default: 0 (disabled)
-PLAYBACK_ANNOUNCEMENT_INTERVAL = 0
+# Files should be named: 0.wav through 9.wav
+PLAYBACK_DIRECTORY = audio_files
 
 # ============================================================================
-# FILE PLAYBACK FEATURES (Phase 2)
+# FEATURE: BROADCASTIFY STREAMING
 # ============================================================================
+# Requirements:
+#   1. Install: sudo apt-get install darkice lame ffmpeg
+#   2. Configure /etc/darkice.cfg with Broadcastify credentials
+#   3. Run: ./start_broadcastify_FIXED.sh (handles all subprocesses)
 #
-# Status Line Indicators:
-#   When ENABLE_PLAYBACK=true, ten colored status indicators appear:
-#   [0][1][2][3][4][5][6][7][8][9]
-#   
-#   [0] = station_id (auto-detected, any extension)
-#   [1-9] = announcement1-9 (any extension)
-#   
-#   Colors:
-#   • White  = File not found
-#   • Green  = File ready to play
-#   • Red    = Currently playing/transmitting
+# Audio Flow:
+#   Radio RX → Gateway → Pipe → FFmpeg → ALSA Loopback → Darkice → Broadcastify
 #
-# Keyboard Controls:
-#   '0' = Play station_id (auto-detected)
-#   '1' = Play announcement1
-#   '2' = Play announcement2
-#   '3' = Play announcement3
-#   '4' = Play announcement4
-#   '5' = Play announcement5
-#   '6' = Play announcement6
-#   '7' = Play announcement7
-#   '8' = Play announcement8
-#   '9' = Play announcement9
-#   '-' = Stop current playback (interrupt/clear queue)
-#
-# Audio Routing:
-#   • File playback → Radio TX (with PTT)
-#   • Radio RX → Mumble (as usual)
-#   • When file plays, PTT activates automatically
-#   • File playback at 100% volume (not mixed with radio)
-#
-# Supported Audio Formats (with soundfile):
-#   • MP3 - Most common, small file size, good quality
-#   • OGG - Open source, small file size
-#   • FLAC - Lossless quality, larger files
-#   • M4A - Apple/AAC format
-#   • WAV - Uncompressed, instant loading, large files
-#
-# Audio File Requirements:
-#   The gateway automatically converts files to the correct format.
-#   Original file can be any sample rate, mono/stereo, any bit depth.
-#   Gateway converts to: 48000 Hz, Mono, 16-bit
-#
-# Installing soundfile for multi-format support (Python 3.13 compatible):
-#   pip install soundfile --break-system-packages
-#   sudo apt-get install libsndfile1
-#   pip install resampy --break-system-packages  # Optional, for better quality
-#
-# Verify installation:
-#   python3 -c "import soundfile; print('soundfile works!')"
-#
-# Directory Structure Example:
-#   ./audio/
-#     ├── announcement1.mp3     # Triggered with '1' key
-#     ├── announcement2.ogg     # Triggered with '2' key
-#     └── station_id.mp3        # Triggered with '3' key or periodic
-#
-# How It Works:
-#   • Files are queued and played in order
-#   • Playback triggers PTT automatically
-#   • Radio audio continues to Mumble (RX path)
-#   • File playback goes to radio (TX path)
-#   • Periodic announcements only when radio is idle
-#   • Files are loaded into memory (not streamed)
-#   • All conversion happens automatically at load time
-#
-# Troubleshooting:
-#
-#   • "No module named 'soundfile'":
-#     pip install soundfile --break-system-packages
-#
-#   • "Error opening file: Format not recognised":
-#     sudo apt-get install libsndfile1
-#
-#   • White [1][2][3] indicators:
-#     Files not found - check file names and paths
-#     ls -la ./audio/
-#
-#   • File plays but no TX output:
-#     Already fixed in Phase 2 - file audio routes to radio TX
-#
-#   • File too quiet:
-#     Already fixed in Phase 2 - file plays at 100% volume
-#
-# Creating Compatible Files:
-#
-#   With soundfile installed, ANY format works! Just drop files in ./audio/
-#
-#   If you need to convert manually:
-#     ffmpeg -i input.mp3 -ar 48000 -ac 1 output.wav
-#
-#   Using Audacity:
-#     File → Export → Export as MP3 or WAV
-#     Set to Mono, 48000 Hz
-#
-#   Text-to-Speech (espeak):
-#     espeak -w temp.wav "This is W1XYZ repeater"
-#     ffmpeg -i temp.wav -ar 48000 -ac 1 station_id.mp3
-#
-# Configuration Examples:
-#
-#   1. Station ID every 10 minutes:
-#      ENABLE_PLAYBACK = true
-#      PLAYBACK_DIRECTORY = ./audio/
-#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 600
-#      # Place station_id.mp3 (or .wav/.ogg/.flac/.m4a) in ./audio/
-#
-#   2. Manual announcements only (no periodic):
-#      ENABLE_PLAYBACK = true
-#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 0
-#      # Press 0-9 to manually trigger files
-#
-#   3. Custom directory with multiple announcements:
-#      PLAYBACK_DIRECTORY = /home/user/radio_audio/
-#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 1800
-#      # Files: station_id.ogg, announcement1-9.mp3
-#
-# Performance:
-#   • Memory: ~50-100 KB per loaded file (uncompressed in RAM)
-#   • CPU: Conversion happens once at load time
-#   • Playback: Zero CPU (just memory copy)
-#
+# Note: File playback (announcements) do NOT stream directly
+#       They go: File → Radio TX → Air → Radio RX → Stream (realistic!)
 # ============================================================================
 
+# Enable streaming to Broadcastify
+# Requires Darkice + FFmpeg running (see startup script)
+ENABLE_STREAM_OUTPUT = true
+
+# Broadcastify server details (from your feed settings)
+STREAM_SERVER = audio9.broadcastify.com
+STREAM_PORT = 80
+STREAM_PASSWORD = 7jwb2ngc
+STREAM_MOUNT = /3pc56gsd8v4n
+
+# Stream metadata (displayed on Broadcastify)
+STREAM_NAME = Radio Gateway
+STREAM_DESCRIPTION = Radio to Mumble Gateway Stream
+
+# Stream format and quality
+STREAM_FORMAT = mp3      # mp3 or ogg
+STREAM_BITRATE = 16      # kbps (16 common for scanner audio)
+
 # ============================================================================
-# FILE PLAYBACK USAGE NOTES
+# FEATURE: ECHOLINK INTEGRATION (via TheLinkBox)
 # ============================================================================
+# Connect to the worldwide EchoLink network using TheLinkBox proxy client
 #
-# Supported Audio Formats (with pydub):
-#   • MP3 - Most common, small file size, good quality
-#   • OGG - Open source, small file size
-#   • FLAC - Lossless quality, larger files
-#   • M4A - Apple/AAC format
-#   • WAV - Uncompressed, instant loading, large files
+# What is TheLinkBox?
+#   - FREE EchoLink proxy client (no port forwarding needed!)
+#   - NAT-friendly (works behind routers/firewalls)
+#   - Uses EchoLink's public proxy servers automatically
 #
-# Audio File Requirements:
-#   The gateway automatically converts files to the correct format.
-#   Original file can be any sample rate, mono/stereo, any bit depth.
-#   Gateway converts to: 48000 Hz, Mono, 16-bit
+# Prerequisites:
+#   1. Install TheLinkBox: sudo apt-get install thelinkbox
+#   2. Register at echolink.org with valid amateur radio callsign
+#   3. Configure /etc/thelinkbox/thelinkbox.conf
+#   4. Start TheLinkBox before starting gateway
 #
-# Installing pydub for MP3/OGG/FLAC support:
-#   pip install pydub --break-system-packages
-#   sudo apt-get install ffmpeg  # Required by pydub
+# Audio Flow:
+#   Radio RX ──┐
+#   EchoLink ─┼──> Mixer ──┬──> Mumble
+#   Files ────┘            ├──> Radio TX
+#                          └──> EchoLink TX
 #
-# Directory Structure Example:
-#   ./audio/
-#     ├── station_id.mp3        # Key 0 (auto-detected, periodic)
-#     ├── announcement1.mp3     # Key 1
-#     ├── announcement2.ogg     # Key 2
-#     ├── announcement3.wav     # Key 3
-#     ├── announcement4.flac    # Key 4
-#     ├── announcement5.m4a     # Key 5
-#     ├── announcement6.mp3     # Key 6
-#     ├── announcement7.wav     # Key 7
-#     ├── announcement8.ogg     # Key 8
-#     └── announcement9.mp3     # Key 9
+# See README.md for complete TheLinkBox configuration guide
+# ============================================================================
+
+# Enable EchoLink integration
+ENABLE_ECHOLINK = false
+
+# Named pipes for IPC with TheLinkBox
+# These must match TheLinkBox configuration:
+#   [AUDIO]
+#   AUDIO_IN_DEVICE = /tmp/echolink_tx   (TheLinkBox reads from here)
+#   AUDIO_OUT_DEVICE = /tmp/echolink_rx  (TheLinkBox writes here)
+ECHOLINK_RX_PIPE = /tmp/echolink_rx  # Gateway reads FROM TheLinkBox
+ECHOLINK_TX_PIPE = /tmp/echolink_tx  # Gateway writes TO TheLinkBox
+
+# Audio routing options - configure exactly where EchoLink audio goes
+ECHOLINK_TO_MUMBLE = true   # EchoLink users heard on Mumble
+ECHOLINK_TO_RADIO = true    # EchoLink users heard on Radio (gateway will PTT)
+MUMBLE_TO_ECHOLINK = true   # Mumble users sent to EchoLink network
+RADIO_TO_ECHOLINK = true    # Radio RX sent to EchoLink network
+
+# Common Configurations:
 #
-# Keyboard Controls (during operation):
-#   '0' = Play station_id (auto-detected, any extension)
-#   '1' = Play announcement1 (any extension)
-#   '2' = Play announcement2
-#   '3' = Play announcement3
-#   '4' = Play announcement4
-#   '5' = Play announcement5
-#   '6' = Play announcement6
-#   '7' = Play announcement7
-#   '8' = Play announcement8
-#   '9' = Play announcement9
-#   '-' = Stop playback (interrupt current file, clear queue)
+# Full Bridge (everyone hears everyone):
+#   ECHOLINK_TO_MUMBLE = true
+#   ECHOLINK_TO_RADIO = true
+#   MUMBLE_TO_ECHOLINK = true
+#   RADIO_TO_ECHOLINK = true
 #
-# How It Works:
-#   • Files are queued and played in order
-#   • Playback triggers PTT automatically
-#   • File playback at full volume (not mixed with radio)
-#   • Radio RX continues to Mumble (separate path)
-#   • Periodic station ID only when radio is idle
-#   • Files are loaded into memory (not streamed)
+# Radio + EchoLink only (Mumble separate):
+#   ECHOLINK_TO_MUMBLE = false
+#   ECHOLINK_TO_RADIO = true
+#   MUMBLE_TO_ECHOLINK = false
+#   RADIO_TO_ECHOLINK = true
 #
-# Creating Compatible Files:
-#
-#   Using ffmpeg (convert any format):
-#     ffmpeg -i input.mp3 -ar 48000 -ac 1 -sample_fmt s16 output.wav
-#     ffmpeg -i input.ogg -ar 48000 -ac 1 output.mp3
-#
-#   Using Audacity:
-#     1. File → Export → Export as WAV or MP3
-#     2. For WAV: PCM signed 16-bit, 48000 Hz, Mono
-#     3. For MP3: 128 kbps or higher, Mono
-#
-#   Text-to-Speech (espeak):
-#     espeak -w temp.wav "This is W1XYZ repeater"
-#     ffmpeg -i temp.wav -ar 48000 -ac 1 station_id.mp3
-#
-# Configuration Examples:
-#
-#   1. Station ID every 10 minutes (MP3):
-#      ENABLE_PLAYBACK = true
-#      PLAYBACK_DIRECTORY = ./audio/
-#      PLAYBACK_ANNOUNCEMENT_FILE = station_id.mp3
-#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 600
-#
-#   2. Manual announcements only:
-#      ENABLE_PLAYBACK = true
-#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 0
-#      (Press 1, 2, or 3 to play files manually)
-#
-#   3. Custom directory with OGG files:
-#      PLAYBACK_DIRECTORY = /home/user/radio_audio/
-#      PLAYBACK_ANNOUNCEMENT_FILE = id.ogg
-#      PLAYBACK_ANNOUNCEMENT_INTERVAL = 1800
-#
-# Troubleshooting:
-#
-#   • "File not found":
-#     Check PLAYBACK_DIRECTORY path and verify file exists
-#     ls -la ./audio/
-#
-#   • "MP3 not supported without pydub":
-#     Install pydub: pip install pydub --break-system-packages
-#     Or convert to WAV: ffmpeg -i file.mp3 -ar 48000 -ac 1 file.wav
-#
-#   • No audio output:
-#     Check ENABLE_PLAYBACK = true
-#     Press keyboard shortcuts (1, 2, 3) to test
-#     Check file is in correct directory
-#
-#   • Wrong speed or pitch:
-#     With pydub: Automatically fixed
-#     Without pydub: Convert to 48000 Hz WAV
-#
-#   • File too quiet/loud:
-#     Adjust in audio editor before using
-#     Or normalize: ffmpeg -i in.mp3 -filter:a "volume=0.8" out.mp3
-#
+# Mumble + EchoLink only (Radio separate):
+#   ECHOLINK_TO_MUMBLE = true
+#   ECHOLINK_TO_RADIO = false
+#   MUMBLE_TO_ECHOLINK = true
+#   RADIO_TO_ECHOLINK = false
+
+
+# ============================================================================
+# ADVANCED: STREAM HEALTH MONITORING
+# ============================================================================
+
+# Enable stream health monitoring
+# Monitors audio input stream and auto-restarts on errors
+# Can help recover from -9999 errors but may cause brief dropouts
+ENABLE_STREAM_HEALTH = false
+
+# ============================================================================
+# ADVANCED: DIAGNOSTICS
+# ============================================================================
+
+# Verbose logging - shows detailed diagnostic information
+# true = show debug output | false = minimal output
+VERBOSE_LOGGING = true
+
+# Update rate for status line display
+# Lower = smoother updates, higher CPU usage
+STATUS_UPDATE_INTERVAL = 0.02
+
 # ============================================================================
 # TROUBLESHOOTING GUIDE
 # ============================================================================
 #
-# Common Issues and Solutions:
+# AUDIO ISSUES:
+#   • No audio on Mumble: Check INPUT_VOLUME, verify VAD/VOX settings
+#   • No audio on radio: Check OUTPUT_VOLUME, verify AIOC connection
+#   • Choppy audio: Increase AUDIO_CHUNK_SIZE
+#   • High latency: Decrease AUDIO_CHUNK_SIZE
+#   • -9999 errors: Increase AUDIO_CHUNK_SIZE or enable STREAM_HEALTH
 #
-# 1. AUDIO DROPOUTS / -9999 ERRORS
-#    • Enable ENABLE_STREAM_HEALTH = true
-#    • Increase AUDIO_CHUNK_SIZE (try 4800)
-#    • Try different USB port
-#    • Check USB power supply
-#    • Press 'x' key at runtime to toggle stream health
+# MUMBLE ISSUES:
+#   • Won't connect: Verify MUMBLE_SERVER, MUMBLE_PORT
+#   • No codec: Wait 5-10 seconds after connect, check server compatibility
+#   • Channel not found: Check MUMBLE_CHANNEL spelling
 #
-# 2. DELAY BUILDING UP OVER TIME
-#    • Ensure ENABLE_VAD = true
-#    • Reduce MAX_MUMBLE_BUFFER_SECONDS (try 1.5)
-#    • Check VAD_THRESHOLD is appropriate for your radio
-#    • Watch status line to see if RX shows 0% during silence
+# PTT ISSUES:
+#   • PTT activates too quickly: Increase PTT_ACTIVATION_DELAY
+#   • PTT releases too quickly: Increase PTT_RELEASE_DELAY
+#   • PTT doesn't activate: Check AIOC_PTT_CHANNEL (try 1, 2, or 3)
 #
-# 3. CUTTING OFF END OF TRANSMISSIONS
-#    • Increase PTT_RELEASE_DELAY (try 0.5)
-#    • Increase VAD_RELEASE (try 400-500)
-#    • Not applicable in Manual PTT mode (press 'p')
+# STREAMING ISSUES:
+#   • Stream offline: Check Darkice is running (ps aux | grep darkice)
+#   • No audio on stream: Verify FFmpeg bridge is running
+#   • Needs reboot to work: Run ./start_broadcastify_FIXED.sh
 #
-# 4. TOO MUCH NOISE GOING TO MUMBLE
-#    • Lower VAD_THRESHOLD (try -30, less sensitive)
-#    • Enable ENABLE_NOISE_GATE = true
-#    • Increase NOISE_GATE_THRESHOLD (try -30)
-#    • Enable ENABLE_HIGHPASS_FILTER = true
+# FILE PLAYBACK ISSUES:
+#   • Files won't play: Check PLAYBACK_DIRECTORY path
+#   • Wrong files play: Verify files named 0.wav through 9.wav
+#   • Audio quality poor: Re-encode files at AUDIO_RATE sample rate
 #
-# 5. MISSING WEAK SIGNALS
-#    • Raise VAD_THRESHOLD (try -38, more sensitive)
-#    • Increase INPUT_VOLUME (press '.' key multiple times)
-#    • Disable or reduce NOISE_GATE_THRESHOLD
-#
-# 6. MUMBLE USERS COMPLAIN ABOUT AUDIO QUALITY
-#    • Increase MUMBLE_BITRATE (try 96000)
-#    • Check INPUT_VOLUME (should be 0.5-1.5)
-#    • Verify AUDIO_RATE = 48000
-#    • Disable NOISE_SUPPRESSION temporarily to test
-#
-# 7. PTT NOT WORKING OR STUCK
-#    • If in Manual PTT mode (M-ON/M--), press 'p' to toggle
-#    • Check TX mute status, press 't' to unmute
-#    • Verify AIOC_PTT_CHANNEL matches your AIOC jumper setting
-#    • Check PTT_RELEASE_DELAY isn't too long
-#
-# 8. MANUAL PTT MODE (NEW FEATURE)
-#    • Press 'p' to manually key/unkey radio
-#    • Status shows M-ON (keyed) or M-- (unkeyed)
-#    • Overrides automatic PTT behavior
-#    • Useful for long transmissions or testing
-#
-# 9. FILE PLAYBACK NOT WORKING (Phase 2)
-#    • Check ENABLE_PLAYBACK = true in config
-#    • Verify files exist: ls -la ./audio/
-#    • For MP3/OGG: Install pydub (pip install pydub --break-system-packages)
-#    • Press '1', '2', or '3' to manually trigger playback
-#    • Check verbose logging for error messages
-#
-# 10. PERIODIC ANNOUNCEMENT NOT PLAYING (Phase 2)
-#    • Check PLAYBACK_ANNOUNCEMENT_INTERVAL > 0
-#    • Check PLAYBACK_ANNOUNCEMENT_FILE is set and exists
-#    • Radio must be idle (no active VAD) for announcement to play
-#    • Wait for the interval to elapse (e.g., 600s = 10 minutes)
-#
-# Status Line Legend:
-#   [✓/⚠/✗]   = Audio capture status (ACTIVE/IDLE/STOPPED)
-#   M:✓/✗     = Mumble connected/disconnected
-#   PTT:ON/-- = Push-to-talk active/inactive (auto mode)
-#   PTT:M-ON/M-- = Manual PTT mode active/inactive (press 'p')
-#   VAD:✗/🔊/-- = VAD disabled/active/silent
-#   -XXdB     = Current audio level (tune VAD_THRESHOLD based on this)
-#   TX:[bar]  = Mumble → Radio audio level (or [---MUTE---] if muted)
-#   RX:[bar]  = Radio → Mumble audio level (or [---MUTE---] if muted)
-#   Vol:X.Xx  = RX volume multiplier (adjustable with , and . keys)
-#   [N,F,A,S,W,E,X] = Audio processing flags (only shown when enabled):
-#                     N=Noise Gate | F=HPF | A=AGC | S=Spectral | W=Wiener
-#                     E=Echo Cancel | X=Stream Health OFF (missing X = enabled)
-#   R:n       = Stream restart count (shows if >0)
-#
-# Keyboard Controls (press during operation - no restart needed):
-#   MUTE:    't'=TX | 'r'=RX | 'm'=Global
-#   AUDIO:   'v'=VAD | ','=Vol- | '.'=Vol+
-#   PROCESS: 'n'=Gate | 'f'=HPF | 'a'=AGC | 's'=Spectral | 'w'=Wiener
-#            'e'=Echo | 'x'=Stream Health
-#   PTT:     'p'=Manual PTT Toggle
-#   PLAY:    '1'=Ann1 | '2'=Ann2 | '3'=StationID (if ENABLE_PLAYBACK=true)
-#
-# For more help, check the README.txt file or enable VERBOSE_LOGGING.
+# For more help, enable VERBOSE_LOGGING = true and check output
 # ============================================================================
