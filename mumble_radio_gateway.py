@@ -23,7 +23,7 @@ except ImportError:
 
 try:
     from pymumble_py3 import Mumble
-    from pymumble_py3.callbacks import PYMUMBLE_CLBK_SOUNDRECEIVED
+    from pymumble_py3.callbacks import PYMUMBLE_CLBK_SOUNDRECEIVED, PYMUMBLE_CLBK_TEXTMESSAGERECEIVED
     import pymumble_py3.constants as mumble_constants
 except ImportError:
     print("ERROR: pymumble library not found!")
@@ -72,9 +72,9 @@ class Config:
             'NOISE_SUPPRESSION_STRENGTH': 0.6,
             'ENABLE_NOISE_GATE': False,
             'NOISE_GATE_THRESHOLD': -32,
-            'NOISE_GATE_ATTACK': 10,
-            'NOISE_GATE_RELEASE': 100,
-            'ENABLE_HIGHPASS_FILTER': True,
+            'NOISE_GATE_ATTACK': 0.01,  # float (seconds)
+            'NOISE_GATE_RELEASE': 0.1,  # float (seconds)
+            'ENABLE_HIGHPASS_FILTER': False,
             'HIGHPASS_CUTOFF_FREQ': 120,
             'ENABLE_ECHO_CANCELLATION': False,
             'INPUT_VOLUME': 1.0,
@@ -85,27 +85,39 @@ class Config:
             'MUMBLE_DEBUG': False,
             'NETWORK_TIMEOUT': 10,
             'TCP_NODELAY': True,
-            'VERBOSE_LOGGING': True,
-            'STATUS_UPDATE_INTERVAL': 2,
+            'VERBOSE_LOGGING': False,
+            'STATUS_UPDATE_INTERVAL': 1,  # seconds
             'MAX_MUMBLE_BUFFER_SECONDS': 1.0,
             'BUFFER_MANAGEMENT_VERBOSE': False,
-            'ENABLE_VAD': True,
+            'ENABLE_VAD': False,
             'VAD_THRESHOLD': -33,
-            'VAD_ATTACK': 20,
-            'VAD_RELEASE': 300,
-            'VAD_MIN_DURATION': 150,
+            'VAD_ATTACK': 0.02,  # float (seconds)
+            'VAD_RELEASE': 0.3,  # float (seconds)
+            'VAD_MIN_DURATION': 0.1,  # float (seconds)
             'ENABLE_STREAM_HEALTH': False,
             'STREAM_RESTART_INTERVAL': 60,
             'STREAM_RESTART_IDLE_TIME': 3,
             'ENABLE_VOX': True,
             'VOX_THRESHOLD': -40,
-            'VOX_ATTACK_TIME': 50,
-            'VOX_RELEASE_TIME': 500,
+            'VOX_ATTACK_TIME': 0.05,  # float (seconds)
+            'VOX_RELEASE_TIME': 0.5,  # float (seconds)
             # File Playback
             'ENABLE_PLAYBACK': False,
             'PLAYBACK_DIRECTORY': './audio/',
             'PLAYBACK_ANNOUNCEMENT_FILE': '',
             'PLAYBACK_ANNOUNCEMENT_INTERVAL': 0,  # seconds, 0 = disabled
+            # Text-to-Speech and Text Commands (Phase 4)
+            'ENABLE_TTS': True,
+            'ENABLE_TEXT_COMMANDS': True,
+            'TTS_VOLUME': 1.0,  # Volume multiplier for TTS audio (1.0 = normal, 2.0 = double, 3.0 = triple)
+            'PTT_TTS_DELAY': 0.25,  # Silence padding before TTS (seconds) to prevent cutoff
+            # SDR Integration
+            'ENABLE_SDR': True,
+            'SDR_DEVICE_NAME': 'hw:5,1',  # ALSA device name (e.g., 'Loopback', 'hw:5,1')
+            'SDR_MIX_RATIO': 1.0,  # Volume/mix ratio for SDR audio (1.0 = full volume)
+            'SDR_DISPLAY_GAIN': 1.0,  # Display sensitivity multiplier (1.0 = normal, higher = more sensitive bar)
+            'SDR_AUDIO_BOOST': 1.0,  # Actual audio volume boost (1.0 = no change, 2.0 = 2x louder)
+            'SDR_BUFFER_MULTIPLIER': 8,  # Buffer size multiplier (8 = 8x normal buffer for smoother playback)
             # EchoLink Integration (Phase 3B)
             'ENABLE_ECHOLINK': False,
             'ECHOLINK_RX_PIPE': '/tmp/echolink_rx',
@@ -149,7 +161,11 @@ class Config:
                         key = key.strip()
                         value = value.strip()
                         
-                        # Skip if value is empty
+                        # Strip inline comments (everything after #)
+                        if '#' in value:
+                            value = value.split('#')[0].strip()
+                        
+                        # Skip if value is empty after stripping comments
                         if not value:
                             continue
                         
@@ -168,6 +184,21 @@ class Config:
                             elif default_type == float:
                                 value = float(value)
                             # else keep as string
+                            
+                            setattr(self, key, value)
+                        else:
+                            # Key not in defaults - try to infer type
+                            # Try float first (works for both int and float strings)
+                            try:
+                                if '.' in value:
+                                    value = float(value)
+                                else:
+                                    value = int(value)
+                            except ValueError:
+                                # Not a number, check for boolean
+                                if value.lower() in ('true', 'false', 'yes', 'no', 'on', 'off'):
+                                    value = value.lower() in ('true', 'yes', 'on')
+                                # else keep as string
                             
                             setattr(self, key, value)
             
@@ -228,6 +259,10 @@ class AIOCRadioSource(AudioSource):
         
     def get_audio(self, chunk_size):
         """Get audio from radio via AIOC input stream"""
+        # Check if Radio RX is muted (press 'r' key)
+        if self.gateway.rx_muted:
+            return None, False
+        
         if not self.gateway.input_stream or self.gateway.restarting_stream:
             return None, False
         
@@ -324,25 +359,125 @@ class FilePlaybackSource(AudioSource):
         self.check_file_availability()
     
     def check_file_availability(self):
-        """Check if announcement files exist"""
+        """Scan audio directory and intelligently load files"""
         import os
+        import glob
         
-        # Check station_id (key 0) - auto-detect
-        for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
+        if not os.path.exists(self.announcement_directory):
+            if self.gateway.config.VERBOSE_LOGGING:
+                print(f"\n[Playback] Audio directory not found: {self.announcement_directory}")
+            return
+        
+        # Storage for found files
+        file_map = {}  # key -> (filepath, filename)
+        
+        # Step 1: Look for station_id (key 0)
+        # Priority: station_id.mp3 > station_id.wav > station_id.*
+        station_id_found = False
+        for ext in ['.mp3', '.wav', '.ogg', '.flac', '.m4a']:
             path = os.path.join(self.announcement_directory, f'station_id{ext}')
             if os.path.exists(path):
-                self.file_status['0']['exists'] = True
-                self.file_status['0']['path'] = path
+                file_map['0'] = (path, os.path.basename(path))
+                station_id_found = True
                 break
         
-        # Check announcements 1-9
-        for i in range(1, 10):
-            for ext in ['.mp3', '.ogg', '.flac', '.m4a', '.wav']:
-                path = os.path.join(self.announcement_directory, f'announcement{i}{ext}')
-                if os.path.exists(path):
-                    self.file_status[str(i)]['exists'] = True
-                    self.file_status[str(i)]['path'] = path
+        # Step 2: Look for numbered files (1_ through 9_)
+        # Example: 1_welcome.mp3, 2_emergency.wav, etc.
+        all_files = []
+        for ext in ['*.mp3', '*.wav', '*.ogg', '*.flac', '*.m4a']:
+            all_files.extend(glob.glob(os.path.join(self.announcement_directory, ext)))
+        
+        # Sort files alphabetically for consistent loading
+        all_files.sort()
+        
+        # First pass: Look for files with number prefixes (1_ through 9_)
+        for filepath in all_files:
+            filename = os.path.basename(filepath)
+            
+            # Skip station_id files
+            if filename.startswith('station_id'):
+                continue
+            
+            # Check for number prefix (1_ through 9_)
+            if len(filename) >= 2 and filename[0].isdigit() and filename[1] == '_':
+                key = filename[0]
+                if key in '123456789' and key not in file_map:
+                    file_map[key] = (filepath, filename)
+        
+        # Second pass: If slots still empty, fill with any remaining files
+        unassigned_files = [f for f in all_files 
+                           if os.path.basename(f) not in [v[1] for v in file_map.values()]
+                           and not os.path.basename(f).startswith('station_id')]
+        
+        # Fill empty slots in order (1-9)
+        for filepath in unassigned_files:
+            # Find next empty slot
+            assigned = False
+            for slot in range(1, 10):
+                key = str(slot)
+                if key not in file_map:
+                    file_map[key] = (filepath, os.path.basename(filepath))
+                    assigned = True
                     break
+            
+            if not assigned:
+                # All slots 1-9 are full
+                break
+        
+        # Step 3: Update file_status with found files
+        for key in '0123456789':
+            if key in file_map:
+                filepath, filename = file_map[key]
+                self.file_status[key]['exists'] = True
+                self.file_status[key]['path'] = filepath
+                self.file_status[key]['filename'] = filename
+        
+        # Step 4: Print file mapping (will be displayed before status bar)
+        self.file_mapping_display = self._generate_file_mapping_display(file_map, station_id_found)
+    
+    def _generate_file_mapping_display(self, file_map, station_id_found):
+        """Generate the file mapping display string"""
+        lines = []
+        lines.append("=" * 60)
+        lines.append("FILE PLAYBACK MAPPING")
+        lines.append("=" * 60)
+        
+        if not file_map:
+            lines.append("No audio files found in: " + self.announcement_directory)
+            lines.append("Supported formats: .mp3, .wav, .ogg, .flac, .m4a")
+            lines.append("")
+            lines.append("Naming conventions:")
+            lines.append("  station_id.mp3 or station_id.wav  → Key [0]")
+            lines.append("  1_filename.mp3                    → Key [1]")
+            lines.append("  2_filename.wav                    → Key [2]")
+            lines.append("  Or place any audio files and they'll auto-assign to keys 1-9")
+            lines.append("=" * 60)
+            return "\n".join(lines)
+        
+        # Show all keys 1-9 then 0 (matching status bar order)
+        # Format: "Key [N]: filename.mp3" or "Key [N]: <none>"
+        
+        # Keys 1-9 - Announcements
+        for key in '123456789':
+            if key in file_map:
+                lines.append(f"Key [{key}]: {file_map[key][1]}")
+            else:
+                lines.append(f"Key [{key}]: <none>")
+        
+        # Key 0 - Station ID (at end, matching status bar)
+        if '0' in file_map:
+            lines.append(f"Key [0]: {file_map['0'][1]}")
+        else:
+            lines.append(f"Key [0]: <none>")
+        
+        lines.append("=" * 60)
+        
+        return "\n".join(lines)
+    
+    def print_file_mapping(self):
+        """Print the file mapping (call this just before status bar starts)"""
+        if hasattr(self, 'file_mapping_display'):
+            print(self.file_mapping_display)
     
     def get_file_status_string(self):
         """Get status indicator string for display"""
@@ -353,17 +488,17 @@ class FilePlaybackSource(AudioSource):
         RESET = '\033[0m'
         
         status_str = ""
-        # Show all 10 slots: 1-9 then 0 (station_id at end)
+        # Show all 10 slots: 1-9 then 0 (station_id at end) - no brackets to save space
         for key in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']:
             if self.file_status[key]['playing']:
                 # Red when playing
-                status_str += f"{RED}[{key}]{RESET}"
+                status_str += f"{RED}{key}{RESET}"
             elif self.file_status[key]['exists']:
                 # Green when file exists
-                status_str += f"{GREEN}[{key}]{RESET}"
+                status_str += f"{GREEN}{key}{RESET}"
             else:
                 # White when no file
-                status_str += f"{WHITE}[{key}]{RESET}"
+                status_str += f"{WHITE}{key}{RESET}"
         
         return status_str
         
@@ -402,19 +537,13 @@ class FilePlaybackSource(AudioSource):
     
     def stop_playback(self):
         """Stop current playback and clear queue"""
-        import os
-        
         # Mark current file as not playing
         if self.current_file:
-            filename = os.path.basename(self.current_file)
-            if 'station_id' in filename:
-                self.file_status['0']['playing'] = False
-            else:
-                # Check announcement1-9
-                for i in range(1, 10):
-                    if f'announcement{i}' in filename:
-                        self.file_status[str(i)]['playing'] = False
-                        break
+            # Find which key this file belongs to
+            for key, info in self.file_status.items():
+                if info['path'] == self.current_file:
+                    self.file_status[key]['playing'] = False
+                    break
         
         # Clear current playback
         self.current_file = None
@@ -449,14 +578,12 @@ class FilePlaybackSource(AudioSource):
             # Determine which file number this is for status tracking
             filename = os.path.basename(filepath)
             file_key = None
-            if 'station_id' in filename:
-                file_key = '0'
-            else:
-                # Check for announcement1-9
-                for i in range(1, 10):
-                    if f'announcement{i}' in filename:
-                        file_key = str(i)
-                        break
+            
+            # Check against all stored paths to find the key
+            for key, info in self.file_status.items():
+                if info['path'] == filepath:
+                    file_key = key
+                    break
             
             # Try soundfile first (best option for Python 3.13)
             try:
@@ -521,8 +648,8 @@ class FilePlaybackSource(AudioSource):
             except ImportError:
                 # soundfile not available, try wave module (WAV only)
                 if file_ext != '.wav':
-                    print(f"\n[Playback] Error: {file_ext.upper()} not supported without soundfile")
                     if self.gateway.config.VERBOSE_LOGGING:
+                        print(f"\n[Playback] Error: {file_ext.upper()} not supported without soundfile")
                         print(f"  Install soundfile for multi-format support:")
                         print(f"    pip install soundfile resampy --break-system-packages")
                         print(f"  Also install system library:")
@@ -619,17 +746,20 @@ class FilePlaybackSource(AudioSource):
         """Get audio chunk from file playback"""
         import os
         
-        # Debug: Log when this is called
-        if hasattr(self.gateway, 'mixer') and self.gateway.mixer.call_count % 100 == 1 and self.gateway.config.VERBOSE_LOGGING:
-            print(f"  [FilePlayback.get_audio] Called. Current file: {self.current_file}, Queue: {len(self.playlist)}")
-        
         # Check for periodic announcements
         self.check_periodic_announcement()
         
         # If no file is playing, try to load next from queue
         if not self.current_file and self.playlist:
+            if self.gateway.config.VERBOSE_LOGGING:
+                print(f"\n[FilePlayback] Loading file from queue (queue length: {len(self.playlist)})")
             if not self.load_next_file():
+                if self.gateway.config.VERBOSE_LOGGING:
+                    print(f"[FilePlayback] Failed to load file from queue")
                 return None, False
+            else:
+                if self.gateway.config.VERBOSE_LOGGING:
+                    print(f"[FilePlayback] Successfully loaded: {os.path.basename(self.current_file)}")
         
         # No file playing
         if not self.file_data:
@@ -644,17 +774,17 @@ class FilePlaybackSource(AudioSource):
             if self.gateway.config.VERBOSE_LOGGING:
                 print(f"\n[Playback] Finished: {os.path.basename(self.current_file) if self.current_file else 'unknown'}")
             
-            # Mark file as not playing
+            # Reset volume to normal (in case TTS boosted it)
+            self.volume = 1.0
+            if self.gateway.config.VERBOSE_LOGGING:
+                print(f"[Playback] Volume reset to 1.0x")
+            
+            # Mark file as not playing by matching path
             if self.current_file:
-                filename = os.path.basename(self.current_file)
-                if 'station_id' in filename:
-                    self.file_status['0']['playing'] = False
-                else:
-                    # Check announcement1-9
-                    for i in range(1, 10):
-                        if f'announcement{i}' in filename:
-                            self.file_status[str(i)]['playing'] = False
-                            break
+                for key, info in self.file_status.items():
+                    if info['path'] == self.current_file:
+                        self.file_status[key]['playing'] = False
+                        break
             
             self.current_file = None
             self.file_data = None
@@ -684,7 +814,12 @@ class FilePlaybackSource(AudioSource):
             samples = array.array('h', [int(s * self.volume) for s in samples])
             chunk = samples.tobytes()
         
-        # File playback triggers PTT
+        # Small yield to prevent file playback from overwhelming other threads
+        # (especially important now that we removed priority scheduling)
+        import time
+        time.sleep(0.001)  # 1ms - negligible latency but helps system balance
+        
+        # File playback triggers PTT - ALWAYS
         return chunk, True
     
     def is_active(self):
@@ -831,6 +966,299 @@ class EchoLinkSource(AudioSource):
                 self.tx_pipe.close()
             except:
                 pass
+
+
+class SDRSource(AudioSource):
+    """SDR receiver audio input via ALSA loopback"""
+    def __init__(self, config, gateway):
+        super().__init__("SDR", config)
+        self.gateway = gateway
+        self.priority = 2  # Lower priority than radio but higher than files
+        self.ptt_control = False  # SDR doesn't trigger PTT
+        self.volume = 1.0
+        self.mix_ratio = 1.0  # Future: allow mixing ratio control
+        self.enabled = True  # Start enabled by default
+        self.muted = False  # Can be muted independently
+        
+        # Audio stream
+        self.input_stream = None
+        self.pyaudio = None
+        self.audio_level = 0
+        self.last_read_time = 0
+        
+        # Dropout tracking
+        self.dropout_count = 0
+        self.overflow_count = 0
+        self.total_reads = 0
+        self.last_stats_time = time.time()
+        
+        if self.config.VERBOSE_LOGGING:
+            print(f"[SDR] Initializing SDR audio source...")
+    
+    def setup_audio(self):
+        """Initialize SDR audio input from ALSA loopback"""
+        try:
+            import pyaudio
+            self.pyaudio = pyaudio.PyAudio()
+            
+            # Find the SDR loopback device
+            device_index = None
+            device_name = None
+            
+            if hasattr(self.config, 'SDR_DEVICE_NAME') and self.config.SDR_DEVICE_NAME:
+                # User specified a device name
+                target_name = self.config.SDR_DEVICE_NAME
+                
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[SDR] Searching for device matching: {target_name}")
+                    print(f"[SDR] Available input devices:")
+                
+                # Search for matching device
+                for i in range(self.pyaudio.get_device_count()):
+                    info = self.pyaudio.get_device_info_by_index(i)
+                    if info['maxInputChannels'] > 0:
+                        if self.config.VERBOSE_LOGGING:
+                            print(f"[SDR]   [{i}] {info['name']} (in:{info['maxInputChannels']})")
+                        
+                        # Match by name substring OR by hw device number
+                        # Examples:
+                        #   "Loopback" matches "Loopback: PCM (hw:2,0)"
+                        #   "hw:2,0" matches "Loopback: PCM (hw:2,0)"
+                        #   "hw:Loopback,2,0" extracts "hw:2,0" and matches
+                        name_lower = info['name'].lower()
+                        
+                        # Extract hw device from target if format is hw:Name,X,Y
+                        if target_name.startswith('hw:') and ',' in target_name:
+                            # Extract just the hw:X,Y part (skip the name)
+                            parts = target_name.split(',')
+                            if len(parts) >= 2:
+                                # hw:Loopback,2,0 -> look for hw:2,0
+                                hw_device = f"hw:{parts[-2]},{parts[-1]}"
+                                if hw_device in name_lower:
+                                    device_index = i
+                                    device_name = info['name']
+                                    break
+                        
+                        # Simple substring match
+                        if target_name.lower() in name_lower:
+                            device_index = i
+                            device_name = info['name']
+                            break
+            
+            if device_index is None:
+                print(f"[SDR] ✗ SDR device not found")
+                if hasattr(self.config, 'SDR_DEVICE_NAME'):
+                    print(f"[SDR]   Looked for: {self.config.SDR_DEVICE_NAME}")
+                    print(f"[SDR]   Try one of these formats:")
+                    print(f"[SDR]     SDR_DEVICE_NAME = Loopback")
+                    print(f"[SDR]     SDR_DEVICE_NAME = hw:2,0")
+                    print(f"[SDR]   Or enable VERBOSE_LOGGING to see all devices")
+                return False
+            
+            # Open input stream with larger buffer to prevent stuttering
+            buffer_multiplier = getattr(self.config, 'SDR_BUFFER_MULTIPLIER', 4)
+            buffer_size = self.config.AUDIO_CHUNK_SIZE * buffer_multiplier
+            
+            # Note: Priority scheduling removed - let system manage all threads equally
+            # Manual priority tweaking was causing TTS glitches and display freezing
+            
+            self.input_stream = self.pyaudio.open(
+                format=pyaudio.paInt16,
+                channels=self.config.AUDIO_CHANNELS,
+                rate=self.config.AUDIO_RATE,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=buffer_size,
+                stream_callback=None
+            )
+            
+            if self.config.VERBOSE_LOGGING:
+                print(f"[SDR] ✓ Audio input configured: {device_name}")
+                print(f"[SDR]   Buffer: {buffer_size} samples ({buffer_size/self.config.AUDIO_RATE*1000:.1f}ms)")
+                if priority_set:
+                    print(f"[SDR]   High priority scheduling: ENABLED")
+                else:
+                    print(f"[SDR]   High priority scheduling: DISABLED (may stutter)")
+            
+            return True
+            
+        except Exception as e:
+            if self.config.VERBOSE_LOGGING:
+                print(f"[SDR] ✗ Failed to setup audio: {e}")
+            return False
+    
+    def get_audio(self, chunk_size):
+        """Get audio from SDR receiver"""
+        if not self.enabled or self.muted:
+            if self.gateway.config.VERBOSE_LOGGING and hasattr(self, '_debug_counter'):
+                if self._debug_counter % 100 == 0:
+                    state = "disabled" if not self.enabled else "muted"
+                    print(f"[SDR Debug] Not reading audio - SDR is {state}")
+            if not hasattr(self, '_debug_counter'):
+                self._debug_counter = 0
+            self._debug_counter += 1
+            return None, False
+        
+        # Check if globally muted (both TX and RX muted)
+        if self.gateway.tx_muted and self.gateway.rx_muted:
+            return None, False
+        
+        if not self.input_stream:
+            if self.gateway.config.VERBOSE_LOGGING and not hasattr(self, '_stream_warning_shown'):
+                print(f"[SDR Debug] No input stream available!")
+                self._stream_warning_shown = True
+            return None, False
+        
+        try:
+            # Read audio data with dropout detection
+            self.total_reads += 1
+            
+            try:
+                data = self.input_stream.read(chunk_size, exception_on_overflow=False)
+            except IOError as io_err:
+                # Buffer overflow - data was dropped
+                self.overflow_count += 1
+                self.dropout_count += 1
+                
+                if self.gateway.config.VERBOSE_LOGGING:
+                    print(f"\n[SDR] ⚠ Buffer overflow #{self.overflow_count} - clearing buffer")
+                
+                # Try to clear the buffer and recover
+                try:
+                    # Read and discard extra data to clear buffer
+                    self.input_stream.read(chunk_size * 2, exception_on_overflow=False)
+                except:
+                    pass
+                
+                # Return silence for this chunk to maintain timing
+                silence = b'\x00' * (chunk_size * 2)  # 16-bit silence
+                return silence, False
+            
+            # Track successful reads
+            self.last_read_time = time.time()
+            
+            # Print statistics periodically
+            if self.gateway.config.VERBOSE_LOGGING and self.total_reads % 500 == 0:
+                elapsed = time.time() - self.last_stats_time
+                if elapsed > 10.0:  # Every 10+ seconds
+                    dropout_rate = (self.dropout_count / self.total_reads) * 100
+                    print(f"\n[SDR Stats] Reads: {self.total_reads}, Dropouts: {self.dropout_count} ({dropout_rate:.1f}%)")
+                    if dropout_rate > 1.0:
+                        print(f"[SDR Stats] ⚠ High dropout rate! Try increasing SDR_BUFFER_MULTIPLIER")
+                    self.last_stats_time = time.time()
+            
+            # Initialize debug counters if needed
+            if not hasattr(self, '_read_counter'):
+                self._read_counter = 0
+                self._last_debug_time = time.time()
+            
+            self._read_counter += 1
+            
+            # Calculate audio level using same method as RX/TX (RMS with dB scale)
+            import array
+            import math
+            samples = array.array('h', data)
+            if len(samples) > 0:
+                # Calculate RMS (root mean square) - same as RX/TX
+                sum_squares = sum(s * s for s in samples)
+                rms = math.sqrt(sum_squares / len(samples))
+                
+                # Convert to 0-100 scale using dB (same as RX/TX)
+                if rms > 0:
+                    db = 20 * math.log10(rms / 32767.0)
+                    # Map -60dB to 0dB as 0 to 100
+                    raw_level = max(0, min(100, (db + 60) * (100/60)))
+                else:
+                    raw_level = 0
+                
+                # Apply DISPLAY gain if configured
+                display_gain = getattr(self.gateway.config, 'SDR_DISPLAY_GAIN', 1.0)
+                display_level = int(raw_level * display_gain)
+                if display_level > 100:
+                    display_level = 100
+                
+                # Apply smoothing like RX/TX - fast attack, slow decay
+                if display_level > self.audio_level:
+                    self.audio_level = display_level  # Fast attack
+                else:
+                    self.audio_level = int(self.audio_level * 0.7 + display_level * 0.3)  # Slow decay
+                
+                # Apply AUDIO boost to actual audio data (changes volume)
+                audio_boost = getattr(self.gateway.config, 'SDR_AUDIO_BOOST', 1.0)
+                if audio_boost != 1.0:
+                    samples = array.array('h', [int(min(32767, max(-32768, s * audio_boost))) for s in samples])
+                    data = samples.tobytes()
+                
+                # Periodic debug output
+                if self.gateway.config.VERBOSE_LOGGING:
+                    if time.time() - self._last_debug_time > 2.0:  # Every 2 seconds
+                        peak = max(abs(s) for s in samples)
+                        
+                        print(f"[SDR Debug] Read {self._read_counter} chunks")
+                        print(f"[SDR Debug] Samples: {len(samples)}, RMS: {rms:.1f}, dB: {db:.1f}")
+                        print(f"[SDR Debug] Raw level: {raw_level:.1f}%, Smoothed: {self.audio_level}%")
+                        if audio_boost != 1.0:
+                            print(f"[SDR Debug] Audio boost: {audio_boost}x")
+                        
+                        # Check if audio is actually changing
+                        if peak == 0:
+                            print(f"[SDR Debug] ⚠ All samples are ZERO - no audio data!")
+                        elif rms < 100:
+                            print(f"[SDR Debug] ⚠ Very quiet audio - RMS {rms:.1f} < 100")
+                        else:
+                            print(f"[SDR Debug] ✓ Audio data looks good")
+                        
+                        self._last_debug_time = time.time()
+            else:
+                if self.gateway.config.VERBOSE_LOGGING:
+                    print(f"[SDR Debug] ✗ No samples in data!")
+            
+            self.last_read_time = time.time()
+            
+            # Apply volume/mix ratio
+            if self.mix_ratio != 1.0:
+                samples = array.array('h', [int(s * self.mix_ratio) for s in samples])
+                data = samples.tobytes()
+            
+            return data, False  # SDR doesn't trigger PTT
+            
+        except Exception as e:
+            # Catch any other unexpected errors
+            if self.gateway.config.VERBOSE_LOGGING:
+                print(f"[SDR] Error reading audio: {e}")
+                import traceback
+                traceback.print_exc()
+            return None, False
+    
+    def is_active(self):
+        """SDR is active if enabled and receiving audio"""
+        return self.enabled and not self.muted and self.input_stream is not None
+    
+    def get_status(self):
+        """Return status string"""
+        if not self.enabled:
+            return "SDR: Disabled"
+        elif self.muted:
+            return "SDR: Muted"
+        else:
+            return f"SDR: Active ({self.audio_level}%)"
+    
+    def cleanup(self):
+        """Close SDR audio stream"""
+        if self.input_stream:
+            try:
+                # Stop stream first to prevent ALSA errors
+                if self.input_stream.is_active():
+                    self.input_stream.stop_stream()
+                time.sleep(0.05)  # Give ALSA time to clean up buffers
+                self.input_stream.close()
+            except Exception as e:
+                pass  # Suppress ALSA errors during shutdown
+        if self.pyaudio:
+            try:
+                self.pyaudio.terminate()
+            except Exception as e:
+                pass  # Suppress errors
 
 
 class StreamOutputSource:
@@ -1126,6 +1554,7 @@ class AudioMixer:
 class MumbleRadioGateway:
     def __init__(self, config):
         self.config = config
+        self.start_time = time.time()  # Track gateway start time for uptime
         self.aioc_device = None
         self.mumble = None
         self.pyaudio_instance = None
@@ -1177,6 +1606,9 @@ class MumbleRadioGateway:
         # Initialize audio mixer and sources
         self.mixer = AudioMixer(config)
         self.radio_source = None  # Will be initialized after AIOC setup
+        self.sdr_source = None  # SDR receiver audio source
+        self.sdr_muted = False  # SDR-specific mute
+        self.sdr_audio_level = 0  # SDR audio level for status bar
     
     def calculate_audio_level(self, pcm_data):
         """Calculate RMS audio level from PCM data (0-100 scale)"""
@@ -1213,17 +1645,23 @@ class MumbleRadioGateway:
         Args:
             level: Audio level 0-100
             muted: Whether this channel is muted
-            color: 'green' for RX, 'red' for TX
+            color: 'green' for RX, 'red' for TX, 'cyan' for SDR
         """
         # ANSI color codes
         YELLOW = '\033[93m'
         GREEN = '\033[92m'
         RED = '\033[91m'
+        CYAN = '\033[96m'
         WHITE = '\033[97m'
         RESET = '\033[0m'
         
         # Choose bar color
-        bar_color = GREEN if color == 'green' else RED
+        if color == 'red':
+            bar_color = RED
+        elif color == 'cyan':
+            bar_color = CYAN
+        else:
+            bar_color = GREEN
         
         # Show MUTE if muted (fixed width, colored)
         if muted:
@@ -1541,16 +1979,32 @@ class MumbleRadioGateway:
     def set_ptt_state(self, state_on):
         """Control AIOC PTT"""
         if not self.aioc_device:
+            print(f"\n[PTT] ✗ No AIOC device available!")
             return
-            
-        state = 1 if state_on else 0
-        iomask = 1 << (self.config.AIOC_PTT_CHANNEL - 1)
-        iodata = state << (self.config.AIOC_PTT_CHANNEL - 1)
-        data = Struct("<BBBBB").pack(0, 0, iodata, iomask, 0)
-        self.aioc_device.write(bytes(data))
         
-        # Update PTT state (status line will show it)
-        self.ptt_active = state_on
+        try:
+            state = 1 if state_on else 0
+            iomask = 1 << (self.config.AIOC_PTT_CHANNEL - 1)
+            iodata = state << (self.config.AIOC_PTT_CHANNEL - 1)
+            data = Struct("<BBBBB").pack(0, 0, iodata, iomask, 0)
+            
+            if self.config.VERBOSE_LOGGING:
+                print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio")
+                print(f"[PTT] Channel: GPIO{self.config.AIOC_PTT_CHANNEL}")
+                print(f"[PTT] Data: {data.hex()}")
+            
+            self.aioc_device.write(bytes(data))
+            
+            if self.config.VERBOSE_LOGGING:
+                print(f"[PTT] ✓ HID write successful")
+            
+            # Update PTT state (status line will show it)
+            self.ptt_active = state_on
+            
+        except Exception as e:
+            print(f"\n[PTT] ✗ Error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def sound_received_handler(self, user, soundchunk):
         """Called when audio is received from Mumble server"""
@@ -1713,6 +2167,7 @@ class MumbleRadioGateway:
         if self.config.VERBOSE_LOGGING:
             print("Initializing AIOC device...")
         try:
+            # Use hid.Device (capital D) - this is what's available
             self.aioc_device = hid.Device(vid=self.config.AIOC_VID, pid=self.config.AIOC_PID)
             print(f"✓ AIOC: {self.aioc_device.product}")
             return True
@@ -1886,36 +2341,58 @@ class MumbleRadioGateway:
                     import os
                     import glob
                     audio_dir = self.playback_source.announcement_directory
-                    if os.path.exists(audio_dir):
-                        audio_files = []
-                        for ext in ['*.mp3', '*.ogg', '*.flac', '*.m4a', '*.wav']:
-                            audio_files.extend(glob.glob(os.path.join(audio_dir, ext)))
-                        
-                        if audio_files:
-                            print(f"  Audio directory: {os.path.abspath(audio_dir)}")
-                            print(f"  Found {len(audio_files)} audio file(s):")
-                            for f in sorted(audio_files):
-                                size_kb = os.path.getsize(f) / 1024
-                                print(f"    • {os.path.basename(f)} ({size_kb:.1f} KB)")
-                        else:
-                            print(f"  ⚠ No audio files found in {os.path.abspath(audio_dir)}")
-                            print(f"    Create directory: mkdir -p {audio_dir}")
-                            print(f"    Add files: cp your_file.mp3 {audio_dir}")
-                    else:
-                        print(f"  ⚠ Audio directory not found: {os.path.abspath(audio_dir)}")
-                        print(f"    Create it with: mkdir -p {audio_dir}")
-                    
-                    # Show keyboard controls
-                    print("  Keyboard controls:")
-                    print("    '1-9' = Play announcement1-9 (any extension)")
-                    print("    '0' = Play station_id (auto-detected)")
-                    print("    '-' = Stop current playback")
+                    # File scanning and mapping happens in FilePlaybackSource.__init__
+                    # Mapping will be displayed later (just before status bar)
                     
                 except Exception as playback_err:
                     print(f"⚠ Warning: Could not initialize playback source: {playback_err}")
                     self.playback_source = None
             else:
                 self.playback_source = None
+            
+            # Initialize text-to-speech if enabled
+            self.tts_engine = None
+            if self.config.ENABLE_TTS:
+                try:
+                    print("Initializing text-to-speech...")
+                    from gtts import gTTS
+                    self.tts_engine = gTTS  # Store class reference
+                    print("✓ Text-to-speech (gTTS) initialized")
+                    print("  Use !speak <text> in Mumble to generate TTS")
+                except ImportError:
+                    print("⚠ gTTS not installed")
+                    print("  Install with: pip3 install gtts --break-system-packages")
+                    self.tts_engine = None
+                except Exception as tts_err:
+                    print(f"⚠ Warning: Could not initialize TTS: {tts_err}")
+                    self.tts_engine = None
+            else:
+                print("  Text-to-speech: DISABLED (set ENABLE_TTS = true to enable)")
+            
+            # Initialize SDR source if enabled
+            if self.config.ENABLE_SDR:
+                try:
+                    print("Initializing SDR audio source...")
+                    self.sdr_source = SDRSource(self.config, self)
+                    if self.sdr_source.setup_audio():
+                        # Set initial state from config
+                        self.sdr_source.enabled = True
+                        self.sdr_source.mix_ratio = self.config.SDR_MIX_RATIO
+                        self.mixer.add_source(self.sdr_source)
+                        print("✓ SDR audio source added to mixer")
+                        print(f"  Device: {self.config.SDR_DEVICE_NAME}")
+                        print(f"  Press 'd' to toggle SDR on/off")
+                        print(f"  Press 's' to mute/unmute SDR")
+                    else:
+                        print("⚠ Warning: Could not initialize SDR audio")
+                        self.sdr_source = None
+                except Exception as sdr_err:
+                    print(f"⚠ Warning: Could not initialize SDR source: {sdr_err}")
+                    self.sdr_source = None
+            else:
+                self.sdr_source = None
+                if self.config.VERBOSE_LOGGING:
+                    print("  SDR audio: DISABLED (set ENABLE_SDR = true to enable)")
             
             # Initialize EchoLink source if enabled (Phase 3B)
             if self.config.ENABLE_ECHOLINK:
@@ -2018,20 +2495,7 @@ class MumbleRadioGateway:
                                     self.playback_source = FilePlaybackSource(self.config, self)
                                     self.mixer.add_source(self.playback_source)
                                     print("✓ File playback source added to mixer")
-                                    
-                                    # Show available audio files
-                                    import os
-                                    import glob
-                                    audio_dir = self.playback_source.announcement_directory
-                                    if os.path.exists(audio_dir):
-                                        audio_files = []
-                                        for ext in ['*.mp3', '*.ogg', '*.flac', '*.m4a', '*.wav']:
-                                            audio_files.extend(glob.glob(os.path.join(audio_dir, ext)))
-                                        
-                                        if audio_files:
-                                            print(f"  Found {len(audio_files)} audio file(s) in {audio_dir}")
-                                        else:
-                                            print(f"  ⚠ No audio files in {audio_dir}")
+                                    # File mapping will be displayed later
                                     
                                 except Exception as playback_err:
                                     print(f"⚠ Warning: Could not initialize playback source: {playback_err}")
@@ -2105,6 +2569,17 @@ class MumbleRadioGateway:
             # Set up callback for received audio
             self.mumble.callbacks.set_callback(PYMUMBLE_CLBK_SOUNDRECEIVED, self.sound_received_handler)
             
+            # Set up callback for text messages
+            if self.config.ENABLE_TEXT_COMMANDS:
+                try:
+                    self.mumble.callbacks.set_callback(PYMUMBLE_CLBK_TEXTMESSAGERECEIVED, self.on_text_message)
+                    print("✓ Text message callback registered")
+                    print("  Send text commands in Mumble chat (e.g., !status, !help)")
+                except Exception as callback_err:
+                    print(f"⚠ Text callback registration failed: {callback_err}")
+            else:
+                print("  Text commands: DISABLED (set ENABLE_TEXT_COMMANDS = true to enable)")
+            
             # Enable receiving sound
             self.mumble.set_receive_sound(True)
             
@@ -2165,6 +2640,343 @@ class MumbleRadioGateway:
             print(f"    Server: {self.config.MUMBLE_SERVER}")
             print(f"    Port: {self.config.MUMBLE_PORT}")
             return False
+    
+    def speak_text(self, text):
+        """
+        Generate TTS audio from text and play it on radio
+        
+        Args:
+            text: Text to convert to speech
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not self.tts_engine:
+            if self.config.VERBOSE_LOGGING:
+                print("\n[TTS] Text-to-speech not available")
+            return False
+        
+        if not self.playback_source:
+            if self.config.VERBOSE_LOGGING:
+                print("\n[TTS] Playback source not available")
+            return False
+        
+        try:
+            import tempfile
+            import os
+            
+            if self.config.VERBOSE_LOGGING:
+                print(f"\n[TTS] Generating speech: {text[:50]}...")
+            
+            # Create temporary file
+            temp_file = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+            temp_path = temp_file.name
+            temp_file.close()
+            
+            # Generate TTS audio using gTTS
+            if self.config.VERBOSE_LOGGING:
+                print(f"[TTS] Calling gTTS to generate audio...")
+            try:
+                tts = self.tts_engine(text, lang='en', slow=False)
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[TTS] Saving to {temp_path}...")
+                tts.save(temp_path)
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[TTS] ✓ Audio file saved")
+            except Exception as tts_error:
+                print(f"[TTS] ✗ gTTS generation failed: {tts_error}")
+                print(f"[TTS] Check internet connection (gTTS requires internet)")
+                return False
+            
+            # Verify file exists and has valid content
+            import os
+            if not os.path.exists(temp_path):
+                print(f"[TTS] ✗ File not created!")
+                return False
+            
+            size = os.path.getsize(temp_path)
+            if self.config.VERBOSE_LOGGING:
+                print(f"[TTS] File size: {size} bytes")
+            
+            # Validate it's actually an MP3 file, not an HTML error page
+            # MP3 files start with ID3 tag or MPEG frame sync
+            try:
+                with open(temp_path, 'rb') as f:
+                    header = f.read(10)
+                    
+                    # Check for ID3 tag (ID3v2)
+                    is_mp3 = header.startswith(b'ID3')
+                    
+                    # Check for MPEG frame sync (0xFF 0xFB or 0xFF 0xF3)
+                    if not is_mp3 and len(header) >= 2:
+                        is_mp3 = (header[0] == 0xFF and (header[1] & 0xE0) == 0xE0)
+                    
+                    # Check if it's HTML (error page)
+                    is_html = header.startswith(b'<!DOCTYPE') or header.startswith(b'<html')
+                    
+                    if is_html:
+                        print(f"[TTS] ✗ gTTS returned HTML error page, not MP3")
+                        print(f"[TTS] This usually means:")
+                        print(f"  - Rate limiting from Google")
+                        print(f"  - Network/firewall blocking")
+                        print(f"  - Invalid characters in text")
+                        # Read first 200 chars to show error
+                        f.seek(0)
+                        error_preview = f.read(200).decode('utf-8', errors='ignore')
+                        print(f"[TTS] Error preview: {error_preview[:100]}")
+                        os.unlink(temp_path)
+                        return False
+                    
+                    if not is_mp3:
+                        print(f"[TTS] ✗ File doesn't appear to be valid MP3")
+                        print(f"[TTS] Header: {header.hex()}")
+                        os.unlink(temp_path)
+                        return False
+                    
+                    if self.config.VERBOSE_LOGGING:
+                        print(f"[TTS] ✓ Validated MP3 file format")
+                        
+            except Exception as val_err:
+                print(f"[TTS] ✗ Could not validate file: {val_err}")
+                return False
+            
+            # File is valid MP3
+            if size < 1000:
+                # Suspiciously small - probably an error
+                print(f"[TTS] ✗ File too small ({size} bytes) - likely an error")
+                os.unlink(temp_path)
+                return False
+            
+            # Skip padding for now - it was causing corruption
+            # The MP3 file is ready to play as-is
+            if self.config.VERBOSE_LOGGING:
+                print(f"[TTS] MP3 file ready for playback")
+            
+            if self.config.VERBOSE_LOGGING:
+                print(f"[TTS] Queueing for playback...")
+            
+            # Queue for playback (will go to radio TX)
+            if self.playback_source:
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[TTS] Playback source exists, queueing file...")
+                
+                # Temporarily boost playback volume for TTS
+                # Volume will be reset to 1.0 when file finishes playing
+                original_volume = self.playback_source.volume
+                self.playback_source.volume = self.config.TTS_VOLUME
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[TTS] Boosting volume from {original_volume}x to {self.config.TTS_VOLUME}x for TTS playback")
+                    print(f"[TTS] Volume will auto-reset to 1.0x when TTS finishes")
+                
+                result = self.playback_source.queue_file(temp_path)
+                
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[TTS] Queue result: {result}")
+                if not result:
+                    print(f"[TTS] ✗ Failed to queue file")
+                    self.playback_source.volume = original_volume  # Restore on failure
+                    return False
+            else:
+                print(f"[TTS] ✗ No playback source available!")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            print(f"\n[TTS] Error: {e}")
+            return False
+    
+    def send_text_message(self, message):
+        """
+        Send text message to current Mumble channel
+        
+        Args:
+            message: Text message to send
+        """
+        try:
+            if self.config.VERBOSE_LOGGING:
+                print(f"\n[Mumble Text] Attempting to send: {message[:100]}...")
+            if self.mumble and hasattr(self.mumble, 'users') and hasattr(self.mumble.users, 'myself'):
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[Mumble Text] Mumble object exists, calling send_message...")
+                # Try the send_message method (might be the correct one)
+                self.mumble.users.myself.send_message(message)
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[Mumble Text] ✓ Message sent successfully")
+            else:
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[Mumble Text] ✗ Mumble not ready")
+        except AttributeError as ae:
+            # Try alternate method
+            try:
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[Mumble Text] Trying alternate method...")
+                self.mumble.my_channel().send_text_message(message)
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[Mumble Text] ✓ Message sent via channel method")
+            except Exception as e2:
+                print(f"\n[Mumble Text] ✗ Both methods failed: {ae}, {e2}")
+        except Exception as e:
+            print(f"\n[Mumble Text] ✗ Error sending: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def on_text_message(self, text_message):
+        """
+        Handle incoming text messages from Mumble users
+        
+        Supports commands:
+            !speak <text>  - Generate TTS and broadcast on radio
+            !play <1-9>    - Play announcement file
+            !status        - Show gateway status
+            !help          - Show available commands
+        """
+        try:
+            # Debug: Print when text is received (if verbose)
+            if self.config.VERBOSE_LOGGING:
+                print(f"\n[Mumble Text] Message received from user {text_message.actor}")
+            
+            # Get sender info
+            sender = self.mumble.users[text_message.actor]
+            sender_name = sender['name']
+            message = text_message.message.strip()
+            
+            if self.config.VERBOSE_LOGGING:
+                print(f"[Mumble Text] {sender_name}: {message}")
+            
+            # Ignore if not a command
+            if not message.startswith('!'):
+                if self.config.VERBOSE_LOGGING:
+                    print(f"[Mumble Text] Not a command (doesn't start with !), ignoring")
+                return
+            
+            # Parse command
+            parts = message.split(None, 1)  # Split on first space
+            command = parts[0].lower()
+            args = parts[1] if len(parts) > 1 else ""
+            
+            # Handle commands
+            if command == '!speak':
+                if args:
+                    if self.speak_text(args):
+                        self.send_text_message(f"Speaking: {args[:50]}...")
+                    else:
+                        self.send_text_message("TTS not available")
+                else:
+                    self.send_text_message("Usage: !speak <text>")
+            
+            elif command == '!play':
+                if args and args in '0123456789':
+                    key = args
+                    if self.playback_source:
+                        path = self.playback_source.file_status[key]['path']
+                        filename = self.playback_source.file_status[key].get('filename', '')
+                        if path:
+                            self.playback_source.queue_file(path)
+                            self.send_text_message(f"Playing: {filename}")
+                        else:
+                            self.send_text_message(f"No file on key {key}")
+                    else:
+                        self.send_text_message("Playback not available")
+                else:
+                    self.send_text_message("Usage: !play <0-9>")
+            
+            elif command == '!status':
+                import psutil
+                import os
+                
+                status_lines = []
+                status_lines.append("╔════════════════════════════════════╗")
+                status_lines.append("║     GATEWAY STATUS REPORT          ║")
+                status_lines.append("╚════════════════════════════════════╝")
+                
+                # System Resources
+                cpu_percent = psutil.cpu_percent(interval=0.1)
+                memory = psutil.virtual_memory()
+                status_lines.append("")
+                status_lines.append("📊 SYSTEM:")
+                status_lines.append(f"  CPU Load: {cpu_percent:.1f}%")
+                status_lines.append(f"  Memory: {memory.percent:.1f}% ({memory.used // (1024**2)} MB / {memory.total // (1024**2)} MB)")
+                status_lines.append(f"  Uptime: {int((time.time() - self.start_time) // 60)} minutes")
+                
+                # PTT & Audio Status
+                status_lines.append("")
+                status_lines.append("📻 RADIO:")
+                status_lines.append(f"  PTT: {'🔴 ACTIVE (TX)' if self.ptt_active else '🟢 Idle'}")
+                status_lines.append(f"  Manual PTT: {'ON' if self.manual_ptt_mode else 'OFF'}")
+                status_lines.append(f"  TX Muted: {'YES' if self.tx_muted else 'NO'}")
+                status_lines.append(f"  RX Muted: {'YES' if self.rx_muted else 'NO'}")
+                status_lines.append(f"  Audio Level: TX {self.tx_audio_level}% / RX {self.rx_audio_level}%")
+                
+                # Mumble Status
+                status_lines.append("")
+                status_lines.append("💬 MUMBLE:")
+                status_lines.append(f"  Connected: {'YES' if self.mumble else 'NO'}")
+                status_lines.append(f"  Users: {len(self.mumble.users) if self.mumble else 0}")
+                status_lines.append(f"  Channel: {self.config.MUMBLE_CHANNEL if self.config.MUMBLE_CHANNEL else 'Root'}")
+                
+                # Audio Processing
+                status_lines.append("")
+                status_lines.append("🎛️ PROCESSING:")
+                processing = []
+                if self.config.ENABLE_VAD: processing.append(f"VAD ({self.config.VAD_THRESHOLD}dB)")
+                if self.config.ENABLE_VOX: processing.append(f"VOX ({self.config.VOX_THRESHOLD}dB)")
+                if self.config.ENABLE_NOISE_GATE: processing.append("Noise Gate")
+                if self.config.ENABLE_HIGHPASS_FILTER: processing.append(f"HPF ({self.config.HIGHPASS_CUTOFF_FREQ}Hz)")
+                if self.config.ENABLE_AGC: processing.append("AGC")
+                if self.config.ENABLE_NOISE_SUPPRESSION: processing.append(f"Noise Sup ({self.config.NOISE_SUPPRESSION_METHOD})")
+                if self.config.ENABLE_ECHO_CANCELLATION: processing.append("Echo Cancel")
+                status_lines.append(f"  Active: {', '.join(processing) if processing else 'None'}")
+                status_lines.append(f"  Input Vol: {self.config.INPUT_VOLUME}x")
+                status_lines.append(f"  Output Vol: {self.config.OUTPUT_VOLUME}x")
+                
+                # File Playback
+                if self.playback_source:
+                    status_lines.append("")
+                    status_lines.append("🎵 PLAYBACK:")
+                    file_count = sum(1 for k in '0123456789' if self.playback_source.file_status[k]['exists'])
+                    status_lines.append(f"  Files Loaded: {file_count}/10")
+                    playing = [k for k in '0123456789' if self.playback_source.file_status[k]['playing']]
+                    if playing:
+                        status_lines.append(f"  Now Playing: Key {playing[0]}")
+                    if self.playback_source.playlist:
+                        status_lines.append(f"  Queue: {len(self.playback_source.playlist)} file(s)")
+                
+                # TTS Status
+                status_lines.append("")
+                status_lines.append("🗣️ TEXT-TO-SPEECH:")
+                status_lines.append(f"  Available: {'YES' if self.tts_engine else 'NO'}")
+                if self.tts_engine:
+                    status_lines.append(f"  Volume Boost: {self.config.TTS_VOLUME}x")
+                
+                # Streaming
+                if self.config.ENABLE_STREAM_OUTPUT:
+                    status_lines.append("")
+                    status_lines.append("📡 STREAMING:")
+                    status_lines.append(f"  Enabled: YES")
+                    status_lines.append(f"  Server: {self.config.STREAM_SERVER}")
+                
+                status_lines.append("")
+                status_lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                
+                self.send_text_message("\n".join(status_lines))
+            
+            elif command == '!help':
+                help_text = [
+                    "=== Gateway Commands ===",
+                    "!speak <text> - TTS broadcast on radio",
+                    "!play <0-9> - Play announcement file",
+                    "!status - Show gateway status",
+                    "!help - Show this help"
+                ]
+                self.send_text_message("\n".join(help_text))
+            
+            else:
+                self.send_text_message(f"Unknown command. Try !help")
+        
+        except Exception as e:
+            if self.config.VERBOSE_LOGGING:
+                print(f"\n[Text Command] Error: {e}")
     
     def audio_transmit_loop(self):
         """Continuously capture audio from sources and send to Mumble via mixer"""
@@ -2243,6 +3055,9 @@ class MumbleRadioGateway:
                             else:
                                 self.rx_audio_level = int(self.rx_audio_level * 0.7 + current_level * 0.3)  # Slow decay
                             
+                            # Update last RX audio time to prevent decay during file playback
+                            self.last_rx_audio_time = time.time()
+                            
                             # Activate PTT if not already active and not muted
                             if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
                                 self.set_ptt_state(True)
@@ -2266,16 +3081,13 @@ class MumbleRadioGateway:
                                         # Older PyAudio doesn't support exception_on_overflow parameter
                                         self.output_stream.write(pcm)
                                     
-                                    # Small sleep to let audio subsystem process
-                                    # Helps prevent stuttering on slower systems
-                                    time.sleep(0.001)  # 1ms
-                                    
                                     if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                                         print(f"\n[Debug] Sent {len(pcm)} bytes to radio TX output")
                                 except IOError as io_err:
                                     # Handle output buffer issues
-                                    if self.config.VERBOSE_LOGGING and consecutive_errors == 0:
+                                    if self.config.VERBOSE_LOGGING:
                                         print(f"\n[Warning] Output stream buffer issue: {io_err}")
+                                        print(f"[Warning] This can cause stuttering - consider increasing AUDIO_CHUNK_SIZE")
                                     # Don't count as critical error - just skip this chunk
                                 except Exception as tx_err:
                                     if self.config.VERBOSE_LOGGING:
@@ -2356,11 +3168,8 @@ class MumbleRadioGateway:
                     # Reset consecutive errors on success
                     consecutive_errors = 0
                     
-                    # Check RX mute - if muted, don't send to Mumble
-                    if self.rx_muted:
-                        if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                            print(f"\n[Debug] RX is muted, not sending to Mumble")
-                        continue
+                    # Note: rx_muted is now checked in the Radio source's get_audio() method
+                    # This allows SDR to be independent from Radio RX mute
                     
                     # Check if Mumble is connected and ready
                     if not self.mumble:
@@ -2696,6 +3505,8 @@ class MumbleRadioGateway:
         import tty
         import termios
         
+        # Note: Priority scheduling removed - system manages all threads
+        
         # Save terminal settings
         try:
             old_settings = termios.tcgetattr(sys.stdin)
@@ -2732,6 +3543,15 @@ class MumbleRadioGateway:
                             # One or both unmuted → mute both
                             self.tx_muted = True
                             self.rx_muted = True
+                    
+                    elif char == 's':
+                        # Toggle SDR mute
+                        if self.sdr_source:
+                            self.sdr_muted = not self.sdr_muted
+                            self.sdr_source.muted = self.sdr_muted
+                            if self.config.VERBOSE_LOGGING:
+                                state = "MUTED" if self.sdr_muted else "UNMUTED"
+                                print(f"\n[SDR] {state}")
                     
                     elif char == 'v':
                         # Toggle VAD on/off
@@ -2797,24 +3617,22 @@ class MumbleRadioGateway:
                     elif char in '0123456789':
                         # Play announcement 0-9
                         if self.playback_source:
-                            if self.config.VERBOSE_LOGGING:
-                                if char == '0':
-                                    print("\n[Keyboard] Key '0' pressed - queueing station_id")
-                                else:
-                                    print(f"\n[Keyboard] Key '{char}' pressed - queueing announcement{char}")
-                            
                             # Use the stored path from file_status
                             stored_path = self.playback_source.file_status[char]['path']
+                            stored_filename = self.playback_source.file_status[char].get('filename', '')
+                            
                             if stored_path:
                                 # File exists, queue it directly
+                                if self.config.VERBOSE_LOGGING:
+                                    print(f"\n[Keyboard] Key '{char}' pressed - queueing {stored_filename}")
                                 self.playback_source.queue_file(stored_path)
                             else:
                                 # File not found
                                 if self.config.VERBOSE_LOGGING:
                                     if char == '0':
-                                        print(f"\n[Playback] station_id file not found in {self.playback_source.announcement_directory}")
+                                        print(f"\n[Playback] Station ID not found (looked for station_id.mp3 or station_id.wav)")
                                     else:
-                                        print(f"\n[Playback] announcement{char} file not found in {self.playback_source.announcement_directory}")
+                                        print(f"\n[Playback] No file assigned to key '{char}'")
                         else:
                             if self.config.VERBOSE_LOGGING:
                                 print("\n[Keyboard] File playback not enabled")
@@ -2840,6 +3658,8 @@ class MumbleRadioGateway:
     
     def status_monitor_loop(self):
         """Monitor PTT release timeout and audio transmit status"""
+        # Note: Priority scheduling removed - system manages all threads
+        
         status_check_interval = self.config.STATUS_UPDATE_INTERVAL
         last_status_check = time.time()
         
@@ -2925,17 +3745,34 @@ class MumbleRadioGateway:
                 else:
                     radio_rx_bar = self.format_level_bar(self.tx_audio_level, muted=self.rx_muted, color='green')
                 
-                # Add diagnostics if there have been restarts (white label, yellow number)
-                diag = f" {WHITE}R:{YELLOW}{self.stream_restart_count}{RESET}" if self.stream_restart_count > 0 else ""
+                # SDR bar: Show SDR audio level (CYAN color)
+                sdr_bar = ""
+                if self.sdr_source:
+                    # Always read current level directly from source
+                    # Don't cache in self.sdr_audio_level to prevent freezing
+                    if hasattr(self.sdr_source, 'audio_level'):
+                        current_sdr_level = self.sdr_source.audio_level
+                    else:
+                        current_sdr_level = 0
+                    
+                    sdr_muted = self.sdr_muted or not self.sdr_source.enabled
+                    sdr_bar = f" {WHITE}SDR:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, color='cyan')
                 
-                # Show VAD level in dB if enabled (white label, yellow numbers, fixed width: always 5 chars like " -28dB" or "    ")
-                vad_info = f" {YELLOW}{self.vad_envelope:3.0f}{RESET}{WHITE}dB{RESET}" if self.config.ENABLE_VAD else "     "
+                # Add diagnostics if there have been restarts (fixed width: always 6 chars like " R:123" or "      ")
+                # This prevents the status line from jumping when restarts occur
+                if self.stream_restart_count > 0:
+                    diag = f" {WHITE}R:{YELLOW}{self.stream_restart_count}{RESET}"
+                else:
+                    diag = "      "  # 6 spaces to match " R:XX" width
+                
+                # Show VAD level in dB if enabled (white label, yellow numbers, fixed width: always 6 chars like " -100dB" or "      ")
+                vad_info = f" {YELLOW}{self.vad_envelope:4.0f}{RESET}{WHITE}dB{RESET}" if self.config.ENABLE_VAD else "       "
                 
                 # Show RX volume (white label, yellow number, always 3 chars for number)
                 vol_info = f" {WHITE}Vol:{YELLOW}{self.config.INPUT_VOLUME:3.1f}{RESET}{WHITE}x{RESET}"
                 
                 # Show audio processing status (compact single-letter flags)
-                # Only show what's enabled to keep line compact
+                # This now appears AFTER file status, so width changes don't matter
                 proc_flags = []
                 if self.config.ENABLE_NOISE_GATE: proc_flags.append("N")
                 if self.config.ENABLE_HIGHPASS_FILTER: proc_flags.append("F")
@@ -2946,6 +3783,7 @@ class MumbleRadioGateway:
                 if self.config.ENABLE_ECHO_CANCELLATION: proc_flags.append("E")
                 if not self.config.ENABLE_STREAM_HEALTH: proc_flags.append("X")  # X shows stream health is OFF
                 
+                # Only show brackets if there are flags (saves space)
                 proc_info = f" {WHITE}[{YELLOW}{','.join(proc_flags)}{WHITE}]{RESET}" if proc_flags else ""
                 
                 # File status indicators (if playback enabled)
@@ -2954,7 +3792,8 @@ class MumbleRadioGateway:
                     file_status_info = " " + self.playback_source.get_file_status_string()
                 
                 # Extra padding to clear any orphaned text when line shortens
-                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{vol_info}{proc_info}{file_status_info}{diag}     ", end="", flush=True)
+                # Order: ...Vol → FileStatus → ProcessingFlags → Diagnostics
+                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sdr_bar}{vol_info}{file_status_info}{proc_info}{diag}     ", end="", flush=True)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -3020,10 +3859,16 @@ class MumbleRadioGateway:
         else:
             print(f"  Stream Health: DISABLED (may experience -9999 errors if streams get stuck)")
         
+        # Print file mapping if playback is enabled
+        if self.config.ENABLE_PLAYBACK and hasattr(self, 'playback_source') and self.playback_source:
+            print()  # Blank line
+            self.playback_source.print_file_mapping()
+            print()  # Blank line before keyboard controls
+        
         print("Press Ctrl+C to exit")
         print("Keyboard Controls:")
-        print("  Mute: 't'=TX | 'r'=RX | 'm'=Global  |  Audio: 'v'=VAD | ','=Vol- | '.'=Vol+")
-        print("  Proc: 'n'=Gate | 'f'=HPF | 'a'=AGC | 's'=Spectral | 'w'=Wiener | 'e'=Echo | 'x'=Restart")
+        print("  Mute: 't'=TX | 'r'=RX | 'm'=Global | 's'=SDR  |  Audio: 'v'=VAD | ','=Vol- | '.'=Vol+")
+        print("  Proc: 'n'=Gate | 'f'=HPF | 'a'=AGC | 'w'=Wiener | 'e'=Echo | 'x'=Restart")
         print("  PTT:  'p'=Manual PTT Toggle (override auto-PTT)")
         if self.config.ENABLE_PLAYBACK:
             print("  Play: '1-9'=Announcements | '0'=StationID | '-'=Stop")
@@ -3039,8 +3884,10 @@ class MumbleRadioGateway:
             print("  VAD:✗/🔊/-- = VAD disabled/active/silent (dB = current level)")
             print("  TX:[bar] = Mumble → Radio audio level")
             print("  RX:[bar] = Radio → Mumble audio level")
+            print("  SDR:[bar] = SDR receiver audio level (cyan)")
             print("  Vol:X.Xx = RX volume multiplier (Radio → Mumble gain)")
-            print("  [N,F,A,S,W,E,X] = Processing: N=NoiseGate F=HPF A=AGC S=Spectral W=Wiener E=Echo X=StreamHealth-OFF")
+            print("  1234567890 = File status (green=loaded, red=playing, white=empty)")
+            print("  [N,F,A,W,E,X] = Processing: N=NoiseGate F=HPF A=AGC W=Wiener E=Echo X=StreamHealth-OFF")
             print("  R:n      = Stream restart count (only if >0)")
             print()
         
@@ -3099,26 +3946,40 @@ class MumbleRadioGateway:
         # Small delay to let Mumble fully stop
         time.sleep(0.1)
         
-        # Now close audio streams
+        # Now close audio streams (with better error handling for ALSA)
+        if self.sdr_source:
+            try:
+                self.sdr_source.cleanup()
+                if self.config.VERBOSE_LOGGING:
+                    print("  SDR audio closed")
+            except Exception as e:
+                pass  # Suppress ALSA errors during shutdown
+        
         if self.input_stream:
             try:
-                self.input_stream.stop_stream()
+                # Stop stream first (prevents ALSA mmap errors)
+                if self.input_stream.is_active():
+                    self.input_stream.stop_stream()
+                time.sleep(0.05)  # Give ALSA time to clean up
                 self.input_stream.close()
-            except:
-                pass
+            except Exception as e:
+                pass  # Suppress ALSA errors during shutdown
         
         if self.output_stream:
             try:
-                self.output_stream.stop_stream()
+                # Stop stream first
+                if self.output_stream.is_active():
+                    self.output_stream.stop_stream()
+                time.sleep(0.05)  # Give ALSA time to clean up
                 self.output_stream.close()
-            except:
-                pass
+            except Exception as e:
+                pass  # Suppress ALSA errors during shutdown
         
         if self.pyaudio_instance:
             try:
                 self.pyaudio_instance.terminate()
-            except:
-                pass
+            except Exception as e:
+                pass  # Suppress errors
         
         # Close AIOC device
         if self.aioc_device:

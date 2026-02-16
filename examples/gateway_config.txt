@@ -191,8 +191,31 @@ ENABLE_ECHO_CANCELLATION = false
 ENABLE_PLAYBACK = true
 
 # Directory containing audio files
-# Files should be named: 0.wav through 9.wav
+# Gateway will scan this directory and auto-assign files to keys
 PLAYBACK_DIRECTORY = audio_files
+
+# File Naming & Auto-Assignment:
+# 
+# Station ID (key 0):
+#   Priority: station_id.mp3 > station_id.wav > station_id.(any format)
+#   If not found, key 0 will be disabled
+#
+# Announcements (keys 1-9):
+#   Method 1 - Numbered prefix (recommended):
+#     1_welcome.mp3       → Key 1
+#     2_emergency.wav     → Key 2
+#     3_net_starting.mp3  → Key 3
+#     Files starting with "N_" assign to key N
+#
+#   Method 2 - Auto-assignment:
+#     If files don't have number prefixes, they'll be
+#     assigned to keys 1-9 in alphabetical order
+#
+# Supported formats: .mp3, .wav, .ogg, .flac, .m4a
+#
+# On startup, gateway will display which file is assigned to each key
+# This mapping is shown just above the status bar
+
 
 # ============================================================================
 # FEATURE: BROADCASTIFY STREAMING
