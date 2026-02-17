@@ -259,15 +259,15 @@ class AIOCRadioSource(AudioSource):
         
     def get_audio(self, chunk_size):
         """Get audio from radio via AIOC input stream"""
-        # Check if Radio RX is muted (press 'r' key)
-        if self.gateway.rx_muted:
-            return None, False
-        
         if not self.gateway.input_stream or self.gateway.restarting_stream:
             return None, False
         
         try:
-            # Read audio from AIOC with error recovery
+            # Always read from the AIOC stream, even when muted.
+            # If we skip the read while muted the PyAudio buffer fills up,
+            # input_stream.is_active() returns False, the audio_transmit_loop
+            # raises "Stream inactive", and the mixer never runs — which means
+            # SDRSource.get_audio() is never called and the SDR bar freezes.
             try:
                 data = self.gateway.input_stream.read(chunk_size, exception_on_overflow=False)
             except IOError as io_err:
@@ -282,17 +282,21 @@ class AIOCRadioSource(AudioSource):
                 else:
                     raise  # Re-raise other IOErrors
             
+            # Update capture time so stream-health checks stay happy
+            self.gateway.last_audio_capture_time = time.time()
+            self.gateway.last_successful_read = time.time()
+            self.gateway.audio_capture_active = True
+
+            # When muted: buffer drained (stream stays alive) but return nothing
+            if self.gateway.rx_muted:
+                return None, False
+            
             # Calculate audio level (for status display)
             current_level = self.gateway.calculate_audio_level(data)
             if current_level > self.gateway.tx_audio_level:
                 self.gateway.tx_audio_level = current_level
             else:
                 self.gateway.tx_audio_level = int(self.gateway.tx_audio_level * 0.7 + current_level * 0.3)
-            
-            # Update capture time
-            self.gateway.last_audio_capture_time = time.time()
-            self.gateway.last_successful_read = time.time()
-            self.gateway.audio_capture_active = True
             
             # Apply volume if needed
             if self.volume != 1.0 and data:
