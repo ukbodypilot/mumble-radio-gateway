@@ -1,0 +1,492 @@
+# ============================================================================
+# MUMBLE RADIO GATEWAY - CONFIGURATION FILE
+# ============================================================================
+# 
+# Bidirectional audio gateway between Mumble VoIP and radio via AIOC
+# 
+# Features:
+#   • Mumble ↔ Radio audio bridging with auto-PTT
+#   • File playback system (announcements/station ID)
+#   • Broadcastify streaming (optional)
+#   • EchoLink integration (optional)
+#   • Audio processing (noise gate, AGC, filters)
+#
+# Quick Start:
+#   1. Set MUMBLE_SERVER to your server IP/hostname
+#   2. Set ENABLE_STREAM_OUTPUT = true for Broadcastify streaming
+#   3. Most other settings have sensible defaults
+#
+# Keyboard Controls (runtime):
+#   MUTE:    't' = TX | 'r' = RX | 'm' = Global | 's' = SDR
+#   AUDIO:   'v' = VAD | ',' = Vol- | '.' = Vol+
+#   SDR:     'd' = Duck toggle | 's' = Mute toggle
+#   PROCESS: 'n' = Gate | 'f' = HPF | 'a' = AGC | 'w' = Wiener | 'e' = Echo | 'x' = Stream health
+#   PTT:     'p' = Manual PTT toggle
+#   PLAY:    '1-9' = Announcements | '0' = Station ID | '-' = Stop
+# ============================================================================
+
+# ============================================================================
+# CORE: MUMBLE SERVER CONNECTION
+# ============================================================================
+
+# Mumble server IP address or hostname
+# Examples: 192.168.1.100, mumble.example.com
+MUMBLE_SERVER = 192.168.2.128
+
+# Mumble server port
+# Default: 64738 (standard Mumble port)
+MUMBLE_PORT = 64738
+
+# Username displayed on Mumble
+MUMBLE_USERNAME = RadioGateway
+
+# Server password (leave empty if none)
+MUMBLE_PASSWORD = 
+
+# Channel to join (leave empty for root channel)
+# Examples: Radio, General/Radio
+MUMBLE_CHANNEL = 
+
+# Audio bitrate in bits/second
+# 40000 = good | 72000 = high (recommended) | 96000 = maximum
+MUMBLE_BITRATE = 72000
+
+# Enable Opus Variable Bit Rate
+# true = adapts quality based on audio (recommended)
+MUMBLE_VBR = true
+
+# ============================================================================
+# CORE: RADIO INTERFACE (AIOC)
+# ============================================================================
+
+# AIOC USB device identifiers
+# Default values work for most AIOC devices
+AIOC_VID = 0x1209
+AIOC_PID = 0x7388
+
+# Audio device names (auto-detected if empty)
+# Leave blank unless you have multiple AIOC devices
+AIOC_INPUT_DEVICE = 
+AIOC_OUTPUT_DEVICE = 
+
+# GPIO channel for PTT control
+# 2 = CM108 GPIO2 (standard AIOC configuration)
+AIOC_PTT_CHANNEL = 3
+
+# ============================================================================
+# CORE: AUDIO QUALITY & BUFFERING
+# ============================================================================
+
+# Sample rate in Hz
+# 48000 = CD quality (recommended, matches Mumble)
+AUDIO_RATE = 48000
+
+# Channels: 1 = Mono (recommended for radio)
+AUDIO_CHANNELS = 1
+
+# Bit depth: 16 = Standard (don't change)
+AUDIO_BITS = 16
+
+# Audio chunk size (samples) - CRITICAL FOR STABILITY
+# Controls latency vs stability tradeoff:
+#   480 =  10ms - Lowest latency (may have dropouts)
+#   960 =  20ms - Low latency
+#  1920 =  40ms - Balanced
+#  2400 =  50ms - Stable
+#  4800 = 100ms - High stability
+#  9600 = 200ms - Maximum stability (recommended for file playback)
+# Larger = smoother playback, more latency
+# If you get -9999 errors, increase this
+AUDIO_CHUNK_SIZE = 9600
+
+# ============================================================================
+# CORE: AUDIO LEVELS
+# ============================================================================
+
+# Radio RX → Mumble volume multiplier
+# 0.5 = half volume | 1.0 = unity (default) | 2.0 = double
+# Adjust if radio audio is too quiet/loud in Mumble
+INPUT_VOLUME = 1.0
+
+# Mumble → Radio TX volume multiplier
+# Adjust if Mumble audio is too quiet/loud on radio
+OUTPUT_VOLUME = 1.0
+
+# ============================================================================
+# CORE: PTT (PUSH-TO-TALK) CONTROL
+# ============================================================================
+
+# Delay before activating PTT after audio detected (seconds)
+# Gives time for squelch tail to settle
+PTT_ACTIVATION_DELAY = 0.0
+
+# Delay before releasing PTT after audio stops (seconds)
+# Prevents cutting off end of transmissions
+PTT_RELEASE_DELAY = 0.5
+
+# ============================================================================
+# FEATURE: VOICE ACTIVITY DETECTION (VAD)
+# ============================================================================
+
+# Enable VAD for Radio RX → Mumble
+# true = only send to Mumble when radio signal detected (recommended)
+# false = always send (may transmit noise/carrier)
+ENABLE_VAD = true
+
+# VAD threshold in dBFS (more negative = more sensitive)
+# -40 = very sensitive | -33 = balanced | -25 = less sensitive
+VAD_THRESHOLD = -33
+
+# VAD timing
+VAD_ATTACK = 0.02   # How fast to activate (seconds)
+VAD_RELEASE = 0.3   # How long to hold after silence (seconds)
+VAD_MIN_DURATION = 0.1  # Minimum transmission length (seconds)
+
+# ============================================================================
+# FEATURE: VOX (VOICE-OPERATED SWITCH)
+# ============================================================================
+
+# Enable VOX for Radio RX → Mumble
+# Alternative to VAD, based on audio level threshold
+ENABLE_VOX = false
+
+# VOX threshold in dBFS
+VOX_THRESHOLD = -30
+
+# VOX timing
+VOX_ATTACK_TIME = 0.05   # How fast to activate
+VOX_RELEASE_TIME = 0.5   # How long to hold after silence
+
+# ============================================================================
+# FEATURE: AUDIO PROCESSING
+# ============================================================================
+
+# Noise Gate - removes low-level background noise
+ENABLE_NOISE_GATE = false
+NOISE_GATE_THRESHOLD = -40    # dBFS threshold
+NOISE_GATE_ATTACK = 0.01      # Attack time (seconds)
+NOISE_GATE_RELEASE = 0.1      # Release time (seconds)
+
+# High-Pass Filter - removes low-frequency rumble
+ENABLE_HIGHPASS_FILTER = false
+HIGHPASS_CUTOFF_FREQ = 300    # Hz (300 = good for voice)
+
+# Automatic Gain Control - normalizes audio levels
+ENABLE_AGC = false
+
+# Noise Suppression - advanced noise reduction
+ENABLE_NOISE_SUPPRESSION = false
+NOISE_SUPPRESSION_METHOD = spectral  # spectral or wiener
+NOISE_SUPPRESSION_STRENGTH = 0.5     # 0.0 to 1.0
+
+# Echo Cancellation - reduces feedback
+ENABLE_ECHO_CANCELLATION = false
+
+# ============================================================================
+# FEATURE: FILE PLAYBACK (Announcements & Station ID)
+# ============================================================================
+
+# Enable file playback system
+# Allows triggering audio files with keys 0-9
+ENABLE_PLAYBACK = true
+
+# Directory containing audio files
+# Gateway will scan this directory and auto-assign files to keys
+PLAYBACK_DIRECTORY = audio
+
+# File Naming & Auto-Assignment:
+# 
+# Station ID (key 0):
+#   Priority: station_id.mp3 > station_id.wav > station_id.(any format)
+#   If not found, key 0 will be disabled
+#
+# Announcements (keys 1-9):
+#   Method 1 - Numbered prefix (recommended):
+#     1_welcome.mp3       → Key 1
+#     2_emergency.wav     → Key 2
+#     3_net_starting.mp3  → Key 3
+#     Files starting with "N_" assign to key N
+#
+#   Method 2 - Auto-assignment:
+#     If files don't have number prefixes, they'll be
+#     assigned to keys 1-9 in alphabetical order
+#
+# Supported formats: .mp3, .wav, .ogg, .flac, .m4a
+#
+# On startup, gateway will display which file is assigned to each key
+# This mapping is shown just above the status bar
+
+
+# ============================================================================
+# FEATURE: SDR RECEIVER INTEGRATION
+# ============================================================================
+# Add a second receiver (SDR) that feeds audio into the gateway
+# simultaneously with the main AIOC radio. Audio is mixed together.
+#
+# Prerequisites:
+#   1. Install ALSA loopback: sudo modprobe snd-aloop
+#   2. Make permanent: echo "snd-aloop" | sudo tee -a /etc/modules
+#   3. Configure SDRconnect (or other SDR software) to output to Loopback device
+#
+# Keyboard Controls:
+#   's' = Mute/unmute SDR audio
+#   'm' = Global mute (mutes everything including SDR)
+#
+# Status Bar:
+#   SDR:[cyan bar] = SDR audio level display
+#
+# Use Case Examples:
+#   - Monitor two frequencies simultaneously
+#   - Add scanner audio feed to gateway
+#   - Mix in web SDR or remote receiver
+# ============================================================================
+
+# Enable SDR audio input
+# SDR is enabled by default when this is true
+ENABLE_SDR = true
+
+# ALSA device name for SDR audio input
+# IMPORTANT: ALSA Loopback devices work in PAIRS
+#   - If SDRconnect outputs to hw:2,0 → Gateway reads from hw:2,1
+#   - If SDRconnect outputs to hw:2,1 → Gateway reads from hw:2,0
+#
+# The gateway will search for devices containing this string
+# Examples:
+#   Loopback          - Searches for any Loopback device
+#   hw:2,1            - Specific hardware device (pair of hw:2,0)
+#   hw:Loopback,2,1   - Full ALSA format
+#
+# To find your device:
+#   1. Note what SDRconnect shows (e.g., "hw:2,0")
+#   2. Use the OPPOSITE subdevice number:
+#      SDRconnect → hw:2,0 means use hw:2,1
+#      SDRconnect → hw:2,1 means use hw:2,0
+SDR_DEVICE_NAME = hw:5,1
+
+# SDR audio ducking
+# true  = SDR audio is silenced whenever any other source is active
+#         (Radio RX, Mumble TX, file playback). SDR is only heard
+#         when the channel is completely clear. (DEFAULT - recommended)
+# false = SDR audio is always mixed in alongside other sources at
+#         SDR_MIX_RATIO volume. Use when you want the SDR to be a
+#         constant background feed regardless of other activity.
+SDR_DUCK = true
+
+# SDR audio mix ratio (0.0 to 1.0) - only applies when SDR_DUCK = false
+# Sets the SDR volume relative to other sources when mixing simultaneously
+# 1.0 = full volume (default)
+# 0.5 = half volume
+SDR_MIX_RATIO = 1.0
+
+# SDR display sensitivity (1.0 to 10.0)
+# Controls how sensitive the status bar and percentage display are
+# This does NOT change the actual audio volume
+# 1.0 = normal sensitivity (default)
+# 3.0 = show 3x on bar (more visible)
+# 5.0 = very sensitive (bar shows even quiet signals)
+# Higher values make the bar respond to quieter signals
+SDR_DISPLAY_GAIN = 1.0
+
+# SDR audio volume boost (1.0 to 10.0)
+# Controls ACTUAL audio volume sent to Mumble
+# 1.0 = no change (default - original level)
+# 2.0 = 2x louder
+# 3.0 = 3x louder
+# Adjust if SDR audio is too quiet or too loud in Mumble
+SDR_AUDIO_BOOST = 1.0
+
+# SDR buffer size multiplier (1 to 16)
+# Larger buffer = smoother audio, less dropouts, more latency
+# 8 = recommended for network SDRs or packet drops (default)
+# 4 = moderate buffering
+# 16 = maximum (use if still hearing dropouts)
+# 1 = lowest latency but may drop packets
+SDR_BUFFER_MULTIPLIER = 16
+
+# ============================================================================
+# FEATURE: TEXT-TO-SPEECH & TEXT COMMANDS (Phase 4)
+# ============================================================================
+# Convert text to speech and broadcast on radio
+# Remote control via Mumble text messages
+#
+# Prerequisites:
+#   pip3 install gtts --break-system-packages
+#
+# Text Commands (send via Mumble chat):
+#   !speak <text>  - Generate TTS and broadcast on radio
+#   !play <0-9>    - Play announcement file  
+#   !status        - Show gateway status
+#   !help          - Show available commands
+#
+# Example:
+#   User types in Mumble: !speak Emergency traffic - all stations stand by
+#   Gateway: Generates speech, keys PTT, broadcasts on radio
+# ============================================================================
+
+# Enable text-to-speech (requires gtts)
+ENABLE_TTS = true
+
+# Enable text command processing
+# Allows Mumble users to control gateway via text messages
+ENABLE_TEXT_COMMANDS = true
+
+# TTS volume boost (1.0 = normal, 2.0 = double, 3.0 = triple)
+# TTS audio is often quieter than regular files, boost it here
+TTS_VOLUME = 1.0
+
+# Silence padding before TTS audio (seconds)
+# Prevents first words from being cut off due to PTT delay
+# 0.25 = quarter second of silence before speech starts
+PTT_TTS_DELAY = 0.25
+
+
+# ============================================================================
+# FEATURE: BROADCASTIFY STREAMING
+# ============================================================================
+# Requirements:
+#   1. Install: sudo apt-get install darkice lame ffmpeg
+#   2. Configure /etc/darkice.cfg with Broadcastify credentials
+#   3. Run: ./start_broadcastify_FIXED.sh (handles all subprocesses)
+#
+# Audio Flow:
+#   Radio RX → Gateway → Pipe → FFmpeg → ALSA Loopback → Darkice → Broadcastify
+#
+# Note: File playback (announcements) do NOT stream directly
+#       They go: File → Radio TX → Air → Radio RX → Stream (realistic!)
+# ============================================================================
+
+# Enable streaming to Broadcastify
+# Requires Darkice + FFmpeg running (see startup script)
+ENABLE_STREAM_OUTPUT = true
+
+# Broadcastify server details (from your feed settings)
+STREAM_SERVER = audio9.broadcastify.com
+STREAM_PORT = 80
+STREAM_PASSWORD = 7jwb2ngc
+STREAM_MOUNT = /3pc56gsd8v4n
+
+# Stream metadata (displayed on Broadcastify)
+STREAM_NAME = Radio Gateway
+STREAM_DESCRIPTION = Radio to Mumble Gateway Stream
+
+# Stream format and quality
+STREAM_FORMAT = mp3      # mp3 or ogg
+STREAM_BITRATE = 16      # kbps (16 common for scanner audio)
+
+# ============================================================================
+# FEATURE: ECHOLINK INTEGRATION (via TheLinkBox)
+# ============================================================================
+# Connect to the worldwide EchoLink network using TheLinkBox proxy client
+#
+# What is TheLinkBox?
+#   - FREE EchoLink proxy client (no port forwarding needed!)
+#   - NAT-friendly (works behind routers/firewalls)
+#   - Uses EchoLink's public proxy servers automatically
+#
+# Prerequisites:
+#   1. Install TheLinkBox: sudo apt-get install thelinkbox
+#   2. Register at echolink.org with valid amateur radio callsign
+#   3. Configure /etc/thelinkbox/thelinkbox.conf
+#   4. Start TheLinkBox before starting gateway
+#
+# Audio Flow:
+#   Radio RX ──┐
+#   EchoLink ─┼──> Mixer ──┬──> Mumble
+#   Files ────┘            ├──> Radio TX
+#                          └──> EchoLink TX
+#
+# See README.md for complete TheLinkBox configuration guide
+# ============================================================================
+
+# Enable EchoLink integration
+ENABLE_ECHOLINK = false
+
+# Named pipes for IPC with TheLinkBox
+# These must match TheLinkBox configuration:
+#   [AUDIO]
+#   AUDIO_IN_DEVICE = /tmp/echolink_tx   (TheLinkBox reads from here)
+#   AUDIO_OUT_DEVICE = /tmp/echolink_rx  (TheLinkBox writes here)
+ECHOLINK_RX_PIPE = /tmp/echolink_rx  # Gateway reads FROM TheLinkBox
+ECHOLINK_TX_PIPE = /tmp/echolink_tx  # Gateway writes TO TheLinkBox
+
+# Audio routing options - configure exactly where EchoLink audio goes
+ECHOLINK_TO_MUMBLE = true   # EchoLink users heard on Mumble
+ECHOLINK_TO_RADIO = true    # EchoLink users heard on Radio (gateway will PTT)
+MUMBLE_TO_ECHOLINK = true   # Mumble users sent to EchoLink network
+RADIO_TO_ECHOLINK = true    # Radio RX sent to EchoLink network
+
+# Common Configurations:
+#
+# Full Bridge (everyone hears everyone):
+#   ECHOLINK_TO_MUMBLE = true
+#   ECHOLINK_TO_RADIO = true
+#   MUMBLE_TO_ECHOLINK = true
+#   RADIO_TO_ECHOLINK = true
+#
+# Radio + EchoLink only (Mumble separate):
+#   ECHOLINK_TO_MUMBLE = false
+#   ECHOLINK_TO_RADIO = true
+#   MUMBLE_TO_ECHOLINK = false
+#   RADIO_TO_ECHOLINK = true
+#
+# Mumble + EchoLink only (Radio separate):
+#   ECHOLINK_TO_MUMBLE = true
+#   ECHOLINK_TO_RADIO = false
+#   MUMBLE_TO_ECHOLINK = true
+#   RADIO_TO_ECHOLINK = false
+
+
+# ============================================================================
+# ADVANCED: STREAM HEALTH MONITORING
+# ============================================================================
+
+# Enable stream health monitoring
+# Monitors audio input stream and auto-restarts on errors
+# Can help recover from -9999 errors but may cause brief dropouts
+ENABLE_STREAM_HEALTH = false
+
+# ============================================================================
+# ADVANCED: DIAGNOSTICS
+# ============================================================================
+
+# Verbose logging - shows detailed diagnostic information
+# true = show debug output | false = minimal output
+VERBOSE_LOGGING = false
+
+# Update rate for status line display
+# Lower = smoother updates, higher CPU usage
+STATUS_UPDATE_INTERVAL = 1
+
+# ============================================================================
+# TROUBLESHOOTING GUIDE
+# ============================================================================
+#
+# AUDIO ISSUES:
+#   • No audio on Mumble: Check INPUT_VOLUME, verify VAD/VOX settings
+#   • No audio on radio: Check OUTPUT_VOLUME, verify AIOC connection
+#   • Choppy audio: Increase AUDIO_CHUNK_SIZE
+#   • High latency: Decrease AUDIO_CHUNK_SIZE
+#   • -9999 errors: Increase AUDIO_CHUNK_SIZE or enable STREAM_HEALTH
+#
+# MUMBLE ISSUES:
+#   • Won't connect: Verify MUMBLE_SERVER, MUMBLE_PORT
+#   • No codec: Wait 5-10 seconds after connect, check server compatibility
+#   • Channel not found: Check MUMBLE_CHANNEL spelling
+#
+# PTT ISSUES:
+#   • PTT activates too quickly: Increase PTT_ACTIVATION_DELAY
+#   • PTT releases too quickly: Increase PTT_RELEASE_DELAY
+#   • PTT doesn't activate: Check AIOC_PTT_CHANNEL (try 1, 2, or 3)
+#
+# STREAMING ISSUES:
+#   • Stream offline: Check Darkice is running (ps aux | grep darkice)
+#   • No audio on stream: Verify FFmpeg bridge is running
+#   • Needs reboot to work: Run ./start_broadcastify_FIXED.sh
+#
+# FILE PLAYBACK ISSUES:
+#   • Files won't play: Check PLAYBACK_DIRECTORY path
+#   • Wrong files play: Verify files named 0.wav through 9.wav
+#   • Audio quality poor: Re-encode files at AUDIO_RATE sample rate
+#
+# For more help, enable VERBOSE_LOGGING = true and check output
+# ============================================================================
