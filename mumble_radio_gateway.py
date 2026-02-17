@@ -89,7 +89,7 @@ class Config:
             'STATUS_UPDATE_INTERVAL': 1,  # seconds
             'MAX_MUMBLE_BUFFER_SECONDS': 1.0,
             'BUFFER_MANAGEMENT_VERBOSE': False,
-            'ENABLE_VAD': False,
+            'ENABLE_VAD': True,
             'VAD_THRESHOLD': -33,
             'VAD_ATTACK': 0.02,  # float (seconds)
             'VAD_RELEASE': 0.3,  # float (seconds)
@@ -114,9 +114,10 @@ class Config:
             # SDR Integration
             'ENABLE_SDR': True,
             'SDR_DEVICE_NAME': 'hw:5,1',  # ALSA device name (e.g., 'Loopback', 'hw:5,1')
-            'SDR_MIX_RATIO': 1.0,  # Volume/mix ratio for SDR audio (1.0 = full volume)
-            'SDR_DISPLAY_GAIN': 1.0,  # Display sensitivity multiplier (1.0 = normal, higher = more sensitive bar)
-            'SDR_AUDIO_BOOST': 1.0,  # Actual audio volume boost (1.0 = no change, 2.0 = 2x louder)
+            'SDR_DUCK': True,             # Duck SDR: silence SDR when any other source is active (default: True)
+            'SDR_MIX_RATIO': 1.0,        # Volume/mix ratio when ducking is disabled (1.0 = full volume)
+            'SDR_DISPLAY_GAIN': 1.0,     # Display sensitivity multiplier (1.0 = normal, higher = more sensitive bar)
+            'SDR_AUDIO_BOOST': 1.0,      # Actual audio volume boost (1.0 = no change, 2.0 = 2x louder)
             'SDR_BUFFER_MULTIPLIER': 8,  # Buffer size multiplier (8 = 8x normal buffer for smoother playback)
             # EchoLink Integration (Phase 3B)
             'ENABLE_ECHOLINK': False,
@@ -980,9 +981,10 @@ class SDRSource(AudioSource):
         self.priority = 2  # Lower priority than radio but higher than files
         self.ptt_control = False  # SDR doesn't trigger PTT
         self.volume = 1.0
-        self.mix_ratio = 1.0  # Future: allow mixing ratio control
-        self.enabled = True  # Start enabled by default
-        self.muted = False  # Can be muted independently
+        self.mix_ratio = 1.0  # Volume applied when ducking is disabled
+        self.duck = True      # When True: silence SDR if any other source is active
+        self.enabled = True   # Start enabled by default
+        self.muted = False    # Can be muted independently
         
         # Audio stream
         self.input_stream = None
@@ -1373,7 +1375,7 @@ class AudioMixer:
     def get_mixed_audio(self, chunk_size):
         """
         Get mixed audio from all enabled sources.
-        Returns: (mixed_audio, ptt_required, active_sources)
+        Returns: (mixed_audio, ptt_required, active_sources, sdr_was_ducked)
         """
         self.call_count += 1
         
@@ -1384,7 +1386,7 @@ class AudioMixer:
                 print(f"  Source: {src.name}, enabled={src.enabled}, priority={src.priority}")
         
         if not self.sources:
-            return None, False, []
+            return None, False, [], False
         
         # Priority mode: only use highest priority active source
         if self.mixing_mode == 'priority':
@@ -1405,12 +1407,12 @@ class AudioMixer:
                         print(f"  [Mixer] {source.name} returned None (no audio)")
                 
                 if audio is not None:
-                    return audio, ptt and source.ptt_control, [source.name]
+                    return audio, ptt and source.ptt_control, [source.name], False
             
             # No sources had audio
             if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                 print(f"  [Mixer] No sources returned audio")
-            return None, False, []
+            return None, False, [], False
         
         # Simultaneous mode: mix all active sources
         elif self.mixing_mode == 'simultaneous':
@@ -1420,15 +1422,16 @@ class AudioMixer:
         elif self.mixing_mode == 'duck':
             return self._mix_with_ducking(chunk_size)
         
-        return None, False, []
+        return None, False, [], False
     
     def _mix_simultaneous(self, chunk_size):
         """Mix all active sources together"""
         mixed_audio = None
         ptt_required = False
         active_sources = []
-        ptt_audio = None  # Separate PTT audio
-        non_ptt_audio = None  # Non-PTT audio
+        ptt_audio = None      # Separate PTT audio
+        non_ptt_audio = None  # Non-PTT, non-SDR audio (Radio RX etc)
+        sdr_audio = None      # SDR audio kept separate for ducking logic
         
         for source in self.sources:
             if not source.enabled:
@@ -1450,21 +1453,51 @@ class AudioMixer:
             
             active_sources.append(source.name)
             
+            # SDR audio is held separately so ducking can be applied after
+            # all other sources have been checked
+            if source.name == "SDR":
+                # Apply mix_ratio to SDR audio when not ducking
+                if hasattr(source, 'mix_ratio') and source.mix_ratio != 1.0:
+                    import array as _array
+                    samples = _array.array('h', audio)
+                    samples = _array.array('h', [int(s * source.mix_ratio) for s in samples])
+                    audio = samples.tobytes()
+                sdr_audio = audio
+                continue  # Don't add to other buckets yet
+            
             # Separate PTT and non-PTT sources
             if ptt and source.ptt_control:
                 ptt_required = True
-                # PTT source - keep at full volume, don't mix
                 if ptt_audio is None:
                     ptt_audio = audio
                 else:
-                    # Multiple PTT sources - mix them
                     ptt_audio = self._mix_audio_streams(ptt_audio, audio, 0.5)
             else:
-                # Non-PTT source (radio RX)
                 if non_ptt_audio is None:
                     non_ptt_audio = audio
                 else:
                     non_ptt_audio = self._mix_audio_streams(non_ptt_audio, audio, 0.5)
+        
+        # --- SDR ducking decision ---
+        # Find the SDR source object (if present) to read duck flag
+        sdr_source = self.get_source("SDR")
+        sdr_duck = sdr_source.duck if sdr_source else True
+        other_audio_active = (ptt_audio is not None) or (non_ptt_audio is not None)
+        sdr_was_ducked = False  # Track if SDR was actively ducked this cycle
+        
+        if sdr_audio is not None:
+            if sdr_duck and other_audio_active:
+                # Ducking ON and other audio is playing → silence SDR
+                if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                    print(f"  [Mixer-Simultaneous] SDR ducked (other sources active)")
+                sdr_audio = None
+                sdr_was_ducked = True
+            else:
+                # Ducking OFF, or no other audio → include SDR in mix
+                if non_ptt_audio is None:
+                    non_ptt_audio = sdr_audio
+                else:
+                    non_ptt_audio = self._mix_audio_streams(non_ptt_audio, sdr_audio, 0.5)
         
         # Priority: PTT audio always wins (full volume, no mixing with radio)
         if ptt_audio is not None:
@@ -1477,7 +1510,7 @@ class AudioMixer:
         if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
             print(f"  [Mixer-Simultaneous] Result: {len(active_sources)} active sources, PTT={ptt_required}")
         
-        return mixed_audio, ptt_required, active_sources
+        return mixed_audio, ptt_required, active_sources, sdr_was_ducked
     
     def _mix_with_ducking(self, chunk_size):
         """Mix with ducking: reduce lower priority sources"""
@@ -1517,7 +1550,7 @@ class AudioMixer:
             else:
                 mixed_audio = self._mix_audio_streams(mixed_audio, audio, 0.5)
         
-        return mixed_audio, ptt_required, active_sources
+        return mixed_audio, ptt_required, active_sources, False
     
     def _mix_audio_streams(self, audio1, audio2, ratio=0.5):
         """Mix two audio streams together"""
@@ -1612,6 +1645,7 @@ class MumbleRadioGateway:
         self.radio_source = None  # Will be initialized after AIOC setup
         self.sdr_source = None  # SDR receiver audio source
         self.sdr_muted = False  # SDR-specific mute
+        self.sdr_ducked = False  # Is SDR currently being ducked (status display)
         self.sdr_audio_level = 0  # SDR audio level for status bar
     
     def calculate_audio_level(self, pcm_data):
@@ -1643,13 +1677,16 @@ class MumbleRadioGateway:
         except Exception:
             return 0
     
-    def format_level_bar(self, level, muted=False, color='green'):
+    def format_level_bar(self, level, muted=False, ducked=False, color='green'):
         """Format audio level as a visual bar (0-100 scale) with optional color
         
         Args:
             level: Audio level 0-100
             muted: Whether this channel is muted
+            ducked: Whether this channel is being ducked (SDR only)
             color: 'green' for RX, 'red' for TX, 'cyan' for SDR
+        
+        Returns a fixed-width string (same width regardless of muted/ducked/normal state)
         """
         # ANSI color codes
         YELLOW = '\033[93m'
@@ -1667,15 +1704,24 @@ class MumbleRadioGateway:
         else:
             bar_color = GREEN
         
+        # All return paths have EXACTLY the same visible character width:
+        # [12 chars] + space + 4 chars = 17 visible characters total
+        
         # Show MUTE if muted (fixed width, colored)
         if muted:
-            return f"{WHITE}[{bar_color}---MUTE---{WHITE}]{RESET}  {bar_color}M{RESET} "
+            # [---MUTE---] + 2 spaces + "M  " (M with 2 trailing spaces for alignment)
+            return f"{WHITE}[{bar_color}---MUTE---{WHITE}]{RESET}  {bar_color}M  {RESET}"
+        
+        # Show DUCK if ducked (fixed width, colored) - for SDR only
+        if ducked:
+            # [---DUCK---] + 2 spaces + "D  " (D with 2 trailing spaces for alignment)
+            return f"{WHITE}[{bar_color}---DUCK---{WHITE}]{RESET}  {bar_color}D  {RESET}"
         
         # Create a 10-character bar graph
         bar_length = 10
         filled = int((level / 100.0) * bar_length)
         
-        # Always use 3-character percentage field (right-aligned)
+        # [bar graph] + space + "XXX%" (always 4 chars: 3 digits right-aligned + %)
         bar = '█' * filled + '-' * (bar_length - filled)
         return f"{WHITE}[{bar_color}{bar}{WHITE}]{RESET} {YELLOW}{level:3d}%{RESET}"
     
@@ -2381,11 +2427,15 @@ class MumbleRadioGateway:
                     if self.sdr_source.setup_audio():
                         # Set initial state from config
                         self.sdr_source.enabled = True
+                        self.sdr_source.duck = self.config.SDR_DUCK
                         self.sdr_source.mix_ratio = self.config.SDR_MIX_RATIO
                         self.mixer.add_source(self.sdr_source)
                         print("✓ SDR audio source added to mixer")
                         print(f"  Device: {self.config.SDR_DEVICE_NAME}")
-                        print(f"  Press 'd' to toggle SDR on/off")
+                        if self.config.SDR_DUCK:
+                            print(f"  Ducking: ENABLED (SDR silenced when other audio is active)")
+                        else:
+                            print(f"  Ducking: DISABLED (SDR mixed at {self.config.SDR_MIX_RATIO:.1f}x ratio)")
                         print(f"  Press 's' to mute/unmute SDR")
                     else:
                         print("⚠ Warning: Could not initialize SDR audio")
@@ -3021,7 +3071,10 @@ class MumbleRadioGateway:
                     # Get audio - use mixer if available, otherwise direct read
                     if self.radio_source and self.mixer:
                         # Use mixer (Phase 1 mode)
-                        data, ptt_required, active_sources = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
+                        data, ptt_required, active_sources, sdr_was_ducked = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
+                        
+                        # Store SDR ducked state for status bar display
+                        self.sdr_ducked = sdr_was_ducked
                         
                         if data is None:
                             # No audio from any source - send silence to keep stream alive
@@ -3557,6 +3610,16 @@ class MumbleRadioGateway:
                                 state = "MUTED" if self.sdr_muted else "UNMUTED"
                                 print(f"\n[SDR] {state}")
                     
+                    elif char == 'd':
+                        # Toggle SDR ducking on/off
+                        if self.sdr_source:
+                            self.sdr_source.duck = not self.sdr_source.duck
+                            if self.config.VERBOSE_LOGGING:
+                                if self.sdr_source.duck:
+                                    print(f"\n[SDR] Ducking ENABLED (SDR silenced when other audio active)")
+                                else:
+                                    print(f"\n[SDR] Ducking DISABLED (SDR mixed at {self.sdr_source.mix_ratio:.1f}x ratio)")
+                    
                     elif char == 'v':
                         # Toggle VAD on/off
                         self.config.ENABLE_VAD = not self.config.ENABLE_VAD
@@ -3759,8 +3822,12 @@ class MumbleRadioGateway:
                     else:
                         current_sdr_level = 0
                     
+                    # Determine display state
                     sdr_muted = self.sdr_muted or not self.sdr_source.enabled
-                    sdr_bar = f" {WHITE}SDR:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, color='cyan')
+                    sdr_ducked = self.sdr_ducked if not sdr_muted else False
+                    
+                    # Format: SDR: (no mode indicator here - it goes in proc_flags)
+                    sdr_bar = f" {WHITE}SDR:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, ducked=sdr_ducked, color='cyan')
                 
                 # Add diagnostics if there have been restarts (fixed width: always 6 chars like " R:123" or "      ")
                 # This prevents the status line from jumping when restarts occur
@@ -3786,6 +3853,9 @@ class MumbleRadioGateway:
                     elif self.config.NOISE_SUPPRESSION_METHOD == 'wiener': proc_flags.append("W")
                 if self.config.ENABLE_ECHO_CANCELLATION: proc_flags.append("E")
                 if not self.config.ENABLE_STREAM_HEALTH: proc_flags.append("X")  # X shows stream health is OFF
+                # D flag: SDR ducking enabled (only show if SDR is present)
+                if self.sdr_source and hasattr(self.sdr_source, 'duck') and self.sdr_source.duck:
+                    proc_flags.append("D")
                 
                 # Only show brackets if there are flags (saves space)
                 proc_info = f" {WHITE}[{YELLOW}{','.join(proc_flags)}{WHITE}]{RESET}" if proc_flags else ""
@@ -3873,6 +3943,7 @@ class MumbleRadioGateway:
         print("Keyboard Controls:")
         print("  Mute: 't'=TX | 'r'=RX | 'm'=Global | 's'=SDR  |  Audio: 'v'=VAD | ','=Vol- | '.'=Vol+")
         print("  Proc: 'n'=Gate | 'f'=HPF | 'a'=AGC | 'w'=Wiener | 'e'=Echo | 'x'=Restart")
+        print("  SDR:  'd'=Duck toggle | 's'=Mute toggle")
         print("  PTT:  'p'=Manual PTT Toggle (override auto-PTT)")
         if self.config.ENABLE_PLAYBACK:
             print("  Play: '1-9'=Announcements | '0'=StationID | '-'=Stop")
@@ -3891,7 +3962,7 @@ class MumbleRadioGateway:
             print("  SDR:[bar] = SDR receiver audio level (cyan)")
             print("  Vol:X.Xx = RX volume multiplier (Radio → Mumble gain)")
             print("  1234567890 = File status (green=loaded, red=playing, white=empty)")
-            print("  [N,F,A,W,E,X] = Processing: N=NoiseGate F=HPF A=AGC W=Wiener E=Echo X=StreamHealth-OFF")
+            print("  [N,F,A,W,E,D,X] = Processing: N=NoiseGate F=HPF A=AGC W=Wiener E=Echo D=SDRDuck X=StreamHealth-OFF")
             print("  R:n      = Stream restart count (only if >0)")
             print()
         
