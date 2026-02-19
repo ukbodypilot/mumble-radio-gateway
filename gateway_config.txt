@@ -17,10 +17,10 @@
 #   3. Most other settings have sensible defaults
 #
 # Keyboard Controls (runtime):
-#   MUTE:    't' = TX | 'r' = RX | 'm' = Global | 's' = SDR
+#   MUTE:    't' = TX | 'r' = RX | 'm' = Global | 's' = SDR1 | 'x' = SDR2
 #   AUDIO:   'v' = VAD | ',' = Vol- | '.' = Vol+
-#   SDR:     'd' = Duck toggle | 's' = Mute toggle
-#   PROCESS: 'n' = Gate | 'f' = HPF | 'a' = AGC | 'w' = Wiener | 'e' = Echo | 'x' = Stream health
+#   SDR:     'd' = SDR1 Duck toggle
+#   PROCESS: 'n' = Gate | 'f' = HPF | 'a' = AGC | 'w' = Wiener | 'e' = Echo
 #   PTT:     'p' = Manual PTT toggle
 #   PLAY:    '1-9' = Announcements | '0' = Station ID | '-' = Stop
 # ============================================================================
@@ -223,29 +223,39 @@ PLAYBACK_DIRECTORY = audio
 # Add a second receiver (SDR) that feeds audio into the gateway
 # simultaneously with the main AIOC radio. Audio is mixed together.
 #
+# Two SDR inputs supported: SDR1 and SDR2 with priority-based ducking
+#
 # Prerequisites:
 #   1. Install ALSA loopback: sudo modprobe snd-aloop
 #   2. Make permanent: echo "snd-aloop" | sudo tee -a /etc/modules
 #   3. Configure SDRconnect (or other SDR software) to output to Loopback device
 #
 # Keyboard Controls:
-#   's' = Mute/unmute SDR audio
-#   'm' = Global mute (mutes everything including SDR)
+#   's' = Mute/unmute SDR1 audio
+#   'x' = Mute/unmute SDR2 audio
+#   'd' = Toggle SDR1 ducking on/off
+#   'm' = Global mute (mutes everything including SDRs)
+#
+# Priority System:
+#   - AIOC/Radio RX always has top priority (ducks all SDRs)
+#   - SDR_PRIORITY and SDR2_PRIORITY determine ducking between SDRs
+#   - Lower number = higher priority (1 ducks 2)
 #
 # Status Bar:
-#   SDR:[cyan bar] = SDR audio level display
+#   SDR1:[cyan bar] = SDR1 audio level display
+#   SDR2:[magenta bar] = SDR2 audio level display
 #
 # Use Case Examples:
-#   - Monitor two frequencies simultaneously
-#   - Add scanner audio feed to gateway
-#   - Mix in web SDR or remote receiver
+#   - Monitor two frequencies simultaneously with priority
+#   - Add scanner audio feed + web SDR with priority ducking
+#   - Mix in remote receiver with local SDR
 # ============================================================================
 
-# Enable SDR audio input
-# SDR is enabled by default when this is true
+# -------- SDR1 Configuration --------
+# Enable SDR1 audio input
 ENABLE_SDR = true
 
-# ALSA device name for SDR audio input
+# ALSA device name for SDR1 audio input
 # IMPORTANT: ALSA Loopback devices work in PAIRS
 #   - If SDRconnect outputs to hw:2,0 → Gateway reads from hw:2,1
 #   - If SDRconnect outputs to hw:2,1 → Gateway reads from hw:2,0
@@ -261,47 +271,115 @@ ENABLE_SDR = true
 #   2. Use the OPPOSITE subdevice number:
 #      SDRconnect → hw:2,0 means use hw:2,1
 #      SDRconnect → hw:2,1 means use hw:2,0
-SDR_DEVICE_NAME = hw:5,1
+SDR_DEVICE_NAME = hw:6,1
 
-# SDR audio ducking
-# true  = SDR audio is silenced whenever any other source is active
-#         (Radio RX, Mumble TX, file playback). SDR is only heard
-#         when the channel is completely clear. (DEFAULT - recommended)
-# false = SDR audio is always mixed in alongside other sources at
-#         SDR_MIX_RATIO volume. Use when you want the SDR to be a
-#         constant background feed regardless of other activity.
+# SDR1 priority for ducking (1 = higher priority, 2 = lower priority)
+# If SDR1_PRIORITY < SDR2_PRIORITY, SDR1 will duck SDR2 when both have audio
+# AIOC/Radio RX always ducks both SDRs regardless of priority
+SDR_PRIORITY = 1
+
+# SDR1 audio ducking
+# true  = SDR1 audio is silenced when higher priority audio is active
+#         (AIOC/Radio RX, or lower-priority-number SDR)
+# false = SDR1 audio is always mixed at SDR_MIX_RATIO volume
 SDR_DUCK = true
 
-# SDR audio mix ratio (0.0 to 1.0) - only applies when SDR_DUCK = false
-# Sets the SDR volume relative to other sources when mixing simultaneously
+# SDR1 audio mix ratio (0.0 to 1.0) - only applies when SDR_DUCK = false
+# Sets the SDR1 volume relative to other sources when mixing simultaneously
 # 1.0 = full volume (default)
 # 0.5 = half volume
 SDR_MIX_RATIO = 1.0
 
-# SDR display sensitivity (1.0 to 10.0)
+# SDR1 display sensitivity (1.0 to 10.0)
 # Controls how sensitive the status bar and percentage display are
 # This does NOT change the actual audio volume
 # 1.0 = normal sensitivity (default)
 # 3.0 = show 3x on bar (more visible)
 # 5.0 = very sensitive (bar shows even quiet signals)
-# Higher values make the bar respond to quieter signals
 SDR_DISPLAY_GAIN = 1.0
 
-# SDR audio volume boost (1.0 to 10.0)
+# SDR1 audio volume boost (1.0 to 10.0)
 # Controls ACTUAL audio volume sent to Mumble
 # 1.0 = no change (default - original level)
 # 2.0 = 2x louder
 # 3.0 = 3x louder
-# Adjust if SDR audio is too quiet or too loud in Mumble
 SDR_AUDIO_BOOST = 1.0
 
-# SDR buffer size multiplier (1 to 16)
+# SDR1 buffer size multiplier (1 to 16)
 # Larger buffer = smoother audio, less dropouts, more latency
 # 8 = recommended for network SDRs or packet drops (default)
 # 4 = moderate buffering
 # 16 = maximum (use if still hearing dropouts)
 # 1 = lowest latency but may drop packets
 SDR_BUFFER_MULTIPLIER = 16
+
+# -------- SDR2 Configuration --------
+# Enable SDR2 audio input (second SDR receiver)
+ENABLE_SDR2 = false
+
+# ALSA device name for SDR2 audio input (must be different from SDR1)
+# Same pairing rules as SDR1 - use opposite subdevice number
+SDR2_DEVICE_NAME = hw:5,1
+
+# SDR2 priority for ducking (1 = higher priority, 2 = lower priority)
+# If SDR2_PRIORITY > SDR1_PRIORITY, SDR2 will be ducked by SDR1
+SDR2_PRIORITY = 2
+
+# SDR2 audio ducking
+SDR2_DUCK = true
+
+# SDR2 audio mix ratio (when ducking disabled)
+SDR2_MIX_RATIO = 1.0
+
+# SDR2 display sensitivity
+SDR2_DISPLAY_GAIN = 1.0
+
+# SDR2 audio volume boost
+SDR2_AUDIO_BOOST = 1.0
+
+# SDR2 buffer size multiplier
+SDR2_BUFFER_MULTIPLIER = 16
+# 4 = moderate buffering
+# 16 = maximum (use if still hearing dropouts)
+# 1 = lowest latency but may drop packets
+SDR_BUFFER_MULTIPLIER = 16
+
+# ============================================================================
+# SIGNAL DETECTION & SOURCE SWITCHING
+# ============================================================================
+# Controls when and how the mixer switches between audio sources (e.g. when
+# radio RX arrives and ducks the SDR, or when it ends and SDR resumes).
+#
+# Attack  — how long a source must be CONTINUOUSLY active before a switch is
+#           allowed.  Any silence resets the timer, so brief transients or
+#           noise bursts never cause an unwanted switch.
+#
+# Release — how long the interrupting source must be continuously silent
+#           before the original source is allowed to resume.  Prevents SDR
+#           from popping back on during natural speech pauses.
+#
+# Padding — a brief silence inserted at EACH transition point (duck-out and
+#           duck-in).  Gives a clean audible break instead of an abrupt cut:
+#             duck-out: [SDR playing] → [silence] → [radio plays, SDR ducked]
+#             duck-in:  [radio silent] → [silence] → [SDR resumes]
+#
+# Recommended starting values:
+#   - Sensitive/fast:   attack=0.3, release=1.0, padding=0.1
+#   - Balanced:         attack=0.5, release=2.0, padding=0.2
+#   - Conservative:     attack=1.0, release=3.0, padding=0.3
+# ============================================================================
+
+# Attack: seconds of CONTINUOUS signal required before a source switch is allowed
+# Prevents transient noises from triggering the duck.  Any silence resets the timer.
+SIGNAL_ATTACK_TIME = 1
+
+# Release: seconds of continuous silence required before switching back
+# Prevents the SDR from resuming during brief pauses in speech/audio
+SIGNAL_RELEASE_TIME = 2
+
+# Padding: seconds of silence inserted at each transition (duck-out AND duck-in)
+# Creates a clean audible break so changeovers are not jarring
+SWITCH_PADDING_TIME = 0.2
 
 # ============================================================================
 # FEATURE: TEXT-TO-SPEECH & TEXT COMMANDS (Phase 4)

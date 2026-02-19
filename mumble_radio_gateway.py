@@ -130,8 +130,9 @@ class Config:
             'SDR2_BUFFER_MULTIPLIER': 8,
             'SDR2_PRIORITY': 2,          # SDR2 priority for ducking (1 = higher, 2 = lower)
             # Signal Detection Hysteresis (prevents stuttering from rapid on/off)
-            'SIGNAL_ATTACK_TIME': 0.1,   # Seconds signal must be present before considered active (0.1 = 100ms, fast attack)
-            'SIGNAL_RELEASE_TIME': 0.5,  # Seconds signal must be absent before considered inactive (0.5 = 500ms, slow release)
+            'SIGNAL_ATTACK_TIME': 0.1,   # Seconds of CONTINUOUS signal required before a source switch is allowed
+            'SIGNAL_RELEASE_TIME': 0.5,  # Seconds of continuous silence required before switching back
+            'SWITCH_PADDING_TIME': 0.2,  # Seconds of silence inserted at each transition (duck-out and duck-in)
             # EchoLink Integration (Phase 3B)
             'ENABLE_ECHOLINK': False,
             'ECHOLINK_RX_PIPE': '/tmp/echolink_rx',
@@ -1430,13 +1431,17 @@ class AudioMixer:
         self.mixing_mode = 'simultaneous'  # Mix all sources together
         self.call_count = 0  # Debug counter
         
-        # Signal detection state tracking with hysteresis
-        # Tracks when each source last had actual signal
-        self.signal_state = {}  # source_name -> {'has_signal': bool, 'last_signal_time': float, 'last_silence_time': float}
-        
-        # Hysteresis timing (configurable to prevent stuttering)
-        self.SIGNAL_ATTACK_TIME = config.SIGNAL_ATTACK_TIME   # How long signal must be present before considered active
-        self.SIGNAL_RELEASE_TIME = config.SIGNAL_RELEASE_TIME  # How long signal must be absent before considered inactive
+        # Per-source signal state for attack/release hysteresis
+        self.signal_state = {}
+
+        # Hysteresis + transition timing
+        self.SIGNAL_ATTACK_TIME  = config.SIGNAL_ATTACK_TIME
+        self.SIGNAL_RELEASE_TIME = config.SIGNAL_RELEASE_TIME
+        self.SWITCH_PADDING_TIME = getattr(config, 'SWITCH_PADDING_TIME', 0.2)
+
+        # Duck state machines — one entry per duck-group (e.g. 'aioc_vs_sdrs')
+        # Tracks current duck state and active padding windows
+        self.duck_state = {}
         
     def add_source(self, source):
         """Add an audio source to the mixer"""
@@ -1596,45 +1601,54 @@ class AudioMixer:
         # Helper function with hysteresis for stable signal detection
         def has_actual_audio(audio_data, source_name):
             """
-            Check if audio has actual signal with hysteresis to prevent stuttering.
-            - Attack time: Signal must be present for SIGNAL_ATTACK_TIME before considered active
-            - Release time: Signal must be absent for SIGNAL_RELEASE_TIME before considered inactive
+            Check if audio has actual signal with attack/release hysteresis.
+
+            Attack: signal must be CONTINUOUSLY present for SIGNAL_ATTACK_TIME before
+                    a switch is allowed.  Any chunk of silence resets the attack timer,
+                    so brief transients never trigger a source switch.
+
+            Release: once active, the source must be continuously silent for
+                     SIGNAL_RELEASE_TIME before it is declared inactive again.
             """
-            # Initialize state for this source if not exists
             if source_name not in self.signal_state:
                 self.signal_state[source_name] = {
                     'has_signal': False,
-                    'last_signal_time': 0,
-                    'last_silence_time': current_time
+                    'signal_continuous_start': 0.0,  # start of current unbroken signal run
+                    'last_signal_time': 0.0,
+                    'last_silence_time': current_time,
                 }
-            
+
             state = self.signal_state[source_name]
             signal_present_now = check_signal_instant(audio_data)
-            
-            # Update timing based on current signal
+
             if signal_present_now:
                 state['last_signal_time'] = current_time
+                if state['signal_continuous_start'] == 0.0:
+                    # First chunk of a new continuous signal run — start the attack timer
+                    state['signal_continuous_start'] = current_time
             else:
                 state['last_silence_time'] = current_time
-            
-            # Apply hysteresis logic
-            if state['has_signal']:
-                # Currently active - check if we should release
-                time_since_signal = current_time - state['last_signal_time']
-                if time_since_signal > self.SIGNAL_RELEASE_TIME:
-                    # No signal for RELEASE_TIME - mark as inactive
-                    state['has_signal'] = False
-                    if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                        print(f"  [Mixer] {source_name} signal RELEASED (silent for {time_since_signal:.2f}s)")
+                # Any silence breaks continuity — reset the attack timer
+                state['signal_continuous_start'] = 0.0
+
+            if not state['has_signal']:
+                # Inactive — fire attack only when signal has been unbroken for ATTACK_TIME
+                if state['signal_continuous_start'] > 0.0:
+                    continuous_duration = current_time - state['signal_continuous_start']
+                    if continuous_duration >= self.SIGNAL_ATTACK_TIME:
+                        state['has_signal'] = True
+                        if self.config.VERBOSE_LOGGING:
+                            print(f"  [Mixer] {source_name} ACTIVATED "
+                                  f"(continuous signal for {continuous_duration:.2f}s)")
             else:
-                # Currently inactive - check if we should attack
-                time_since_silence = current_time - state['last_silence_time']
-                if signal_present_now and time_since_silence > self.SIGNAL_ATTACK_TIME:
-                    # Signal present for ATTACK_TIME - mark as active
-                    state['has_signal'] = True
-                    if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                        print(f"  [Mixer] {source_name} signal ACTIVATED (present for {time_since_silence:.2f}s)")
-            
+                # Active — release only after RELEASE_TIME of continuous silence
+                time_since_signal = current_time - state['last_signal_time']
+                if time_since_signal >= self.SIGNAL_RELEASE_TIME:
+                    state['has_signal'] = False
+                    if self.config.VERBOSE_LOGGING:
+                        print(f"  [Mixer] {source_name} RELEASED "
+                              f"(silent for {time_since_signal:.2f}s)")
+
             return state['has_signal']
         
         other_audio_active = (ptt_audio is not None) or (non_ptt_audio is not None)
@@ -1652,27 +1666,65 @@ class AudioMixer:
                 if non_ptt_audio and not non_ptt_has_signal:
                     print(f"  [Mixer] Non-PTT audio present but only silence - not ducking SDRs")
         
+        # --- Duck state machine with transition padding ---
+        # Manages the AIOC/Radio/PTT vs SDR duck relationship.
+        # When a transition occurs (ducking starts or stops), SWITCH_PADDING_TIME
+        # seconds of silence are inserted so the changeover is never abrupt:
+        #   duck-out: both SDR and radio are silenced → then radio takes over
+        #   duck-in:  SDR stays silent for padding → then SDR resumes
+        ds = self.duck_state.setdefault('aioc_vs_sdrs', {
+            'is_ducked': False,
+            'prev_signal': False,
+            'padding_end_time': 0.0,
+            'transition_type': None,   # 'out' = duck starting, 'in' = duck ending
+        })
+
+        prev_signal = ds['prev_signal']
+        ds['prev_signal'] = other_audio_active
+
+        if not ds['is_ducked'] and other_audio_active and not prev_signal:
+            # Transition: other audio just became active → start ducking SDRs
+            ds['is_ducked'] = True
+            ds['padding_end_time'] = current_time + self.SWITCH_PADDING_TIME
+            ds['transition_type'] = 'out'
+            if self.config.VERBOSE_LOGGING:
+                print(f"  [Mixer] SDR duck-OUT: {self.SWITCH_PADDING_TIME:.2f}s transition silence")
+        elif ds['is_ducked'] and not other_audio_active and prev_signal:
+            # Transition: other audio just went inactive → stop ducking SDRs
+            ds['is_ducked'] = False
+            ds['padding_end_time'] = current_time + self.SWITCH_PADDING_TIME
+            ds['transition_type'] = 'in'
+            if self.config.VERBOSE_LOGGING:
+                print(f"  [Mixer] SDR duck-IN:  {self.SWITCH_PADDING_TIME:.2f}s transition silence")
+
+        in_padding = current_time < ds['padding_end_time']
+        # Effective duck: still silencing SDRs either because a source is active
+        # OR because we're inside a padding window after a transition
+        aioc_ducks_sdrs = ds['is_ducked'] or in_padding
+        # During duck-out padding: silence ALL output so the switch is a clean break
+        in_transition_out = in_padding and ds['transition_type'] == 'out'
+
         sdr1_was_ducked = False
         sdr2_was_ducked = False
-        
+
         # First pass: determine which SDRs should be ducked
         sdrs_to_include = {}  # SDRs that will actually be mixed
-        
+
         # Sort SDR sources by priority (lower number = higher priority)
         sorted_sdrs = sorted(
             sdr_sources.items(),
             key=lambda x: getattr(x[1][1], 'sdr_priority', 99)
         )
-        
+
         for sdr_name, (sdr_audio, sdr_source) in sorted_sdrs:
             sdr_duck = sdr_source.duck if hasattr(sdr_source, 'duck') else True
             sdr_priority = getattr(sdr_source, 'sdr_priority', 99)
-            
+
             should_duck = False
-            
+
             if sdr_duck:
-                # Rule 1: AIOC/PTT/Radio audio ducks ALL SDRs (only if actual signal)
-                if other_audio_active:
+                # Rule 1: AIOC/PTT/Radio audio ducks ALL SDRs (with padding on transitions)
+                if aioc_ducks_sdrs:
                     should_duck = True
                     if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                         print(f"  [Mixer] {sdr_name} ducked by AIOC/Radio/PTT audio")
@@ -1720,10 +1772,16 @@ class AudioMixer:
                 print(f"  [Mixer-Simultaneous] Using PTT audio at FULL VOLUME (not mixing with radio)")
         elif non_ptt_audio is not None:
             mixed_audio = non_ptt_audio
-        
+
+        # Duck-out transition padding: silence everything for SWITCH_PADDING_TIME
+        # so the listener hears a clean break before the radio takes over
+        if in_transition_out:
+            mixed_audio = None
+            ptt_required = False
+
         if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
             print(f"  [Mixer-Simultaneous] Result: {len(active_sources)} active sources, PTT={ptt_required}")
-        
+
         return mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked
     
     def _mix_with_ducking(self, chunk_size):
