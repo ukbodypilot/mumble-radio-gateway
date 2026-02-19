@@ -59,7 +59,7 @@ class Config:
             'AUDIO_CHUNK_SIZE': 9600,
             'AUDIO_CHANNELS': 1,
             'AUDIO_BITS': 16,
-            'MUMBLE_BITRATE': 72000,
+            'MUMBLE_BITRATE': 96000,
             'MUMBLE_VBR': True,
             'MUMBLE_JITTER_BUFFER': 10,
             'AIOC_PTT_CHANNEL': 3,
@@ -109,6 +109,7 @@ class Config:
             'PLAYBACK_DIRECTORY': './audio/',
             'PLAYBACK_ANNOUNCEMENT_FILE': '',
             'PLAYBACK_ANNOUNCEMENT_INTERVAL': 0,  # seconds, 0 = disabled
+            'PLAYBACK_VOLUME': 2.0,               # float (multiplier; >1.0 boosts, audio is clipped to int16 range)
             # Text-to-Speech and Text Commands (Phase 4)
             'ENABLE_TTS': True,
             'ENABLE_TEXT_COMMANDS': True,
@@ -365,7 +366,7 @@ class FilePlaybackSource(AudioSource):
         self.gateway = gateway
         self.priority = 0  # HIGHEST priority - announcements interrupt radio
         self.ptt_control = True  # File playback triggers PTT
-        self.volume = 1.0
+        self.volume = getattr(config, 'PLAYBACK_VOLUME', 1.0)
         
         # Playback state
         self.current_file = None
@@ -814,10 +815,10 @@ class FilePlaybackSource(AudioSource):
             if self.gateway.config.VERBOSE_LOGGING:
                 print(f"\n[Playback] Finished: {os.path.basename(self.current_file) if self.current_file else 'unknown'}")
             
-            # Reset volume to normal (in case TTS boosted it)
-            self.volume = 1.0
+            # Reset volume to configured level (in case TTS boosted it)
+            self.volume = getattr(self.gateway.config, 'PLAYBACK_VOLUME', 1.0)
             if self.gateway.config.VERBOSE_LOGGING:
-                print(f"[Playback] Volume reset to 1.0x")
+                print(f"[Playback] Volume reset to {self.volume}x")
             
             # Mark file as not playing by matching path
             if self.current_file:
@@ -2980,15 +2981,18 @@ class MumbleRadioGateway:
 
             # Apply audio quality settings now that the codec is ready.
             # set_bandwidth() was never called before — the library default is 50kbps.
-            # Only set bandwidth and VBR; leave complexity and signal at library defaults
-            # (complexity=9, signal=auto) to avoid CPU starvation on the Pi.
+            # complexity=10: max Opus quality (marginal CPU cost on Pi)
+            # signal=3001: OPUS_SIGNAL_VOICE — tunes psychoacoustic model for speech
             try:
                 self.mumble.set_bandwidth(self.config.MUMBLE_BITRATE)
                 enc = getattr(self.mumble.sound_output, 'encoder', None)
                 if enc is not None:
                     enc.vbr = 1 if self.config.MUMBLE_VBR else 0
+                    enc.complexity = 10
+                    enc.signal = 3001  # OPUS_SIGNAL_VOICE
                     print(f"  ✓ Opus encoder: {self.config.MUMBLE_BITRATE//1000}kbps, "
-                          f"VBR={'on' if self.config.MUMBLE_VBR else 'off'}")
+                          f"VBR={'on' if self.config.MUMBLE_VBR else 'off'}, "
+                          f"complexity=10, signal=voice")
                 else:
                     print(f"  ✓ Mumble bandwidth set to {self.config.MUMBLE_BITRATE//1000}kbps "
                           f"(VBR will apply when codec negotiates)")

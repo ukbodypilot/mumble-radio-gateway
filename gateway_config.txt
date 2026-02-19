@@ -49,9 +49,9 @@ MUMBLE_CHANNEL =
 
 # Opus encoder bitrate in bits/second (outgoing audio quality)
 # Applied via set_bandwidth() after connection — was not applied before v3.1
-# 40000 = good  |  72000 = high (recommended)  |  96000 = maximum
+# 40000 = good  |  72000 = high  |  96000 = maximum (recommended)
 # Higher bitrate = better quality but more network bandwidth
-MUMBLE_BITRATE = 72000
+MUMBLE_BITRATE = 96000
 
 # Enable Opus Variable Bit Rate
 # true = Opus adapts bitrate to content (lower during silence, higher during speech)
@@ -196,6 +196,12 @@ ENABLE_PLAYBACK = true
 # Directory containing audio files
 # Gateway will scan this directory and auto-assign files to keys
 PLAYBACK_DIRECTORY = audio
+
+# Playback volume multiplier for announcement audio files
+# 1.0 = normal, 1.5 = 50% louder, 2.0 = double — audio is clipped to int16 range so
+# boosting beyond clipping only increases distortion, not perceived loudness
+# Try 1.5 or 2.0 if announcements sound quiet relative to the radio RX audio
+PLAYBACK_VOLUME = 2.0
 
 # File Naming & Auto-Assignment:
 # 
