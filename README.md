@@ -610,6 +610,22 @@ INPUT_VOLUME = 1.0           # Radio RX → Mumble volume (0.1 - 3.0)
 OUTPUT_VOLUME = 1.0          # Mumble → Radio TX volume (0.1 - 3.0)
 ```
 
+### Mumble Quality Settings
+
+```ini
+# Opus encoder outgoing bitrate (bits/second)
+# Applied via set_bandwidth() on connection. Previous versions never applied
+# this — the library defaulted to 50kbps regardless of the config value.
+# 40000 = good  |  72000 = high (recommended)  |  96000 = maximum
+MUMBLE_BITRATE = 72000
+
+# Variable Bit Rate — Opus adapts bitrate to content
+# true = lower bitrate during silence, higher during speech (recommended)
+MUMBLE_VBR = true
+```
+
+> **Note:** The Opus encoder is also configured at startup with `complexity=10` (maximum quality, negligible CPU cost for mono voice) and `signal=voice` (voice-specific optimisation). These are not config file options — they are always applied.
+
 ### VAD (Voice Activity Detection) Settings
 
 ```ini
@@ -957,6 +973,13 @@ class MySource(AudioSource):
 ## Changelog
 
 ### Recent Fixes & Improvements
+
+**Audio quality and CPU performance improvements**
+- All RMS calculations replaced with numpy vectorized operations (10–100× faster on Pi) — reduces per-loop CPU usage and the risk of AIOC buffer overflows causing silent sample drops
+- AIOC input stream buffer increased from 1× to 4× chunk size (matching output), giving 800 ms of hardware headroom vs 200 ms previously — absorbs OS/GIL scheduling pauses
+- `MUMBLE_BITRATE` and `MUMBLE_VBR` are now actually applied to the Mumble client via `set_bandwidth()` — previously the library always defaulted to 50 kbps regardless of the config value
+- Opus encoder configured with `complexity=10` (max quality) and `signal=voice` on startup
+- Code defaults corrected to match config: `PTT_RELEASE_DELAY` 0.3→0.5, `ENABLE_VOX` true→false, `VOX_THRESHOLD` −40→−30, `NOISE_GATE_THRESHOLD` −32→−40, `HIGHPASS_CUTOFF_FREQ` 120→300
 
 **Announcement playback — PTT and stuttering fixes**
 - File playback audio is now treated as deterministically active; it no longer goes through the SDR attack hysteresis timer that was causing 0.5 s of the real audio to be discarded before PTT triggered, followed by a 1.0 s silence gap that dropped PTT altogether

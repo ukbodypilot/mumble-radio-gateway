@@ -63,7 +63,7 @@ class Config:
             'MUMBLE_VBR': True,
             'MUMBLE_JITTER_BUFFER': 10,
             'AIOC_PTT_CHANNEL': 3,
-            'PTT_RELEASE_DELAY': 0.3,
+            'PTT_RELEASE_DELAY': 0.5,
             'PTT_ACTIVATION_DELAY': 0.1,
             'AIOC_VID': 0x1209,
             'AIOC_PID': 0x7388,
@@ -72,13 +72,13 @@ class Config:
             'ENABLE_AGC': False,
             'ENABLE_NOISE_SUPPRESSION': False,
             'NOISE_SUPPRESSION_METHOD': 'none',
-            'NOISE_SUPPRESSION_STRENGTH': 0.6,
+            'NOISE_SUPPRESSION_STRENGTH': 0.5,
             'ENABLE_NOISE_GATE': False,
-            'NOISE_GATE_THRESHOLD': -32,
+            'NOISE_GATE_THRESHOLD': -40,
             'NOISE_GATE_ATTACK': 0.01,  # float (seconds)
             'NOISE_GATE_RELEASE': 0.1,  # float (seconds)
             'ENABLE_HIGHPASS_FILTER': False,
-            'HIGHPASS_CUTOFF_FREQ': 120,
+            'HIGHPASS_CUTOFF_FREQ': 300,
             'ENABLE_ECHO_CANCELLATION': False,
             'INPUT_VOLUME': 1.0,
             'OUTPUT_VOLUME': 1.0,
@@ -100,8 +100,8 @@ class Config:
             'ENABLE_STREAM_HEALTH': False,
             'STREAM_RESTART_INTERVAL': 60,
             'STREAM_RESTART_IDLE_TIME': 3,
-            'ENABLE_VOX': True,
-            'VOX_THRESHOLD': -40,
+            'ENABLE_VOX': False,
+            'VOX_THRESHOLD': -30,
             'VOX_ATTACK_TIME': 0.05,  # float (seconds)
             'VOX_RELEASE_TIME': 0.5,  # float (seconds)
             # File Playback
@@ -2964,7 +2964,28 @@ class MumbleRadioGateway:
                 print("  ⚠ Audio codec not initialized after 5s")
                 print("    Audio may not work until codec is ready")
                 print("    This usually resolves itself within 10-30 seconds")
-            
+
+            # Apply audio quality settings now that the codec is ready.
+            # set_bandwidth() was never called before — the library default is 50kbps.
+            # This applies MUMBLE_BITRATE, VBR, and voice signal hint to the Opus encoder.
+            try:
+                self.mumble.set_bandwidth(self.config.MUMBLE_BITRATE)
+                enc = getattr(self.mumble.sound_output, 'encoder', None)
+                if enc is not None:
+                    enc.vbr = 1 if self.config.MUMBLE_VBR else 0
+                    enc.complexity = 10          # Max Opus quality (no perceptible CPU cost for mono voice)
+                    enc.signal = 3001            # OPUS_SIGNAL_VOICE — voice-specific optimisation
+                    print(f"  ✓ Opus encoder: {self.config.MUMBLE_BITRATE//1000}kbps, "
+                          f"VBR={'on' if self.config.MUMBLE_VBR else 'off'}, "
+                          f"complexity=10, signal=voice")
+                else:
+                    # Encoder not ready yet (codec may still be negotiating) — bandwidth
+                    # will be applied when the encoder is created via _set_bandwidth().
+                    print(f"  ✓ Mumble bandwidth set to {self.config.MUMBLE_BITRATE//1000}kbps "
+                          f"(encoder settings will apply when codec negotiates)")
+            except Exception as qe:
+                print(f"  ⚠ Could not apply audio quality settings: {qe}")
+
             # Join channel if specified
             if self.config.MUMBLE_CHANNEL:
                 try:
