@@ -118,7 +118,7 @@ OUTPUT_VOLUME = 1.0
 
 # Delay before activating PTT after audio detected (seconds)
 # Gives time for squelch tail to settle
-PTT_ACTIVATION_DELAY = 0.0
+PTT_ACTIVATION_DELAY = 0.1
 
 # Delay before releasing PTT after audio stops (seconds)
 # Prevents cutting off end of transmissions
@@ -135,7 +135,7 @@ ENABLE_VAD = true
 
 # VAD threshold in dBFS (more negative = more sensitive)
 # -40 = very sensitive | -33 = balanced | -25 = less sensitive
-VAD_THRESHOLD = -33
+VAD_THRESHOLD = -40
 
 # VAD timing
 VAD_ATTACK = 0.02   # How fast to activate (seconds)
@@ -371,15 +371,15 @@ SDR_BUFFER_MULTIPLIER = 16
 
 # Attack: seconds of CONTINUOUS signal required before a source switch is allowed
 # Prevents transient noises from triggering the duck.  Any silence resets the timer.
-SIGNAL_ATTACK_TIME = 1
+SIGNAL_ATTACK_TIME = 0.5
 
 # Release: seconds of continuous silence required before switching back
 # Prevents the SDR from resuming during brief pauses in speech/audio
-SIGNAL_RELEASE_TIME = 2
+SIGNAL_RELEASE_TIME = 1
 
 # Padding: seconds of silence inserted at each transition (duck-out AND duck-in)
 # Creates a clean audible break so changeovers are not jarring
-SWITCH_PADDING_TIME = 0.2
+SWITCH_PADDING_TIME = 1
 
 # ============================================================================
 # FEATURE: TEXT-TO-SPEECH & TEXT COMMANDS (Phase 4)
@@ -415,7 +415,14 @@ TTS_VOLUME = 1.0
 # Silence padding before TTS audio (seconds)
 # Prevents first words from being cut off due to PTT delay
 # 0.25 = quarter second of silence before speech starts
-PTT_TTS_DELAY = 0.25
+PTT_TTS_DELAY = 1
+
+# Delay after PTT key-up before announcement/TTS audio is sent to the radio (seconds)
+# Gives the radio transmitter time to fully key up before speech begins.
+# During this window PTT is active but no audio is written to the AIOC output.
+# Increase if the first syllable of announcements is clipped on the air.
+# 0.5 = half second (recommended for most radios)
+PTT_ANNOUNCEMENT_DELAY = 0.5
 
 
 # ============================================================================
