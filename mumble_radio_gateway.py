@@ -111,6 +111,7 @@ class Config:
             'ENABLE_TEXT_COMMANDS': True,
             'TTS_VOLUME': 1.0,  # Volume multiplier for TTS audio (1.0 = normal, 2.0 = double, 3.0 = triple)
             'PTT_TTS_DELAY': 1.0,   # Silence padding before TTS (seconds) to prevent cutoff
+            'PTT_ANNOUNCEMENT_DELAY': 0.5,  # Seconds after PTT key-up before announcement audio starts
             # SDR Integration
             'ENABLE_SDR': True,
             'SDR_DEVICE_NAME': 'hw:6,1',  # ALSA device name (e.g., 'Loopback', 'hw:5,1')
@@ -1653,16 +1654,18 @@ class AudioMixer:
         
         other_audio_active = (ptt_audio is not None) or (non_ptt_audio is not None)
         
-        # Check if other_audio actually has signal (not just zeros) with hysteresis
+        # Check if other_audio actually has signal (not just zeros) with hysteresis.
+        # PTT audio (file playback) is deterministic — when FilePlaybackSource returns data
+        # it IS playing.  Applying attack hysteresis to it would delay SDR ducking AND would
+        # trigger a duck-out transition that inserts SWITCH_PADDING_TIME of silence, cutting
+        # the start of every announcement and dropping PTT.
+        # Only apply hysteresis to non-PTT radio RX to suppress noise/squelch-tail transients.
         if other_audio_active:
-            # Check both ptt_audio and non_ptt_audio for actual signal
-            ptt_has_signal = has_actual_audio(ptt_audio, "PTT") if ptt_audio else False
+            ptt_is_active = ptt_audio is not None  # Deterministic: treat as active immediately
             non_ptt_has_signal = has_actual_audio(non_ptt_audio, "Radio") if non_ptt_audio else False
-            other_audio_active = ptt_has_signal or non_ptt_has_signal
-            
+            other_audio_active = ptt_is_active or non_ptt_has_signal
+
             if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                if ptt_audio and not ptt_has_signal:
-                    print(f"  [Mixer] PTT audio present but only silence - not ducking SDRs")
                 if non_ptt_audio and not non_ptt_has_signal:
                     print(f"  [Mixer] Non-PTT audio present but only silence - not ducking SDRs")
         
@@ -1773,11 +1776,12 @@ class AudioMixer:
         elif non_ptt_audio is not None:
             mixed_audio = non_ptt_audio
 
-        # Duck-out transition padding: silence everything for SWITCH_PADDING_TIME
-        # so the listener hears a clean break before the radio takes over
-        if in_transition_out:
+        # Duck-out transition padding: silence non-PTT output for SWITCH_PADDING_TIME
+        # so the changeover from SDR to radio RX is a clean break.
+        # Never suppress PTT audio (file playback) — doing so would drop PTT and stutter
+        # the announcement.  SDRs are already ducked via aioc_ducks_sdrs.
+        if in_transition_out and not ptt_required:
             mixed_audio = None
-            ptt_required = False
 
         # When PTT (file playback) wins the mix, non_ptt_audio (radio RX) is not
         # included in mixed_audio.  Carry it out separately so the transmit loop
@@ -3450,12 +3454,19 @@ class MumbleRadioGateway:
                             # Update last RX audio time to prevent decay during file playback
                             self.last_rx_audio_time = time.time()
                             
-                            # Activate PTT if not already active and not muted
+                            # Activate PTT if not already active and not muted.
+                            # On first activation, start the announcement delay timer so the
+                            # radio has time to fully key up before audio begins.
                             if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
                                 self.set_ptt_state(True)
-                            
+                                self._announcement_ptt_delay_until = time.time() + self.config.PTT_ANNOUNCEMENT_DELAY
+
+                            # Hold audio during the PTT key-up delay window.
+                            # PTT is already active; we're just waiting for the radio to settle.
+                            in_announcement_delay = time.time() < getattr(self, '_announcement_ptt_delay_until', 0.0)
+
                             # Send audio to radio output (like Mumble RX does)
-                            if self.output_stream and not self.tx_muted:
+                            if self.output_stream and not self.tx_muted and not in_announcement_delay:
                                 try:
                                     # Apply output volume
                                     pcm = data
