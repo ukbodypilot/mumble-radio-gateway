@@ -12,6 +12,9 @@ import signal
 import threading
 from struct import Struct
 import select  # For non-blocking keyboard input
+import array as _array_mod
+import math as _math_mod
+import numpy as np
 
 # Check for required libraries
 try:
@@ -320,10 +323,8 @@ class AIOCRadioSource(AudioSource):
 
             # Apply volume if needed
             if self.volume != 1.0 and data:
-                import array
-                samples = array.array('h', data)
-                samples = array.array('h', [int(s * self.volume) for s in samples])
-                data = samples.tobytes()
+                arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                data = np.clip(arr * self.volume, -32768, 32767).astype(np.int16).tobytes()
 
             # Apply audio processing
             data = self.gateway.process_audio_for_mumble(data)
@@ -848,11 +849,9 @@ class FilePlaybackSource(AudioSource):
         
         # Apply volume
         if self.volume != 1.0:
-            import array
-            samples = array.array('h', chunk)
-            samples = array.array('h', [int(s * self.volume) for s in samples])
-            chunk = samples.tobytes()
-        
+            arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+            chunk = np.clip(arr * self.volume, -32768, 32767).astype(np.int16).tobytes()
+
         # Small yield to prevent file playback from overwhelming other threads
         # (especially important now that we removed priority scheduling)
         import time
@@ -955,11 +954,9 @@ class EchoLinkSource(AudioSource):
                 
                 # Apply volume
                 if self.volume != 1.0:
-                    import array
-                    samples = array.array('h', data)
-                    samples = array.array('h', [int(s * self.volume) for s in samples])
-                    data = samples.tobytes()
-                
+                    arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                    data = np.clip(arr * self.volume, -32768, 32767).astype(np.int16).tobytes()
+
                 return data, False  # No PTT control
             else:
                 return None, False
@@ -1236,80 +1233,61 @@ class SDRSource(AudioSource):
             
             self._read_counter += 1
             
-            # Convert stereo to mono if needed
-            # SDR streams may be stereo (2 channels), but mixer expects mono
-            import array
-            samples = array.array('h', data)
-            
-            # Check if this SDR source is configured for stereo
-            if hasattr(self, 'sdr_channels') and self.sdr_channels == 2 and len(samples) > 0:
-                # Stereo has interleaved samples: L, R, L, R, L, R...
-                # Convert to mono by averaging: (L + R) / 2
-                mono_samples = array.array('h')
-                for i in range(0, len(samples), 2):
-                    left = samples[i]
-                    right = samples[i + 1] if i + 1 < len(samples) else left
-                    # Average the two channels
-                    mono = int((left + right) / 2)
-                    mono_samples.append(mono)
-                samples = mono_samples
-                data = samples.tobytes()
-                
+            # Convert stereo to mono if needed using numpy (vectorized)
+            arr = np.frombuffer(data, dtype=np.int16)
+
+            if hasattr(self, 'sdr_channels') and self.sdr_channels == 2 and len(arr) >= 2:
+                # Stereo: interleaved L, R — average to mono
+                stereo = arr.reshape(-1, 2).astype(np.int32)
+                arr = ((stereo[:, 0] + stereo[:, 1]) >> 1).astype(np.int16)
+                data = arr.tobytes()
                 if self.gateway.config.VERBOSE_LOGGING and self._read_counter == 1:
                     print(f"[{self.name}] Converting stereo to mono (averaging L+R channels)")
-            
-            # Calculate audio level using same method as RX/TX (RMS with dB scale)
-            import math
-            if len(samples) > 0:
-                # Calculate RMS (root mean square) - same as RX/TX
-                sum_squares = sum(s * s for s in samples)
-                rms = math.sqrt(sum_squares / len(samples))
-                
-                # Convert to 0-100 scale using dB (same as RX/TX)
+
+            # Calculate audio level using numpy (RMS with dB scale)
+            if len(arr) > 0:
+                farr = arr.astype(np.float32)
+                rms = float(np.sqrt(np.mean(farr * farr)))
+
+                # Convert to 0-100 scale using dB
                 if rms > 0:
-                    db = 20 * math.log10(rms / 32767.0)
-                    # Map -60dB to 0dB as 0 to 100
+                    db = 20 * _math_mod.log10(rms / 32767.0)
                     raw_level = max(0, min(100, (db + 60) * (100/60)))
                 else:
+                    db = -100.0
                     raw_level = 0
-                
+
                 # Apply DISPLAY gain if configured
                 display_gain = getattr(self.gateway.config, 'SDR_DISPLAY_GAIN', 1.0)
-                display_level = int(raw_level * display_gain)
-                if display_level > 100:
-                    display_level = 100
-                
-                # Apply smoothing like RX/TX - fast attack, slow decay
+                display_level = min(100, int(raw_level * display_gain))
+
+                # Apply smoothing — fast attack, slow decay
                 if display_level > self.audio_level:
-                    self.audio_level = display_level  # Fast attack
+                    self.audio_level = display_level
                 else:
-                    self.audio_level = int(self.audio_level * 0.7 + display_level * 0.3)  # Slow decay
-                
-                # Apply AUDIO boost to actual audio data (changes volume)
+                    self.audio_level = int(self.audio_level * 0.7 + display_level * 0.3)
+
+                # Apply AUDIO boost (changes actual volume)
                 audio_boost = getattr(self.gateway.config, 'SDR_AUDIO_BOOST', 1.0)
                 if audio_boost != 1.0:
-                    samples = array.array('h', [int(min(32767, max(-32768, s * audio_boost))) for s in samples])
-                    data = samples.tobytes()
-                
+                    arr = np.clip(farr * audio_boost, -32768, 32767).astype(np.int16)
+                    data = arr.tobytes()
+
                 # Periodic debug output
                 if self.gateway.config.VERBOSE_LOGGING:
-                    if time.time() - self._last_debug_time > 2.0:  # Every 2 seconds
-                        peak = max(abs(s) for s in samples)
-                        
+                    if time.time() - self._last_debug_time > 2.0:
+                        peak = int(np.max(np.abs(arr)))
                         print(f"[SDR Debug] Read {self._read_counter} chunks")
-                        print(f"[SDR Debug] Samples: {len(samples)}, RMS: {rms:.1f}, dB: {db:.1f}")
+                        print(f"[SDR Debug] Samples: {len(arr)}, RMS: {rms:.1f}, dB: {db:.1f}")
                         print(f"[SDR Debug] Raw level: {raw_level:.1f}%, Smoothed: {self.audio_level}%")
                         if audio_boost != 1.0:
                             print(f"[SDR Debug] Audio boost: {audio_boost}x")
-                        
-                        # Check if audio is actually changing
                         if peak == 0:
                             print(f"[SDR Debug] ⚠ All samples are ZERO - no audio data!")
                         elif rms < 100:
                             print(f"[SDR Debug] ⚠ Very quiet audio - RMS {rms:.1f} < 100")
                         else:
                             print(f"[SDR Debug] ✓ Audio data looks good")
-                        
                         self._last_debug_time = time.time()
             else:
                 if self.gateway.config.VERBOSE_LOGGING:
@@ -1319,8 +1297,7 @@ class SDRSource(AudioSource):
             
             # Apply volume/mix ratio
             if self.mix_ratio != 1.0:
-                samples = array.array('h', [int(s * self.mix_ratio) for s in samples])
-                data = samples.tobytes()
+                data = np.clip(arr.astype(np.float32) * self.mix_ratio, -32768, 32767).astype(np.int16).tobytes()
             
             return data, False  # SDR doesn't trigger PTT
             
@@ -1565,10 +1542,8 @@ class AudioMixer:
             if source.name.startswith("SDR"):
                 # Apply mix_ratio to SDR audio when not ducking
                 if hasattr(source, 'mix_ratio') and source.mix_ratio != 1.0:
-                    import array as _array
-                    samples = _array.array('h', audio)
-                    samples = _array.array('h', [int(s * source.mix_ratio) for s in samples])
-                    audio = samples.tobytes()
+                    arr_s = np.frombuffer(audio, dtype=np.int16).astype(np.float32)
+                    audio = np.clip(arr_s * source.mix_ratio, -32768, 32767).astype(np.int16).tobytes()
                 sdr_sources[source.name] = (audio, source)
                 continue  # Don't add to other buckets yet
             
@@ -1599,20 +1574,13 @@ class AudioMixer:
             """Check if audio contains actual signal above noise floor (instant check, no hysteresis)"""
             if not audio_data:
                 return False
-            import array
-            import math
             try:
-                samples = array.array('h', audio_data)
-                if len(samples) == 0:
+                arr = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+                if len(arr) == 0:
                     return False
-                # Calculate RMS
-                sum_squares = sum(s * s for s in samples)
-                rms = math.sqrt(sum_squares / len(samples))
-                # Convert to dB
+                rms = float(np.sqrt(np.mean(arr * arr)))
                 if rms > 0:
-                    db = 20 * math.log10(rms / 32767.0)
-                    # Threshold: -50dB or ~3% on 0-100 scale
-                    # This filters out silence and very quiet noise
+                    db = 20 * _math_mod.log10(rms / 32767.0)
                     return db > -50.0
                 return False
             except:
@@ -1876,10 +1844,8 @@ class AudioMixer:
     
     def _apply_volume(self, audio, volume):
         """Apply volume multiplier to audio"""
-        import array
-        samples = array.array('h', audio)
-        samples = array.array('h', [int(s * volume) for s in samples])
-        return samples.tobytes()
+        arr = np.frombuffer(audio, dtype=np.int16).astype(np.float32)
+        return np.clip(arr * volume, -32768, 32767).astype(np.int16).tobytes()
     
     def get_status(self):
         """Get status of all sources"""
@@ -1957,29 +1923,17 @@ class MumbleRadioGateway:
     def calculate_audio_level(self, pcm_data):
         """Calculate RMS audio level from PCM data (0-100 scale)"""
         try:
-            import array
-            import math
-            
-            # Convert bytes to 16-bit signed integers
-            samples = array.array('h', pcm_data)
-            
-            if len(samples) == 0:
+            if not pcm_data:
                 return 0
-            
-            # Calculate RMS (root mean square)
-            sum_squares = sum(s * s for s in samples)
-            rms = math.sqrt(sum_squares / len(samples))
-            
-            # Normalize to 0-100 scale (32767 is max for 16-bit audio)
-            # Use log scale for better display
+            arr = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
+            if len(arr) == 0:
+                return 0
+            rms = float(np.sqrt(np.mean(arr * arr)))
             if rms > 0:
-                # Convert to dB scale then to 0-100
-                db = 20 * math.log10(rms / 32767.0)
-                # Map -60dB to 0dB as 0 to 100
+                db = 20 * _math_mod.log10(rms / 32767.0)
                 level = max(0, min(100, (db + 60) * (100/60)))
                 return int(level)
             return 0
-            
         except Exception:
             return 0
     
@@ -2199,23 +2153,20 @@ class MumbleRadioGateway:
         """Voice Activity Detection - determines if audio should be sent to Mumble"""
         if not self.config.ENABLE_VAD:
             return True  # VAD disabled, always send
-        
+
         try:
-            import array
-            import math
-            
-            # Convert bytes to samples
-            samples = array.array('h', pcm_data)
-            if len(samples) == 0:
+            if not pcm_data:
                 return False
-            
+            arr = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
+            if len(arr) == 0:
+                return False
+
             # Calculate RMS level
-            sum_squares = sum(s * s for s in samples)
-            rms = math.sqrt(sum_squares / len(samples))
-            
+            rms = float(np.sqrt(np.mean(arr * arr)))
+
             # Convert to dB
             if rms > 0:
-                db_level = 20 * math.log10(rms / 32767.0)
+                db_level = 20 * _math_mod.log10(rms / 32767.0)
             else:
                 db_level = -100
             
@@ -2280,24 +2231,21 @@ class MumbleRadioGateway:
             return True  # VOX disabled, always transmit
         
         try:
-            import array
-            import math
-            
-            # Convert bytes to 16-bit signed integers
-            samples = array.array('h', pcm_data)
-            if len(samples) == 0:
+            if not pcm_data:
                 return False
-            
+            arr = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
+            if len(arr) == 0:
+                return False
+
             # Calculate RMS level
-            sum_squares = sum(s * s for s in samples)
-            rms = math.sqrt(sum_squares / len(samples))
-            
+            rms = float(np.sqrt(np.mean(arr * arr)))
+
             # Convert to dB
             if rms > 0:
-                db = 20 * math.log10(rms / 32767.0)
+                db = 20 * _math_mod.log10(rms / 32767.0)
             else:
                 db = -100  # Very quiet
-            
+
             # Attack and release timing
             attack_time = self.config.VOX_ATTACK_TIME / 1000.0  # ms to seconds
             release_time = self.config.VOX_RELEASE_TIME / 1000.0
@@ -2398,10 +2346,8 @@ class MumbleRadioGateway:
                 # Apply output volume
                 pcm = soundchunk.pcm
                 if self.config.OUTPUT_VOLUME != 1.0:
-                    import array
-                    samples = array.array('h', pcm)
-                    samples = array.array('h', [int(s * self.config.OUTPUT_VOLUME) for s in samples])
-                    pcm = samples.tobytes()
+                    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+                    pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
                 
                 self.output_stream.write(pcm)
             except Exception as e:
@@ -2657,13 +2603,15 @@ class MumbleRadioGateway:
                 print("✓ Audio configured")
             
             # Input stream (Radio → AIOC → Mumble)
+            # Use a 4x buffer (matching output) so OS/GIL scheduling pauses
+            # don't overflow the hardware ring buffer and drop samples.
             self.input_stream = self.pyaudio_instance.open(
                 format=audio_format,
                 channels=self.config.AUDIO_CHANNELS,
                 rate=self.config.AUDIO_RATE,
                 input=True,
                 input_device_index=input_idx,
-                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
+                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
                 stream_callback=None  # Use blocking mode
             )
             
@@ -3494,10 +3442,8 @@ class MumbleRadioGateway:
                                     # Apply output volume
                                     pcm = data
                                     if self.config.OUTPUT_VOLUME != 1.0:
-                                        import array
-                                        samples = array.array('h', pcm)
-                                        samples = array.array('h', [int(s * self.config.OUTPUT_VOLUME) for s in samples])
-                                        pcm = samples.tobytes()
+                                        arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+                                        pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
                                     
                                     # Write to output stream
                                     # Use exception_on_overflow=False to handle buffer issues gracefully
@@ -3600,10 +3546,8 @@ class MumbleRadioGateway:
                         # Apply input volume if needed
                         if self.config.INPUT_VOLUME != 1.0 and data:
                             try:
-                                import array
-                                samples = array.array('h', data)
-                                samples = array.array('h', [int(s * self.config.INPUT_VOLUME) for s in samples])
-                                data = samples.tobytes()
+                                arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                                data = np.clip(arr * self.config.INPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
                             except Exception:
                                 pass  # If volume adjustment fails, use original data
                         
@@ -3825,7 +3769,7 @@ class MumbleRadioGateway:
                 print(f"  [Diagnostic] Opening new input stream (device {input_idx})...")
                 restart_os.dup2(devnull_fd, stderr_fd)
             
-            # Recreate input stream
+            # Recreate input stream (4x buffer — same as initial open)
             try:
                 self.input_stream = self.pyaudio_instance.open(
                     format=audio_format,
@@ -3833,7 +3777,7 @@ class MumbleRadioGateway:
                     rate=self.config.AUDIO_RATE,
                     input=True,
                     input_device_index=input_idx,
-                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
+                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
                     stream_callback=None
                 )
                 
