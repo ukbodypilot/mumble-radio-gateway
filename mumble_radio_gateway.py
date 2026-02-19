@@ -784,9 +784,14 @@ class FilePlaybackSource(AudioSource):
         # No file playing
         if not self.file_data:
             return None, False
-        
+
         # Calculate chunk size in bytes (16-bit = 2 bytes per sample)
         chunk_bytes = chunk_size * self.config.AUDIO_CHANNELS * 2
+
+        # During the PTT announcement delay the radio is keying up.  Return silence
+        # without advancing the file position so no audio is lost.
+        if getattr(self.gateway, 'announcement_delay_active', False):
+            return b'\x00' * chunk_bytes, True
         
         # Check if we have enough data left
         if self.file_position >= len(self.file_data):
@@ -3460,13 +3465,17 @@ class MumbleRadioGateway:
                             if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
                                 self.set_ptt_state(True)
                                 self._announcement_ptt_delay_until = time.time() + self.config.PTT_ANNOUNCEMENT_DELAY
+                                self.announcement_delay_active = True
 
-                            # Hold audio during the PTT key-up delay window.
-                            # PTT is already active; we're just waiting for the radio to settle.
-                            in_announcement_delay = time.time() < getattr(self, '_announcement_ptt_delay_until', 0.0)
+                            # Clear the delay flag once the window has passed.
+                            # FilePlaybackSource returns silence (without advancing file position)
+                            # while this flag is set, so no audio is lost during key-up.
+                            if getattr(self, 'announcement_delay_active', False):
+                                if time.time() >= self._announcement_ptt_delay_until:
+                                    self.announcement_delay_active = False
 
                             # Send audio to radio output (like Mumble RX does)
-                            if self.output_stream and not self.tx_muted and not in_announcement_delay:
+                            if self.output_stream and not self.tx_muted:
                                 try:
                                     # Apply output volume
                                     pcm = data
