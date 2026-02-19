@@ -2603,15 +2603,17 @@ class MumbleRadioGateway:
                 print("✓ Audio configured")
             
             # Input stream (Radio → AIOC → Mumble)
-            # Use a 4x buffer (matching output) so OS/GIL scheduling pauses
-            # don't overflow the hardware ring buffer and drop samples.
+            # frames_per_buffer must match AUDIO_CHUNK_SIZE for input — this sets
+            # the ALSA period size.  Using a larger value (e.g. 4x) causes ALSA to
+            # accumulate that many samples before making them available, producing
+            # 800 ms bursts of audio followed by 800 ms of silence.  Keep at 1x.
             self.input_stream = self.pyaudio_instance.open(
                 format=audio_format,
                 channels=self.config.AUDIO_CHANNELS,
                 rate=self.config.AUDIO_RATE,
                 input=True,
                 input_device_index=input_idx,
-                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
+                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
                 stream_callback=None  # Use blocking mode
             )
             
@@ -3790,7 +3792,7 @@ class MumbleRadioGateway:
                 print(f"  [Diagnostic] Opening new input stream (device {input_idx})...")
                 restart_os.dup2(devnull_fd, stderr_fd)
             
-            # Recreate input stream (4x buffer — same as initial open)
+            # Recreate input stream — keep frames_per_buffer at 1x (see initial open comment)
             try:
                 self.input_stream = self.pyaudio_instance.open(
                     format=audio_format,
@@ -3798,7 +3800,7 @@ class MumbleRadioGateway:
                     rate=self.config.AUDIO_RATE,
                     input=True,
                     input_device_index=input_idx,
-                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
+                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
                     stream_callback=None
                 )
                 
