@@ -7,37 +7,37 @@ A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-
 ║                       MUMBLE RADIO GATEWAY — AUDIO FLOW                              ║
 ╚══════════════════════════════════════════════════════════════════════════════════════╝
 
-  SOURCES                                  MIXER                        DESTINATIONS
-  ───────                       ╔══════════════════════╗                ────────────
-
-  ┌─────────────────┐           ║                      ║   PTT audio  ┌──────────────────┐
-  │  File Playback  │──────────►║                      ╠─────────────►│  Radio TX        │
-  │  Priority 0     │           ║   P R I O R I T Y    ║               │  AIOC USB        │
-  │  WAV·MP3·FLAC   │           ║      M I X E R       ║               │  GPIO PTT        │
-  │  10 slots (0–9) │           ║                      ║               └──────────────────┘
-  └─────────────────┘           ║  Priority-based      ║
-                                ║  source selection    ║   RX audio   ┌──────────────────┐
-  ┌─────────────────┐           ║                      ╠─────────────►│  Mumble TX       │
-  │  Radio RX (P1)  │──────────►║  SDR ducking:        ║               │  Opus VoIP       │
-  │  AIOC USB       │           ║  Radio RX            ║               └──────────────────┘
-  └─────────────────┘           ║    > SDR1 (P1)       ║
-                                ║      > SDR2 (P2)     ║  Mixed audio ┌──────────────────┐
-  ┌─────────────────┐           ║                      ╠─────────────►│  Stream Output   │
-  │  Mumble RX (P1) │──────────►║  Attack / Release /  ║               │  Darkice /       │
-  │  Opus VoIP      │           ║  Padding on each     ║               │  Broadcastify    │
-  └─────────────────┘           ║  transition          ║               └──────────────────┘
-                                ║                      ║
-  ┌─────────────────┐           ║  Audio Processing:   ║  EchoLink    ┌──────────────────┐
-  │  SDR1 (P2)      │──────────►║  VAD · Noise Gate    ╠─────────────►│  EchoLink TX     │
-  │  ALSA Loopback  │  [DUCK]   ║  AGC · HPF           ║               │  Named Pipes     │
-  │  ■ cyan bar     │           ║  Wiener · Echo Canc  ║               └──────────────────┘
-  └─────────────────┘           ║                      ║
-                                ╚══════════════════════╝
-  ┌─────────────────┐
-  │  SDR2 (P2)      │──────────► [DUCK: by Radio RX or SDR1]
-  │  ALSA Loopback  │
-  │  ■ magenta bar  │           Duck priority:  Radio RX  >  SDR1 (P1)  >  SDR2 (P2)
-  └─────────────────┘
+  ┌─────────────────┐  PTT audio (direct)                           ┌──────────────────┐
+  │  Mumble RX      │──────────────────────────────────────────────►│  Radio TX        │
+  │  (Opus VoIP)    │  Mumble users heard → keyed to radio          │  AIOC USB        │
+  └─────────────────┘  auto-PTT, bypasses mixer                     │  GPIO PTT        │
+                                                                     │                  │
+  SOURCES                                  MIXER                    │  ↑ also receives ┤
+  ───────                       ╔══════════════════════╗            │  File Playback   │
+                                ║                      ║            └──────────────────┘
+  ┌─────────────────┐           ║                      ║   PTT audio        ▲
+  │  File Playback  │──────────►║   P R I O R I T Y    ╠────────────────────┘
+  │  Priority 0     │           ║      M I X E R       ║
+  │  WAV·MP3·FLAC   │           ║                      ║  Radio RX  ┌──────────────────┐
+  │  10 slots (0–9) │           ║  Priority-based      ╠───────────►│  Mumble TX       │
+  └─────────────────┘           ║  source selection    ║            │  Opus VoIP       │
+                                ║                      ║            └──────────────────┘
+  ┌─────────────────┐           ║  SDR ducking:        ║
+  │  Radio RX (P1)  │──────────►║  Radio RX            ║  Mixed     ┌──────────────────┐
+  │  AIOC USB       │           ║    > SDR1 (P1)       ╠───────────►│  Stream Output   │
+  └─────────────────┘           ║      > SDR2 (P2)     ║            │  Darkice /       │
+                                ║                      ║            │  Broadcastify    │
+  ┌─────────────────┐           ║  Attack/Release/     ║            └──────────────────┘
+  │  SDR1 (P2)      │──────────►║  Padding transitions ║
+  │  ALSA Loopback  │  [DUCK]   ║                      ║  EchoLink  ┌──────────────────┐
+  │  ■ cyan bar     │           ║  Audio Processing:   ╠───────────►│  EchoLink TX     │
+  └─────────────────┘           ║  VAD · Noise Gate    ║            │  Named Pipes     │
+                                ║  AGC · HPF           ║            └──────────────────┘
+  ┌─────────────────┐           ║  Wiener · Echo Canc  ║
+  │  SDR2 (P2)      │──────────►║                      ║
+  │  ALSA Loopback  │  [DUCK]   ╚══════════════════════╝
+  │  ■ magenta bar  │
+  └─────────────────┘           Duck priority:  Radio RX  >  SDR1 (P1)  >  SDR2 (P2)
 
   ┌─────────────────┐           Each duck transition uses attack / release / padding:
   │  EchoLink (P3)  │──────────►  [source active] → silence gap → [audio switches]
@@ -70,12 +70,12 @@ A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-
 ### Audio Sources (Priority-Based Mixing)
 
 ```
-Priority 0 (Highest) → File Playback    [PTT enabled]
-Priority 1           → Radio RX         [No PTT]
-Priority 1           → Mumble RX        [No PTT]
-Priority 2           → SDR1 Receiver    [No PTT, with ducking]
-Priority 2           → SDR2 Receiver    [No PTT, with ducking]
-Priority 3 (Lowest)  → EchoLink        [No PTT]
+Priority 0 (Highest) → File Playback    [PTT → Radio TX]
+Priority 1           → Mumble RX        [PTT → Radio TX, direct path]
+Priority 1           → Radio RX         [→ Mumble TX, no PTT]
+Priority 2           → SDR1 Receiver    [→ Mumble TX, with ducking]
+Priority 2           → SDR2 Receiver    [→ Mumble TX, with ducking]
+Priority 3 (Lowest)  → EchoLink        [→ Mumble TX]
 ```
 
 #### 1. **File Playback** (Priority 0, PTT enabled)
@@ -102,10 +102,12 @@ Priority 3 (Lowest)  → EchoLink        [No PTT]
    - Real-time level display (magenta bar)
    - Priority-based ducking vs SDR1 (configurable)
 
-#### 5. **Mumble RX** (Priority 1)
-   - VoIP audio from Mumble server
-   - Opus codec, low latency
-   - Routes to radio TX with auto-PTT
+#### 5. **Mumble RX** (Priority 1, PTT enabled — direct path)
+   - Audio from Mumble users is captured via a callback, **bypassing the mixer**
+   - Immediately keys PTT and transmits through the AIOC to the radio
+   - Output volume controlled by `OUTPUT_VOLUME`
+   - Suppressed when TX is muted (`t` key) or manual PTT mode is active
+   - This is the primary gateway path: **Mumble users speak → radio transmits**
 
 #### 6. **EchoLink** (Priority 3)
    - Named pipe integration
@@ -501,10 +503,12 @@ This creates responsive bars that show peaks immediately but decay smoothly.
 │                         AUDIO INPUTS                              │
 ├──────────────────────────────────────────────────────────────────┤
 │  Priority 0:  File Playback (10 slots) ───────┐                  │
-│  Priority 1:  Radio RX (AIOC)         ────────┤                  │
-│  Priority 1:  Mumble RX               ────────┤                  │
-│  Priority 2:  SDR (ALSA Loopback)     ────────┼──→ MIXER         │
+│  Priority 1:  Radio RX (AIOC)         ────────┼──→ MIXER         │
+│  Priority 2:  SDR (ALSA Loopback)     ────────┤                  │
 │  Priority 3:  EchoLink (Named Pipes)  ────────┘                  │
+│                                                                   │
+│  Mumble RX  ──────────────────────────────────→ Radio TX (PTT)   │
+│             (direct callback path, bypasses mixer entirely)       │
 └──────────────────────────────────────────────────────────────────┘
                                                   │
                                                   ↓
@@ -534,15 +538,19 @@ This creates responsive bars that show peaks immediately but decay smoothly.
 When multiple sources provide audio simultaneously:
 
 ```
+Mumble RX (direct path — bypasses mixer):
+  ├─ Audio captured via callback, PTT keyed immediately
+  ├─ Written directly to AIOC output → Radio TX
+  └─ Suppressed only when TX muted or manual PTT mode active
+
 Priority 0 (File Playback):
   ├─ Triggers PTT → announcement sent to Radio TX
   ├─ Concurrent Radio RX still forwarded to Mumble
-  └─ Highest priority
+  └─ Highest priority within mixer
 
-Priority 1 (Radio RX / Mumble RX):
-  ├─ Radio RX → Mumble TX
-  ├─ Mumble RX → Radio TX (auto-PTT)
-  └─ Normal priority
+Priority 1 (Radio RX / AIOC):
+  ├─ Radio RX → Mumble TX (and stream if enabled)
+  └─ Forwarded to all listeners
 
 Priority 2 (SDR):
   ├─ DUCKED when Priority 0 or 1 active (default)
