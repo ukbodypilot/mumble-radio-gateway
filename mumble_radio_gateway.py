@@ -61,7 +61,7 @@ class Config:
             'MUMBLE_JITTER_BUFFER': 10,
             'AIOC_PTT_CHANNEL': 3,
             'PTT_RELEASE_DELAY': 0.3,
-            'PTT_ACTIVATION_DELAY': 0.0,
+            'PTT_ACTIVATION_DELAY': 0.1,
             'AIOC_VID': 0x1209,
             'AIOC_PID': 0x7388,
             'AIOC_INPUT_DEVICE': -1,
@@ -90,7 +90,7 @@ class Config:
             'MAX_MUMBLE_BUFFER_SECONDS': 1.0,
             'BUFFER_MANAGEMENT_VERBOSE': False,
             'ENABLE_VAD': True,
-            'VAD_THRESHOLD': -33,
+            'VAD_THRESHOLD': -40,
             'VAD_ATTACK': 0.02,  # float (seconds)
             'VAD_RELEASE': 0.3,  # float (seconds)
             'VAD_MIN_DURATION': 0.1,  # float (seconds)
@@ -110,10 +110,10 @@ class Config:
             'ENABLE_TTS': True,
             'ENABLE_TEXT_COMMANDS': True,
             'TTS_VOLUME': 1.0,  # Volume multiplier for TTS audio (1.0 = normal, 2.0 = double, 3.0 = triple)
-            'PTT_TTS_DELAY': 0.25,  # Silence padding before TTS (seconds) to prevent cutoff
+            'PTT_TTS_DELAY': 1.0,   # Silence padding before TTS (seconds) to prevent cutoff
             # SDR Integration
             'ENABLE_SDR': True,
-            'SDR_DEVICE_NAME': 'hw:5,1',  # ALSA device name (e.g., 'Loopback', 'hw:5,1')
+            'SDR_DEVICE_NAME': 'hw:6,1',  # ALSA device name (e.g., 'Loopback', 'hw:5,1')
             'SDR_DUCK': True,             # Duck SDR: silence SDR when higher priority source is active
             'SDR_MIX_RATIO': 1.0,        # Volume/mix ratio when ducking is disabled (1.0 = full volume)
             'SDR_DISPLAY_GAIN': 1.0,     # Display sensitivity multiplier (1.0 = normal, higher = more sensitive bar)
@@ -130,9 +130,9 @@ class Config:
             'SDR2_BUFFER_MULTIPLIER': 8,
             'SDR2_PRIORITY': 2,          # SDR2 priority for ducking (1 = higher, 2 = lower)
             # Signal Detection Hysteresis (prevents stuttering from rapid on/off)
-            'SIGNAL_ATTACK_TIME': 0.1,   # Seconds of CONTINUOUS signal required before a source switch is allowed
-            'SIGNAL_RELEASE_TIME': 0.5,  # Seconds of continuous silence required before switching back
-            'SWITCH_PADDING_TIME': 0.2,  # Seconds of silence inserted at each transition (duck-out and duck-in)
+            'SIGNAL_ATTACK_TIME': 0.5,   # Seconds of CONTINUOUS signal required before a source switch is allowed
+            'SIGNAL_RELEASE_TIME': 1.0,  # Seconds of continuous silence required before switching back
+            'SWITCH_PADDING_TIME': 1.0,  # Seconds of silence inserted at each transition (duck-out and duck-in)
             # EchoLink Integration (Phase 3B)
             'ENABLE_ECHOLINK': False,
             'ECHOLINK_RX_PIPE': '/tmp/echolink_rx',
@@ -1437,7 +1437,7 @@ class AudioMixer:
         # Hysteresis + transition timing
         self.SIGNAL_ATTACK_TIME  = config.SIGNAL_ATTACK_TIME
         self.SIGNAL_RELEASE_TIME = config.SIGNAL_RELEASE_TIME
-        self.SWITCH_PADDING_TIME = getattr(config, 'SWITCH_PADDING_TIME', 0.2)
+        self.SWITCH_PADDING_TIME = getattr(config, 'SWITCH_PADDING_TIME', 1.0)
 
         # Duck state machines — one entry per duck-group (e.g. 'aioc_vs_sdrs')
         # Tracks current duck state and active padding windows
