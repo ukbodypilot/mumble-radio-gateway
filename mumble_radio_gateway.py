@@ -1474,8 +1474,8 @@ class AudioMixer:
                 print(f"  Source: {src.name}, enabled={src.enabled}, priority={src.priority}")
         
         if not self.sources:
-            return None, False, [], False, False
-        
+            return None, False, [], False, False, None
+
         # Priority mode: only use highest priority active source
         if self.mixing_mode == 'priority':
             for source in self.sources:
@@ -1483,34 +1483,34 @@ class AudioMixer:
                     if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                         print(f"  [Mixer] Skipping {source.name} (disabled)")
                     continue
-                
+
                 # Try to get audio from this source
                 audio, ptt = source.get_audio(chunk_size)
-                
+
                 # Debug what each source returns
                 if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                     if audio is not None:
                         print(f"  [Mixer] {source.name} returned audio ({len(audio)} bytes), PTT={ptt}")
                     else:
                         print(f"  [Mixer] {source.name} returned None (no audio)")
-                
+
                 if audio is not None:
-                    return audio, ptt and source.ptt_control, [source.name], False, False
-            
+                    return audio, ptt and source.ptt_control, [source.name], False, False, None
+
             # No sources had audio
             if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                 print(f"  [Mixer] No sources returned audio")
-            return None, False, [], False, False
-        
+            return None, False, [], False, False, None
+
         # Simultaneous mode: mix all active sources
         elif self.mixing_mode == 'simultaneous':
             return self._mix_simultaneous(chunk_size)
-        
+
         # Duck mode: reduce volume of lower priority when higher priority active
         elif self.mixing_mode == 'duck':
             return self._mix_with_ducking(chunk_size)
-        
-        return None, False, [], False, False
+
+        return None, False, [], False, False, None
     
     def _mix_simultaneous(self, chunk_size):
         """Mix all active sources together with SDR priority-based ducking"""
@@ -1779,10 +1779,16 @@ class AudioMixer:
             mixed_audio = None
             ptt_required = False
 
+        # When PTT (file playback) wins the mix, non_ptt_audio (radio RX) is not
+        # included in mixed_audio.  Carry it out separately so the transmit loop
+        # can still forward it to Mumble — listeners hear the radio channel even
+        # while an announcement is being transmitted.
+        rx_audio = non_ptt_audio if ptt_required else None
+
         if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
             print(f"  [Mixer-Simultaneous] Result: {len(active_sources)} active sources, PTT={ptt_required}")
 
-        return mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked
+        return mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio
     
     def _mix_with_ducking(self, chunk_size):
         """Mix with ducking: reduce lower priority sources"""
@@ -1822,8 +1828,8 @@ class AudioMixer:
             else:
                 mixed_audio = self._mix_audio_streams(mixed_audio, audio, 0.5)
         
-        return mixed_audio, ptt_required, active_sources, False, False
-    
+        return mixed_audio, ptt_required, active_sources, False, False, None
+
     def _mix_audio_streams(self, audio1, audio2, ratio=0.5):
         """Mix two audio streams together"""
         import array
@@ -3399,7 +3405,7 @@ class MumbleRadioGateway:
                     # Get audio - use mixer if available, otherwise direct read
                     if self.radio_source and self.mixer:
                         # Use mixer (Phase 1 mode)
-                        data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
+                        data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
                         
                         # Store SDR ducked states for status bar display
                         self.sdr_ducked = sdr1_was_ducked
@@ -3482,7 +3488,7 @@ class MumbleRadioGateway:
                             # PTT audio (file playback/announcements) goes ONLY to Radio TX
                             # Stream will hear it when it comes back through Radio RX
                             # DO NOT send PTT audio directly to stream!
-                            
+
                             # EchoLink can optionally receive PTT audio directly
                             if self.echolink_source and self.config.RADIO_TO_ECHOLINK:
                                 try:
@@ -3490,8 +3496,25 @@ class MumbleRadioGateway:
                                 except Exception as el_err:
                                     if self.config.VERBOSE_LOGGING:
                                         print(f"\n[EchoLink] Send error: {el_err}")
-                            
-                            # Skip sending to Mumble and Stream - this is TX audio, not RX
+
+                            # Forward concurrent radio RX to Mumble/stream even during
+                            # announcement playback so listeners are not cut off
+                            if rx_audio is not None:
+                                if (self.mumble and
+                                        hasattr(self.mumble, 'sound_output') and
+                                        self.mumble.sound_output is not None and
+                                        getattr(self.mumble.sound_output, 'encoder_framesize', None) is not None):
+                                    try:
+                                        self.mumble.sound_output.add_sound(rx_audio)
+                                    except Exception:
+                                        pass
+                                if self.stream_output and self.stream_output.connected:
+                                    try:
+                                        self.stream_output.send_audio(rx_audio)
+                                    except Exception:
+                                        pass
+
+                            # Skip the normal RX→Mumble path below - this is TX audio
                             continue
                         
                         # No PTT required (radio RX) - send to Mumble as usual
