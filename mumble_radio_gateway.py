@@ -1673,12 +1673,19 @@ class AudioMixer:
         ds['prev_signal'] = other_audio_active
 
         if not ds['is_ducked'] and other_audio_active and not prev_signal:
-            # Transition: other audio just became active → start ducking SDRs
+            # Transition: other audio just became active → start ducking SDRs.
+            # Record whether SDR had actual signal now so we know whether the
+            # transition-silence is needed (SDR→radio handoff) or not (radio-only).
             ds['is_ducked'] = True
             ds['padding_end_time'] = current_time + self.SWITCH_PADDING_TIME
             ds['transition_type'] = 'out'
+            ds['sdr_active_at_transition'] = any(
+                check_signal_instant(sdr_audio)
+                for sdr_audio, _ in sdr_sources.values()
+            )
             if self.config.VERBOSE_LOGGING:
-                print(f"  [Mixer] SDR duck-OUT: {self.SWITCH_PADDING_TIME:.2f}s transition silence")
+                print(f"  [Mixer] SDR duck-OUT: {self.SWITCH_PADDING_TIME:.2f}s transition silence "
+                      f"(SDR active: {ds['sdr_active_at_transition']})")
         elif ds['is_ducked'] and not other_audio_active and prev_signal:
             # Transition: other audio just went inactive → stop ducking SDRs
             ds['is_ducked'] = False
@@ -1764,10 +1771,14 @@ class AudioMixer:
             mixed_audio = non_ptt_audio
 
         # Duck-out transition padding: silence non-PTT output for SWITCH_PADDING_TIME
-        # so the changeover from SDR to radio RX is a clean break.
-        # Never suppress PTT audio (file playback) — doing so would drop PTT and stutter
-        # the announcement.  SDRs are already ducked via aioc_ducks_sdrs.
-        if in_transition_out and not ptt_required:
+        # ONLY when SDR was actually playing at the time of the transition.
+        # This creates a clean break at the SDR→radio handoff point.
+        #
+        # CRITICAL: Do NOT silence if no SDR was active — non_ptt_audio at this point
+        # IS the radio RX audio going to Mumble.  Silencing it unconditionally caused
+        # every new radio transmission to lose its first 1.0 s of audio to Mumble.
+        # SDRs are already muted via aioc_ducks_sdrs regardless of this flag.
+        if in_transition_out and not ptt_required and ds.get('sdr_active_at_transition', False):
             mixed_audio = None
 
         # When PTT (file playback) wins the mix, non_ptt_audio (radio RX) is not
@@ -2969,22 +2980,18 @@ class MumbleRadioGateway:
 
             # Apply audio quality settings now that the codec is ready.
             # set_bandwidth() was never called before — the library default is 50kbps.
-            # This applies MUMBLE_BITRATE, VBR, and voice signal hint to the Opus encoder.
+            # Only set bandwidth and VBR; leave complexity and signal at library defaults
+            # (complexity=9, signal=auto) to avoid CPU starvation on the Pi.
             try:
                 self.mumble.set_bandwidth(self.config.MUMBLE_BITRATE)
                 enc = getattr(self.mumble.sound_output, 'encoder', None)
                 if enc is not None:
                     enc.vbr = 1 if self.config.MUMBLE_VBR else 0
-                    enc.complexity = 10          # Max Opus quality (no perceptible CPU cost for mono voice)
-                    enc.signal = 3001            # OPUS_SIGNAL_VOICE — voice-specific optimisation
                     print(f"  ✓ Opus encoder: {self.config.MUMBLE_BITRATE//1000}kbps, "
-                          f"VBR={'on' if self.config.MUMBLE_VBR else 'off'}, "
-                          f"complexity=10, signal=voice")
+                          f"VBR={'on' if self.config.MUMBLE_VBR else 'off'}")
                 else:
-                    # Encoder not ready yet (codec may still be negotiating) — bandwidth
-                    # will be applied when the encoder is created via _set_bandwidth().
                     print(f"  ✓ Mumble bandwidth set to {self.config.MUMBLE_BITRATE//1000}kbps "
-                          f"(encoder settings will apply when codec negotiates)")
+                          f"(VBR will apply when codec negotiates)")
             except Exception as qe:
                 print(f"  ⚠ Could not apply audio quality settings: {qe}")
 
