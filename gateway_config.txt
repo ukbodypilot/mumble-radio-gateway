@@ -47,12 +47,15 @@ MUMBLE_PASSWORD =
 # Examples: Radio, General/Radio
 MUMBLE_CHANNEL = 
 
-# Audio bitrate in bits/second
-# 40000 = good | 72000 = high (recommended) | 96000 = maximum
+# Opus encoder bitrate in bits/second (outgoing audio quality)
+# Applied via set_bandwidth() after connection — was not applied before v3.1
+# 40000 = good  |  72000 = high (recommended)  |  96000 = maximum
+# Higher bitrate = better quality but more network bandwidth
 MUMBLE_BITRATE = 72000
 
 # Enable Opus Variable Bit Rate
-# true = adapts quality based on audio (recommended)
+# true = Opus adapts bitrate to content (lower during silence, higher during speech)
+# false = constant bitrate (more predictable bandwidth usage)
 MUMBLE_VBR = true
 
 # ============================================================================
@@ -375,7 +378,7 @@ SIGNAL_ATTACK_TIME = 0.5
 
 # Release: seconds of continuous silence required before switching back
 # Prevents the SDR from resuming during brief pauses in speech/audio
-SIGNAL_RELEASE_TIME = 1
+SIGNAL_RELEASE_TIME = 2
 
 # Padding: seconds of silence inserted at each transition (duck-out AND duck-in)
 # Creates a clean audible break so changeovers are not jarring
