@@ -2,7 +2,48 @@
 
 A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-source audio mixing, SDR integration, real-time processing, and extensive features.
 
-![Architecture](gateway_flowchart.jpg)
+```
+╔══════════════════════════════════════════════════════════════════════════════════════╗
+║                       MUMBLE RADIO GATEWAY — AUDIO FLOW                              ║
+╚══════════════════════════════════════════════════════════════════════════════════════╝
+
+  SOURCES                                  MIXER                        DESTINATIONS
+  ───────                       ╔══════════════════════╗                ────────────
+
+  ┌─────────────────┐           ║                      ║   PTT audio  ┌──────────────────┐
+  │  File Playback  │──────────►║                      ╠─────────────►│  Radio TX        │
+  │  Priority 0     │           ║   P R I O R I T Y    ║               │  AIOC USB        │
+  │  WAV·MP3·FLAC   │           ║      M I X E R       ║               │  GPIO PTT        │
+  │  10 slots (0–9) │           ║                      ║               └──────────────────┘
+  └─────────────────┘           ║  Priority-based      ║
+                                ║  source selection    ║   RX audio   ┌──────────────────┐
+  ┌─────────────────┐           ║                      ╠─────────────►│  Mumble TX       │
+  │  Radio RX (P1)  │──────────►║  SDR ducking:        ║               │  Opus VoIP       │
+  │  AIOC USB       │           ║  Radio RX            ║               └──────────────────┘
+  └─────────────────┘           ║    > SDR1 (P1)       ║
+                                ║      > SDR2 (P2)     ║  Mixed audio ┌──────────────────┐
+  ┌─────────────────┐           ║                      ╠─────────────►│  Stream Output   │
+  │  Mumble RX (P1) │──────────►║  Attack / Release /  ║               │  Darkice /       │
+  │  Opus VoIP      │           ║  Padding on each     ║               │  Broadcastify    │
+  └─────────────────┘           ║  transition          ║               └──────────────────┘
+                                ║                      ║
+  ┌─────────────────┐           ║  Audio Processing:   ║  EchoLink    ┌──────────────────┐
+  │  SDR1 (P2)      │──────────►║  VAD · Noise Gate    ╠─────────────►│  EchoLink TX     │
+  │  ALSA Loopback  │  [DUCK]   ║  AGC · HPF           ║               │  Named Pipes     │
+  │  ■ cyan bar     │           ║  Wiener · Echo Canc  ║               └──────────────────┘
+  └─────────────────┘           ║                      ║
+                                ╚══════════════════════╝
+  ┌─────────────────┐
+  │  SDR2 (P2)      │──────────► [DUCK: by Radio RX or SDR1]
+  │  ALSA Loopback  │
+  │  ■ magenta bar  │           Duck priority:  Radio RX  >  SDR1 (P1)  >  SDR2 (P2)
+  └─────────────────┘
+
+  ┌─────────────────┐           Each duck transition uses attack / release / padding:
+  │  EchoLink (P3)  │──────────►  [source active] → silence gap → [audio switches]
+  │  Named Pipes    │             [source silent ] → silence gap → [audio restores]
+  └─────────────────┘
+```
 
 ## Table of Contents
 
