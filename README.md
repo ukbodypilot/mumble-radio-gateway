@@ -32,7 +32,8 @@ A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-
 Priority 0 (Highest) → File Playback    [PTT enabled]
 Priority 1           → Radio RX         [No PTT]
 Priority 1           → Mumble RX        [No PTT]
-Priority 2           → SDR Receiver     [No PTT, with ducking]
+Priority 2           → SDR1 Receiver    [No PTT, with ducking]
+Priority 2           → SDR2 Receiver    [No PTT, with ducking]
 Priority 3 (Lowest)  → EchoLink        [No PTT]
 ```
 
@@ -40,27 +41,32 @@ Priority 3 (Lowest)  → EchoLink        [No PTT]
    - 10 announcement slots (keys 1-9 + Station ID on 0)
    - WAV, MP3, FLAC support with automatic resampling
    - Volume normalization and per-file controls
-   - **Triggers PTT** when playing
-   
+   - **Triggers PTT** when playing; Radio RX still forwarded to Mumble
+
 #### 2. **Radio RX** (Priority 1)
    - AIOC USB audio interface
    - GPIO PTT control
    - Automatic audio processing pipeline
    - Independent mute control
 
-#### 3. **SDR Receiver** (Priority 2, with ducking)
+#### 3. **SDR1 Receiver** (Priority 2, with ducking)
    - ALSA loopback device input
-   - Second simultaneous receiver
-   - **Audio ducking**: SDR silenced when other sources active (default)
    - Independent volume, mute, and duck controls
    - Real-time level display (cyan bar)
+   - Ducked by Radio RX and higher-priority SDR
 
-#### 4. **Mumble RX** (Priority 1)
+#### 4. **SDR2 Receiver** (Priority 2, with ducking)
+   - Second independent ALSA loopback input
+   - Same controls as SDR1 but independent (`x` to mute)
+   - Real-time level display (magenta bar)
+   - Priority-based ducking vs SDR1 (configurable)
+
+#### 5. **Mumble RX** (Priority 1)
    - VoIP audio from Mumble server
    - Opus codec, low latency
    - Routes to radio TX with auto-PTT
 
-#### 5. **EchoLink** (Priority 3)
+#### 6. **EchoLink** (Priority 3)
    - Named pipe integration
    - TheLinkBox compatible
    - Optional routing to/from Mumble and Radio
@@ -93,9 +99,47 @@ The SDR source features **audio ducking** to prevent interference with primary c
 ```
 
 **Controls:**
-- Press `d` to toggle ducking on/off at runtime
-- Config: `SDR_DUCK = true` (default)
-- Status indicator: `[D]` flag when ducking enabled
+- Press `d` to toggle SDR1 ducking on/off at runtime
+- Config: `SDR_DUCK = true` / `SDR2_DUCK = true` (default)
+- Status indicator: `[D]` flag when SDR1 ducking enabled
+
+### Dual SDR with Priority Ducking
+
+Two SDR inputs can run simultaneously with configurable priority:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  PRIORITY HIERARCHY                                          │
+│                                                              │
+│  1. Radio RX (AIOC)  ← always top priority, ducks all SDRs  │
+│  2. SDR1 (priority=1) ← ducks SDR2 if both have signal      │
+│  3. SDR2 (priority=2) ← lowest, ducked by SDR1 and radio    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Example use cases:**
+- **Scanner + web SDR**: SDR1 = local scanner (priority 1), SDR2 = websdr.org feed (priority 2) — scanner ducks the web SDR when active
+- **Two frequencies**: Monitor VHF and UHF simultaneously; higher-priority channel interrupts the other
+- **Remote + local**: Local SDR1 takes priority over a remote SDR2 pipe
+
+**Configuration:**
+```ini
+ENABLE_SDR  = true      # SDR1 enabled
+ENABLE_SDR2 = true      # SDR2 enabled
+
+SDR_PRIORITY  = 1       # SDR1: higher priority (ducks SDR2)
+SDR2_PRIORITY = 2       # SDR2: lower priority (ducked by SDR1)
+
+SDR_DUCK  = true        # SDR1: ducked by radio RX
+SDR2_DUCK = true        # SDR2: ducked by radio RX and SDR1
+```
+
+**Status bar during dual SDR operation:**
+```
+SDR1:[███----] 45%  SDR2:[--DUCK--]  D    ← SDR2 ducked by SDR1
+SDR1:[--DUCK-]  D   SDR2:[--DUCK--]  D    ← both ducked by radio RX
+SDR1:[███----] 45%  SDR2:[██-----] 30%    ← both playing (mixed)
+```
 
 ### Source Switching — Attack, Release & Transition Padding
 
@@ -200,8 +244,13 @@ AIOC_PTT_CHANNEL = 3
 # Enable features (these are the defaults)
 ENABLE_VAD = true      # Voice Activity Detection
 ENABLE_TTS = true      # Text-to-Speech
-ENABLE_SDR = true      # SDR receiver integration
-SDR_DUCK = true        # SDR ducking (silence when other audio active)
+ENABLE_SDR = true      # SDR1 receiver
+SDR_DUCK = true        # SDR1 ducking (silence when higher priority audio active)
+
+# Optional second SDR receiver
+ENABLE_SDR2 = false    # SDR2 disabled by default
+SDR2_DEVICE_NAME = hw:3,1
+SDR2_PRIORITY = 2      # Ducked by SDR1 and radio RX
 ```
 
 ## SDR Integration
@@ -223,40 +272,53 @@ aplay -l | grep Loopback
 
 ### Loopback Device Pairing
 
-ALSA loopback devices work in **pairs**:
+ALSA loopback devices work in **pairs**. For dual SDR you need two separate loopback card numbers:
 
 ```
-┌─────────────────────────────────────┐
-│  ALSA Loopback Device Pairing       │
-├─────────────────────────────────────┤
-│  hw:X,0 (playback) ↔ hw:X,1 (recv) │
-│                                     │
-│  SDRconnect → hw:2,0                │
-│  Gateway    ← hw:2,1                │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  ALSA Loopback Device Pairing                │
+├──────────────────────────────────────────────┤
+│  hw:X,0 (playback) ↔ hw:X,1 (capture)       │
+│                                              │
+│  SDR1 software → hw:2,0                     │
+│  Gateway SDR1  ← hw:2,1                     │
+│                                              │
+│  SDR2 software → hw:3,0  (different card)   │
+│  Gateway SDR2  ← hw:3,1                     │
+└──────────────────────────────────────────────┘
 ```
 
-**Example:**
-- SDRconnect outputs to `hw:2,0`
-- Gateway reads from `hw:2,1`
+To get two loopback cards, load the module with `numlids=2`:
+```bash
+sudo modprobe snd-aloop numlids=2
+
+# Make permanent
+echo "options snd-aloop numlids=2" | sudo tee /etc/modprobe.d/snd-aloop.conf
+echo "snd-aloop" | sudo tee -a /etc/modules
+```
 
 ### Configuration
 
 ```ini
-# Enable SDR
+# SDR1 (cyan bar)
 ENABLE_SDR = true
 SDR_DEVICE_NAME = hw:2,1
+SDR_PRIORITY = 1           # Higher priority (ducks SDR2)
+SDR_DUCK = true            # Ducked by radio RX
+SDR_MIX_RATIO = 1.0
+SDR_DISPLAY_GAIN = 1.0
+SDR_AUDIO_BOOST = 1.0
+SDR_BUFFER_MULTIPLIER = 8
 
-# Ducking (silence SDR when other audio active)
-SDR_DUCK = true        # true = duck, false = always mix
-SDR_MIX_RATIO = 1.0    # Mix ratio when ducking disabled (1.0 = full)
-
-# Audio levels
-SDR_DISPLAY_GAIN = 1.0     # Status bar sensitivity (1.0 = normal)
-SDR_AUDIO_BOOST = 1.0      # Actual volume boost (1.0 = no change)
-
-# Buffering
-SDR_BUFFER_MULTIPLIER = 8  # Larger = smoother, more latency
+# SDR2 (magenta bar) — disabled by default
+ENABLE_SDR2 = false
+SDR2_DEVICE_NAME = hw:3,1
+SDR2_PRIORITY = 2          # Lower priority (ducked by SDR1)
+SDR2_DUCK = true           # Ducked by radio RX and SDR1
+SDR2_MIX_RATIO = 1.0
+SDR2_DISPLAY_GAIN = 1.0
+SDR2_AUDIO_BOOST = 1.0
+SDR2_BUFFER_MULTIPLIER = 8
 ```
 
 ### Testing SDR Audio
@@ -276,12 +338,14 @@ Press keys during operation to control the gateway:
 ### Mute Controls
 - `t` = TX Mute (Mumble → Radio)
 - `r` = RX Mute (Radio → Mumble)
-- `s` = SDR Mute (mutes SDR completely)
+- `s` = SDR1 Mute
+- `x` = SDR2 Mute
 - `m` = Global Mute (mutes all audio)
 
 ### SDR Controls
-- `d` = **Toggle SDR Ducking** (duck vs. mix mode)
-- `s` = Toggle SDR Mute
+- `d` = **Toggle SDR1 Ducking** (duck vs. mix mode)
+- `s` = Toggle SDR1 Mute
+- `x` = Toggle SDR2 Mute
 
 ### Audio Controls
 - `v` = Toggle VAD on/off
@@ -327,7 +391,8 @@ ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% S
 |-----|-------|---------|
 | **TX:[bar]** | Red | Mumble → Radio (radio TX) |
 | **RX:[bar]** | Green | Radio → Mumble (radio RX) |
-| **SDR:[bar]** | Cyan | SDR receiver audio level |
+| **SDR1:[bar]** | Cyan | SDR1 receiver audio level |
+| **SDR2:[bar]** | Magenta | SDR2 receiver audio level (if enabled) |
 
 **Bar States:**
 ```
@@ -451,25 +516,31 @@ Priority 3 (EchoLink):
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    SDR Ducking Decision Tree                 │
+│              SDR Ducking Decision Tree (per SDR)             │
 └─────────────────────────────────────────────────────────────┘
 
-Is SDR enabled?
-  └─ NO → SDR not in mix
+Is this SDR enabled?
+  └─ NO  → not in mix
   └─ YES ↓
 
-Is SDR muted (s key)?
-  └─ YES → SDR not in mix
-  └─ NO ↓
+Is this SDR muted (s/x key)?
+  └─ YES → stream drained silently, not in mix
+  └─ NO  ↓
 
-Is SDR ducking enabled (d key / SDR_DUCK)?
-  └─ NO → SDR always mixed at SDR_MIX_RATIO
+Is SDR ducking enabled (SDR_DUCK / SDR2_DUCK)?
+  └─ NO  → always mixed at SDR_MIX_RATIO
   └─ YES ↓
 
-Is any other source active (Radio/Mumble/Files)?
-  └─ YES → SDR ducked (silenced)
-  └─ NO  → SDR passes through normally
+Is Radio RX (AIOC) active? [after attack/release/padding]
+  └─ YES → ducked
+  └─ NO  ↓
+
+Is a higher-priority SDR active (lower priority number)?
+  └─ YES → ducked
+  └─ NO  → passes through normally
 ```
+
+Both SDRs go through the same pipeline independently, so SDR1 can be playing while SDR2 is ducked, or vice versa.
 
 ## Configuration Reference
 
@@ -508,22 +579,34 @@ PTT_RELEASE_DELAY = 0.5      # Post-PTT tail (seconds)
 
 ### SDR Integration Settings
 
+Both SDR inputs share the same set of parameters; SDR2 uses the `SDR2_` prefix.
+
 ```ini
-ENABLE_SDR = true                # Enable SDR input
-SDR_DEVICE_NAME = hw:2,1         # ALSA device (see SDR Integration)
-
-# Ducking
-SDR_DUCK = true                  # Duck SDR when other audio active
-SDR_MIX_RATIO = 1.0              # Mix volume when ducking OFF (0.0-1.0)
-
-# Audio Levels
+# ── SDR1 (cyan bar) ──────────────────────────────────
+ENABLE_SDR = true                # Enable SDR1
+SDR_DEVICE_NAME = hw:2,1         # ALSA capture device
+SDR_PRIORITY = 1                 # Duck priority (lower = higher priority)
+SDR_DUCK = true                  # Duck when radio RX or higher-priority SDR active
+SDR_MIX_RATIO = 1.0              # Volume when ducking disabled (0.0-1.0)
 SDR_DISPLAY_GAIN = 1.0           # Status bar sensitivity (1.0-10.0)
 SDR_AUDIO_BOOST = 1.0            # Actual volume boost (1.0-10.0)
+SDR_BUFFER_MULTIPLIER = 8        # Buffer size multiplier (1-16)
 
-# Buffering
-SDR_BUFFER_MULTIPLIER = 8        # Buffer size (1-16)
-                                 # 8 = recommended for network SDRs
+# ── SDR2 (magenta bar) ───────────────────────────────
+ENABLE_SDR2 = false              # Enable SDR2 (disabled by default)
+SDR2_DEVICE_NAME = hw:3,1        # Must be a different device from SDR1
+SDR2_PRIORITY = 2                # Higher number = lower priority (ducked by SDR1)
+SDR2_DUCK = true                 # Duck when radio RX or SDR1 active
+SDR2_MIX_RATIO = 1.0
+SDR2_DISPLAY_GAIN = 1.0
+SDR2_AUDIO_BOOST = 1.0
+SDR2_BUFFER_MULTIPLIER = 8
 ```
+
+**Priority rules:**
+- Radio RX (AIOC) always ducks **all** SDRs, regardless of priority settings
+- Between SDRs: lower `SDR_PRIORITY` number ducks the higher number
+- Set both to the same priority to mix them equally with no inter-SDR ducking
 
 ### Source Switching Settings
 
@@ -655,9 +738,14 @@ arecord -l | grep Loopback
 - Ensure SDR software is outputting to correct device
 
 **Problem: SDR always silent**
-- Press `d` to check if ducking is enabled
-- Press `s` to ensure SDR is not muted
-- Check `SDR_AUDIO_BOOST` setting (try 2.0)
+- Press `d` to check if ducking is enabled (SDR1), check `SDR2_DUCK` in config for SDR2
+- Press `s` (SDR1) or `x` (SDR2) to ensure the SDR is not muted
+- Check `SDR_AUDIO_BOOST` / `SDR2_AUDIO_BOOST` (try 2.0)
+
+**Problem: SDR2 never plays (always ducked by SDR1)**
+- Check `SDR_PRIORITY` and `SDR2_PRIORITY` — if SDR1 has a lower number it will always duck SDR2 when both have signal
+- Set `SDR2_DUCK = false` to mix SDR2 alongside SDR1 regardless of priority
+- Or set both priorities equal (e.g. both = 1) to disable inter-SDR ducking
 
 ### TTS Issues
 
