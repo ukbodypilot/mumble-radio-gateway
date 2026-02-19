@@ -97,6 +97,38 @@ The SDR source features **audio ducking** to prevent interference with primary c
 - Config: `SDR_DUCK = true` (default)
 - Status indicator: `[D]` flag when ducking enabled
 
+### Source Switching — Attack, Release & Transition Padding
+
+Ducking transitions use a three-stage gate to avoid jarring cuts:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  ATTACK: radio signal must be CONTINUOUSLY present for   │
+│  SIGNAL_ATTACK_TIME before the SDR is ducked.            │
+│  Any silence resets the timer — transient noise can      │
+│  never trigger a duck.                                   │
+├──────────────────────────────────────────────────────────┤
+│  TRANSITION (duck-out):                                  │
+│  [SDR playing] → [silence gap] → [radio takes over]     │
+│                   SWITCH_PADDING_TIME                    │
+├──────────────────────────────────────────────────────────┤
+│  RELEASE: radio must be continuously silent for          │
+│  SIGNAL_RELEASE_TIME before the SDR resumes.             │
+│  Brief pauses in speech don't un-duck prematurely.       │
+├──────────────────────────────────────────────────────────┤
+│  TRANSITION (duck-in):                                   │
+│  [radio ends] → [silence gap] → [SDR resumes]           │
+│                 SWITCH_PADDING_TIME                      │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Configuration:**
+```ini
+SIGNAL_ATTACK_TIME  = 0.5   # seconds of continuous signal before duck
+SIGNAL_RELEASE_TIME = 2.0   # seconds of silence before SDR resumes
+SWITCH_PADDING_TIME = 0.2   # silence gap inserted at each transition
+```
+
 ### Text-to-Speech
 - Google TTS (gTTS) integration
 - Mumble text command: `!speak <text>`
@@ -397,9 +429,9 @@ When multiple sources provide audio simultaneously:
 
 ```
 Priority 0 (File Playback):
-  ├─ Triggers PTT
-  ├─ Goes to Radio TX ONLY
-  └─ Highest priority (interrupts everything)
+  ├─ Triggers PTT → announcement sent to Radio TX
+  ├─ Concurrent Radio RX still forwarded to Mumble
+  └─ Highest priority
 
 Priority 1 (Radio RX / Mumble RX):
   ├─ Radio RX → Mumble TX
@@ -491,6 +523,24 @@ SDR_AUDIO_BOOST = 1.0            # Actual volume boost (1.0-10.0)
 # Buffering
 SDR_BUFFER_MULTIPLIER = 8        # Buffer size (1-16)
                                  # 8 = recommended for network SDRs
+```
+
+### Source Switching Settings
+
+```ini
+# Attack: continuous signal required before a duck switch is triggered.
+# Any silence resets this timer — prevents transient noises causing a switch.
+SIGNAL_ATTACK_TIME = 0.5         # seconds (default 0.5)
+
+# Release: continuous silence required before SDR resumes after a duck.
+# Prevents SDR popping back on during natural speech pauses.
+SIGNAL_RELEASE_TIME = 2.0        # seconds (default 2.0)
+
+# Padding: silence inserted at each transition (duck-out AND duck-in).
+# Creates a clean audible break so changeovers are never jarring.
+#   duck-out: [SDR] → silence → [radio takes over]
+#   duck-in:  [radio ends] → silence → [SDR resumes]
+SWITCH_PADDING_TIME = 0.2        # seconds (default 0.2)
 ```
 
 ### File Playback Settings
@@ -748,7 +798,21 @@ class MySource(AudioSource):
 
 ## Changelog
 
-### Current Version - SDR Ducking & Status Improvements
+### Recent Fixes & Improvements
+
+**Source switching rework**
+- Attack timer now requires CONTINUOUSLY unbroken signal; any silence resets it so transient noise can never trigger a duck
+- New `SWITCH_PADDING_TIME`: brief silence inserted at both transition points (duck-out and duck-in) for clean, non-jarring changeovers
+- Duck state machine tracks transitions correctly and extends mute window through padding
+
+**Radio RX during announcement playback**
+- AIOC radio receive audio now continues flowing to Mumble and the streaming output while an announcement is being transmitted on the radio
+- Previously Mumble listeners were cut off for the duration of any file playback
+
+**SDR audio buffer fix (mute/unmute)**
+- SDRSource now always drains the PyAudio input stream even when muted, preventing a burst of stale buffered audio on unmute — mirrors the existing fix in AIOCRadioSource
+
+### Previous - SDR Ducking & Status Improvements
 - **Added**: SDR audio ducking (silence SDR when other audio active)
 - **Added**: Runtime ducking toggle (`d` key)
 - **Added**: Status bar duck indicator (`[D]` flag)
