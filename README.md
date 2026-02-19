@@ -186,7 +186,10 @@ SDR1:[███----] 45%  SDR2:[██-----] 30%    ← both playing (mixed)
 
 ### Source Switching — Attack, Release & Transition Padding
 
-Ducking transitions use a three-stage gate to avoid jarring cuts:
+SDR ducking transitions use a three-stage gate to avoid jarring cuts.
+**Note:** These timers apply only to SDR ducking (Radio RX signal detection).
+File playback is deterministic — PTT fires immediately when a file starts,
+with no attack delay, and the `PTT_ANNOUNCEMENT_DELAY` window handles key-up timing separately.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -212,8 +215,8 @@ Ducking transitions use a three-stage gate to avoid jarring cuts:
 **Configuration:**
 ```ini
 SIGNAL_ATTACK_TIME  = 0.5   # seconds of continuous signal before duck
-SIGNAL_RELEASE_TIME = 2.0   # seconds of silence before SDR resumes
-SWITCH_PADDING_TIME = 0.2   # silence gap inserted at each transition
+SIGNAL_RELEASE_TIME = 1.0   # seconds of silence before SDR resumes
+SWITCH_PADDING_TIME = 1.0   # silence gap inserted at each transition
 ```
 
 ### Text-to-Speech
@@ -611,7 +614,7 @@ OUTPUT_VOLUME = 1.0          # Mumble → Radio TX volume (0.1 - 3.0)
 
 ```ini
 ENABLE_VAD = true            # Enable VAD (default: true)
-VAD_THRESHOLD = -33          # Threshold in dBFS (-50 to -20)
+VAD_THRESHOLD = -40          # Threshold in dBFS (-50 to -20)
                              # More negative = more sensitive
 VAD_ATTACK = 0.02            # How fast to activate (seconds)
 VAD_RELEASE = 0.3            # Hold time after silence (seconds)
@@ -622,8 +625,14 @@ VAD_MIN_DURATION = 0.1       # Minimum transmission length (seconds)
 
 ```ini
 AIOC_PTT_CHANNEL = 3         # GPIO channel (1, 2, or 3)
-PTT_ACTIVATION_DELAY = 0.0   # Pre-PTT delay (seconds)
+PTT_ACTIVATION_DELAY = 0.1   # Pre-PTT delay (seconds) — squelch tail settle time
 PTT_RELEASE_DELAY = 0.5      # Post-PTT tail (seconds)
+
+# Announcement / file playback PTT key-up delay
+# After PTT is keyed, audio is held for this many seconds while the radio
+# transmitter fully activates.  File position does not advance during this
+# window, so no audio is lost.
+PTT_ANNOUNCEMENT_DELAY = 0.5 # seconds (default 0.5 — increase if first syllable is clipped)
 ```
 
 ### SDR Integration Settings
@@ -681,6 +690,10 @@ SWITCH_PADDING_TIME = 0.2        # seconds (default 0.2)
 ENABLE_PLAYBACK = true               # Enable file playback
 PLAYBACK_DIRECTORY = audio           # Directory for audio files
 PLAYBACK_ANNOUNCEMENT_INTERVAL = 0   # Auto-play interval (0 = disabled)
+
+PTT_ANNOUNCEMENT_DELAY = 0.5         # Seconds after PTT key-up before audio starts
+                                     # Radio TX must be keyed before audio begins
+                                     # File position held during this window (no audio lost)
 ```
 
 **File Naming:**
@@ -694,7 +707,7 @@ PLAYBACK_ANNOUNCEMENT_INTERVAL = 0   # Auto-play interval (0 = disabled)
 ENABLE_TTS = true            # Enable TTS (requires gtts)
 ENABLE_TEXT_COMMANDS = true  # Allow Mumble text commands
 TTS_VOLUME = 1.0             # TTS volume boost (1.0-3.0)
-PTT_TTS_DELAY = 0.25         # Silence padding before TTS (seconds)
+PTT_TTS_DELAY = 1.0          # Silence padding before TTS (seconds)
 ```
 
 ### Audio Processing Settings
@@ -841,6 +854,14 @@ arecord -l | grep Loopback
 - Disable file playback if files are looping
 - Restart gateway
 
+**Problem: Announcement first syllable clipped**
+- Increase `PTT_ANNOUNCEMENT_DELAY` (try 1.0 or 1.5)
+- Radio needs more time to key up before audio begins
+
+**Problem: Announcement sounds like it starts mid-sentence**
+- Ensure `PTT_ANNOUNCEMENT_DELAY` is set (default 0.5)
+- This window holds the file position frozen — no audio is lost during key-up
+
 ## Advanced Features
 
 ### Darkice Streaming
@@ -936,6 +957,15 @@ class MySource(AudioSource):
 ## Changelog
 
 ### Recent Fixes & Improvements
+
+**Announcement playback — PTT and stuttering fixes**
+- File playback audio is now treated as deterministically active; it no longer goes through the SDR attack hysteresis timer that was causing 0.5 s of the real audio to be discarded before PTT triggered, followed by a 1.0 s silence gap that dropped PTT altogether
+- Duck-out transition padding no longer suppresses file playback audio — it applies only to SDR/radio transitions as intended; SDRs are still ducked immediately
+- New `PTT_ANNOUNCEMENT_DELAY` (default 0.5 s): after PTT is keyed, file position is held frozen for this window while the radio transmitter activates; no audio is consumed or lost during key-up
+- Previously the delay was applied by discarding already-read chunks; now the file source returns silence without advancing position so the start of every announcement is preserved
+
+**Default parameter updates**
+- `PTT_ACTIVATION_DELAY` 0.0 → 0.1, `VAD_THRESHOLD` −33 → −40, `SIGNAL_ATTACK_TIME` 0.1 → 0.5, `SIGNAL_RELEASE_TIME` 0.5 → 1.0, `SWITCH_PADDING_TIME` 0.2 → 1.0, `PTT_TTS_DELAY` 0.25 → 1.0, `SDR_DEVICE_NAME` hw:5,1 → hw:6,1
 
 **Source switching rework**
 - Attack timer now requires CONTINUOUSLY unbroken signal; any silence resets it so transient noise can never trigger a duck

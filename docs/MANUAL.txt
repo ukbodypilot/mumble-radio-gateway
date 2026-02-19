@@ -1,0 +1,538 @@
+================================================================================
+MUMBLE RADIO GATEWAY - USER GUIDE
+================================================================================
+
+VERSION: 3.0
+Last Updated: February 2026
+
+================================================================================
+OVERVIEW
+================================================================================
+
+The Mumble Radio Gateway bridges a radio (via AIOC - All-In-One Cable) with
+a Mumble voice chat server. It provides:
+
+- Bidirectional audio bridge: Mumble VoIP ↔ Amateur Radio (AIOC USB)
+- Multi-source audio mixing with priority-based source selection
+- Automatic PTT control with configurable key-up delay
+- Voice Activity Detection (Radio RX → Mumble)
+- Dual SDR receiver inputs with independent priority ducking
+- File playback / announcement system (10 slots, keys 0-9)
+- Text-to-Speech via Mumble text commands (!speak)
+- EchoLink bridge via named pipes (TheLinkBox compatible)
+- Broadcastify / Icecast live streaming
+- Real-time audio processing (noise gate, AGC, filters, echo cancellation)
+- Live status monitoring with keyboard controls
+
+================================================================================
+AUDIO SOURCES AND PRIORITY
+================================================================================
+
+Sources are mixed with the following priority hierarchy:
+
+  Mumble RX   — DIRECT PATH (bypasses mixer)
+                Audio from Mumble users is captured via callback, PTT is
+                keyed immediately, and audio is written directly to the AIOC
+                output (radio mic input). This is the primary gateway path:
+                Mumble users speak → radio transmits.
+                Suppressed only when TX is muted (t key) or manual PTT active.
+
+  Priority 0  — File Playback
+                Announcement files (WAV, MP3, FLAC). Triggers PTT.
+                Radio RX continues flowing to Mumble during playback.
+                PTT_ANNOUNCEMENT_DELAY holds audio until radio is keyed.
+
+  Priority 1  — Radio RX (AIOC)
+                Audio from radio → forwarded to Mumble TX and stream output.
+                Ducks all SDR sources when active.
+
+  Priority 2  — SDR1 and SDR2 (ALSA Loopback)
+                Software-defined radio inputs via ALSA loopback devices.
+                Ducked by Radio RX and by higher-priority SDRs.
+                Status bar: cyan (SDR1), magenta (SDR2).
+
+  Priority 3  — EchoLink
+                Named pipe integration (lowest priority).
+
+================================================================================
+KEYBOARD CONTROLS (Runtime)
+================================================================================
+
+MUTE CONTROLS
+-------------
+  t = Toggle TX Mute (Mumble → Radio)
+      Mutes audio going TO the radio. Also blocks PTT.
+
+  r = Toggle RX Mute (Radio → Mumble)
+      Mutes audio coming FROM the radio to Mumble.
+
+  m = Global Mute Toggle
+      Mutes BOTH directions at once.
+
+  s = Toggle SDR1 Mute
+      Silences the SDR1 source (stream is still drained to prevent buffer burst).
+
+  x = Toggle SDR2 Mute
+      Silences the SDR2 source.
+
+PTT CONTROL
+-----------
+  p = Toggle Manual PTT Mode
+      ON  = PTT stays keyed until you press 'p' again.
+      OFF = Automatic PTT based on Mumble audio.
+
+      Use cases:
+      - Long transmissions requiring continuous PTT
+      - Testing radio transmitter without Mumble audio
+      - Override automatic PTT for any reason
+
+SDR CONTROLS
+------------
+  d = Toggle SDR1 Ducking
+      ON  = SDR1 is silenced when Radio RX is active (default)
+      OFF = SDR1 mixed with Radio RX at SDR_MIX_RATIO
+
+AUDIO LEVEL
+-----------
+  , = Decrease RX Volume (Radio → Mumble, steps of 0.1x)
+  . = Increase RX Volume (Radio → Mumble, steps of 0.1x)
+
+AUDIO PROCESSING TOGGLES
+-------------------------
+  v = Toggle VAD (Voice Activity Detection)
+      ON  = Only send to Mumble when radio signal detected (recommended)
+      OFF = Continuous transmission to Mumble (may transmit noise)
+
+  n = Toggle Noise Gate
+      Cuts audio below the noise gate threshold.
+
+  f = Toggle High-Pass Filter (HPF)
+      Removes low-frequency rumble and hum.
+
+  a = Toggle AGC (Automatic Gain Control)
+      Normalises audio volume automatically.
+
+  w = Toggle Wiener Noise Suppression
+      Advanced background noise removal.
+
+  e = Toggle Echo Cancellation
+      Experimental echo removal.
+
+FILE PLAYBACK
+-------------
+  0         = Play Station ID (station_id.mp3 / .wav)
+  1 - 9     = Play announcement files (mapped alphabetically or by filename prefix)
+  -         = Stop playback and clear queue
+
+STREAM HEALTH
+-------------
+  (no key)  = Stream health can be toggled via config (ENABLE_STREAM_HEALTH)
+              See gateway_config.txt for details.
+
+================================================================================
+STATUS LINE
+================================================================================
+
+Example:
+  ACTIVE: ✓ M:✓ PTT:ON VAD:🔊 -28dB TX:[████--] 55% RX:[██----] 28% SDR1:[████] 60% Vol:1.0x 1234567890 [D]
+
+Breakdown:
+----------
+
+ACTIVE / IDLE / STOPPED
+  ✓ = Audio capture working
+  ⚠ = Audio idle
+  ✗ = Audio stopped (will auto-restart)
+
+M:✓ / M:✗
+  Mumble connection status.
+
+PTT:ON / PTT:-- / PTT:M-ON / PTT:M--
+  ON   = Auto PTT active (radio transmitting)
+  --   = PTT inactive
+  M-ON = Manual PTT mode, keyed
+  M--  = Manual PTT mode, not keyed
+
+VAD:🔊 / VAD:-- / VAD:✗
+  🔊  = Signal detected, transmitting to Mumble
+  --  = VAD enabled but silent
+  ✗   = VAD disabled (continuous transmission)
+  -XXdB = Current audio level in dBFS
+
+TX:[bar] %
+  Red bar — Mumble → Radio TX audio level.
+
+RX:[bar] %
+  Green bar — Radio → Mumble RX audio level.
+  Shows 0% when VAD is blocking (no signal detected).
+
+SDR1:[bar] %
+  Cyan bar — SDR1 audio level.
+  Shows [---MUTE---] when muted, [---DUCK---] when ducked.
+
+SDR2:[bar] %
+  Magenta bar — SDR2 audio level (only shown when SDR2 enabled).
+
+Vol:X.Xx
+  RX volume multiplier (adjust with , and . keys).
+
+0 1 2 3 4 5 6 7 8 9
+  File playback slots. Colour:
+    Green  = File loaded and ready
+    Red    = File currently playing
+    White  = No file assigned to this slot
+
+[N,F,A,D,W,S,E,X]
+  Processing flags (only enabled features shown):
+    N = Noise Gate
+    F = High-Pass Filter
+    A = AGC
+    D = SDR1 Ducking enabled
+    W = Wiener noise suppression
+    S = Spectral noise suppression
+    E = Echo Cancellation
+    X = Stream Health DISABLED (missing X = enabled)
+
+R:n
+  Stream restart count. Only shown if > 0.
+
+================================================================================
+CONFIGURATION FILE: gateway_config.txt
+================================================================================
+
+The gateway reads configuration from gateway_config.txt in the same directory.
+
+KEY SETTINGS
+------------
+
+Mumble Server:
+  MUMBLE_SERVER   = 192.168.2.126
+  MUMBLE_PORT     = 64738
+  MUMBLE_USERNAME = RadioGateway
+  MUMBLE_PASSWORD =
+  MUMBLE_CHANNEL  =
+
+Audio:
+  AUDIO_RATE       = 48000
+  AUDIO_CHUNK_SIZE = 2400
+  INPUT_VOLUME     = 1.0
+  OUTPUT_VOLUME    = 1.0
+
+AIOC Device:
+  AIOC_VID         = 0x1209
+  AIOC_PID         = 0x7388
+  AIOC_PTT_CHANNEL = 3
+
+PTT Timing:
+  PTT_RELEASE_DELAY      = 0.5   # Tail after audio stops (seconds)
+  PTT_ACTIVATION_DELAY   = 0.1   # Pre-PTT delay for squelch settle (seconds)
+  PTT_ANNOUNCEMENT_DELAY = 0.5   # Key-up hold before announcement audio starts (seconds)
+                                  # File position is frozen during this window — no audio lost
+
+Voice Activity Detection (VAD):
+  ENABLE_VAD     = true
+  VAD_THRESHOLD  = -40   # dBFS  (-40 = sensitive, -25 = less sensitive)
+  VAD_ATTACK     = 0.02  # seconds
+  VAD_RELEASE    = 0.3   # seconds
+  VAD_MIN_DURATION = 0.1 # seconds
+
+SDR Inputs:
+  ENABLE_SDR         = true
+  SDR_DEVICE_NAME    = hw:6,1    # ALSA loopback capture device
+  SDR_PRIORITY       = 1
+  SDR_DUCK           = true
+  SDR_AUDIO_BOOST    = 1.0
+
+  ENABLE_SDR2        = false
+  SDR2_DEVICE_NAME   = hw:4,1
+  SDR2_PRIORITY      = 2
+  SDR2_DUCK          = true
+  SDR2_AUDIO_BOOST   = 1.0
+
+Source Switching Hysteresis (SDR ducking):
+  SIGNAL_ATTACK_TIME  = 0.5  # Continuous signal before duck fires (seconds)
+  SIGNAL_RELEASE_TIME = 1.0  # Continuous silence before SDR resumes (seconds)
+  SWITCH_PADDING_TIME = 1.0  # Silence gap inserted at each transition (seconds)
+
+File Playback:
+  ENABLE_PLAYBACK               = true
+  PLAYBACK_DIRECTORY            = ./audio/
+  PLAYBACK_ANNOUNCEMENT_INTERVAL = 0   # seconds (0 = disabled)
+
+Text-to-Speech:
+  ENABLE_TTS          = true
+  ENABLE_TEXT_COMMANDS = true
+  TTS_VOLUME          = 1.0
+  PTT_TTS_DELAY       = 1.0   # Padding before TTS audio (seconds)
+
+Audio Processing:
+  ENABLE_NOISE_GATE          = false
+  NOISE_GATE_THRESHOLD       = -32
+  ENABLE_HIGHPASS_FILTER     = false
+  HIGHPASS_CUTOFF_FREQ       = 120
+  ENABLE_AGC                 = false
+  ENABLE_NOISE_SUPPRESSION   = false
+  NOISE_SUPPRESSION_METHOD   = spectral
+  ENABLE_ECHO_CANCELLATION   = false
+
+Logging:
+  VERBOSE_LOGGING         = false
+  STATUS_UPDATE_INTERVAL  = 1
+
+See gateway_config.txt for the complete list of all parameters with full documentation.
+
+================================================================================
+AUDIO FLOW
+================================================================================
+
+Mumble → Radio (TX Path — direct):
+  1. Audio received from Mumble server via callback
+  2. PTT activated immediately (unless TX muted or manual PTT mode)
+  3. Audio written directly to AIOC output → Radio mic input
+  4. PTT released after PTT_RELEASE_DELAY when audio stops
+
+File / Announcement → Radio (TX Path — via mixer):
+  1. File loaded from audio/ directory (WAV, MP3, FLAC)
+  2. PTT keyed. PTT_ANNOUNCEMENT_DELAY window begins.
+  3. File position is frozen — silence sent to AIOC during key-up.
+  4. After delay, actual audio flows to AIOC output → Radio TX.
+  5. Concurrent Radio RX still forwarded to Mumble during playback.
+  6. PTT released when file finishes (after PTT_RELEASE_DELAY).
+
+Radio → Mumble (RX Path):
+  1. Audio captured from radio output → AIOC input
+  2. Audio processing applied (noise gate, VAD, filters, etc.)
+  3. VAD checks if signal is present
+  4. If VAD active, audio sent to Mumble server
+  5. If VAD inactive, audio dropped (prevents buffer buildup)
+  6. RX mute can block this entire path
+
+================================================================================
+SDR INTEGRATION
+================================================================================
+
+The gateway accepts audio from up to two SDR (Software-Defined Radio) receivers
+via ALSA loopback devices.
+
+SETUP
+-----
+  1. Load the ALSA loopback module:
+       sudo modprobe snd-aloop numlids=2
+
+  2. Make permanent:
+       echo "options snd-aloop numlids=2" | sudo tee /etc/modprobe.d/snd-aloop.conf
+       echo "snd-aloop" | sudo tee -a /etc/modules
+
+  3. Configure SDR software (e.g. SDRconnect) to output to hw:X,0
+     Gateway reads from hw:X,1 (the capture side of the same loopback card)
+
+PRIORITY AND DUCKING
+--------------------
+  Radio RX (AIOC)  → ducks all SDRs when active
+  SDR1 (priority 1) → ducks SDR2 when both have signal
+  SDR2 (priority 2) → lowest, ducked by SDR1 and radio
+
+  Ducking uses a three-stage gate (applies to SDR sources only):
+
+    ATTACK:   Radio signal must be CONTINUOUSLY present for SIGNAL_ATTACK_TIME
+              before the SDR is ducked. Any silence resets the timer.
+
+    PADDING:  At each transition (duck-out or duck-in), SWITCH_PADDING_TIME
+              seconds of silence is inserted so changeovers are not jarring.
+
+    RELEASE:  Radio must be continuously silent for SIGNAL_RELEASE_TIME
+              before the SDR resumes.
+
+  File playback is deterministic and does NOT use the attack/release system —
+  PTT fires immediately when a file starts.
+
+================================================================================
+RECENT CHANGES (v3.0)
+================================================================================
+
+ANNOUNCEMENT PLAYBACK — PTT AND AUDIO FIXES
+--------------------------------------------
+- Fixed: File playback audio was incorrectly fed through the SDR attack
+  hysteresis (0.5 s), causing a duck-out transition that inserted 1.0 s of
+  silence with PTT dropped — making every announcement stutter and lose its
+  first second of audio.
+- Fixed: Duck-out transition padding no longer suppresses file playback (PTT)
+  audio. It applies only to SDR/Radio RX transitions as intended.
+- NEW: PTT_ANNOUNCEMENT_DELAY (default 0.5 s) — after PTT is keyed, the file
+  source returns silence WITHOUT advancing the file position, so the radio can
+  fully key up before speech begins. No audio is lost during this window.
+
+DEFAULT PARAMETER UPDATES
+--------------------------
+  PTT_ACTIVATION_DELAY   0.0  → 0.1
+  VAD_THRESHOLD         -33   → -40
+  SIGNAL_ATTACK_TIME     0.1  → 0.5
+  SIGNAL_RELEASE_TIME    0.5  → 1.0
+  SWITCH_PADDING_TIME    0.2  → 1.0
+  PTT_TTS_DELAY          0.25 → 1.0
+  SDR_DEVICE_NAME        hw:5,1 → hw:6,1
+
+MUMBLE RX DOCUMENTATION CLARIFICATION
+---------------------------------------
+- Mumble RX bypasses the mixer entirely via a direct callback path
+- PTT is keyed immediately when Mumble audio is detected
+- Audio is written directly to AIOC output → Radio TX
+- Corrected all documentation that previously said "No PTT" for Mumble RX
+
+RADIO RX DURING ANNOUNCEMENTS
+-------------------------------
+- AIOC radio receive audio now continues flowing to Mumble and stream output
+  while an announcement is being transmitted. Listeners are no longer cut off.
+
+SDR AUDIO BUFFER FIX
+---------------------
+- SDRSource always drains the PyAudio input stream even when muted, preventing
+  a burst of stale buffered audio on unmute.
+
+SOURCE SWITCHING REWORK
+------------------------
+- Attack timer requires CONTINUOUSLY unbroken signal — transient noise can
+  never trigger a source switch.
+- SWITCH_PADDING_TIME inserts clean silence at both duck-out and duck-in
+  transitions so changeovers are not jarring.
+
+DUAL SDR SUPPORT
+-----------------
+- Two independent SDR inputs (SDR1, SDR2) with configurable priority.
+- SDR1 ducks SDR2 when both have signal (configurable).
+- Independent mute controls (s / x keys), independent level bars.
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+PROBLEM: Announcement starts mid-sentence / first syllable clipped
+SOLUTION:
+  - Increase PTT_ANNOUNCEMENT_DELAY (try 1.0 or 1.5)
+  - The radio needs more time to fully key up before audio begins
+
+PROBLEM: Announcement only plays silence / no audio heard
+SOLUTION:
+  - Check TX is not muted (press 't' to unmute)
+  - Ensure ENABLE_PLAYBACK = true in config
+  - Verify audio files exist in PLAYBACK_DIRECTORY
+
+PROBLEM: PTT not releasing or sticking
+SOLUTION:
+  - If in Manual PTT mode, press 'p' to release
+  - Adjust PTT_RELEASE_DELAY
+  - Check TX mute status
+
+PROBLEM: PTT doesn't activate
+SOLUTION:
+  - Check AIOC_PTT_CHANNEL (try 1, 2, or 3)
+  - Verify AIOC device is detected on startup
+  - Check TX is not muted
+
+PROBLEM: Audio capture shows STOPPED or frequent restarts
+SOLUTION:
+  - Increase AUDIO_CHUNK_SIZE to 4800 or higher
+  - Enable ENABLE_STREAM_HEALTH = true
+  - Try different USB port or cable
+
+PROBLEM: -9999 Unanticipated host error
+SOLUTION:
+  - Enable ENABLE_STREAM_HEALTH = true
+  - Increase AUDIO_CHUNK_SIZE
+  - Check system load (htop)
+  - Verify AIOC is on a dedicated USB controller
+
+PROBLEM: No audio from SDR
+SOLUTION:
+  - Check snd-aloop is loaded: lsmod | grep snd_aloop
+  - Verify device exists: arecord -l | grep Loopback
+  - Confirm SDR software outputs to hw:X,0 (not hw:X,1)
+
+PROBLEM: SDR always ducked (never plays)
+SOLUTION:
+  - Check Radio RX is not always active (VAD may be too sensitive)
+  - Press 'd' to toggle SDR1 ducking off temporarily
+  - Check SDR_AUDIO_BOOST / SDR2_AUDIO_BOOST (signal may be too quiet)
+
+PROBLEM: SDR2 always ducked by SDR1
+SOLUTION:
+  - Set SDR2_DUCK = false to mix alongside SDR1
+  - Or set both SDR_PRIORITY = SDR2_PRIORITY to disable inter-SDR ducking
+
+PROBLEM: Too much background noise transmitted to Mumble
+SOLUTION:
+  - Enable VAD (press 'v' or set ENABLE_VAD = true)
+  - Adjust VAD_THRESHOLD (more negative = more sensitive)
+  - Enable Noise Gate (press 'n')
+
+PROBLEM: Mumble disconnects frequently
+SOLUTION:
+  - Check network connection
+  - Increase NETWORK_TIMEOUT
+  - Verify MUMBLE_RECONNECT = true
+
+PROBLEM: TTS "gTTS returned HTML error page"
+SOLUTION:
+  - Rate limited by Google — wait 1-2 minutes
+  - Check internet connection
+
+================================================================================
+PERFORMANCE TIPS
+================================================================================
+
+For Low Latency:
+  - Use smaller AUDIO_CHUNK_SIZE (1200-2400)
+  - Reduce PTT_RELEASE_DELAY
+  - Set TCP_NODELAY = true
+  - Disable unnecessary audio processing
+
+For Stability:
+  - Use larger AUDIO_CHUNK_SIZE (4800+)
+  - Enable ENABLE_STREAM_HEALTH = true
+  - Use dedicated USB port for AIOC
+  - Reduce system load
+
+For Best Audio Quality:
+  - Enable ENABLE_NOISE_GATE = true
+  - Enable ENABLE_HIGHPASS_FILTER = true
+  - Adjust VAD_THRESHOLD to match your radio squelch
+
+For Announcements:
+  - Set PTT_ANNOUNCEMENT_DELAY = 0.5 to 1.0 (radio dependent)
+  - Use WAV files at 48 kHz / 16-bit mono for best compatibility
+  - Place files in audio/ directory with numeric prefix for easy mapping
+
+================================================================================
+SYSTEM REQUIREMENTS
+================================================================================
+
+Hardware:
+  - AIOC (All-In-One Cable) USB audio device
+  - Radio with audio input/output
+  - Computer with USB port (Raspberry Pi 4 or similar)
+  - Network connection to Mumble server
+
+Software:
+  - Python 3.7+
+  - pymumble_py3
+  - pyaudio / portaudio19-dev
+  - soundfile, resampy (for non-WAV file playback)
+  - gtts (optional, for Text-to-Speech)
+  - hidapi (for AIOC PTT HID control)
+
+Installation:
+  sudo apt-get install python3 python3-pip portaudio19-dev libsndfile1
+  pip3 install pymumble pyaudio soundfile resampy gtts hidapi --break-system-packages
+
+================================================================================
+SUPPORT & DOCUMENTATION
+================================================================================
+
+Configuration file: gateway_config.txt (same directory as the script)
+Full README:        README.md
+EchoLink setup:     docs/THELINKBOX_SETUP.md
+TTS commands:       docs/TTS_TEXT_COMMANDS_GUIDE.md
+
+================================================================================
+END OF USER GUIDE
+================================================================================
