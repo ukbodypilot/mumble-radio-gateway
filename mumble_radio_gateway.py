@@ -275,9 +275,12 @@ class AIOCRadioSource(AudioSource):
         
     def get_audio(self, chunk_size):
         """Get audio from radio via AIOC input stream"""
+        # Reset the full-duplex cache every call so stale data is never forwarded
+        self._rx_cache = None
+
         if not self.gateway.input_stream or self.gateway.restarting_stream:
             return None, False
-        
+
         try:
             # Always read from the AIOC stream, even when muted.
             # If we skip the read while muted the PyAudio buffer fills up,
@@ -297,41 +300,44 @@ class AIOCRadioSource(AudioSource):
                     return None, False
                 else:
                     raise  # Re-raise other IOErrors
-            
+
             # Update capture time so stream-health checks stay happy
             self.gateway.last_audio_capture_time = time.time()
             self.gateway.last_successful_read = time.time()
             self.gateway.audio_capture_active = True
 
-            # When muted: buffer drained (stream stays alive) but return nothing
+            # When muted: buffer drained (stream stays alive) but return nothing.
+            # _rx_cache stays None so full-duplex forwarding also respects mute.
             if self.gateway.rx_muted:
                 return None, False
-            
+
             # Calculate audio level (for status display)
             current_level = self.gateway.calculate_audio_level(data)
             if current_level > self.gateway.tx_audio_level:
                 self.gateway.tx_audio_level = current_level
             else:
                 self.gateway.tx_audio_level = int(self.gateway.tx_audio_level * 0.7 + current_level * 0.3)
-            
+
             # Apply volume if needed
             if self.volume != 1.0 and data:
                 import array
                 samples = array.array('h', data)
                 samples = array.array('h', [int(s * self.volume) for s in samples])
                 data = samples.tobytes()
-            
+
             # Apply audio processing
             data = self.gateway.process_audio_for_mumble(data)
-            
+
+            # Cache the processed audio for full-duplex forwarding during PTT.
+            # The transmit loop reads this directly so RX → Mumble works even if
+            # VAD is blocking and regardless of ptt_active timing in the mixer.
+            self._rx_cache = data
+
             # Check VAD - always call to keep the envelope/state current.
             should_transmit = self.gateway.check_vad(data)
 
-            # Full-duplex: when the gateway is transmitting (PTT active from file
-            # playback or Mumble RX direct path), bypass the VAD gate so radio RX
-            # still flows to Mumble regardless of signal level.  VAD is for
-            # squelch control when idle; during TX the user explicitly wants to
-            # monitor the channel.
+            # Full-duplex: when the gateway is transmitting (PTT active), bypass
+            # the VAD gate so radio RX still flows to Mumble via the normal path.
             if self.gateway.ptt_active:
                 should_transmit = True
 
@@ -3526,19 +3532,28 @@ class MumbleRadioGateway:
                                         print(f"\n[EchoLink] Send error: {el_err}")
 
                             # Forward concurrent radio RX to Mumble/stream even during
-                            # announcement playback so listeners are not cut off
-                            if rx_audio is not None:
+                            # announcement playback (full-duplex monitoring).
+                            #
+                            # Use _rx_cache from AIOCRadioSource directly — this is set
+                            # on every read regardless of VAD or ptt_active timing, so it
+                            # is always current.  Fall back to the mixer's rx_audio path
+                            # (e.g. if no radio_source is configured).
+                            rx_for_mumble = (
+                                getattr(self.radio_source, '_rx_cache', None)
+                                if self.radio_source else rx_audio
+                            )
+                            if rx_for_mumble is not None:
                                 if (self.mumble and
                                         hasattr(self.mumble, 'sound_output') and
                                         self.mumble.sound_output is not None and
                                         getattr(self.mumble.sound_output, 'encoder_framesize', None) is not None):
                                     try:
-                                        self.mumble.sound_output.add_sound(rx_audio)
+                                        self.mumble.sound_output.add_sound(rx_for_mumble)
                                     except Exception:
                                         pass
                                 if self.stream_output and self.stream_output.connected:
                                     try:
-                                        self.stream_output.send_audio(rx_audio)
+                                        self.stream_output.send_audio(rx_for_mumble)
                                     except Exception:
                                         pass
 
