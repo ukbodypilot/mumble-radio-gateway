@@ -324,9 +324,17 @@ class AIOCRadioSource(AudioSource):
             # Apply audio processing
             data = self.gateway.process_audio_for_mumble(data)
             
-            # Check VAD - should we transmit this?
+            # Check VAD - always call to keep the envelope/state current.
             should_transmit = self.gateway.check_vad(data)
-            
+
+            # Full-duplex: when the gateway is transmitting (PTT active from file
+            # playback or Mumble RX direct path), bypass the VAD gate so radio RX
+            # still flows to Mumble regardless of signal level.  VAD is for
+            # squelch control when idle; during TX the user explicitly wants to
+            # monitor the channel.
+            if self.gateway.ptt_active:
+                should_transmit = True
+
             if should_transmit:
                 return data, False  # Don't trigger PTT (radio RX)
             else:
