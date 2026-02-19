@@ -114,11 +114,24 @@ class Config:
             # SDR Integration
             'ENABLE_SDR': True,
             'SDR_DEVICE_NAME': 'hw:5,1',  # ALSA device name (e.g., 'Loopback', 'hw:5,1')
-            'SDR_DUCK': True,             # Duck SDR: silence SDR when any other source is active (default: True)
+            'SDR_DUCK': True,             # Duck SDR: silence SDR when higher priority source is active
             'SDR_MIX_RATIO': 1.0,        # Volume/mix ratio when ducking is disabled (1.0 = full volume)
             'SDR_DISPLAY_GAIN': 1.0,     # Display sensitivity multiplier (1.0 = normal, higher = more sensitive bar)
             'SDR_AUDIO_BOOST': 1.0,      # Actual audio volume boost (1.0 = no change, 2.0 = 2x louder)
             'SDR_BUFFER_MULTIPLIER': 8,  # Buffer size multiplier (8 = 8x normal buffer for smoother playback)
+            'SDR_PRIORITY': 1,           # SDR priority for ducking (1 = higher priority, 2 = lower priority)
+            # SDR2 Integration (second SDR receiver)
+            'ENABLE_SDR2': True,
+            'SDR2_DEVICE_NAME': 'hw:4,1',
+            'SDR2_DUCK': True,
+            'SDR2_MIX_RATIO': 1.0,
+            'SDR2_DISPLAY_GAIN': 1.0,
+            'SDR2_AUDIO_BOOST': 1.0,
+            'SDR2_BUFFER_MULTIPLIER': 8,
+            'SDR2_PRIORITY': 2,          # SDR2 priority for ducking (1 = higher, 2 = lower)
+            # Signal Detection Hysteresis (prevents stuttering from rapid on/off)
+            'SIGNAL_ATTACK_TIME': 0.1,   # Seconds signal must be present before considered active (0.1 = 100ms, fast attack)
+            'SIGNAL_RELEASE_TIME': 0.5,  # Seconds signal must be absent before considered inactive (0.5 = 500ms, slow release)
             # EchoLink Integration (Phase 3B)
             'ENABLE_ECHOLINK': False,
             'ECHOLINK_RX_PIPE': '/tmp/echolink_rx',
@@ -975,14 +988,15 @@ class EchoLinkSource(AudioSource):
 
 class SDRSource(AudioSource):
     """SDR receiver audio input via ALSA loopback"""
-    def __init__(self, config, gateway):
-        super().__init__("SDR", config)
+    def __init__(self, config, gateway, name="SDR1", sdr_priority=1):
+        super().__init__(name, config)
         self.gateway = gateway
-        self.priority = 2  # Lower priority than radio but higher than files
+        self.priority = 2  # Audio mixer priority (lower than radio/files)
+        self.sdr_priority = sdr_priority  # Priority for SDR-to-SDR ducking (1=higher, 2=lower)
         self.ptt_control = False  # SDR doesn't trigger PTT
         self.volume = 1.0
         self.mix_ratio = 1.0  # Volume applied when ducking is disabled
-        self.duck = True      # When True: silence SDR if any other source is active
+        self.duck = True      # When True: silence SDR if higher priority source is active
         self.enabled = True   # Start enabled by default
         self.muted = False    # Can be muted independently
         
@@ -999,7 +1013,7 @@ class SDRSource(AudioSource):
         self.last_stats_time = time.time()
         
         if self.config.VERBOSE_LOGGING:
-            print(f"[SDR] Initializing SDR audio source...")
+            print(f"[{self.name}] Initializing SDR audio source...")
     
     def setup_audio(self):
         """Initialize SDR audio input from ALSA loopback"""
@@ -1011,20 +1025,28 @@ class SDRSource(AudioSource):
             device_index = None
             device_name = None
             
-            if hasattr(self.config, 'SDR_DEVICE_NAME') and self.config.SDR_DEVICE_NAME:
+            # Determine which config parameter to use based on SDR name
+            if self.name == "SDR2":
+                config_device_attr = 'SDR2_DEVICE_NAME'
+                config_buffer_attr = 'SDR2_BUFFER_MULTIPLIER'
+            else:  # SDR1 or legacy "SDR"
+                config_device_attr = 'SDR_DEVICE_NAME'
+                config_buffer_attr = 'SDR_BUFFER_MULTIPLIER'
+            
+            if hasattr(self.config, config_device_attr) and getattr(self.config, config_device_attr):
                 # User specified a device name
-                target_name = self.config.SDR_DEVICE_NAME
+                target_name = getattr(self.config, config_device_attr)
                 
                 if self.config.VERBOSE_LOGGING:
-                    print(f"[SDR] Searching for device matching: {target_name}")
-                    print(f"[SDR] Available input devices:")
+                    print(f"[{self.name}] Searching for device matching: {target_name}")
+                    print(f"[{self.name}] Available input devices:")
                 
                 # Search for matching device
                 for i in range(self.pyaudio.get_device_count()):
                     info = self.pyaudio.get_device_info_by_index(i)
                     if info['maxInputChannels'] > 0:
                         if self.config.VERBOSE_LOGGING:
-                            print(f"[SDR]   [{i}] {info['name']} (in:{info['maxInputChannels']})")
+                            print(f"[{self.name}]   [{i}] {info['name']} (in:{info['maxInputChannels']})")
                         
                         # Match by name substring OR by hw device number
                         # Examples:
@@ -1052,73 +1074,106 @@ class SDRSource(AudioSource):
                             break
             
             if device_index is None:
-                print(f"[SDR] ✗ SDR device not found")
-                if hasattr(self.config, 'SDR_DEVICE_NAME'):
-                    print(f"[SDR]   Looked for: {self.config.SDR_DEVICE_NAME}")
-                    print(f"[SDR]   Try one of these formats:")
-                    print(f"[SDR]     SDR_DEVICE_NAME = Loopback")
-                    print(f"[SDR]     SDR_DEVICE_NAME = hw:2,0")
-                    print(f"[SDR]   Or enable VERBOSE_LOGGING to see all devices")
+                print(f"[{self.name}] ✗ SDR device not found")
+                if hasattr(self.config, config_device_attr):
+                    print(f"[{self.name}]   Looked for: {getattr(self.config, config_device_attr)}")
+                    print(f"[{self.name}]   Try one of these formats:")
+                    print(f"[{self.name}]     {config_device_attr} = Loopback")
+                    print(f"[{self.name}]     {config_device_attr} = hw:2,0")
+                    print(f"[{self.name}]   Or enable VERBOSE_LOGGING to see all devices")
                 return False
             
             # Open input stream with larger buffer to prevent stuttering
-            buffer_multiplier = getattr(self.config, 'SDR_BUFFER_MULTIPLIER', 4)
+            buffer_multiplier = getattr(self.config, config_buffer_attr, 4)
             buffer_size = self.config.AUDIO_CHUNK_SIZE * buffer_multiplier
             
             # Note: Priority scheduling removed - let system manage all threads equally
             # Manual priority tweaking was causing TTS glitches and display freezing
             
-            self.input_stream = self.pyaudio.open(
-                format=pyaudio.paInt16,
-                channels=self.config.AUDIO_CHANNELS,
-                rate=self.config.AUDIO_RATE,
-                input=True,
-                input_device_index=device_index,
-                frames_per_buffer=buffer_size,
-                stream_callback=None
-            )
+            # Auto-detect supported channel count
+            # Try stereo first, fall back to mono
+            device_info = self.pyaudio.get_device_info_by_index(device_index)
+            max_channels = device_info['maxInputChannels']
+            
+            # Use 2 channels if supported (stereo), otherwise use 1 (mono)
+            sdr_channels = min(2, max_channels)
+            
+            try:
+                self.input_stream = self.pyaudio.open(
+                    format=pyaudio.paInt16,
+                    channels=sdr_channels,
+                    rate=self.config.AUDIO_RATE,
+                    input=True,
+                    input_device_index=device_index,
+                    frames_per_buffer=buffer_size,
+                    stream_callback=None
+                )
+                self.sdr_channels = sdr_channels  # Store for later use
+            except Exception as e:
+                # If 2 channels failed, try 1 channel
+                if sdr_channels == 2:
+                    if self.config.VERBOSE_LOGGING:
+                        print(f"[{self.name}] Stereo failed, trying mono...")
+                    sdr_channels = 1
+                    self.input_stream = self.pyaudio.open(
+                        format=pyaudio.paInt16,
+                        channels=sdr_channels,
+                        rate=self.config.AUDIO_RATE,
+                        input=True,
+                        input_device_index=device_index,
+                        frames_per_buffer=buffer_size,
+                        stream_callback=None
+                    )
+                    self.sdr_channels = sdr_channels
+                else:
+                    raise
             
             if self.config.VERBOSE_LOGGING:
-                print(f"[SDR] ✓ Audio input configured: {device_name}")
-                print(f"[SDR]   Buffer: {buffer_size} samples ({buffer_size/self.config.AUDIO_RATE*1000:.1f}ms)")
-                if priority_set:
-                    print(f"[SDR]   High priority scheduling: ENABLED")
-                else:
-                    print(f"[SDR]   High priority scheduling: DISABLED (may stutter)")
+                print(f"[{self.name}] ✓ Audio input configured: {device_name}")
+                print(f"[{self.name}]   Channels: {sdr_channels} ({'stereo' if sdr_channels == 2 else 'mono'})")
+                print(f"[{self.name}]   Buffer: {buffer_size} samples ({buffer_size/self.config.AUDIO_RATE*1000:.1f}ms)")
             
             return True
             
         except Exception as e:
             if self.config.VERBOSE_LOGGING:
-                print(f"[SDR] ✗ Failed to setup audio: {e}")
+                print(f"[{self.name}] ✗ Failed to setup audio: {e}")
             return False
     
     def get_audio(self, chunk_size):
         """Get audio from SDR receiver"""
-        if not self.enabled or self.muted:
-            if self.gateway.config.VERBOSE_LOGGING and hasattr(self, '_debug_counter'):
-                if self._debug_counter % 100 == 0:
-                    state = "disabled" if not self.enabled else "muted"
-                    print(f"[SDR Debug] Not reading audio - SDR is {state}")
-            if not hasattr(self, '_debug_counter'):
-                self._debug_counter = 0
-            self._debug_counter += 1
+        if not self.enabled:
             return None, False
-        
-        # Check if globally muted (both TX and RX muted)
-        if self.gateway.tx_muted and self.gateway.rx_muted:
-            return None, False
-        
+
         if not self.input_stream:
             if self.gateway.config.VERBOSE_LOGGING and not hasattr(self, '_stream_warning_shown'):
                 print(f"[SDR Debug] No input stream available!")
                 self._stream_warning_shown = True
             return None, False
-        
+
+        # Determine if we should discard audio (muted or globally muted).
+        # Always read from the stream even when muted so the PyAudio buffer
+        # doesn't fill up and produce a burst of stale audio on unmute.
+        should_discard = self.muted or (self.gateway.tx_muted and self.gateway.rx_muted)
+
+        if should_discard:
+            if self.gateway.config.VERBOSE_LOGGING and hasattr(self, '_debug_counter'):
+                if self._debug_counter % 100 == 0:
+                    state = "globally muted" if (self.gateway.tx_muted and self.gateway.rx_muted) else "muted"
+                    print(f"[SDR Debug] Draining audio (SDR is {state})")
+            if not hasattr(self, '_debug_counter'):
+                self._debug_counter = 0
+            self._debug_counter += 1
+            try:
+                self.input_stream.read(chunk_size, exception_on_overflow=False)
+            except Exception:
+                pass
+            return None, False
+
         try:
             # Read audio data with dropout detection
             self.total_reads += 1
-            
+
             try:
                 data = self.input_stream.read(chunk_size, exception_on_overflow=False)
             except IOError as io_err:
@@ -1160,10 +1215,30 @@ class SDRSource(AudioSource):
             
             self._read_counter += 1
             
-            # Calculate audio level using same method as RX/TX (RMS with dB scale)
+            # Convert stereo to mono if needed
+            # SDR streams may be stereo (2 channels), but mixer expects mono
             import array
-            import math
             samples = array.array('h', data)
+            
+            # Check if this SDR source is configured for stereo
+            if hasattr(self, 'sdr_channels') and self.sdr_channels == 2 and len(samples) > 0:
+                # Stereo has interleaved samples: L, R, L, R, L, R...
+                # Convert to mono by averaging: (L + R) / 2
+                mono_samples = array.array('h')
+                for i in range(0, len(samples), 2):
+                    left = samples[i]
+                    right = samples[i + 1] if i + 1 < len(samples) else left
+                    # Average the two channels
+                    mono = int((left + right) / 2)
+                    mono_samples.append(mono)
+                samples = mono_samples
+                data = samples.tobytes()
+                
+                if self.gateway.config.VERBOSE_LOGGING and self._read_counter == 1:
+                    print(f"[{self.name}] Converting stereo to mono (averaging L+R channels)")
+            
+            # Calculate audio level using same method as RX/TX (RMS with dB scale)
+            import math
             if len(samples) > 0:
                 # Calculate RMS (root mean square) - same as RX/TX
                 sum_squares = sum(s * s for s in samples)
@@ -1355,6 +1430,14 @@ class AudioMixer:
         self.mixing_mode = 'simultaneous'  # Mix all sources together
         self.call_count = 0  # Debug counter
         
+        # Signal detection state tracking with hysteresis
+        # Tracks when each source last had actual signal
+        self.signal_state = {}  # source_name -> {'has_signal': bool, 'last_signal_time': float, 'last_silence_time': float}
+        
+        # Hysteresis timing (configurable to prevent stuttering)
+        self.SIGNAL_ATTACK_TIME = config.SIGNAL_ATTACK_TIME   # How long signal must be present before considered active
+        self.SIGNAL_RELEASE_TIME = config.SIGNAL_RELEASE_TIME  # How long signal must be absent before considered inactive
+        
     def add_source(self, source):
         """Add an audio source to the mixer"""
         self.sources.append(source)
@@ -1375,7 +1458,7 @@ class AudioMixer:
     def get_mixed_audio(self, chunk_size):
         """
         Get mixed audio from all enabled sources.
-        Returns: (mixed_audio, ptt_required, active_sources, sdr_was_ducked)
+        Returns: (mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked)
         """
         self.call_count += 1
         
@@ -1386,7 +1469,7 @@ class AudioMixer:
                 print(f"  Source: {src.name}, enabled={src.enabled}, priority={src.priority}")
         
         if not self.sources:
-            return None, False, [], False
+            return None, False, [], False, False
         
         # Priority mode: only use highest priority active source
         if self.mixing_mode == 'priority':
@@ -1407,12 +1490,12 @@ class AudioMixer:
                         print(f"  [Mixer] {source.name} returned None (no audio)")
                 
                 if audio is not None:
-                    return audio, ptt and source.ptt_control, [source.name], False
+                    return audio, ptt and source.ptt_control, [source.name], False, False
             
             # No sources had audio
             if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                 print(f"  [Mixer] No sources returned audio")
-            return None, False, [], False
+            return None, False, [], False, False
         
         # Simultaneous mode: mix all active sources
         elif self.mixing_mode == 'simultaneous':
@@ -1422,16 +1505,16 @@ class AudioMixer:
         elif self.mixing_mode == 'duck':
             return self._mix_with_ducking(chunk_size)
         
-        return None, False, [], False
+        return None, False, [], False, False
     
     def _mix_simultaneous(self, chunk_size):
-        """Mix all active sources together"""
+        """Mix all active sources together with SDR priority-based ducking"""
         mixed_audio = None
         ptt_required = False
         active_sources = []
         ptt_audio = None      # Separate PTT audio
         non_ptt_audio = None  # Non-PTT, non-SDR audio (Radio RX etc)
-        sdr_audio = None      # SDR audio kept separate for ducking logic
+        sdr_sources = {}      # Dictionary of SDR sources: name -> (audio, source_obj)
         
         for source in self.sources:
             if not source.enabled:
@@ -1453,16 +1536,15 @@ class AudioMixer:
             
             active_sources.append(source.name)
             
-            # SDR audio is held separately so ducking can be applied after
-            # all other sources have been checked
-            if source.name == "SDR":
+            # SDR audio is held separately so priority-based ducking can be applied
+            if source.name.startswith("SDR"):
                 # Apply mix_ratio to SDR audio when not ducking
                 if hasattr(source, 'mix_ratio') and source.mix_ratio != 1.0:
                     import array as _array
                     samples = _array.array('h', audio)
                     samples = _array.array('h', [int(s * source.mix_ratio) for s in samples])
                     audio = samples.tobytes()
-                sdr_audio = audio
+                sdr_sources[source.name] = (audio, source)
                 continue  # Don't add to other buckets yet
             
             # Separate PTT and non-PTT sources
@@ -1478,26 +1560,158 @@ class AudioMixer:
                 else:
                     non_ptt_audio = self._mix_audio_streams(non_ptt_audio, audio, 0.5)
         
-        # --- SDR ducking decision ---
-        # Find the SDR source object (if present) to read duck flag
-        sdr_source = self.get_source("SDR")
-        sdr_duck = sdr_source.duck if sdr_source else True
-        other_audio_active = (ptt_audio is not None) or (non_ptt_audio is not None)
-        sdr_was_ducked = False  # Track if SDR was actively ducked this cycle
+        # --- SDR priority-based ducking decision ---
+        # AIOC audio (Radio RX) and PTT audio always take priority over all SDRs
+        # Between SDRs: lower sdr_priority number = higher priority (ducks others)
+        # BUT: Only duck if there's actual audio signal (not just silence/zeros)
+        # Uses hysteresis to prevent rapid on/off switching (stuttering)
         
-        if sdr_audio is not None:
-            if sdr_duck and other_audio_active:
-                # Ducking ON and other audio is playing → silence SDR
-                if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                    print(f"  [Mixer-Simultaneous] SDR ducked (other sources active)")
-                sdr_audio = None
-                sdr_was_ducked = True
+        import time
+        current_time = time.time()
+        
+        # Helper function to check if audio has actual signal (instantaneous)
+        def check_signal_instant(audio_data):
+            """Check if audio contains actual signal above noise floor (instant check, no hysteresis)"""
+            if not audio_data:
+                return False
+            import array
+            import math
+            try:
+                samples = array.array('h', audio_data)
+                if len(samples) == 0:
+                    return False
+                # Calculate RMS
+                sum_squares = sum(s * s for s in samples)
+                rms = math.sqrt(sum_squares / len(samples))
+                # Convert to dB
+                if rms > 0:
+                    db = 20 * math.log10(rms / 32767.0)
+                    # Threshold: -50dB or ~3% on 0-100 scale
+                    # This filters out silence and very quiet noise
+                    return db > -50.0
+                return False
+            except:
+                return False
+        
+        # Helper function with hysteresis for stable signal detection
+        def has_actual_audio(audio_data, source_name):
+            """
+            Check if audio has actual signal with hysteresis to prevent stuttering.
+            - Attack time: Signal must be present for SIGNAL_ATTACK_TIME before considered active
+            - Release time: Signal must be absent for SIGNAL_RELEASE_TIME before considered inactive
+            """
+            # Initialize state for this source if not exists
+            if source_name not in self.signal_state:
+                self.signal_state[source_name] = {
+                    'has_signal': False,
+                    'last_signal_time': 0,
+                    'last_silence_time': current_time
+                }
+            
+            state = self.signal_state[source_name]
+            signal_present_now = check_signal_instant(audio_data)
+            
+            # Update timing based on current signal
+            if signal_present_now:
+                state['last_signal_time'] = current_time
             else:
-                # Ducking OFF, or no other audio → include SDR in mix
-                if non_ptt_audio is None:
-                    non_ptt_audio = sdr_audio
+                state['last_silence_time'] = current_time
+            
+            # Apply hysteresis logic
+            if state['has_signal']:
+                # Currently active - check if we should release
+                time_since_signal = current_time - state['last_signal_time']
+                if time_since_signal > self.SIGNAL_RELEASE_TIME:
+                    # No signal for RELEASE_TIME - mark as inactive
+                    state['has_signal'] = False
+                    if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"  [Mixer] {source_name} signal RELEASED (silent for {time_since_signal:.2f}s)")
+            else:
+                # Currently inactive - check if we should attack
+                time_since_silence = current_time - state['last_silence_time']
+                if signal_present_now and time_since_silence > self.SIGNAL_ATTACK_TIME:
+                    # Signal present for ATTACK_TIME - mark as active
+                    state['has_signal'] = True
+                    if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"  [Mixer] {source_name} signal ACTIVATED (present for {time_since_silence:.2f}s)")
+            
+            return state['has_signal']
+        
+        other_audio_active = (ptt_audio is not None) or (non_ptt_audio is not None)
+        
+        # Check if other_audio actually has signal (not just zeros) with hysteresis
+        if other_audio_active:
+            # Check both ptt_audio and non_ptt_audio for actual signal
+            ptt_has_signal = has_actual_audio(ptt_audio, "PTT") if ptt_audio else False
+            non_ptt_has_signal = has_actual_audio(non_ptt_audio, "Radio") if non_ptt_audio else False
+            other_audio_active = ptt_has_signal or non_ptt_has_signal
+            
+            if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                if ptt_audio and not ptt_has_signal:
+                    print(f"  [Mixer] PTT audio present but only silence - not ducking SDRs")
+                if non_ptt_audio and not non_ptt_has_signal:
+                    print(f"  [Mixer] Non-PTT audio present but only silence - not ducking SDRs")
+        
+        sdr1_was_ducked = False
+        sdr2_was_ducked = False
+        
+        # First pass: determine which SDRs should be ducked
+        sdrs_to_include = {}  # SDRs that will actually be mixed
+        
+        # Sort SDR sources by priority (lower number = higher priority)
+        sorted_sdrs = sorted(
+            sdr_sources.items(),
+            key=lambda x: getattr(x[1][1], 'sdr_priority', 99)
+        )
+        
+        for sdr_name, (sdr_audio, sdr_source) in sorted_sdrs:
+            sdr_duck = sdr_source.duck if hasattr(sdr_source, 'duck') else True
+            sdr_priority = getattr(sdr_source, 'sdr_priority', 99)
+            
+            should_duck = False
+            
+            if sdr_duck:
+                # Rule 1: AIOC/PTT/Radio audio ducks ALL SDRs (only if actual signal)
+                if other_audio_active:
+                    should_duck = True
+                    if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"  [Mixer] {sdr_name} ducked by AIOC/Radio/PTT audio")
                 else:
-                    non_ptt_audio = self._mix_audio_streams(non_ptt_audio, sdr_audio, 0.5)
+                    # Rule 2: Higher priority SDR (lower number) ducks lower priority SDRs
+                    # Only check SDRs that have actual signal (not just silence)
+                    for other_name, other_tuple in sdrs_to_include.items():
+                        other_source = other_tuple[1]
+                        other_priority = getattr(other_source, 'sdr_priority', 99)
+                        if other_priority < sdr_priority:
+                            should_duck = True
+                            if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                                print(f"  [Mixer] {sdr_name} (priority {sdr_priority}) ducked by {other_name} (priority {other_priority})")
+                            break
+            
+            # Track ducking state for status bar
+            if should_duck:
+                if sdr_name == "SDR1":
+                    sdr1_was_ducked = True
+                elif sdr_name == "SDR2":
+                    sdr2_was_ducked = True
+            else:
+                # Check if this SDR has actual signal before adding to mix (with hysteresis)
+                if has_actual_audio(sdr_audio, sdr_name):
+                    # This SDR has actual signal and will be included
+                    sdrs_to_include[sdr_name] = (sdr_audio, sdr_source)
+                    if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"  [Mixer] {sdr_name} has actual signal - including in mix")
+                else:
+                    # This SDR has no signal (silence) - don't include or duck others
+                    if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"  [Mixer] {sdr_name} only has silence - not including, not ducking others")
+        
+        # Second pass: actually mix the non-ducked SDRs
+        for sdr_name, (sdr_audio, sdr_source) in sdrs_to_include.items():
+            if non_ptt_audio is None:
+                non_ptt_audio = sdr_audio
+            else:
+                non_ptt_audio = self._mix_audio_streams(non_ptt_audio, sdr_audio, 0.5)
         
         # Priority: PTT audio always wins (full volume, no mixing with radio)
         if ptt_audio is not None:
@@ -1510,7 +1724,7 @@ class AudioMixer:
         if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
             print(f"  [Mixer-Simultaneous] Result: {len(active_sources)} active sources, PTT={ptt_required}")
         
-        return mixed_audio, ptt_required, active_sources, sdr_was_ducked
+        return mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked
     
     def _mix_with_ducking(self, chunk_size):
         """Mix with ducking: reduce lower priority sources"""
@@ -1550,7 +1764,7 @@ class AudioMixer:
             else:
                 mixed_audio = self._mix_audio_streams(mixed_audio, audio, 0.5)
         
-        return mixed_audio, ptt_required, active_sources, False
+        return mixed_audio, ptt_required, active_sources, False, False
     
     def _mix_audio_streams(self, audio1, audio2, ratio=0.5):
         """Mix two audio streams together"""
@@ -1643,10 +1857,15 @@ class MumbleRadioGateway:
         # Initialize audio mixer and sources
         self.mixer = AudioMixer(config)
         self.radio_source = None  # Will be initialized after AIOC setup
-        self.sdr_source = None  # SDR receiver audio source
-        self.sdr_muted = False  # SDR-specific mute
-        self.sdr_ducked = False  # Is SDR currently being ducked (status display)
-        self.sdr_audio_level = 0  # SDR audio level for status bar
+        self.sdr_source = None  # SDR1 receiver audio source
+        self.sdr_muted = False  # SDR1-specific mute
+        self.sdr_ducked = False  # Is SDR1 currently being ducked (status display)
+        self.sdr_audio_level = 0  # SDR1 audio level for status bar
+        self.sdr2_source = None  # SDR2 receiver audio source
+        self.sdr2_muted = False  # SDR2-specific mute
+        self.sdr2_ducked = False  # Is SDR2 currently being ducked (status display)
+        self.sdr2_audio_level = 0  # SDR2 audio level for status bar
+        self.aioc_available = False  # Track if AIOC is connected
     
     def calculate_audio_level(self, pcm_data):
         """Calculate RMS audio level from PCM data (0-100 scale)"""
@@ -1693,6 +1912,7 @@ class MumbleRadioGateway:
         GREEN = '\033[92m'
         RED = '\033[91m'
         CYAN = '\033[96m'
+        MAGENTA = '\033[95m'
         WHITE = '\033[97m'
         RESET = '\033[0m'
         
@@ -1701,6 +1921,8 @@ class MumbleRadioGateway:
             bar_color = RED
         elif color == 'cyan':
             bar_color = CYAN
+        elif color == 'magenta':
+            bar_color = MAGENTA
         else:
             bar_color = GREEN
         
@@ -2369,15 +2591,19 @@ class MumbleRadioGateway:
             if self.config.VERBOSE_LOGGING:
                 print(f"✓ Audio input configured")
             
-            # Initialize radio source with mixer
-            try:
-                self.radio_source = AIOCRadioSource(self.config, self)
-                self.mixer.add_source(self.radio_source)
-                if self.config.VERBOSE_LOGGING:
-                    print("✓ Radio audio source added to mixer")
-            except Exception as source_err:
-                print(f"⚠ Warning: Could not initialize radio source: {source_err}")
-                print("  Continuing without mixer (fallback mode)")
+            # Initialize radio source with mixer (only if AIOC available)
+            if self.aioc_available:
+                try:
+                    self.radio_source = AIOCRadioSource(self.config, self)
+                    self.mixer.add_source(self.radio_source)
+                    if self.config.VERBOSE_LOGGING:
+                        print("✓ Radio audio source added to mixer")
+                except Exception as source_err:
+                    print(f"⚠ Warning: Could not initialize radio source: {source_err}")
+                    print("  Continuing without radio audio")
+                    self.radio_source = None
+            else:
+                print("  Radio audio: DISABLED (AIOC not available)")
                 self.radio_source = None
             
             # Initialize file playback source if enabled
@@ -2419,34 +2645,78 @@ class MumbleRadioGateway:
             else:
                 print("  Text-to-speech: DISABLED (set ENABLE_TTS = true to enable)")
             
-            # Initialize SDR source if enabled
+            # Initialize SDR1 source if enabled
             if self.config.ENABLE_SDR:
                 try:
-                    print("Initializing SDR audio source...")
-                    self.sdr_source = SDRSource(self.config, self)
+                    print("Initializing SDR1 audio source...")
+                    self.sdr_source = SDRSource(self.config, self, name="SDR1", sdr_priority=self.config.SDR_PRIORITY)
                     if self.sdr_source.setup_audio():
                         # Set initial state from config
                         self.sdr_source.enabled = True
                         self.sdr_source.duck = self.config.SDR_DUCK
                         self.sdr_source.mix_ratio = self.config.SDR_MIX_RATIO
+                        self.sdr_source.sdr_priority = self.config.SDR_PRIORITY
                         self.mixer.add_source(self.sdr_source)
-                        print("✓ SDR audio source added to mixer")
+                        print("✓ SDR1 audio source added to mixer")
                         print(f"  Device: {self.config.SDR_DEVICE_NAME}")
+                        print(f"  Priority: {self.config.SDR_PRIORITY} (1=higher, 2=lower)")
                         if self.config.SDR_DUCK:
-                            print(f"  Ducking: ENABLED (SDR silenced when other audio is active)")
+                            print(f"  Ducking: ENABLED (SDR silenced when higher priority audio active)")
                         else:
                             print(f"  Ducking: DISABLED (SDR mixed at {self.config.SDR_MIX_RATIO:.1f}x ratio)")
-                        print(f"  Press 's' to mute/unmute SDR")
+                        print(f"  Press 's' to mute/unmute SDR1")
                     else:
-                        print("⚠ Warning: Could not initialize SDR audio")
+                        print("⚠ Warning: Could not initialize SDR1 audio")
                         self.sdr_source = None
                 except Exception as sdr_err:
-                    print(f"⚠ Warning: Could not initialize SDR source: {sdr_err}")
+                    print(f"⚠ Warning: Could not initialize SDR1 source: {sdr_err}")
                     self.sdr_source = None
             else:
                 self.sdr_source = None
                 if self.config.VERBOSE_LOGGING:
-                    print("  SDR audio: DISABLED (set ENABLE_SDR = true to enable)")
+                    print("  SDR1 audio: DISABLED (set ENABLE_SDR = true to enable)")
+            
+            # Initialize SDR2 source if enabled
+            if self.config.ENABLE_SDR2:
+                try:
+                    print("Initializing SDR2 audio source...")
+                    print(f"  SDR2_DEVICE_NAME from config: {self.config.SDR2_DEVICE_NAME}")
+                    print(f"  SDR2_PRIORITY from config: {self.config.SDR2_PRIORITY}")
+                    self.sdr2_source = SDRSource(self.config, self, name="SDR2", sdr_priority=self.config.SDR2_PRIORITY)
+                    if self.sdr2_source.setup_audio():
+                        # Set initial state from config
+                        self.sdr2_source.enabled = True
+                        self.sdr2_source.duck = self.config.SDR2_DUCK
+                        self.sdr2_source.mix_ratio = self.config.SDR2_MIX_RATIO
+                        self.sdr2_source.sdr_priority = self.config.SDR2_PRIORITY
+                        self.mixer.add_source(self.sdr2_source)
+                        print("✓ SDR2 audio source added to mixer")
+                        print(f"  Device: {self.config.SDR2_DEVICE_NAME}")
+                        print(f"  Priority: {self.config.SDR2_PRIORITY} (1=higher, 2=lower)")
+                        if self.config.SDR2_DUCK:
+                            print(f"  Ducking: ENABLED (SDR silenced when higher priority audio active)")
+                        else:
+                            print(f"  Ducking: DISABLED (SDR mixed at {self.config.SDR2_MIX_RATIO:.1f}x ratio)")
+                        print(f"  Press 'x' to mute/unmute SDR2")
+                    else:
+                        print("⚠ Warning: Could not initialize SDR2 audio")
+                        print(f"  Device hw:4,1 not found or already in use")
+                        print(f"  Try: arecord -l | grep Loopback")
+                        print(f"  SDR2 will show as disabled in status bar")
+                        # Keep the source object but disable it so status bar shows
+                        self.sdr2_source.enabled = False
+                except Exception as sdr2_err:
+                    print(f"⚠ Warning: Could not initialize SDR2 source: {sdr2_err}")
+                    # Create disabled source object so status bar still shows it
+                    try:
+                        self.sdr2_source = SDRSource(self.config, self, name="SDR2", sdr_priority=self.config.SDR2_PRIORITY)
+                        self.sdr2_source.enabled = False
+                    except:
+                        self.sdr2_source = None
+            else:
+                self.sdr2_source = None
+                if self.config.VERBOSE_LOGGING:
+                    print("  SDR2 audio: DISABLED (set ENABLE_SDR2 = true to enable)")
             
             # Initialize EchoLink source if enabled (Phase 3B)
             if self.config.ENABLE_ECHOLINK:
@@ -3071,10 +3341,11 @@ class MumbleRadioGateway:
                     # Get audio - use mixer if available, otherwise direct read
                     if self.radio_source and self.mixer:
                         # Use mixer (Phase 1 mode)
-                        data, ptt_required, active_sources, sdr_was_ducked = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
+                        data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
                         
-                        # Store SDR ducked state for status bar display
-                        self.sdr_ducked = sdr_was_ducked
+                        # Store SDR ducked states for status bar display
+                        self.sdr_ducked = sdr1_was_ducked
+                        self.sdr2_ducked = sdr2_was_ducked
                         
                         if data is None:
                             # No audio from any source - send silence to keep stream alive
@@ -3616,9 +3887,18 @@ class MumbleRadioGateway:
                             self.sdr_source.duck = not self.sdr_source.duck
                             if self.config.VERBOSE_LOGGING:
                                 if self.sdr_source.duck:
-                                    print(f"\n[SDR] Ducking ENABLED (SDR silenced when other audio active)")
+                                    print(f"\n[SDR1] Ducking ENABLED (SDR silenced when higher priority audio active)")
                                 else:
-                                    print(f"\n[SDR] Ducking DISABLED (SDR mixed at {self.sdr_source.mix_ratio:.1f}x ratio)")
+                                    print(f"\n[SDR1] Ducking DISABLED (SDR mixed at {self.sdr_source.mix_ratio:.1f}x ratio)")
+                    
+                    elif char == 'x':
+                        # Toggle SDR2 mute
+                        if self.sdr2_source:
+                            self.sdr2_muted = not self.sdr2_muted
+                            self.sdr2_source.muted = self.sdr2_muted
+                            if self.config.VERBOSE_LOGGING:
+                                state = "MUTED" if self.sdr2_muted else "UNMUTED"
+                                print(f"\n[SDR2] {state}")
                     
                     elif char == 'v':
                         # Toggle VAD on/off
@@ -3667,13 +3947,6 @@ class MumbleRadioGateway:
                     elif char == 'e':
                         # Toggle echo cancellation
                         self.config.ENABLE_ECHO_CANCELLATION = not self.config.ENABLE_ECHO_CANCELLATION
-                    
-                    elif char == 'x':
-                        # Toggle proactive stream health management
-                        self.config.ENABLE_STREAM_HEALTH = not self.config.ENABLE_STREAM_HEALTH
-                        # If enabling, set interval to 60s if it's 0
-                        if self.config.ENABLE_STREAM_HEALTH and self.config.STREAM_RESTART_INTERVAL == 0:
-                            self.config.STREAM_RESTART_INTERVAL = 60
                     
                     elif char == 'p':
                         # Toggle manual PTT mode
@@ -3762,6 +4035,8 @@ class MumbleRadioGateway:
                 ORANGE = '\033[33m'
                 WHITE = '\033[97m'
                 GRAY = '\033[90m'
+                CYAN = '\033[96m'
+                MAGENTA = '\033[95m'
                 RESET = '\033[0m'
                 
                 # Format status with color-coded symbols (fixed width for alignment)
@@ -3826,8 +4101,24 @@ class MumbleRadioGateway:
                     sdr_muted = self.sdr_muted or not self.sdr_source.enabled
                     sdr_ducked = self.sdr_ducked if not sdr_muted else False
                     
-                    # Format: SDR: (no mode indicator here - it goes in proc_flags)
-                    sdr_bar = f" {WHITE}SDR:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, ducked=sdr_ducked, color='cyan')
+                    # Format: SDR1: (no mode indicator here - it goes in proc_flags)
+                    sdr_bar = f" {WHITE}SDR1:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, ducked=sdr_ducked, color='cyan')
+                
+                # SDR2 bar: Show SDR2 audio level (MAGENTA color for differentiation)
+                sdr2_bar = ""
+                if self.sdr2_source:
+                    # Always read current level directly from source
+                    if hasattr(self.sdr2_source, 'audio_level'):
+                        current_sdr2_level = self.sdr2_source.audio_level
+                    else:
+                        current_sdr2_level = 0
+                    
+                    # Determine display state
+                    sdr2_muted = self.sdr2_muted or not self.sdr2_source.enabled
+                    sdr2_ducked = self.sdr2_ducked if not sdr2_muted else False
+                    
+                    # Format: SDR2: with magenta color
+                    sdr2_bar = f" {WHITE}SDR2:{RESET}" + self.format_level_bar(current_sdr2_level, muted=sdr2_muted, ducked=sdr2_ducked, color='magenta')
                 
                 # Add diagnostics if there have been restarts (fixed width: always 6 chars like " R:123" or "      ")
                 # This prevents the status line from jumping when restarts occur
@@ -3867,7 +4158,7 @@ class MumbleRadioGateway:
                 
                 # Extra padding to clear any orphaned text when line shortens
                 # Order: ...Vol → FileStatus → ProcessingFlags → Diagnostics
-                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sdr_bar}{vol_info}{file_status_info}{proc_info}{diag}     ", end="", flush=True)
+                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sdr_bar}{sdr2_bar}{vol_info}{file_status_info}{proc_info}{diag}     ", end="", flush=True)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -3888,9 +4179,11 @@ class MumbleRadioGateway:
         print("=" * 60)
         print()
         
-        # Initialize AIOC
-        if not self.setup_aioc():
-            return False
+        # Initialize AIOC (optional - gateway can work without it)
+        self.aioc_available = self.setup_aioc()
+        if not self.aioc_available:
+            print("⚠ AIOC not found - continuing without radio interface")
+            print("  Gateway will operate in Mumble + SDR mode")
         
         # Initialize Audio
         if not self.setup_audio():
@@ -3941,12 +4234,12 @@ class MumbleRadioGateway:
         
         print("Press Ctrl+C to exit")
         print("Keyboard Controls:")
-        print("  Mute: 't'=TX | 'r'=RX | 'm'=Global | 's'=SDR  |  Audio: 'v'=VAD | ','=Vol- | '.'=Vol+")
-        print("  Proc: 'n'=Gate | 'f'=HPF | 'a'=AGC | 'w'=Wiener | 'e'=Echo | 'x'=Restart")
-        print("  SDR:  'd'=Duck toggle | 's'=Mute toggle")
-        print("  PTT:  'p'=Manual PTT Toggle (override auto-PTT)")
+        print("  Mute:  't'=TX | 'r'=RX | 'm'=Global | 's'=SDR1 | 'x'=SDR2  |  Audio: 'v'=VAD | ','=Vol- | '.'=Vol+")
+        print("  Proc:  'n'=Gate | 'f'=HPF | 'a'=AGC | 'w'=Wiener | 'e'=Echo")
+        print("  SDR:   'd'=SDR1 Duck toggle")
+        print("  PTT:   'p'=Manual PTT Toggle (override auto-PTT)")
         if self.config.ENABLE_PLAYBACK:
-            print("  Play: '1-9'=Announcements | '0'=StationID | '-'=Stop")
+            print("  Play:  '1-9'=Announcements | '0'=StationID | '-'=Stop")
         print("=" * 60)
         print()
         
@@ -3959,10 +4252,11 @@ class MumbleRadioGateway:
             print("  VAD:✗/🔊/-- = VAD disabled/active/silent (dB = current level)")
             print("  TX:[bar] = Mumble → Radio audio level")
             print("  RX:[bar] = Radio → Mumble audio level")
-            print("  SDR:[bar] = SDR receiver audio level (cyan)")
+            print("  SDR1:[bar] = SDR1 receiver audio level (cyan)")
+            print("  SDR2:[bar] = SDR2 receiver audio level (magenta)")
             print("  Vol:X.Xx = RX volume multiplier (Radio → Mumble gain)")
             print("  1234567890 = File status (green=loaded, red=playing, white=empty)")
-            print("  [N,F,A,W,E,D,X] = Processing: N=NoiseGate F=HPF A=AGC W=Wiener E=Echo D=SDRDuck X=StreamHealth-OFF")
+            print("  [N,F,A,W,E,D] = Processing: N=NoiseGate F=HPF A=AGC W=Wiener E=Echo D=SDR1Duck")
             print("  R:n      = Stream restart count (only if >0)")
             print()
         
@@ -4026,7 +4320,15 @@ class MumbleRadioGateway:
             try:
                 self.sdr_source.cleanup()
                 if self.config.VERBOSE_LOGGING:
-                    print("  SDR audio closed")
+                    print("  SDR1 audio closed")
+            except Exception as e:
+                pass  # Suppress ALSA errors during shutdown
+        
+        if self.sdr2_source:
+            try:
+                self.sdr2_source.cleanup()
+                if self.config.VERBOSE_LOGGING:
+                    print("  SDR2 audio closed")
             except Exception as e:
                 pass  # Suppress ALSA errors during shutdown
         
