@@ -135,12 +135,12 @@ ENABLE_VAD = true
 
 # VAD threshold in dBFS (more negative = more sensitive)
 # -40 = very sensitive | -33 = balanced | -25 = less sensitive
-VAD_THRESHOLD = -33
+VAD_THRESHOLD = -45
 
 # VAD timing
-VAD_ATTACK = 0.02   # How fast to activate (seconds)
-VAD_RELEASE = 0.3   # How long to hold after silence (seconds)
-VAD_MIN_DURATION = 0.1  # Minimum transmission length (seconds)
+VAD_ATTACK = 0.05   # How fast to activate (seconds)
+VAD_RELEASE = 1   # How long to hold after silence (seconds)
+VAD_MIN_DURATION = 0.25  # Minimum transmission length (seconds)
 
 # ============================================================================
 # FEATURE: VOX (VOICE-OPERATED SWITCH)
