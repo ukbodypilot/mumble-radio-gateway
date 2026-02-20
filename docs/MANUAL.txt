@@ -18,7 +18,7 @@ a Mumble voice chat server. It provides:
 - Voice Activity Detection (Radio RX → Mumble)
 - Dual SDR receiver inputs with independent priority ducking
 - File playback / announcement system (10 slots, keys 0-9)
-- Text-to-Speech via Mumble text commands (!speak)
+- Text commands via Mumble chat (!speak, !play, !files, !stop, !mute, !id, !restart, !status, !help)
 - EchoLink bridge via named pipes (TheLinkBox compatible)
 - Broadcastify / Icecast live streaming
 - Real-time audio processing (noise gate, AGC, filters, echo cancellation)
@@ -401,6 +401,45 @@ DUAL SDR SUPPORT
 - Two independent SDR inputs (SDR1, SDR2) with configurable priority.
 - SDR1 ducks SDR2 when both have signal (configurable).
 - Independent mute controls (s / x keys), independent level bars.
+
+================================================================================
+MUMBLE TEXT COMMANDS
+================================================================================
+
+Send commands in the Mumble text chat window. Commands start with '!'.
+Enable in config: ENABLE_TEXT_COMMANDS = true
+
+  !speak <text>   Generate TTS audio and broadcast on radio.
+                  Example: !speak Net check-in is now open
+
+  !play <0-9>     Play announcement file by slot number.
+                  Example: !play 1
+
+  !files          List all loaded announcement files with their slot numbers.
+                  Shows [PLAYING] next to the currently active file.
+                  Use this when you can't remember what's in each slot.
+
+  !stop           Stop current playback immediately and clear the queue.
+                  Use if the wrong file is playing or you need to abort.
+
+  !mute           Mute TX — stops Mumble audio from reaching the radio.
+                  Equivalent to pressing 't' on the keyboard.
+
+  !unmute         Restore TX after !mute.
+
+  !id             Play the station ID. Shortcut for !play 0.
+
+  !restart        Cleanly restart the gateway process.
+                  Mumble connection is re-established within seconds.
+                  Darkice and FFmpeg are not affected (same PID).
+                  Use if audio stops working or the gateway gets stuck.
+
+  !status         Show a full gateway status report (CPU, PTT, audio levels,
+                  loaded files, TTS status, streaming, etc.).
+
+  !help           Show a summary of available commands in Mumble chat.
+
+See docs/TTS_TEXT_COMMANDS_GUIDE.md for full documentation and examples.
 
 ================================================================================
 TROUBLESHOOTING
