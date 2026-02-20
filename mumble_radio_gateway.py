@@ -4262,7 +4262,9 @@ class MumbleRadioGateway:
                         current_sdr_level = 0
                     
                     # Determine display state
-                    sdr_muted = self.sdr_muted or not self.sdr_source.enabled
+                    # Mirror SDRSource.get_audio(): discard when individually muted OR globally muted
+                    global_muted = self.tx_muted and self.rx_muted
+                    sdr_muted = self.sdr_muted or global_muted
                     sdr_ducked = self.sdr_ducked if not sdr_muted else False
                     
                     # Format: SDR1: (no mode indicator here - it goes in proc_flags)
@@ -4278,7 +4280,7 @@ class MumbleRadioGateway:
                         current_sdr2_level = 0
                     
                     # Determine display state
-                    sdr2_muted = self.sdr2_muted or not self.sdr2_source.enabled
+                    sdr2_muted = self.sdr2_muted or global_muted
                     sdr2_ducked = self.sdr2_ducked if not sdr2_muted else False
                     
                     # Format: SDR2: with magenta color
