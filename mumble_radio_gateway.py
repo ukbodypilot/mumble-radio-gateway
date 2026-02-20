@@ -1913,6 +1913,9 @@ class MumbleRadioGateway:
         
         # Manual PTT control (keyboard toggle)
         self.manual_ptt_mode = False  # Manual PTT control (press 'p')
+
+        # Restart flag (set by !restart command, checked in main() after run() exits)
+        self.restart_requested = False
         
         # Audio processing state
         self.noise_profile = None  # For spectral subtraction
@@ -3220,7 +3223,12 @@ class MumbleRadioGateway:
         
         Supports commands:
             !speak <text>  - Generate TTS and broadcast on radio
-            !play <1-9>    - Play announcement file
+            !play <0-9>    - Play announcement file by slot number
+            !files         - List loaded announcement files
+            !stop          - Stop playback and clear queue
+            !mute          - Mute TX (Mumble → Radio)
+            !unmute        - Unmute TX
+            !id            - Play station ID (shortcut for !play 0)
             !status        - Show gateway status
             !help          - Show available commands
         """
@@ -3354,16 +3362,70 @@ class MumbleRadioGateway:
                 
                 self.send_text_message("\n".join(status_lines))
             
+            elif command == '!files':
+                if self.playback_source:
+                    lines = ["=== Announcement Files ==="]
+                    found = False
+                    for key in '0123456789':
+                        info = self.playback_source.file_status[key]
+                        if info['exists']:
+                            label = "Station ID" if key == '0' else f"Slot {key}"
+                            playing = " [PLAYING]" if info['playing'] else ""
+                            lines.append(f"  {label}: {info['filename']}{playing}")
+                            found = True
+                    if not found:
+                        lines.append("  No files loaded")
+                    self.send_text_message("\n".join(lines))
+                else:
+                    self.send_text_message("Playback not available")
+
+            elif command == '!stop':
+                if self.playback_source:
+                    self.playback_source.stop_playback()
+                    self.send_text_message("Playback stopped")
+                else:
+                    self.send_text_message("Playback not available")
+
+            elif command == '!restart':
+                self.send_text_message("Gateway restarting...")
+                self.restart_requested = True
+                self.running = False
+
+            elif command == '!mute':
+                self.tx_muted = True
+                self.send_text_message("TX muted (Mumble → Radio)")
+
+            elif command == '!unmute':
+                self.tx_muted = False
+                self.send_text_message("TX unmuted")
+
+            elif command == '!id':
+                if self.playback_source:
+                    info = self.playback_source.file_status['0']
+                    if info['path']:
+                        self.playback_source.queue_file(info['path'])
+                        self.send_text_message(f"Playing station ID: {info['filename']}")
+                    else:
+                        self.send_text_message("No station ID file on slot 0")
+                else:
+                    self.send_text_message("Playback not available")
+
             elif command == '!help':
                 help_text = [
                     "=== Gateway Commands ===",
                     "!speak <text> - TTS broadcast on radio",
-                    "!play <0-9> - Play announcement file",
-                    "!status - Show gateway status",
-                    "!help - Show this help"
+                    "!play <0-9>   - Play announcement by slot",
+                    "!files        - List loaded announcement files",
+                    "!stop         - Stop playback and clear queue",
+                    "!mute         - Mute TX (Mumble → Radio)",
+                    "!unmute       - Unmute TX",
+                    "!id           - Play station ID (slot 0)",
+                    "!restart      - Restart the gateway",
+                    "!status       - Show gateway status",
+                    "!help         - Show this help"
                 ]
                 self.send_text_message("\n".join(help_text))
-            
+
             else:
                 self.send_text_message(f"Unknown command. Try !help")
         
@@ -4488,6 +4550,10 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     gateway.run()
+
+    if gateway.restart_requested:
+        print("\nRestarting gateway...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 if __name__ == "__main__":
     main()

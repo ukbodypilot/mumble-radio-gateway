@@ -918,10 +918,20 @@ Place `station_id.wav` or `station_id.mp3` in the audio directory.
 
 Send commands via Mumble text chat:
 
-- `!speak <text>` - Generate TTS and broadcast on radio
-- `!play <0-9>` - Play announcement file
-- `!status` - Show gateway status report
-- `!help` - Show available commands
+| Command | Description |
+|---------|-------------|
+| `!speak <text>` | Generate TTS and broadcast on radio |
+| `!play <0-9>` | Play announcement file by slot number |
+| `!files` | List all loaded announcement files with slot numbers |
+| `!stop` | Stop playback and clear queue |
+| `!mute` | Mute TX (Mumble → Radio) |
+| `!unmute` | Unmute TX |
+| `!id` | Play station ID (shortcut for `!play 0`) |
+| `!restart` | Restart the gateway process cleanly |
+| `!status` | Show full gateway status report |
+| `!help` | Show available commands |
+
+See `docs/TTS_TEXT_COMMANDS_GUIDE.md` for full documentation and examples.
 
 ## Development
 
@@ -974,6 +984,17 @@ class MySource(AudioSource):
 - PyAudio: Python audio interface
 
 ## Changelog
+
+### Text Command Expansion
+
+New Mumble text commands added:
+- `!files` — lists all loaded announcement files with slot numbers; shows `[PLAYING]` on the active file
+- `!stop` — stops current playback immediately and clears the queue
+- `!mute` / `!unmute` — toggle TX mute (Mumble → Radio) remotely without keyboard access
+- `!id` — shortcut for `!play 0`; plays the station ID in one word
+- `!restart` — cleanly restarts the gateway process; Darkice and FFmpeg are unaffected (same PID via `os.execv`)
+
+`!help` updated to list all commands.
 
 ### Recent Fixes & Improvements
 
