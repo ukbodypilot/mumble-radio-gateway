@@ -39,6 +39,7 @@ sudo apt-get install -y \
     python3-pyaudio \
     portaudio19-dev \
     libhidapi-libusb0 \
+    libhidapi-dev \
     libsndfile1 \
     ffmpeg \
     git
@@ -49,21 +50,21 @@ echo
 # ── 2. ALSA loopback module ──────────────────────────────────
 echo "[ 2/7 ] Setting up ALSA loopback (for SDR input)..."
 
-# Load module now
-if ! lsmod | grep -q snd_aloop; then
-    sudo modprobe snd-aloop numlids=2
-    echo "  ✓ snd-aloop module loaded"
-else
-    echo "  ✓ snd-aloop already loaded"
-fi
+# Write modprobe options first (numlids=3 → 3 independent loopback cards)
+echo "options snd-aloop numlids=3" | sudo tee /etc/modprobe.d/snd-aloop.conf > /dev/null
+echo "  ✓ /etc/modprobe.d/snd-aloop.conf → numlids=3"
 
-# Set numlids=2 option (supports dual SDR)
-if [ ! -f /etc/modprobe.d/snd-aloop.conf ]; then
-    echo "options snd-aloop numlids=2" | sudo tee /etc/modprobe.d/snd-aloop.conf > /dev/null
-    echo "  ✓ Created /etc/modprobe.d/snd-aloop.conf (numlids=2)"
-else
-    echo "  ✓ /etc/modprobe.d/snd-aloop.conf already exists"
+# Always unload and reload so the numlids setting takes effect
+if lsmod | grep -q snd_aloop; then
+    sudo modprobe -r snd-aloop 2>/dev/null || true
+    sleep 1
 fi
+sudo modprobe snd-aloop numlids=3
+if [ $? -ne 0 ]; then
+    echo "  ✗ Failed to load snd-aloop — check kernel headers are installed"
+    exit 1
+fi
+echo "  ✓ snd-aloop loaded (3 loopback cards)"
 
 # Make it load on boot
 if ! grep -q "snd-aloop" /etc/modules 2>/dev/null; then
@@ -75,14 +76,47 @@ fi
 
 # Verify
 LOOPBACK_COUNT=$(aplay -l 2>/dev/null | grep -c "Loopback" || true)
-echo "  ✓ Loopback devices visible: $LOOPBACK_COUNT"
-echo "    (SDR software writes to hw:X,0 — gateway reads from hw:X,1)"
+echo "  Loopback cards visible: $LOOPBACK_COUNT (expected 3)"
+echo "    Each card: hw:N,0 (SDR app writes here) / hw:N,1 (gateway reads here)"
+echo "    Find card numbers: aplay -l | grep Loopback"
 echo
 
 # ── 3. Python packages ───────────────────────────────────────
 echo "[ 3/7 ] Installing Python packages..."
-pip3 install -r "$GATEWAY_DIR/docs/requirements.txt" --break-system-packages
-echo "  ✓ Python packages installed"
+
+# Helper: try --break-system-packages (Debian 12+), then plain pip
+_pip() {
+    pip3 install "$@" --break-system-packages 2>/dev/null \
+        || pip3 install "$@" 2>/dev/null
+}
+
+# Core packages (excluding pymumble — handled separately due to PyPI name variants)
+set +e
+_pip hidapi numpy pyaudio soundfile resampy psutil gtts
+CORE_STATUS=$?
+set -e
+if [ $CORE_STATUS -eq 0 ]; then
+    echo "  ✓ Core Python packages installed"
+else
+    echo "  ⚠ Some core packages may have failed — check output above"
+fi
+
+# pymumble: try pymumble-py3 first (Python-3 fork), fall back to pymumble
+set +e
+MUMBLE_OK=false
+if _pip "pymumble-py3>=1.0.0" 2>/dev/null; then
+    echo "  ✓ pymumble-py3 installed"
+    MUMBLE_OK=true
+elif _pip pymumble 2>/dev/null; then
+    echo "  ✓ pymumble installed (fallback package name)"
+    MUMBLE_OK=true
+fi
+set -e
+if ! $MUMBLE_OK; then
+    echo "  ✗ Could not install pymumble automatically"
+    echo "    Try manually: pip3 install pymumble --break-system-packages"
+    echo "              or: pip3 install pymumble-py3 --break-system-packages"
+fi
 echo
 
 # ── 4. UDEV rules for AIOC ──────────────────────────────────
@@ -101,15 +135,19 @@ echo
 
 # ── 5. Darkice (optional — for Broadcastify/Icecast streaming) ──
 echo "[ 5/7 ] Darkice streaming (optional)..."
-if apt-cache show darkice &>/dev/null; then
-    sudo apt-get install -y darkice lame
+set +e
+sudo apt-get install -y darkice lame 2>/dev/null
+DARKICE_STATUS=$?
+set -e
+if [ $DARKICE_STATUS -eq 0 ]; then
     echo "  ✓ Darkice installed"
     echo "  ℹ  To use streaming: configure /etc/darkice.cfg and set"
     echo "     ENABLE_STREAM_OUTPUT = true in gateway_config.txt"
 else
-    echo "  ⚠ darkice not found in apt repos — skipping"
-    echo "    Streaming to Broadcastify will not be available"
-    echo "    (All other gateway features work without darkice)"
+    echo "  ⚠ darkice could not be installed from apt — skipping"
+    echo "    This is optional: streaming to Broadcastify requires darkice,"
+    echo "    but all other gateway features work without it."
+    echo "    To install manually: sudo apt-get install darkice lame"
 fi
 echo
 

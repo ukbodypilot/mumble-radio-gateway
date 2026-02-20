@@ -25,14 +25,46 @@ except ImportError:
     print("Install it with: pip3 install hidapi --break-system-packages")
     sys.exit(1)
 
+# SSL compatibility shim — pymumble uses ssl.wrap_socket() (removed in Python
+# 3.12) and ssl.PROTOCOL_TLSv1_2 (deprecated). Patch before importing pymumble.
+import ssl as _ssl
+if not hasattr(_ssl, 'wrap_socket'):
+    def _ssl_wrap_compat(sock, keyfile=None, certfile=None, server_side=False,
+                         cert_reqs=None, ssl_version=None, ca_certs=None,
+                         do_handshake_on_connect=True, suppress_ragged_eofs=True,
+                         ciphers=None, **_):
+        ctx = _ssl.SSLContext(
+            _ssl.PROTOCOL_TLS_SERVER if server_side else _ssl.PROTOCOL_TLS_CLIENT
+        )
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        if certfile:
+            ctx.load_cert_chain(certfile, keyfile)
+        if ca_certs:
+            ctx.load_verify_locations(ca_certs)
+        if ciphers:
+            ctx.set_ciphers(ciphers)
+        return ctx.wrap_socket(sock, server_side=server_side,
+                               do_handshake_on_connect=do_handshake_on_connect,
+                               suppress_ragged_eofs=suppress_ragged_eofs)
+    _ssl.wrap_socket = _ssl_wrap_compat
+if not hasattr(_ssl, 'PROTOCOL_TLSv1_2'):
+    _ssl.PROTOCOL_TLSv1_2 = _ssl.PROTOCOL_TLS_CLIENT
+
 try:
     from pymumble_py3 import Mumble
     from pymumble_py3.callbacks import PYMUMBLE_CLBK_SOUNDRECEIVED, PYMUMBLE_CLBK_TEXTMESSAGERECEIVED
     import pymumble_py3.constants as mumble_constants
 except ImportError:
-    print("ERROR: pymumble library not found!")
-    print("Install from: https://github.com/azlux/pymumble")
-    sys.exit(1)
+    try:
+        from pymumble import Mumble
+        from pymumble.callbacks import PYMUMBLE_CLBK_SOUNDRECEIVED, PYMUMBLE_CLBK_TEXTMESSAGERECEIVED
+        import pymumble.constants as mumble_constants
+    except ImportError:
+        print("ERROR: pymumble library not found!")
+        print("Install with: pip3 install pymumble --break-system-packages")
+        print("          or: pip3 install pymumble-py3 --break-system-packages")
+        sys.exit(1)
 
 try:
     import pyaudio
@@ -94,10 +126,10 @@ class Config:
             'MAX_MUMBLE_BUFFER_SECONDS': 1.0,
             'BUFFER_MANAGEMENT_VERBOSE': False,
             'ENABLE_VAD': True,
-            'VAD_THRESHOLD': -40,
-            'VAD_ATTACK': 0.02,  # float (seconds)
-            'VAD_RELEASE': 0.3,  # float (seconds)
-            'VAD_MIN_DURATION': 0.1,  # float (seconds)
+            'VAD_THRESHOLD': -45,
+            'VAD_ATTACK': 0.05,  # float (seconds)
+            'VAD_RELEASE': 1,    # float (seconds)
+            'VAD_MIN_DURATION': 0.25,  # float (seconds)
             'ENABLE_STREAM_HEALTH': False,
             'STREAM_RESTART_INTERVAL': 60,
             'STREAM_RESTART_IDLE_TIME': 3,
@@ -1642,8 +1674,8 @@ class AudioMixer:
             ds['padding_end_time'] = current_time + self.SWITCH_PADDING_TIME
             ds['transition_type'] = 'out'
             ds['sdr_active_at_transition'] = any(
-                check_signal_instant(sdr_audio)
-                for sdr_audio, _ in sdr_sources.values()
+                self.sdr_prev_included.get(name, False)
+                for name in sdr_sources.keys()
             )
             if self.config.VERBOSE_LOGGING:
                 print(f"  [Mixer] SDR duck-OUT: {self.SWITCH_PADDING_TIME:.2f}s transition silence "
