@@ -128,29 +128,16 @@ echo "  ✓ FFmpeg bridge running (PID: $FFMPEG_PID)"
 echo "[6/6] Starting gateway..."
 echo ""
 
-# Find the gateway file
-GATEWAY_FILE=""
-for location in \
-    "mumble_radio_gateway_phase3.py" \
-    "./mumble_radio_gateway.py" \
-    "$HOME/mumble_radio_gateway.py" \
-    "$HOME/Downloads/mumble_radio_gateway.py" \
-    "/home/*/Downloads/mumble_radio_gateway.py"
-do
-    if [ -f "$location" ]; then
-        GATEWAY_FILE="$location"
-        break
-    fi
-done
+# Find the gateway file - ONLY in same directory as this script
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+GATEWAY_FILE="$SCRIPT_DIR/mumble_radio_gateway.py"
 
-if [ -z "$GATEWAY_FILE" ]; then
+if [ ! -f "$GATEWAY_FILE" ]; then
     echo "✗ Gateway file not found!"
-    echo "  Looking for: mumble_radio_gateway.py"
-    echo "  Searched:"
-    echo "    - Current directory"
-    echo "    - $HOME"
-    echo "    - $HOME/Downloads"
+    echo "  Expected: $GATEWAY_FILE"
+    echo "  Make sure mumble_radio_gateway.py is in the SAME directory as start.sh"
     cleanup
+    exit 1
 fi
 
 echo "Using: $GATEWAY_FILE"

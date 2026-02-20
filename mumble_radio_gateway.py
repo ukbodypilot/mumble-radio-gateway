@@ -10,6 +10,7 @@ import os
 import time
 import signal
 import threading
+import collections
 from struct import Struct
 import select  # For non-blocking keyboard input
 import array as _array_mod
@@ -294,16 +295,16 @@ class AIOCRadioSource(AudioSource):
             try:
                 data = self.gateway.input_stream.read(chunk_size, exception_on_overflow=False)
             except IOError as io_err:
-                # Handle buffer overflow gracefully
+                # Handle buffer overflow gracefully; absorb all other AIOC errors
+                # so they never propagate through the mixer and interrupt SDR audio.
                 if io_err.errno == -9981:  # Input overflow
-                    # Try to clear the buffer
                     try:
                         self.gateway.input_stream.read(chunk_size * 2, exception_on_overflow=False)
                     except:
                         pass
-                    return None, False
-                else:
-                    raise  # Re-raise other IOErrors
+                return None, False
+            except Exception:
+                return None, False
 
             # Update capture time so stream-health checks stay happy
             self.gateway.last_audio_capture_time = time.time()
@@ -1030,7 +1031,12 @@ class SDRSource(AudioSource):
         self.overflow_count = 0
         self.total_reads = 0
         self.last_stats_time = time.time()
-        
+
+        # Background reader thread state
+        self._chunk_queue = collections.deque(maxlen=4)  # ~800ms of headroom
+        self._reader_running = False
+        self._reader_thread = None
+
         if self.config.VERBOSE_LOGGING:
             print(f"[{self.name}] Initializing SDR audio source...")
     
@@ -1124,7 +1130,7 @@ class SDRSource(AudioSource):
                     rate=self.config.AUDIO_RATE,
                     input=True,
                     input_device_index=device_index,
-                    frames_per_buffer=buffer_size,
+                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
                     stream_callback=None
                 )
                 self.sdr_channels = sdr_channels  # Store for later use
@@ -1140,7 +1146,7 @@ class SDRSource(AudioSource):
                         rate=self.config.AUDIO_RATE,
                         input=True,
                         input_device_index=device_index,
-                        frames_per_buffer=buffer_size,
+                        frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
                         stream_callback=None
                     )
                     self.sdr_channels = sdr_channels
@@ -1150,8 +1156,23 @@ class SDRSource(AudioSource):
             if self.config.VERBOSE_LOGGING:
                 print(f"[{self.name}] ✓ Audio input configured: {device_name}")
                 print(f"[{self.name}]   Channels: {sdr_channels} ({'stereo' if sdr_channels == 2 else 'mono'})")
-                print(f"[{self.name}]   Buffer: {buffer_size} samples ({buffer_size/self.config.AUDIO_RATE*1000:.1f}ms)")
-            
+                chunk = self.config.AUDIO_CHUNK_SIZE
+                print(f"[{self.name}]   Buffer: {chunk} samples ({chunk/self.config.AUDIO_RATE*1000:.1f}ms per period)")
+
+            # Start background reader thread so SDR ALSA reads run independently
+            # of the main loop, preventing sequential double-blocking (AIOC + SDR).
+            self._chunk_queue.clear()
+            self._reader_running = True
+            self._reader_thread = threading.Thread(
+                target=self._reader_thread_func,
+                name=f"{self.name}-reader",
+                daemon=True
+            )
+            self._reader_thread.start()
+
+            if self.config.VERBOSE_LOGGING:
+                print(f"[{self.name}] ✓ Reader thread started")
+
             return True
             
         except Exception as e:
@@ -1159,156 +1180,86 @@ class SDRSource(AudioSource):
                 print(f"[{self.name}] ✗ Failed to setup audio: {e}")
             return False
     
+    def _reader_thread_func(self):
+        """Background thread: reads raw PCM from SDR ALSA stream and enqueues it.
+
+        Intentionally does NO processing between reads — no numpy, no level
+        calculation, no mute checks. The less work done between ALSA reads, the
+        less chance the OS scheduler or Python GIL delays the next read and causes
+        an ALSA overrun. All processing happens in get_audio() in the main thread.
+        """
+        chunk_size = self.config.AUDIO_CHUNK_SIZE
+        while self._reader_running:
+            if not self.input_stream:
+                time.sleep(0.01)
+                continue
+            try:
+                raw = self.input_stream.read(chunk_size, exception_on_overflow=False)
+                self._chunk_queue.append(raw)
+            except IOError:
+                self.overflow_count += 1
+            except Exception:
+                time.sleep(0.002)
+
     def get_audio(self, chunk_size):
-        """Get audio from SDR receiver"""
+        """Get processed audio from SDR receiver.
+
+        Pops raw bytes from the reader thread's queue, then does all processing
+        (stereo-to-mono, level metering, audio boost) here in the main thread.
+        Returns None immediately if the queue is empty — the main loop sends
+        silence to keep the Mumble encoder continuously fed.
+        """
         if not self.enabled:
             return None, False
 
         if not self.input_stream:
-            if self.gateway.config.VERBOSE_LOGGING and not hasattr(self, '_stream_warning_shown'):
-                print(f"[SDR Debug] No input stream available!")
-                self._stream_warning_shown = True
             return None, False
 
-        # Determine if we should discard audio (muted or globally muted).
-        # Always read from the stream even when muted so the PyAudio buffer
-        # doesn't fill up and produce a burst of stale audio on unmute.
-        should_discard = self.muted or (self.gateway.tx_muted and self.gateway.rx_muted)
-
-        if should_discard:
-            if self.gateway.config.VERBOSE_LOGGING and hasattr(self, '_debug_counter'):
-                if self._debug_counter % 100 == 0:
-                    state = "globally muted" if (self.gateway.tx_muted and self.gateway.rx_muted) else "muted"
-                    print(f"[SDR Debug] Draining audio (SDR is {state})")
-            if not hasattr(self, '_debug_counter'):
-                self._debug_counter = 0
-            self._debug_counter += 1
-            try:
-                self.input_stream.read(chunk_size, exception_on_overflow=False)
-            except Exception:
-                pass
-            return None, False
-
+        # Pop raw chunk — non-blocking, return None if reader hasn't produced yet.
+        # The main loop substitutes silence so the Mumble encoder stays fed.
         try:
-            # Read audio data with dropout detection
-            self.total_reads += 1
-
-            try:
-                data = self.input_stream.read(chunk_size, exception_on_overflow=False)
-            except IOError as io_err:
-                # Buffer overflow - data was dropped
-                self.overflow_count += 1
-                self.dropout_count += 1
-                
-                if self.gateway.config.VERBOSE_LOGGING:
-                    print(f"\n[SDR] ⚠ Buffer overflow #{self.overflow_count} - clearing buffer")
-                
-                # Try to clear the buffer and recover
-                try:
-                    # Read and discard extra data to clear buffer
-                    self.input_stream.read(chunk_size * 2, exception_on_overflow=False)
-                except:
-                    pass
-                
-                # Return silence for this chunk to maintain timing
-                silence = b'\x00' * (chunk_size * 2)  # 16-bit silence
-                return silence, False
-            
-            # Track successful reads
-            self.last_read_time = time.time()
-            
-            # Print statistics periodically
-            if self.gateway.config.VERBOSE_LOGGING and self.total_reads % 500 == 0:
-                elapsed = time.time() - self.last_stats_time
-                if elapsed > 10.0:  # Every 10+ seconds
-                    dropout_rate = (self.dropout_count / self.total_reads) * 100
-                    print(f"\n[SDR Stats] Reads: {self.total_reads}, Dropouts: {self.dropout_count} ({dropout_rate:.1f}%)")
-                    if dropout_rate > 1.0:
-                        print(f"[SDR Stats] ⚠ High dropout rate! Try increasing SDR_BUFFER_MULTIPLIER")
-                    self.last_stats_time = time.time()
-            
-            # Initialize debug counters if needed
-            if not hasattr(self, '_read_counter'):
-                self._read_counter = 0
-                self._last_debug_time = time.time()
-            
-            self._read_counter += 1
-            
-            # Convert stereo to mono if needed using numpy (vectorized)
-            arr = np.frombuffer(data, dtype=np.int16)
-
-            if hasattr(self, 'sdr_channels') and self.sdr_channels == 2 and len(arr) >= 2:
-                # Stereo: interleaved L, R — average to mono
-                stereo = arr.reshape(-1, 2).astype(np.int32)
-                arr = ((stereo[:, 0] + stereo[:, 1]) >> 1).astype(np.int16)
-                data = arr.tobytes()
-                if self.gateway.config.VERBOSE_LOGGING and self._read_counter == 1:
-                    print(f"[{self.name}] Converting stereo to mono (averaging L+R channels)")
-
-            # Calculate audio level using numpy (RMS with dB scale)
-            if len(arr) > 0:
-                farr = arr.astype(np.float32)
-                rms = float(np.sqrt(np.mean(farr * farr)))
-
-                # Convert to 0-100 scale using dB
-                if rms > 0:
-                    db = 20 * _math_mod.log10(rms / 32767.0)
-                    raw_level = max(0, min(100, (db + 60) * (100/60)))
-                else:
-                    db = -100.0
-                    raw_level = 0
-
-                # Apply DISPLAY gain if configured
-                display_gain = getattr(self.gateway.config, 'SDR_DISPLAY_GAIN', 1.0)
-                display_level = min(100, int(raw_level * display_gain))
-
-                # Apply smoothing — fast attack, slow decay
-                if display_level > self.audio_level:
-                    self.audio_level = display_level
-                else:
-                    self.audio_level = int(self.audio_level * 0.7 + display_level * 0.3)
-
-                # Apply AUDIO boost (changes actual volume)
-                audio_boost = getattr(self.gateway.config, 'SDR_AUDIO_BOOST', 1.0)
-                if audio_boost != 1.0:
-                    arr = np.clip(farr * audio_boost, -32768, 32767).astype(np.int16)
-                    data = arr.tobytes()
-
-                # Periodic debug output
-                if self.gateway.config.VERBOSE_LOGGING:
-                    if time.time() - self._last_debug_time > 2.0:
-                        peak = int(np.max(np.abs(arr)))
-                        print(f"[SDR Debug] Read {self._read_counter} chunks")
-                        print(f"[SDR Debug] Samples: {len(arr)}, RMS: {rms:.1f}, dB: {db:.1f}")
-                        print(f"[SDR Debug] Raw level: {raw_level:.1f}%, Smoothed: {self.audio_level}%")
-                        if audio_boost != 1.0:
-                            print(f"[SDR Debug] Audio boost: {audio_boost}x")
-                        if peak == 0:
-                            print(f"[SDR Debug] ⚠ All samples are ZERO - no audio data!")
-                        elif rms < 100:
-                            print(f"[SDR Debug] ⚠ Very quiet audio - RMS {rms:.1f} < 100")
-                        else:
-                            print(f"[SDR Debug] ✓ Audio data looks good")
-                        self._last_debug_time = time.time()
-            else:
-                if self.gateway.config.VERBOSE_LOGGING:
-                    print(f"[SDR Debug] ✗ No samples in data!")
-            
-            self.last_read_time = time.time()
-            
-            # Apply volume/mix ratio
-            if self.mix_ratio != 1.0:
-                data = np.clip(arr.astype(np.float32) * self.mix_ratio, -32768, 32767).astype(np.int16).tobytes()
-            
-            return data, False  # SDR doesn't trigger PTT
-            
-        except Exception as e:
-            # Catch any other unexpected errors
-            if self.gateway.config.VERBOSE_LOGGING:
-                print(f"[SDR] Error reading audio: {e}")
-                import traceback
-                traceback.print_exc()
+            raw = self._chunk_queue.popleft()
+        except IndexError:
             return None, False
+
+        # Muted: chunk was popped (keeps queue fresh/current), discard it.
+        should_discard = self.muted or (self.gateway.tx_muted and self.gateway.rx_muted)
+        if should_discard:
+            self.audio_level = max(0, int(self.audio_level * 0.7))
+            return None, False
+
+        self.total_reads += 1
+        self.last_read_time = time.time()
+
+        # Stereo→mono (all numpy processing happens here, not in reader thread)
+        arr = np.frombuffer(raw, dtype=np.int16)
+        if hasattr(self, 'sdr_channels') and self.sdr_channels == 2 and len(arr) >= 2:
+            stereo = arr.reshape(-1, 2).astype(np.int32)
+            arr = ((stereo[:, 0] + stereo[:, 1]) >> 1).astype(np.int16)
+            raw = arr.tobytes()
+
+        # Level metering and audio boost
+        if len(arr) > 0:
+            farr = arr.astype(np.float32)
+            rms = float(np.sqrt(np.mean(farr * farr)))
+            if rms > 0:
+                db = 20 * _math_mod.log10(rms / 32767.0)
+                raw_level = max(0, min(100, (db + 60) * (100 / 60)))
+            else:
+                raw_level = 0
+            display_gain = getattr(self.gateway.config, 'SDR_DISPLAY_GAIN', 1.0)
+            display_level = min(100, int(raw_level * display_gain))
+            if display_level > self.audio_level:
+                self.audio_level = display_level
+            else:
+                self.audio_level = int(self.audio_level * 0.7 + display_level * 0.3)
+
+            audio_boost = getattr(self.gateway.config, 'SDR_AUDIO_BOOST', 1.0)
+            if audio_boost != 1.0:
+                arr = np.clip(farr * audio_boost, -32768, 32767).astype(np.int16)
+                raw = arr.tobytes()
+
+        return raw, False  # SDR never triggers PTT
     
     def is_active(self):
         """SDR is active if enabled and receiving audio"""
@@ -1325,6 +1276,12 @@ class SDRSource(AudioSource):
     
     def cleanup(self):
         """Close SDR audio stream"""
+        # Stop reader thread before closing the stream it reads from
+        self._reader_running = False
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=1.0)
+        self._chunk_queue.clear()
+
         if self.input_stream:
             try:
                 # Stop stream first to prevent ALSA errors
@@ -1332,12 +1289,12 @@ class SDRSource(AudioSource):
                     self.input_stream.stop_stream()
                 time.sleep(0.05)  # Give ALSA time to clean up buffers
                 self.input_stream.close()
-            except Exception as e:
+            except Exception:
                 pass  # Suppress ALSA errors during shutdown
         if self.pyaudio:
             try:
                 self.pyaudio.terminate()
-            except Exception as e:
+            except Exception:
                 pass  # Suppress errors
 
 
@@ -1440,6 +1397,10 @@ class AudioMixer:
         # Duck state machines — one entry per duck-group (e.g. 'aioc_vs_sdrs')
         # Tracks current duck state and active padding windows
         self.duck_state = {}
+
+        # Per-SDR hold timers: instant attack, held release for smooth audio
+        self.sdr_hold_until = {}      # {sdr_name: float timestamp}
+        self.sdr_prev_included = {}   # {sdr_name: bool} - for fade-in detection
         
     def add_source(self, source):
         """Add an audio source to the mixer"""
@@ -1745,16 +1706,51 @@ class AudioMixer:
                 elif sdr_name == "SDR2":
                     sdr2_was_ducked = True
             else:
-                # Check if this SDR has actual signal before adding to mix (with hysteresis)
-                if has_actual_audio(sdr_audio, sdr_name):
-                    # This SDR has actual signal and will be included
-                    sdrs_to_include[sdr_name] = (sdr_audio, sdr_source)
+                # Instant attack + held release for SDR inclusion.
+                #
+                # The old has_actual_audio() approach used a 0.1s attack timer which
+                # dropped the first 200ms chunk (one full AUDIO_CHUNK_SIZE period) and
+                # then switched to full volume abruptly → missing audio + pop/click.
+                #
+                # New approach:
+                #   - Include immediately on any detectable signal (no attack delay)
+                #   - Hold inclusion for SIGNAL_RELEASE_TIME after signal stops so brief
+                #     pauses don't cause dropouts and the tail fades away naturally
+                #   - Apply a short linear fade-in at the moment of first inclusion to
+                #     prevent the onset click when SDR activates after silence
+                has_instant = check_signal_instant(sdr_audio)
+                if has_instant:
+                    self.sdr_hold_until[sdr_name] = current_time + self.SIGNAL_RELEASE_TIME
+                hold_active = current_time < self.sdr_hold_until.get(sdr_name, 0.0)
+                include_sdr = has_instant or hold_active
+                prev_included = self.sdr_prev_included.get(sdr_name, False)
+
+                if include_sdr:
+                    audio_to_include = sdr_audio
+                    if not prev_included:
+                        # Onset: fade-in from 0→1 over first 10ms (480 samples)
+                        arr = np.frombuffer(sdr_audio, dtype=np.int16).astype(np.float32)
+                        fade_len = min(480, len(arr))
+                        arr[:fade_len] *= np.linspace(0.0, 1.0, fade_len)
+                        audio_to_include = arr.astype(np.int16).tobytes()
+                    self.sdr_prev_included[sdr_name] = True
+                    sdrs_to_include[sdr_name] = (audio_to_include, sdr_source)
                     if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                        print(f"  [Mixer] {sdr_name} has actual signal - including in mix")
+                        print(f"  [Mixer] {sdr_name} included (instant={'yes' if has_instant else 'hold'})")
+                elif prev_included:
+                    # Transition frame: was included last chunk, not now.
+                    # Apply fade-out so the cutoff is always smooth regardless of
+                    # how much time elapsed since the last iteration (avoids the
+                    # timing-window bug where a slow AIOC read skips the fade).
+                    arr = np.frombuffer(sdr_audio, dtype=np.int16).astype(np.float32)
+                    arr *= np.linspace(1.0, 0.0, len(arr))
+                    audio_to_include = arr.astype(np.int16).tobytes()
+                    self.sdr_prev_included[sdr_name] = False
+                    sdrs_to_include[sdr_name] = (audio_to_include, sdr_source)
+                    if self.config.VERBOSE_LOGGING:
+                        print(f"  [Mixer] {sdr_name} fade-out (hold expired)")
                 else:
-                    # This SDR has no signal (silence) - don't include or duck others
-                    if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                        print(f"  [Mixer] {sdr_name} only has silence - not including, not ducking others")
+                    self.sdr_prev_included[sdr_name] = False
         
         # Second pass: actually mix the non-ducked SDRs
         for sdr_name, (sdr_audio, sdr_source) in sdrs_to_include.items():
@@ -3442,18 +3438,19 @@ class MumbleRadioGateway:
         max_consecutive_errors = 10
         
         while self.running:
-            # Stream health check (same as before)
-            if self.input_stream and not self.restarting_stream:
-                try:
+            try:
+                # ── AIOC stream health management ────────────────────────────────
+                # These checks are AIOC-specific and must NOT block SDR audio.
+                # The mixer runs unconditionally below so SDR always reaches Mumble.
+                if self.input_stream and not self.restarting_stream:
                     current_time = time.time()
                     time_since_creation = current_time - self.stream_age
                     time_since_vad_active = current_time - self.last_vox_active_time if hasattr(self, 'last_vox_active_time') else 999
-                    
-                    # Check if we should do proactive restart
-                    if (self.config.ENABLE_STREAM_HEALTH and 
-                        self.config.STREAM_RESTART_INTERVAL > 0 and 
-                        time_since_creation > self.config.STREAM_RESTART_INTERVAL):
-                        
+
+                    # Proactive AIOC restart (optional feature, brief gap acceptable)
+                    if (self.config.ENABLE_STREAM_HEALTH and
+                            self.config.STREAM_RESTART_INTERVAL > 0 and
+                            time_since_creation > self.config.STREAM_RESTART_INTERVAL):
                         if not self.vad_active and time_since_vad_active > self.config.STREAM_RESTART_IDLE_TIME:
                             if self.config.VERBOSE_LOGGING:
                                 print(f"\n[Maintenance] Proactive stream restart (age: {time_since_creation:.0f}s, idle: {time_since_vad_active:.0f}s)")
@@ -3461,344 +3458,249 @@ class MumbleRadioGateway:
                             self.stream_age = time.time()
                             time.sleep(0.2)
                             continue
-                    
-                    # Check if stream is active before reading
+
+                    # AIOC stream inactive: restart it but do NOT raise or skip the
+                    # mixer.  AIOCRadioSource.get_audio() returns None while
+                    # restarting_stream is True, so only SDR audio flows until AIOC
+                    # recovers — which is exactly what the user wants.
                     if not self.input_stream.is_active():
                         if self.config.VERBOSE_LOGGING:
-                            print("\n[Diagnostic] Stream became inactive, restarting...")
-                        consecutive_errors = max_consecutive_errors
-                        raise Exception("Stream inactive")
-                    
-                    # Get audio - use mixer if available, otherwise direct read
-                    if self.radio_source and self.mixer:
-                        # Use mixer (Phase 1 mode)
-                        data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
-                        
-                        # Store SDR ducked states for status bar display
-                        self.sdr_ducked = sdr1_was_ducked
-                        self.sdr2_ducked = sdr2_was_ducked
-                        
-                        if data is None:
-                            # No audio from any source - send silence to keep stream alive
-                            silence = b'\x00' * (self.config.AUDIO_CHUNK_SIZE * 2)  # 16-bit silence
-                            
-                            # Send silence to stream to keep connection alive
+                            print("\n[Diagnostic] AIOC stream inactive, restarting...")
+                        self.restart_audio_input()
+                        # Fall through — SDR still runs below
+
+                # ── Mixer path: SDR always runs, AIOC contributes when healthy ──
+                if self.radio_source and self.mixer:
+                    data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
+
+                    # Store SDR ducked states for status bar display
+                    self.sdr_ducked = sdr1_was_ducked
+                    self.sdr2_ducked = sdr2_was_ducked
+
+                    if data is None:
+                        # No audio from any source — substitute silence so the Opus
+                        # encoder receives a continuous stream at the correct rate.
+                        # Skipping add_sound() starves the codec and causes audible
+                        # glitches (distortion, "struggling" sound) when real audio
+                        # resumes because Opus resets its state across the gap.
+                        data = b'\x00' * (self.config.AUDIO_CHUNK_SIZE * 2)
+                        self.audio_capture_active = False
+                        # Fall through — add_sound(silence) runs at the bottom of the
+                        # loop, and stream_output also receives the silence frame there.
+
+                    # Debug: we got audio from mixer
+                    if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"\n[Debug] Got audio from mixer: {len(data)} bytes, sources: {active_sources}, PTT={ptt_required}")
+
+                    # Route audio based on PTT requirement
+                    if ptt_required:
+                        # PTT required (file playback) - send to radio TX output
+                        if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                            print(f"\n[Debug] PTT required - routing to radio TX")
+
+                        # Update last sound time so PTT release timer works
+                        self.last_sound_time = time.time()
+
+                        # Calculate audio level for TX bar
+                        current_level = self.calculate_audio_level(data)
+                        # Smooth the level display (fast attack, slow decay)
+                        if current_level > self.rx_audio_level:
+                            self.rx_audio_level = current_level
+                        else:
+                            self.rx_audio_level = int(self.rx_audio_level * 0.7 + current_level * 0.3)
+
+                        # Update last RX audio time to prevent decay during file playback
+                        self.last_rx_audio_time = time.time()
+
+                        # Activate PTT if not already active and not muted.
+                        if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
+                            self.set_ptt_state(True)
+                            self._announcement_ptt_delay_until = time.time() + self.config.PTT_ANNOUNCEMENT_DELAY
+                            self.announcement_delay_active = True
+
+                        # Clear the delay flag once the window has passed.
+                        if getattr(self, 'announcement_delay_active', False):
+                            if time.time() >= self._announcement_ptt_delay_until:
+                                self.announcement_delay_active = False
+
+                        # Send audio to radio output
+                        if self.output_stream and not self.tx_muted:
+                            try:
+                                pcm = data
+                                if self.config.OUTPUT_VOLUME != 1.0:
+                                    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+                                    pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
+                                try:
+                                    self.output_stream.write(pcm, exception_on_overflow=False)
+                                except TypeError:
+                                    self.output_stream.write(pcm)
+                                if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                                    print(f"\n[Debug] Sent {len(pcm)} bytes to radio TX output")
+                            except IOError as io_err:
+                                if self.config.VERBOSE_LOGGING:
+                                    print(f"\n[Warning] Output stream buffer issue: {io_err}")
+                            except Exception as tx_err:
+                                if self.config.VERBOSE_LOGGING:
+                                    print(f"\n[Error] Failed to send to radio TX: {tx_err}")
+
+                        # EchoLink can optionally receive PTT audio directly
+                        if self.echolink_source and self.config.RADIO_TO_ECHOLINK:
+                            try:
+                                self.echolink_source.send_audio(data)
+                            except Exception as el_err:
+                                if self.config.VERBOSE_LOGGING:
+                                    print(f"\n[EchoLink] Send error: {el_err}")
+
+                        # Forward concurrent radio RX to Mumble/stream even during
+                        # announcement playback (full-duplex monitoring).
+                        rx_for_mumble = (
+                            getattr(self.radio_source, '_rx_cache', None)
+                            if self.radio_source else rx_audio
+                        )
+                        if rx_for_mumble is not None:
+                            if (self.mumble and
+                                    hasattr(self.mumble, 'sound_output') and
+                                    self.mumble.sound_output is not None and
+                                    getattr(self.mumble.sound_output, 'encoder_framesize', None) is not None):
+                                try:
+                                    self.mumble.sound_output.add_sound(rx_for_mumble)
+                                except Exception:
+                                    pass
                             if self.stream_output and self.stream_output.connected:
                                 try:
-                                    self.stream_output.send_audio(silence)
-                                except Exception as stream_err:
-                                    pass  # Ignore errors on silence
-                            
-                            self.audio_capture_active = False
-                            time.sleep(0.01)
-                            continue
-                        
-                        # Debug: we got audio from mixer
-                        if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                            print(f"\n[Debug] Got audio from mixer: {len(data)} bytes, sources: {active_sources}, PTT={ptt_required}")
-                        
-                        # Route audio based on PTT requirement
-                        if ptt_required:
-                            # PTT required (file playback) - send to radio TX output
-                            if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                                print(f"\n[Debug] PTT required - routing to radio TX")
-                            
-                            # Update last sound time so PTT release timer works
-                            self.last_sound_time = time.time()
-                            
-                            # Calculate audio level for TX bar
-                            current_level = self.calculate_audio_level(data)
-                            # Smooth the level display (fast attack, slow decay)
-                            if current_level > self.rx_audio_level:
-                                self.rx_audio_level = current_level  # Fast attack (reusing rx_audio_level for TX display)
-                            else:
-                                self.rx_audio_level = int(self.rx_audio_level * 0.7 + current_level * 0.3)  # Slow decay
-                            
-                            # Update last RX audio time to prevent decay during file playback
-                            self.last_rx_audio_time = time.time()
-                            
-                            # Activate PTT if not already active and not muted.
-                            # On first activation, start the announcement delay timer so the
-                            # radio has time to fully key up before audio begins.
-                            if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
-                                self.set_ptt_state(True)
-                                self._announcement_ptt_delay_until = time.time() + self.config.PTT_ANNOUNCEMENT_DELAY
-                                self.announcement_delay_active = True
-
-                            # Clear the delay flag once the window has passed.
-                            # FilePlaybackSource returns silence (without advancing file position)
-                            # while this flag is set, so no audio is lost during key-up.
-                            if getattr(self, 'announcement_delay_active', False):
-                                if time.time() >= self._announcement_ptt_delay_until:
-                                    self.announcement_delay_active = False
-
-                            # Send audio to radio output (like Mumble RX does)
-                            if self.output_stream and not self.tx_muted:
-                                try:
-                                    # Apply output volume
-                                    pcm = data
-                                    if self.config.OUTPUT_VOLUME != 1.0:
-                                        arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-                                        pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
-                                    
-                                    # Write to output stream
-                                    # Use exception_on_overflow=False to handle buffer issues gracefully
-                                    try:
-                                        self.output_stream.write(pcm, exception_on_overflow=False)
-                                    except TypeError:
-                                        # Older PyAudio doesn't support exception_on_overflow parameter
-                                        self.output_stream.write(pcm)
-                                    
-                                    if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                                        print(f"\n[Debug] Sent {len(pcm)} bytes to radio TX output")
-                                except IOError as io_err:
-                                    # Handle output buffer issues
-                                    if self.config.VERBOSE_LOGGING:
-                                        print(f"\n[Warning] Output stream buffer issue: {io_err}")
-                                        print(f"[Warning] This can cause stuttering - consider increasing AUDIO_CHUNK_SIZE")
-                                    # Don't count as critical error - just skip this chunk
-                                except Exception as tx_err:
-                                    if self.config.VERBOSE_LOGGING:
-                                        print(f"\n[Error] Failed to send to radio TX: {tx_err}")
-                            
-                            # PTT audio (file playback/announcements) goes ONLY to Radio TX
-                            # Stream will hear it when it comes back through Radio RX
-                            # DO NOT send PTT audio directly to stream!
-
-                            # EchoLink can optionally receive PTT audio directly
-                            if self.echolink_source and self.config.RADIO_TO_ECHOLINK:
-                                try:
-                                    self.echolink_source.send_audio(data)
-                                except Exception as el_err:
-                                    if self.config.VERBOSE_LOGGING:
-                                        print(f"\n[EchoLink] Send error: {el_err}")
-
-                            # Forward concurrent radio RX to Mumble/stream even during
-                            # announcement playback (full-duplex monitoring).
-                            #
-                            # Use _rx_cache from AIOCRadioSource directly — this is set
-                            # on every read regardless of VAD or ptt_active timing, so it
-                            # is always current.  Fall back to the mixer's rx_audio path
-                            # (e.g. if no radio_source is configured).
-                            rx_for_mumble = (
-                                getattr(self.radio_source, '_rx_cache', None)
-                                if self.radio_source else rx_audio
-                            )
-                            if rx_for_mumble is not None:
-                                if (self.mumble and
-                                        hasattr(self.mumble, 'sound_output') and
-                                        self.mumble.sound_output is not None and
-                                        getattr(self.mumble.sound_output, 'encoder_framesize', None) is not None):
-                                    try:
-                                        self.mumble.sound_output.add_sound(rx_for_mumble)
-                                    except Exception:
-                                        pass
-                                if self.stream_output and self.stream_output.connected:
-                                    try:
-                                        self.stream_output.send_audio(rx_for_mumble)
-                                    except Exception:
-                                        pass
-
-                            # Skip the normal RX→Mumble path below - this is TX audio
-                            continue
-                        
-                        # No PTT required (radio RX) - send to Mumble as usual
-                        # (falls through to Mumble sending code below)
-                        
-                    else:
-                        # Fallback to direct read (original mode)
-                        try:
-                            data = self.input_stream.read(
-                                self.config.AUDIO_CHUNK_SIZE, 
-                                exception_on_overflow=False
-                            )
-                        except IOError as io_err:
-                            # Handle buffer overflow gracefully
-                            if io_err.errno == -9981:  # Input overflow
-                                if self.config.VERBOSE_LOGGING and consecutive_errors == 0:
-                                    print("\n[Diagnostic] Input overflow, clearing buffer...")
-                                # Try to clear the buffer
-                                try:
-                                    self.input_stream.read(self.config.AUDIO_CHUNK_SIZE * 2, exception_on_overflow=False)
-                                except:
+                                    self.stream_output.send_audio(rx_for_mumble)
+                                except Exception:
                                     pass
-                                time.sleep(0.05)
-                                continue
-                            else:
-                                raise  # Re-raise other IOErrors
-                        
-                        # Calculate audio level for TX (with smoothing)
-                        current_level = self.calculate_audio_level(data)
-                        if current_level > self.tx_audio_level:
-                            self.tx_audio_level = current_level  # Fast attack
-                        else:
-                            self.tx_audio_level = int(self.tx_audio_level * 0.7 + current_level * 0.3)  # Slow decay
-                        
-                        # Mark that we successfully captured audio
-                        self.last_audio_capture_time = time.time()
-                        self.last_successful_read = time.time()
-                        self.audio_capture_active = True
-                        
-                        # Apply input volume if needed
-                        if self.config.INPUT_VOLUME != 1.0 and data:
-                            try:
-                                arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-                                data = np.clip(arr * self.config.INPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
-                            except Exception:
-                                pass  # If volume adjustment fails, use original data
-                        
-                        # Apply audio processing to clean up noisy radio audio
-                        data = self.process_audio_for_mumble(data)
-                        
-                        # Check VAD - only send to Mumble if radio signal is detected
-                        should_transmit = self.check_vad(data)
-                        
-                        if not should_transmit:
-                            # No signal detected, don't send to Mumble
-                            continue
-                    
-                    # Reset consecutive errors on success
-                    consecutive_errors = 0
-                    
-                    # Note: rx_muted is now checked in the Radio source's get_audio() method
-                    # This allows SDR to be independent from Radio RX mute
-                    
-                    # Check if Mumble is connected and ready
-                    if not self.mumble:
-                        if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                            print(f"\n[Debug] Mumble not connected, cannot send audio")
+
+                        # Skip the normal RX→Mumble path below - this is TX audio
                         continue
-                    
-                    if not hasattr(self.mumble, 'sound_output') or self.mumble.sound_output is None:
-                        if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                            print(f"\n[Debug] Mumble sound_output not initialized")
-                        continue
-                    
-                    # Check if codec is initialized (encoder_framesize must not be None)
-                    if not hasattr(self.mumble.sound_output, 'encoder_framesize') or self.mumble.sound_output.encoder_framesize is None:
-                        # Only print warning occasionally, not every time
-                        if self.mixer.call_count % 500 == 1:  # Every ~25 seconds
-                            print(f"\n⚠ Mumble codec still not ready (encoder_framesize is None)")
-                            print(f"   This means Mumble hasn't finished initializing")
-                            print(f"   Waiting for server negotiation to complete...")
-                            print(f"   Check that MUMBLE_SERVER = {self.config.MUMBLE_SERVER} is correct")
-                        continue
-                    
-                    # Send audio directly to Mumble
+
+                    # No PTT required (radio RX / SDR) — falls through to Mumble send
+
+                elif self.input_stream and not self.restarting_stream:
+                    # Fallback: direct AIOC read only (no mixer / no SDR)
                     try:
-                        self.mumble.sound_output.add_sound(data)
-                        if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                            print(f"\n[Debug] Sent {len(data)} bytes to Mumble")
-                    except Exception as send_err:
-                        print(f"\n[Error] Failed to send to Mumble: {send_err}")
-                        import traceback
-                        traceback.print_exc()
-                    
-                    # Send audio to EchoLink if enabled (Phase 3B)
-                    if self.echolink_source and self.config.RADIO_TO_ECHOLINK:
+                        data = self.input_stream.read(
+                            self.config.AUDIO_CHUNK_SIZE,
+                            exception_on_overflow=False
+                        )
+                    except IOError as io_err:
+                        if io_err.errno == -9981:  # Input overflow
+                            if self.config.VERBOSE_LOGGING and consecutive_errors == 0:
+                                print("\n[Diagnostic] Input overflow, clearing buffer...")
+                            try:
+                                self.input_stream.read(self.config.AUDIO_CHUNK_SIZE * 2, exception_on_overflow=False)
+                            except:
+                                pass
+                            time.sleep(0.05)
+                            continue
+                        else:
+                            raise
+
+                    # Calculate audio level for TX
+                    current_level = self.calculate_audio_level(data)
+                    if current_level > self.tx_audio_level:
+                        self.tx_audio_level = current_level
+                    else:
+                        self.tx_audio_level = int(self.tx_audio_level * 0.7 + current_level * 0.3)
+
+                    self.last_audio_capture_time = time.time()
+                    self.last_successful_read = time.time()
+                    self.audio_capture_active = True
+
+                    if self.config.INPUT_VOLUME != 1.0 and data:
                         try:
-                            self.echolink_source.send_audio(data)
-                        except Exception as el_err:
-                            if self.config.VERBOSE_LOGGING:
-                                print(f"\n[EchoLink] Send error: {el_err}")
-                    
-                    # Send audio to Icecast stream if enabled (Phase 3A)
-                    if self.stream_output and self.stream_output.connected:
-                        try:
-                            if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                                print(f"\n[Debug] Sending {len(data)} bytes to Icecast stream")
-                            self.stream_output.send_audio(data)
-                        except Exception as stream_err:
-                            if self.config.VERBOSE_LOGGING:
-                                print(f"\n[Stream] Send error: {stream_err}")
-                    elif self.config.VERBOSE_LOGGING and self.mixer.call_count % 100 == 1:
-                        if not self.stream_output:
-                            print(f"\n[Debug] stream_output is None")
-                        elif not self.stream_output.connected:
-                            print(f"\n[Debug] stream_output not connected")
-                        
-                except Exception as e:
-                    consecutive_errors += 1
+                            arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                            data = np.clip(arr * self.config.INPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
+                        except Exception:
+                            pass
+
+                    data = self.process_audio_for_mumble(data)
+
+                    if not self.check_vad(data):
+                        continue
+
+                else:
+                    # No mixer and no AIOC stream available — wait
                     self.audio_capture_active = False
-                    
-                    # Log detailed error information
-                    error_type = type(e).__name__
-                    error_msg = str(e)
-                    
-                    # Enhanced diagnostics for -9999 errors
-                    if "-9999" in error_msg or "Unanticipated host error" in error_msg:
-                        if consecutive_errors == 1:
-                            if self.config.VERBOSE_LOGGING:
-                                print(f"\n[Diagnostic] ALSA Error -9999 detected")
-                                print(f"  Error details: {error_type}: {error_msg}")
-                                
-                                # Check if stream is still active
-                                try:
-                                    if self.input_stream:
-                                        is_active = self.input_stream.is_active()
-                                        is_stopped = self.input_stream.is_stopped()
-                                        print(f"  Stream state: active={is_active}, stopped={is_stopped}")
-                                except:
-                                    print(f"  Stream state: Unable to query")
-                                
-                                # Check system audio info
-                                try:
-                                    import subprocess
-                                    result = subprocess.run(['arecord', '-l'], capture_output=True, text=True, timeout=1)
-                                    if result.returncode == 0:
-                                        devices = [line for line in result.stdout.split('\n') if 'card' in line.lower()]
-                                        print(f"  Available capture devices: {len(devices)}")
-                                    
-                                    # Check for USB errors in dmesg
-                                    result = subprocess.run(['dmesg', '|', 'tail', '-20'], 
-                                                          shell=True, capture_output=True, text=True, timeout=1)
-                                    usb_errors = [line for line in result.stdout.split('\n') 
-                                                 if 'usb' in line.lower() and ('error' in line.lower() or 'fail' in line.lower())]
-                                    if usb_errors:
-                                        print(f"  Recent USB errors in dmesg: {len(usb_errors)}")
-                                        for err in usb_errors[-3:]:
-                                            print(f"    {err.strip()}")
-                                    
-                                    # Check CPU load
-                                    with open('/proc/loadavg', 'r') as f:
-                                        load = f.read().split()[0]
-                                        print(f"  System load: {load}")
-                                    
-                                    # Check if we're running out of USB bandwidth
-                                    result = subprocess.run(['lsusb', '-t'], capture_output=True, text=True, timeout=1)
-                                    if result.returncode == 0 and 'AIOC' in result.stdout or 'All-In-One' in result.stdout:
-                                        print(f"  USB tree shows AIOC device present")
-                                    
-                                    # Suggest USB reset as potential fix
-                                    print(f"  Recommendation: This may be a USB/ALSA driver issue")
-                                    print(f"  Try: Larger AUDIO_CHUNK_SIZE (2400-4800)")
-                                    print(f"       or move AIOC to different USB port")
-                                except:
-                                    pass
-                    else:
-                        if consecutive_errors == 1:  # First error
-                            if self.config.VERBOSE_LOGGING:
-                                print(f"\n[Diagnostic] Audio capture error #{consecutive_errors}: {error_type}: {error_msg}")
-                    
-                    self.last_stream_error = f"{error_type}: {error_msg}"
-                    
-                    if consecutive_errors >= max_consecutive_errors:
+                    time.sleep(0.1)
+                    continue
+
+                # ── Common: reset error count and send to Mumble ─────────────────
+                consecutive_errors = 0
+
+                if not self.mumble:
+                    if self.mixer and self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"\n[Debug] Mumble not connected, cannot send audio")
+                    continue
+
+                if not hasattr(self.mumble, 'sound_output') or self.mumble.sound_output is None:
+                    if self.mixer and self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"\n[Debug] Mumble sound_output not initialized")
+                    continue
+
+                if not hasattr(self.mumble.sound_output, 'encoder_framesize') or self.mumble.sound_output.encoder_framesize is None:
+                    if self.mixer and self.mixer.call_count % 500 == 1:
+                        print(f"\n⚠ Mumble codec still not ready (encoder_framesize is None)")
+                        print(f"   Waiting for server negotiation to complete...")
+                        print(f"   Check that MUMBLE_SERVER = {self.config.MUMBLE_SERVER} is correct")
+                    continue
+
+                try:
+                    self.mumble.sound_output.add_sound(data)
+                    if self.mixer and self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"\n[Debug] Sent {len(data)} bytes to Mumble")
+                except Exception as send_err:
+                    print(f"\n[Error] Failed to send to Mumble: {send_err}")
+                    import traceback
+                    traceback.print_exc()
+
+                if self.echolink_source and self.config.RADIO_TO_ECHOLINK:
+                    try:
+                        self.echolink_source.send_audio(data)
+                    except Exception as el_err:
                         if self.config.VERBOSE_LOGGING:
-                            print(f"\n✗ Audio capture failed {consecutive_errors} times")
-                            print(f"  Last error: {error_type}: {error_msg}")
-                            print(f"  Total restarts this session: {self.stream_restart_count}")
-                            print(f"  Attempting to restart audio stream...")
-                        
-                        # Try to restart the audio stream
-                        self.restart_audio_input()
-                        self.stream_restart_count += 1
-                        consecutive_errors = 0
-                        time.sleep(1)
-                    else:
-                        time.sleep(0.1)
-            else:
+                            print(f"\n[EchoLink] Send error: {el_err}")
+
+                if self.stream_output and self.stream_output.connected:
+                    try:
+                        if self.mixer and self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
+                            print(f"\n[Debug] Sending {len(data)} bytes to Icecast stream")
+                        self.stream_output.send_audio(data)
+                    except Exception as stream_err:
+                        if self.config.VERBOSE_LOGGING:
+                            print(f"\n[Stream] Send error: {stream_err}")
+
+            except Exception as e:
+                consecutive_errors += 1
                 self.audio_capture_active = False
-                time.sleep(0.1)
+
+                error_type = type(e).__name__
+                error_msg = str(e)
+
+                if "-9999" in error_msg or "Unanticipated host error" in error_msg:
+                    if consecutive_errors == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"\n[Diagnostic] ALSA Error -9999: {error_type}: {error_msg}")
+                        try:
+                            if self.input_stream:
+                                print(f"  Stream state: active={self.input_stream.is_active()}, stopped={self.input_stream.is_stopped()}")
+                        except:
+                            pass
+                else:
+                    if consecutive_errors == 1 and self.config.VERBOSE_LOGGING:
+                        print(f"\n[Diagnostic] Audio error #{consecutive_errors}: {error_type}: {error_msg}")
+
+                self.last_stream_error = f"{error_type}: {error_msg}"
+
+                if consecutive_errors >= max_consecutive_errors:
+                    if self.config.VERBOSE_LOGGING:
+                        print(f"\n✗ Audio capture failed {consecutive_errors} times, restarting AIOC stream...")
+                    self.restart_audio_input()
+                    self.stream_restart_count += 1
+                    consecutive_errors = 0
+                    time.sleep(1)
+                else:
+                    time.sleep(0.1)
     
     def restart_audio_input(self):
         """Attempt to restart the audio input stream"""
