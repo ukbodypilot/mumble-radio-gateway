@@ -17,10 +17,10 @@
 #   3. Most other settings have sensible defaults
 #
 # Keyboard Controls (runtime):
-#   MUTE:    't' = TX | 'r' = RX | 'm' = Global
+#   MUTE:    't' = TX | 'r' = RX | 'm' = Global | 's' = SDR1 | 'x' = SDR2
 #   AUDIO:   'v' = VAD | ',' = Vol- | '.' = Vol+
-#   PROCESS: 'n' = Gate | 'f' = HPF | 'a' = AGC | 's' = Spectral
-#            'w' = Wiener | 'e' = Echo | 'x' = Stream health
+#   SDR:     'd' = SDR1 Duck toggle
+#   PROCESS: 'n' = Gate | 'f' = HPF | 'a' = AGC | 'w' = Wiener | 'e' = Echo
 #   PTT:     'p' = Manual PTT toggle
 #   PLAY:    '1-9' = Announcements | '0' = Station ID | '-' = Stop
 # ============================================================================
@@ -49,11 +49,11 @@ MUMBLE_CHANNEL =
 
 # Audio bitrate in bits/second
 # 40000 = good | 72000 = high (recommended) | 96000 = maximum
-MUMBLE_BITRATE = 72000
+MUMBLE_BITRATE = 32000
 
 # Enable Opus Variable Bit Rate
 # true = adapts quality based on audio (recommended)
-MUMBLE_VBR = true
+MUMBLE_VBR = false
 
 # ============================================================================
 # CORE: RADIO INTERFACE (AIOC)
@@ -71,7 +71,7 @@ AIOC_OUTPUT_DEVICE =
 
 # GPIO channel for PTT control
 # 2 = CM108 GPIO2 (standard AIOC configuration)
-AIOC_PTT_CHANNEL = 2
+AIOC_PTT_CHANNEL = 3
 
 # ============================================================================
 # CORE: AUDIO QUALITY & BUFFERING
@@ -129,7 +129,7 @@ PTT_RELEASE_DELAY = 0.5
 # ============================================================================
 
 # Enable VAD for Radio RX → Mumble
-# true = only send to Mumble when radio signal detected
+# true = only send to Mumble when radio signal detected (recommended)
 # false = always send (may transmit noise/carrier)
 ENABLE_VAD = true
 
@@ -162,20 +162,20 @@ VOX_RELEASE_TIME = 0.5   # How long to hold after silence
 # ============================================================================
 
 # Noise Gate - removes low-level background noise
-ENABLE_NOISE_GATE = true
+ENABLE_NOISE_GATE = false
 NOISE_GATE_THRESHOLD = -40    # dBFS threshold
 NOISE_GATE_ATTACK = 0.01      # Attack time (seconds)
 NOISE_GATE_RELEASE = 0.1      # Release time (seconds)
 
 # High-Pass Filter - removes low-frequency rumble
-ENABLE_HIGHPASS_FILTER = true
+ENABLE_HIGHPASS_FILTER = false
 HIGHPASS_CUTOFF_FREQ = 300    # Hz (300 = good for voice)
 
 # Automatic Gain Control - normalizes audio levels
-ENABLE_AGC = true
+ENABLE_AGC = false
 
 # Noise Suppression - advanced noise reduction
-ENABLE_NOISE_SUPPRESSION = true
+ENABLE_NOISE_SUPPRESSION = false
 NOISE_SUPPRESSION_METHOD = spectral  # spectral or wiener
 NOISE_SUPPRESSION_STRENGTH = 0.5     # 0.0 to 1.0
 
@@ -192,7 +192,7 @@ ENABLE_PLAYBACK = true
 
 # Directory containing audio files
 # Gateway will scan this directory and auto-assign files to keys
-PLAYBACK_DIRECTORY = audio_files
+PLAYBACK_DIRECTORY = audio
 
 # File Naming & Auto-Assignment:
 # 
@@ -215,6 +215,195 @@ PLAYBACK_DIRECTORY = audio_files
 #
 # On startup, gateway will display which file is assigned to each key
 # This mapping is shown just above the status bar
+
+
+# ============================================================================
+# FEATURE: SDR RECEIVER INTEGRATION
+# ============================================================================
+# Add a second receiver (SDR) that feeds audio into the gateway
+# simultaneously with the main AIOC radio. Audio is mixed together.
+#
+# Two SDR inputs supported: SDR1 and SDR2 with priority-based ducking
+#
+# Prerequisites:
+#   1. Install ALSA loopback: sudo modprobe snd-aloop
+#   2. Make permanent: echo "snd-aloop" | sudo tee -a /etc/modules
+#   3. Configure SDRconnect (or other SDR software) to output to Loopback device
+#
+# Keyboard Controls:
+#   's' = Mute/unmute SDR1 audio
+#   'x' = Mute/unmute SDR2 audio
+#   'd' = Toggle SDR1 ducking on/off
+#   'm' = Global mute (mutes everything including SDRs)
+#
+# Priority System:
+#   - AIOC/Radio RX always has top priority (ducks all SDRs)
+#   - SDR_PRIORITY and SDR2_PRIORITY determine ducking between SDRs
+#   - Lower number = higher priority (1 ducks 2)
+#
+# Status Bar:
+#   SDR1:[cyan bar] = SDR1 audio level display
+#   SDR2:[magenta bar] = SDR2 audio level display
+#
+# Use Case Examples:
+#   - Monitor two frequencies simultaneously with priority
+#   - Add scanner audio feed + web SDR with priority ducking
+#   - Mix in remote receiver with local SDR
+# ============================================================================
+
+# -------- SDR1 Configuration --------
+# Enable SDR1 audio input
+ENABLE_SDR = true
+
+# ALSA device name for SDR1 audio input
+# IMPORTANT: ALSA Loopback devices work in PAIRS
+#   - If SDRconnect outputs to hw:2,0 → Gateway reads from hw:2,1
+#   - If SDRconnect outputs to hw:2,1 → Gateway reads from hw:2,0
+#
+# The gateway will search for devices containing this string
+# Examples:
+#   Loopback          - Searches for any Loopback device
+#   hw:2,1            - Specific hardware device (pair of hw:2,0)
+#   hw:Loopback,2,1   - Full ALSA format
+#
+# To find your device:
+#   1. Note what SDRconnect shows (e.g., "hw:2,0")
+#   2. Use the OPPOSITE subdevice number:
+#      SDRconnect → hw:2,0 means use hw:2,1
+#      SDRconnect → hw:2,1 means use hw:2,0
+SDR_DEVICE_NAME = hw:7,1
+
+# SDR1 priority for ducking (1 = higher priority, 2 = lower priority)
+# If SDR1_PRIORITY < SDR2_PRIORITY, SDR1 will duck SDR2 when both have audio
+# AIOC/Radio RX always ducks both SDRs regardless of priority
+SDR_PRIORITY = 1
+
+# SDR1 audio ducking
+# true  = SDR1 audio is silenced when higher priority audio is active
+#         (AIOC/Radio RX, or lower-priority-number SDR)
+# false = SDR1 audio is always mixed at SDR_MIX_RATIO volume
+SDR_DUCK = true
+
+# SDR1 audio mix ratio (0.0 to 1.0) - only applies when SDR_DUCK = false
+# Sets the SDR1 volume relative to other sources when mixing simultaneously
+# 1.0 = full volume (default)
+# 0.5 = half volume
+SDR_MIX_RATIO = 1.0
+
+# SDR1 display sensitivity (1.0 to 10.0)
+# Controls how sensitive the status bar and percentage display are
+# This does NOT change the actual audio volume
+# 1.0 = normal sensitivity (default)
+# 3.0 = show 3x on bar (more visible)
+# 5.0 = very sensitive (bar shows even quiet signals)
+SDR_DISPLAY_GAIN = 1.0
+
+# SDR1 audio volume boost (1.0 to 10.0)
+# Controls ACTUAL audio volume sent to Mumble
+# 1.0 = no change (default - original level)
+# 2.0 = 2x louder
+# 3.0 = 3x louder
+SDR_AUDIO_BOOST = 1.0
+
+# SDR1 buffer size multiplier (reserved, currently unused)
+# Note: frames_per_buffer is fixed at AUDIO_CHUNK_SIZE to prevent ALSA burst-mode
+# choppiness. Increasing this setting no longer helps with dropouts.
+# Use a larger AUDIO_CHUNK_SIZE instead (e.g. 9600 = 200ms, already recommended).
+SDR_BUFFER_MULTIPLIER = 8
+
+# -------- SDR2 Configuration --------
+# Enable SDR2 audio input (second SDR receiver)
+ENABLE_SDR2 = false
+
+# ALSA device name for SDR2 audio input (must be different from SDR1)
+# Same pairing rules as SDR1 - use opposite subdevice number
+SDR2_DEVICE_NAME = hw:4,1
+
+# SDR2 priority for ducking (1 = higher priority, 2 = lower priority)
+# If SDR2_PRIORITY > SDR1_PRIORITY, SDR2 will be ducked by SDR1
+SDR2_PRIORITY = 2
+
+# SDR2 audio ducking
+SDR2_DUCK = true
+
+# SDR2 audio mix ratio (when ducking disabled)
+SDR2_MIX_RATIO = 1.0
+
+# SDR2 display sensitivity
+SDR2_DISPLAY_GAIN = 1.0
+
+# SDR2 audio volume boost
+SDR2_AUDIO_BOOST = 1.0
+
+# SDR2 buffer size multiplier (reserved, currently unused — see SDR_BUFFER_MULTIPLIER note)
+SDR2_BUFFER_MULTIPLIER = 8
+
+# ============================================================================
+# SIGNAL DETECTION HYSTERESIS (Anti-Stuttering)
+# ============================================================================
+# Prevents rapid on/off switching that causes audio stuttering when signal
+# briefly drops. Works like a gate with attack/release times.
+#
+# How it works:
+#   - Attack: Signal must be continuously present for this duration before
+#             the source is considered "active" and allowed to duck others
+#   - Release: Signal must be continuously absent for this duration before
+#              the source is considered "inactive" and stops ducking others
+#
+# This prevents choppy/stuttering audio when:
+#   - SDR signal has brief dropouts
+#   - AIOC audio has noise gaps
+#   - Network jitter causes intermittent silence
+#
+# Recommended values:
+#   - Fast response (may stutter): attack=0.05, release=0.2
+#   - Balanced (default):         attack=0.1,  release=0.5
+#   - Smooth (slow):              attack=0.2,  release=1.0
+# ============================================================================
+
+# Attack time: How long signal must be present before considered active (seconds)
+# Lower = faster response, higher = more stable but slower to react
+SIGNAL_ATTACK_TIME = 0.1
+
+# Release time: How long signal must be absent before considered inactive (seconds)
+# Lower = faster release, higher = holds signal longer (prevents stuttering)
+SIGNAL_RELEASE_TIME = 0.5
+
+# ============================================================================
+# FEATURE: TEXT-TO-SPEECH & TEXT COMMANDS (Phase 4)
+# ============================================================================
+# Convert text to speech and broadcast on radio
+# Remote control via Mumble text messages
+#
+# Prerequisites:
+#   pip3 install gtts --break-system-packages
+#
+# Text Commands (send via Mumble chat):
+#   !speak <text>  - Generate TTS and broadcast on radio
+#   !play <0-9>    - Play announcement file  
+#   !status        - Show gateway status
+#   !help          - Show available commands
+#
+# Example:
+#   User types in Mumble: !speak Emergency traffic - all stations stand by
+#   Gateway: Generates speech, keys PTT, broadcasts on radio
+# ============================================================================
+
+# Enable text-to-speech (requires gtts)
+ENABLE_TTS = true
+
+# Enable text command processing
+# Allows Mumble users to control gateway via text messages
+ENABLE_TEXT_COMMANDS = true
+
+# TTS volume boost (1.0 = normal, 2.0 = double, 3.0 = triple)
+# TTS audio is often quieter than regular files, boost it here
+TTS_VOLUME = 1.0
+
+# Silence padding before TTS audio (seconds)
+# Prevents first words from being cut off due to PTT delay
+# 0.25 = quarter second of silence before speech starts
+PTT_TTS_DELAY = 0.25
 
 
 # ============================================================================
@@ -328,11 +517,11 @@ ENABLE_STREAM_HEALTH = false
 
 # Verbose logging - shows detailed diagnostic information
 # true = show debug output | false = minimal output
-VERBOSE_LOGGING = true
+VERBOSE_LOGGING = false
 
 # Update rate for status line display
 # Lower = smoother updates, higher CPU usage
-STATUS_UPDATE_INTERVAL = 0.02
+STATUS_UPDATE_INTERVAL = 1
 
 # ============================================================================
 # TROUBLESHOOTING GUIDE
