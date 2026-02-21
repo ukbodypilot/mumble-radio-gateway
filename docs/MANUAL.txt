@@ -231,10 +231,10 @@ PTT Timing:
 
 Voice Activity Detection (VAD):
   ENABLE_VAD     = true
-  VAD_THRESHOLD  = -40   # dBFS  (-40 = sensitive, -25 = less sensitive)
-  VAD_ATTACK     = 0.02  # seconds
-  VAD_RELEASE    = 0.3   # seconds
-  VAD_MIN_DURATION = 0.1 # seconds
+  VAD_THRESHOLD  = -45   # dBFS  (more negative = more sensitive)
+  VAD_ATTACK     = 0.05  # seconds
+  VAD_RELEASE    = 1     # seconds
+  VAD_MIN_DURATION = 0.25 # seconds
 
 SDR Inputs:
   ENABLE_SDR         = true
@@ -316,12 +316,13 @@ via ALSA loopback devices.
 
 SETUP
 -----
-  1. Load the ALSA loopback module:
-       sudo modprobe snd-aloop numlids=2
-
-  2. Make permanent:
-       echo "options snd-aloop numlids=2" | sudo tee /etc/modprobe.d/snd-aloop.conf
+  1. Load the ALSA loopback module (3 cards for up to 3 SDR channels):
+       echo "options snd-aloop numlids=3" | sudo tee /etc/modprobe.d/snd-aloop.conf
        echo "snd-aloop" | sudo tee -a /etc/modules
+       sudo modprobe -r snd-aloop 2>/dev/null; sudo modprobe snd-aloop numlids=3
+
+  2. Verify cards created:
+       aplay -l | grep Loopback
 
   3. Configure SDR software (e.g. SDRconnect) to output to hw:X,0
      Gateway reads from hw:X,1 (the capture side of the same loopback card)
@@ -365,7 +366,7 @@ ANNOUNCEMENT PLAYBACK — PTT AND AUDIO FIXES
 DEFAULT PARAMETER UPDATES
 --------------------------
   PTT_ACTIVATION_DELAY   0.0  → 0.1
-  VAD_THRESHOLD         -33   → -40
+  VAD_THRESHOLD         -33   → -45
   SIGNAL_ATTACK_TIME     0.1  → 0.5
   SIGNAL_RELEASE_TIME    0.5  → 1.0
   SWITCH_PADDING_TIME    0.2  → 1.0
@@ -553,15 +554,17 @@ Hardware:
 
 Software:
   - Python 3.7+
-  - pymumble_py3
+  - pymumble-py3 (or pymumble as fallback)
   - pyaudio / portaudio19-dev
   - soundfile, resampy (for non-WAV file playback)
   - gtts (optional, for Text-to-Speech)
-  - hidapi (for AIOC PTT HID control)
+  - hidapi / libhidapi-dev (for AIOC PTT HID control)
 
 Installation:
-  sudo apt-get install python3 python3-pip portaudio19-dev libsndfile1
-  pip3 install pymumble pyaudio soundfile resampy gtts hidapi --break-system-packages
+  sudo apt-get install python3 python3-pip portaudio19-dev libsndfile1 \
+      libhidapi-libusb0 libhidapi-dev
+  pip3 install pymumble-py3 pyaudio soundfile resampy gtts hidapi --break-system-packages
+  # If pymumble-py3 fails: pip3 install pymumble --break-system-packages
 
 ================================================================================
 SUPPORT & DOCUMENTATION

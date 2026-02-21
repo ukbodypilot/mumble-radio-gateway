@@ -27,42 +27,42 @@
 # Enable/disable the feature
 ENABLE_VAD = true
 
-# Threshold in dB (-45 to -25 typical)
-# Lower = more sensitive, Higher = less sensitive
-VAD_THRESHOLD = -33
+# Threshold in dBFS (-50 to -25 typical)
+# More negative = more sensitive
+VAD_THRESHOLD = -45
 
-# Attack time in milliseconds (10-50ms typical)
+# Attack time in seconds (0.02-0.1s typical)
 # How quickly VAD opens when signal appears
-VAD_ATTACK = 20
+VAD_ATTACK = 0.05
 
-# Release time in milliseconds (200-500ms typical)
+# Release time in seconds (0.5-2.0s typical)
 # How long to keep transmitting after signal drops
-VAD_RELEASE = 300
+VAD_RELEASE = 1
 
-# Minimum duration in milliseconds (100-300ms typical)
+# Minimum duration in seconds (0.1-0.5s typical)
 # Prevents very short bursts from being transmitted
-VAD_MIN_DURATION = 150
+VAD_MIN_DURATION = 0.25
 ```
 
 ## Tuning Guide
 
 ### For Noisy Radio (lots of static/hiss)
 ```ini
-VAD_THRESHOLD = -30  # Higher threshold
-VAD_MIN_DURATION = 200  # Filter out short noise bursts
+VAD_THRESHOLD = -35  # Higher threshold (less sensitive)
+VAD_MIN_DURATION = 0.35  # Filter out short noise bursts
 ```
 
 ### For Weak Signals
 ```ini
-VAD_THRESHOLD = -38  # Lower threshold
-VAD_RELEASE = 400  # Longer tail to capture fade-out
+VAD_THRESHOLD = -50  # Lower threshold (more sensitive)
+VAD_RELEASE = 1.5  # Longer tail to capture fade-out
 ```
 
 ### For Fast-paced Communications
 ```ini
-VAD_ATTACK = 10  # Very fast response
-VAD_RELEASE = 200  # Shorter tail
-VAD_MIN_DURATION = 100  # Allow short transmissions
+VAD_ATTACK = 0.02  # Very fast response
+VAD_RELEASE = 0.5  # Shorter tail
+VAD_MIN_DURATION = 0.1  # Allow short transmissions
 ```
 
 ## Diagnostic Output
@@ -101,17 +101,17 @@ VAD works alongside:
 ## Troubleshooting
 
 ### VAD too sensitive (transmits on noise)
-- Increase `VAD_THRESHOLD` (e.g., -30 instead of -33)
+- Increase `VAD_THRESHOLD` (e.g., -35 instead of -45)
 - Increase `VAD_MIN_DURATION` to filter bursts
 - Enable noise gate with higher threshold
 
 ### VAD cuts off transmissions
-- Increase `VAD_RELEASE` (e.g., 400-500ms)
+- Increase `VAD_RELEASE` (e.g., 1.5-2.0s)
 - Decrease `VAD_THRESHOLD` slightly
 - Check if audio processing is too aggressive
 
 ### VAD misses weak signals
-- Decrease `VAD_THRESHOLD` (e.g., -38 instead of -33)
+- Decrease `VAD_THRESHOLD` (e.g., -50 instead of -45)
 - Decrease `VAD_ATTACK` for faster response
 - Increase input volume
 
