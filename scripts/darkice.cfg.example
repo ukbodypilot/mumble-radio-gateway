@@ -2,9 +2,9 @@
 # Darkice configuration — Mumble Radio Gateway → Broadcastify streaming
 # =============================================================================
 # Copy to /etc/darkice.cfg and edit the [icecast2-0] section with your
-# Broadcastify stream key and password.
+# Broadcastify stream key and stream secret.
 #
-# Find your stream key and password at:
+# Find your stream credentials at:
 #   https://www.broadcastify.com/manage/feeds
 #
 # ALSA loopback card number: run  aplay -l | grep Loopback  to list cards.
