@@ -56,17 +56,41 @@ echo "[ 2/8 ] Setting up ALSA loopback (for SDR input)..."
 echo "options snd-aloop enable=1,1,1 index=4,5,6" | sudo tee /etc/modprobe.d/snd-aloop.conf > /dev/null
 echo "  ✓ /etc/modprobe.d/snd-aloop.conf → enable=1,1,1 index=4,5,6"
 
-# Always unload and reload so the settings take effect
+# Show what parameters this kernel's snd-aloop actually supports
+echo "  Supported module parameters:"
+modinfo snd-aloop 2>/dev/null | grep "^parm:" | sed 's/^/    /' || echo "    (modinfo not available)"
+
+# Stop audio services that may hold the module open
+sudo systemctl stop pulseaudio.service pulseaudio.socket \
+    pipewire.service pipewire.socket wireplumber.service 2>/dev/null || true
+
+# Unload — try modprobe -r then rmmod -f as fallback
+UNLOADED=false
 if lsmod | grep -q snd_aloop; then
-    sudo modprobe -r snd-aloop 2>/dev/null || true
+    if sudo modprobe -r snd-aloop 2>/dev/null; then
+        UNLOADED=true
+    elif sudo rmmod -f snd_aloop 2>/dev/null; then
+        UNLOADED=true
+    else
+        echo "  ⚠ Could not unload snd-aloop — a reboot will apply the new settings"
+    fi
     sleep 1
 fi
-sudo modprobe snd-aloop enable=1,1,1 index=4,5,6
-if [ $? -ne 0 ]; then
-    echo "  ✗ Failed to load snd-aloop — check kernel headers are installed"
-    exit 1
+
+# Load with explicit parameters
+if ! lsmod | grep -q snd_aloop; then
+    if sudo modprobe snd-aloop enable=1,1,1 index=4,5,6; then
+        echo "  ✓ snd-aloop loaded"
+    else
+        echo "  ✗ Failed to load snd-aloop"
+        exit 1
+    fi
 fi
-echo "  ✓ snd-aloop loaded (3 loopback cards)"
+
+# Show what the kernel actually applied
+echo "  Active module parameters:"
+printf "    enable = "; cat /sys/module/snd_aloop/parameters/enable 2>/dev/null || echo "(unavailable)"
+printf "    index  = "; cat /sys/module/snd_aloop/parameters/index  2>/dev/null || echo "(unavailable)"
 
 # Make it load on boot
 if ! grep -q "snd-aloop" /etc/modules 2>/dev/null; then
@@ -76,13 +100,10 @@ else
     echo "  ✓ snd-aloop already in /etc/modules"
 fi
 
-# Verify
-# Count cards (not lines) — each card shows 2 lines in aplay -l, one per device
+# Verify — count cards (each card has 2 devices, count device 0 entries only)
 LOOPBACK_COUNT=$(aplay -l 2>/dev/null | grep "Loopback" | grep -c "device 0" || true)
 echo "  Loopback cards visible: $LOOPBACK_COUNT (expected 3 at hw:4 hw:5 hw:6)"
-echo "    hw:4,0 / hw:5,0 / hw:6,0 — SDR app writes here"
-echo "    hw:4,1 / hw:5,1 / hw:6,1 — gateway reads here"
-echo "    Verify: aplay -l | grep Loopback"
+aplay -l 2>/dev/null | grep "Loopback" | grep "device 0" | sed 's/^/    /'
 echo
 
 # ── 3. Python packages ───────────────────────────────────────
