@@ -218,7 +218,7 @@ fi
 
 # Create /etc/darkice.cfg from example if it doesn't exist
 DARKICE_CFG=/etc/darkice.cfg
-DARKICE_EXAMPLE="$GATEWAY_DIR/examples/darkice.cfg.example"
+DARKICE_EXAMPLE="$GATEWAY_DIR/scripts/darkice.cfg.example"
 if [ ! -f "$DARKICE_CFG" ]; then
     if [ -f "$DARKICE_EXAMPLE" ]; then
         sudo cp "$DARKICE_EXAMPLE" "$DARKICE_CFG" \
@@ -230,6 +230,26 @@ if [ ! -f "$DARKICE_CFG" ]; then
 else
     echo "  ✓ $DARKICE_CFG already exists (not overwritten)"
 fi
+
+# Configure WirePlumber to not manage ALSA loopback devices
+# (prevents it locking them to S32_LE and blocking DarkIce)
+WIREPLUMBER_CONF_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
+WIREPLUMBER_CONF="$WIREPLUMBER_CONF_DIR/99-disable-loopback.conf"
+WIREPLUMBER_SRC="$GATEWAY_DIR/scripts/99-disable-loopback.conf"
+mkdir -p "$WIREPLUMBER_CONF_DIR"
+if [ ! -f "$WIREPLUMBER_CONF" ]; then
+    if [ -f "$WIREPLUMBER_SRC" ]; then
+        cp "$WIREPLUMBER_SRC" "$WIREPLUMBER_CONF" \
+            && echo "  ✓ WirePlumber loopback exclusion installed" \
+            || echo "  ⚠ Could not install WirePlumber config — DarkIce may fail to open audio device"
+    else
+        echo "  ⚠ $WIREPLUMBER_SRC not found — skipping WirePlumber config"
+    fi
+else
+    echo "  ✓ WirePlumber loopback config already exists (not overwritten)"
+fi
+systemctl --user restart wireplumber 2>/dev/null || true
+
 set -e
 echo
 
