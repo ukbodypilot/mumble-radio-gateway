@@ -31,7 +31,7 @@ fi
 echo
 
 # ── 1. System packages ───────────────────────────────────────
-echo "[ 1/7 ] Installing system packages..."
+echo "[ 1/8 ] Installing system packages..."
 sudo apt-get update -qq
 sudo apt-get install -y \
     python3 \
@@ -48,7 +48,7 @@ echo "  ✓ System packages installed"
 echo
 
 # ── 2. ALSA loopback module ──────────────────────────────────
-echo "[ 2/7 ] Setting up ALSA loopback (for SDR input)..."
+echo "[ 2/8 ] Setting up ALSA loopback (for SDR input)..."
 
 # Write modprobe options first (numlids=3 → 3 independent loopback cards)
 echo "options snd-aloop numlids=3" | sudo tee /etc/modprobe.d/snd-aloop.conf > /dev/null
@@ -82,7 +82,7 @@ echo "    Find card numbers: aplay -l | grep Loopback"
 echo
 
 # ── 3. Python packages ───────────────────────────────────────
-echo "[ 3/7 ] Installing Python packages..."
+echo "[ 3/8 ] Installing Python packages..."
 
 # Helper: try --break-system-packages (Debian 12+), then plain pip
 _pip() {
@@ -120,7 +120,7 @@ fi
 echo
 
 # ── 4. UDEV rules for AIOC ──────────────────────────────────
-echo "[ 4/7 ] Setting up UDEV rules for AIOC USB device..."
+echo "[ 4/8 ] Setting up UDEV rules for AIOC USB device..."
 UDEV_RULE='SUBSYSTEM=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="audio"'
 
 if [ ! -f /etc/udev/rules.d/99-aioc.rules ]; then
@@ -134,43 +134,54 @@ fi
 echo
 
 # ── 5. Audio group, realtime limits, and sudoers ─────────────────
-echo "[ 5/7 ] Setting up audio permissions..."
+echo "[ 5/8 ] Setting up audio permissions..."
+set +e   # None of this should abort the install
 
 # Determine the real (non-root) user running this script
 ACTUAL_USER=${SUDO_USER:-$USER}
 
-# Add user to audio group (ALSA device access + realtime scheduling)
-if id -nG "$ACTUAL_USER" | grep -qw audio; then
+# Add user to audio group (ALSA device access + darkice realtime scheduling)
+if id -nG "$ACTUAL_USER" 2>/dev/null | grep -qw audio; then
     echo "  ✓ $ACTUAL_USER already in audio group"
 else
-    sudo usermod -aG audio "$ACTUAL_USER"
-    echo "  ✓ Added $ACTUAL_USER to audio group (takes effect on next login)"
+    if sudo usermod -aG audio "$ACTUAL_USER" 2>/dev/null; then
+        echo "  ✓ Added $ACTUAL_USER to audio group (takes effect on next login)"
+    else
+        echo "  ⚠ Could not add $ACTUAL_USER to audio group — run manually: sudo usermod -aG audio $ACTUAL_USER"
+    fi
 fi
 
-# Allow audio group members to use realtime scheduling (required by darkice)
+# Allow audio group to use realtime scheduling (required by darkice without sudo)
+sudo mkdir -p /etc/security/limits.d
 if [ ! -f /etc/security/limits.d/audio-realtime.conf ]; then
     printf '@audio\t-\trtprio\t95\n@audio\t-\tmemlock\tunlimited\n' \
-        | sudo tee /etc/security/limits.d/audio-realtime.conf > /dev/null
-    echo "  ✓ Realtime scheduling limits configured for audio group"
+        | sudo tee /etc/security/limits.d/audio-realtime.conf > /dev/null \
+        && echo "  ✓ Realtime scheduling limits configured for audio group" \
+        || echo "  ⚠ Could not write audio-realtime.conf — darkice may need sudo"
 else
     echo "  ✓ /etc/security/limits.d/audio-realtime.conf already exists"
 fi
 
-# Allow passwordless sudo for modprobe snd-aloop (used by start.sh)
-MODPROBE_BIN=$(which modprobe)
+# Allow passwordless sudo for modprobe snd-aloop (used by start.sh on each run)
+MODPROBE_BIN=$(which modprobe 2>/dev/null || echo /usr/sbin/modprobe)
 SUDOERS_FILE=/etc/sudoers.d/mumble-gateway
-echo "$ACTUAL_USER ALL=(ALL) NOPASSWD: $MODPROBE_BIN snd-aloop, $MODPROBE_BIN -r snd-aloop" \
-    | sudo tee "$SUDOERS_FILE" > /dev/null
-sudo chmod 440 "$SUDOERS_FILE"
-echo "  ✓ Passwordless sudo configured for modprobe snd-aloop"
+if [ -n "$ACTUAL_USER" ]; then
+    printf '%s ALL=(ALL) NOPASSWD: %s snd-aloop, %s -r snd-aloop\n' \
+        "$ACTUAL_USER" "$MODPROBE_BIN" "$MODPROBE_BIN" \
+        | sudo tee "$SUDOERS_FILE" > /dev/null \
+        && sudo chmod 440 "$SUDOERS_FILE" \
+        && echo "  ✓ Passwordless sudo configured for modprobe snd-aloop" \
+        || echo "  ⚠ Could not write sudoers rule — start.sh will prompt for sudo password"
+fi
+
+set -e
 echo
 
-# ── 5b. Darkice (optional — for Broadcastify/Icecast streaming) ──
-echo "[ 5b/7 ] Darkice streaming (optional)..."
+# ── 6. Darkice (optional — for Broadcastify/Icecast streaming) ───
+echo "[ 6/8 ] Darkice streaming (optional)..."
 set +e
 sudo apt-get install -y darkice lame 2>/dev/null
 DARKICE_STATUS=$?
-set -e
 if [ $DARKICE_STATUS -eq 0 ]; then
     echo "  ✓ Darkice installed"
 else
@@ -185,18 +196,20 @@ DARKICE_CFG=/etc/darkice.cfg
 DARKICE_EXAMPLE="$GATEWAY_DIR/examples/darkice.cfg.example"
 if [ ! -f "$DARKICE_CFG" ]; then
     if [ -f "$DARKICE_EXAMPLE" ]; then
-        sudo cp "$DARKICE_EXAMPLE" "$DARKICE_CFG"
-        echo "  ✓ Created $DARKICE_CFG — edit it with your Broadcastify credentials"
+        sudo cp "$DARKICE_EXAMPLE" "$DARKICE_CFG" \
+            && echo "  ✓ Created $DARKICE_CFG — edit with your Broadcastify credentials" \
+            || echo "  ⚠ Could not create $DARKICE_CFG — copy manually from $DARKICE_EXAMPLE"
     else
-        echo "  ⚠ No darkice.cfg example found — create $DARKICE_CFG manually"
+        echo "  ⚠ Example not found — create $DARKICE_CFG manually"
     fi
 else
     echo "  ✓ $DARKICE_CFG already exists (not overwritten)"
 fi
+set -e
 echo
 
-# ── 6. Gateway configuration ─────────────────────────────────
-echo "[ 6/7 ] Setting up configuration..."
+# ── 7. Gateway configuration ─────────────────────────────────
+echo "[ 7/8 ] Setting up configuration..."
 
 CONFIG_DEST="$GATEWAY_DIR/gateway_config.txt"
 CONFIG_SRC="$GATEWAY_DIR/examples/gateway_config.txt"
@@ -218,7 +231,7 @@ echo "  ✓ audio/ directory ready (place announcement files here)"
 echo
 
 # ── 7. Make scripts executable ───────────────────────────────
-echo "[ 7/7 ] Setting permissions..."
+echo "[ 8/8 ] Setting permissions..."
 chmod +x "$GATEWAY_DIR/mumble_radio_gateway.py" 2>/dev/null || true
 chmod +x "$GATEWAY_DIR/scripts/"*.sh 2>/dev/null || true
 chmod +x "$GATEWAY_DIR/start.sh" 2>/dev/null || true
