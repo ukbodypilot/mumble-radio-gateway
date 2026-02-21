@@ -122,13 +122,13 @@ class Config:
             'NETWORK_TIMEOUT': 10,
             'TCP_NODELAY': True,
             'VERBOSE_LOGGING': False,
-            'STATUS_UPDATE_INTERVAL': 1,  # seconds
+            'STATUS_UPDATE_INTERVAL': 1.0,  # seconds
             'MAX_MUMBLE_BUFFER_SECONDS': 1.0,
             'BUFFER_MANAGEMENT_VERBOSE': False,
             'ENABLE_VAD': True,
             'VAD_THRESHOLD': -45,
             'VAD_ATTACK': 0.05,  # float (seconds)
-            'VAD_RELEASE': 1,    # float (seconds)
+            'VAD_RELEASE': 1.0,  # float (seconds)
             'VAD_MIN_DURATION': 0.25,  # float (seconds)
             'ENABLE_STREAM_HEALTH': False,
             'STREAM_RESTART_INTERVAL': 60,
@@ -233,7 +233,10 @@ class Config:
                                 if value.startswith('0x'):
                                     value = int(value, 16)
                                 else:
-                                    value = int(value)
+                                    try:
+                                        value = int(value)
+                                    except ValueError:
+                                        value = float(value)  # allow decimal values for int-defaulted settings
                             elif default_type == float:
                                 value = float(value)
                             # else keep as string
@@ -4186,6 +4189,8 @@ class MumbleRadioGateway:
                     radio_rx_bar = self.format_level_bar(self.tx_audio_level, muted=self.rx_muted, color='green')
                 
                 # SDR bar: Show SDR audio level (CYAN color)
+                # Calculate once so it is always defined regardless of which SDR sources are present
+                global_muted = self.tx_muted and self.rx_muted
                 sdr_bar = ""
                 if self.sdr_source:
                     # Always read current level directly from source
@@ -4194,10 +4199,9 @@ class MumbleRadioGateway:
                         current_sdr_level = self.sdr_source.audio_level
                     else:
                         current_sdr_level = 0
-                    
+
                     # Determine display state
                     # Mirror SDRSource.get_audio(): discard when individually muted OR globally muted
-                    global_muted = self.tx_muted and self.rx_muted
                     sdr_muted = self.sdr_muted or global_muted
                     sdr_ducked = self.sdr_ducked if not sdr_muted else False
                     
