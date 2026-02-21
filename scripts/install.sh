@@ -133,21 +133,65 @@ else
 fi
 echo
 
-# ── 5. Darkice (optional — for Broadcastify/Icecast streaming) ──
-echo "[ 5/7 ] Darkice streaming (optional)..."
+# ── 5. Audio group, realtime limits, and sudoers ─────────────────
+echo "[ 5/7 ] Setting up audio permissions..."
+
+# Determine the real (non-root) user running this script
+ACTUAL_USER=${SUDO_USER:-$USER}
+
+# Add user to audio group (ALSA device access + realtime scheduling)
+if id -nG "$ACTUAL_USER" | grep -qw audio; then
+    echo "  ✓ $ACTUAL_USER already in audio group"
+else
+    sudo usermod -aG audio "$ACTUAL_USER"
+    echo "  ✓ Added $ACTUAL_USER to audio group (takes effect on next login)"
+fi
+
+# Allow audio group members to use realtime scheduling (required by darkice)
+if [ ! -f /etc/security/limits.d/audio-realtime.conf ]; then
+    printf '@audio\t-\trtprio\t95\n@audio\t-\tmemlock\tunlimited\n' \
+        | sudo tee /etc/security/limits.d/audio-realtime.conf > /dev/null
+    echo "  ✓ Realtime scheduling limits configured for audio group"
+else
+    echo "  ✓ /etc/security/limits.d/audio-realtime.conf already exists"
+fi
+
+# Allow passwordless sudo for modprobe snd-aloop (used by start.sh)
+MODPROBE_BIN=$(which modprobe)
+SUDOERS_FILE=/etc/sudoers.d/mumble-gateway
+echo "$ACTUAL_USER ALL=(ALL) NOPASSWD: $MODPROBE_BIN snd-aloop, $MODPROBE_BIN -r snd-aloop" \
+    | sudo tee "$SUDOERS_FILE" > /dev/null
+sudo chmod 440 "$SUDOERS_FILE"
+echo "  ✓ Passwordless sudo configured for modprobe snd-aloop"
+echo
+
+# ── 5b. Darkice (optional — for Broadcastify/Icecast streaming) ──
+echo "[ 5b/7 ] Darkice streaming (optional)..."
 set +e
 sudo apt-get install -y darkice lame 2>/dev/null
 DARKICE_STATUS=$?
 set -e
 if [ $DARKICE_STATUS -eq 0 ]; then
     echo "  ✓ Darkice installed"
-    echo "  ℹ  To use streaming: configure /etc/darkice.cfg and set"
-    echo "     ENABLE_STREAM_OUTPUT = true in gateway_config.txt"
 else
     echo "  ⚠ darkice could not be installed from apt — skipping"
     echo "    This is optional: streaming to Broadcastify requires darkice,"
     echo "    but all other gateway features work without it."
     echo "    To install manually: sudo apt-get install darkice lame"
+fi
+
+# Create /etc/darkice.cfg from example if it doesn't exist
+DARKICE_CFG=/etc/darkice.cfg
+DARKICE_EXAMPLE="$GATEWAY_DIR/examples/darkice.cfg.example"
+if [ ! -f "$DARKICE_CFG" ]; then
+    if [ -f "$DARKICE_EXAMPLE" ]; then
+        sudo cp "$DARKICE_EXAMPLE" "$DARKICE_CFG"
+        echo "  ✓ Created $DARKICE_CFG — edit it with your Broadcastify credentials"
+    else
+        echo "  ⚠ No darkice.cfg example found — create $DARKICE_CFG manually"
+    fi
+else
+    echo "  ✓ $DARKICE_CFG already exists (not overwritten)"
 fi
 echo
 
@@ -193,10 +237,18 @@ echo "       MUMBLE_SERVER   = your.mumble.server"
 echo "       MUMBLE_PORT     = 64738"
 echo "       MUMBLE_USERNAME = RadioGateway"
 echo
-echo "  2. Connect your AIOC USB device"
+echo "  2. If using Broadcastify streaming, edit /etc/darkice.cfg:"
+echo "       password  = YOUR_STREAM_PASSWORD"
+echo "       mountPoint = YOUR_STREAM_KEY"
+echo "       device    = hw:<card>,1,0  (check: aplay -l | grep Loopback)"
+echo
+echo "  3. Connect your AIOC USB device"
 echo "     (unplug and replug after install so udev rules take effect)"
 echo
-echo "  3. Run the gateway:"
+echo "  4. Log out and back in so audio group membership takes effect"
+echo "     (needed for darkice realtime scheduling without sudo)"
+echo
+echo "  5. Run the gateway:"
 echo "       python3 $GATEWAY_DIR/mumble_radio_gateway.py"
 echo
 echo "SDR INPUT (optional):"
