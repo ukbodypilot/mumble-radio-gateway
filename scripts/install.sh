@@ -51,17 +51,17 @@ echo
 echo "[ 2/8 ] Setting up ALSA loopback (for SDR input)..."
 
 # Write modprobe options first:
-#   numlids=3  → 3 independent loopback cards
-#   index=4,5,6 → pin them to hw:4 hw:5 hw:6 on every machine
-echo "options snd-aloop numlids=3 index=4,5,6" | sudo tee /etc/modprobe.d/snd-aloop.conf > /dev/null
-echo "  ✓ /etc/modprobe.d/snd-aloop.conf → numlids=3 index=4,5,6"
+#   enable=1,1,1 → enable 3 independent loopback cards
+#   index=4,5,6  → pin them to hw:4 hw:5 hw:6 on every machine
+echo "options snd-aloop enable=1,1,1 index=4,5,6" | sudo tee /etc/modprobe.d/snd-aloop.conf > /dev/null
+echo "  ✓ /etc/modprobe.d/snd-aloop.conf → enable=1,1,1 index=4,5,6"
 
 # Always unload and reload so the settings take effect
 if lsmod | grep -q snd_aloop; then
     sudo modprobe -r snd-aloop 2>/dev/null || true
     sleep 1
 fi
-sudo modprobe snd-aloop numlids=3 index=4,5,6
+sudo modprobe snd-aloop enable=1,1,1 index=4,5,6
 if [ $? -ne 0 ]; then
     echo "  ✗ Failed to load snd-aloop — check kernel headers are installed"
     exit 1
@@ -77,7 +77,8 @@ else
 fi
 
 # Verify
-LOOPBACK_COUNT=$(aplay -l 2>/dev/null | grep -c "Loopback" || true)
+# Count cards (not lines) — each card shows 2 lines in aplay -l, one per device
+LOOPBACK_COUNT=$(aplay -l 2>/dev/null | grep "Loopback" | grep -c "device 0" || true)
 echo "  Loopback cards visible: $LOOPBACK_COUNT (expected 3 at hw:4 hw:5 hw:6)"
 echo "    hw:4,0 / hw:5,0 / hw:6,0 — SDR app writes here"
 echo "    hw:4,1 / hw:5,1 / hw:6,1 — gateway reads here"
