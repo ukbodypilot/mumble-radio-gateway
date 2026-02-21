@@ -254,10 +254,11 @@ SWITCH_PADDING_TIME = 1.0   # silence gap inserted at each transition
 ```bash
 # Install system dependencies
 sudo apt-get update
-sudo apt-get install -y python3 python3-pip portaudio19-dev libsndfile1
+sudo apt-get install -y python3 python3-pip portaudio19-dev libsndfile1 \
+    libhidapi-libusb0 libhidapi-dev
 
-# Install Python packages
-pip3 install pymumble pyaudio soundfile resampy gtts --break-system-packages
+# Install Python packages (pymumble-py3 preferred; falls back to pymumble)
+pip3 install pymumble-py3 pyaudio soundfile resampy gtts hidapi --break-system-packages
 
 # Clone repository
 git clone <your-repo-url>
@@ -334,13 +335,14 @@ ALSA loopback devices work in **pairs**. For dual SDR you need two separate loop
 └──────────────────────────────────────────────┘
 ```
 
-To get two loopback cards, load the module with `numlids=2`:
+To get three loopback cards, load the module with `numlids=3`:
 ```bash
-sudo modprobe snd-aloop numlids=2
-
-# Make permanent
-echo "options snd-aloop numlids=2" | sudo tee /etc/modprobe.d/snd-aloop.conf
+# Write config first so the setting survives reboots
+echo "options snd-aloop numlids=3" | sudo tee /etc/modprobe.d/snd-aloop.conf
 echo "snd-aloop" | sudo tee -a /etc/modules
+
+# Load (or reload) now
+sudo modprobe -r snd-aloop 2>/dev/null; sudo modprobe snd-aloop numlids=3
 ```
 
 ### Configuration
@@ -630,11 +632,11 @@ MUMBLE_VBR = true
 
 ```ini
 ENABLE_VAD = true            # Enable VAD (default: true)
-VAD_THRESHOLD = -40          # Threshold in dBFS (-50 to -20)
+VAD_THRESHOLD = -45          # Threshold in dBFS (-50 to -20)
                              # More negative = more sensitive
-VAD_ATTACK = 0.02            # How fast to activate (seconds)
-VAD_RELEASE = 0.3            # Hold time after silence (seconds)
-VAD_MIN_DURATION = 0.1       # Minimum transmission length (seconds)
+VAD_ATTACK = 0.05            # How fast to activate (seconds)
+VAD_RELEASE = 1              # Hold time after silence (seconds)
+VAD_MIN_DURATION = 0.25      # Minimum transmission length (seconds)
 ```
 
 ### PTT (Push-to-Talk) Settings
