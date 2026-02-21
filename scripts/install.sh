@@ -117,7 +117,7 @@ _pip() {
 
 # Core packages (excluding pymumble — handled separately due to PyPI name variants)
 set +e
-_pip hidapi numpy pyaudio soundfile resampy psutil gtts
+_pip hid numpy pyaudio soundfile resampy psutil gtts
 CORE_STATUS=$?
 set -e
 if [ $CORE_STATUS -eq 0 ]; then
@@ -146,7 +146,8 @@ echo
 
 # ── 4. UDEV rules for AIOC ──────────────────────────────────
 echo "[ 4/8 ] Setting up UDEV rules for AIOC USB device..."
-UDEV_RULE='SUBSYSTEM=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="audio"'
+UDEV_RULE='SUBSYSTEM=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="audio"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="plugdev"'
 
 if [ ! -f /etc/udev/rules.d/99-aioc.rules ]; then
     echo "$UDEV_RULE" | sudo tee /etc/udev/rules.d/99-aioc.rules > /dev/null
