@@ -252,24 +252,34 @@ SWITCH_PADDING_TIME = 1.0   # silence gap inserted at each transition
 ### Installation
 
 ```bash
-# Install system dependencies
-sudo apt-get update
-sudo apt-get install -y python3 python3-pip portaudio19-dev libsndfile1 \
-    libhidapi-libusb0 libhidapi-dev
-
-# Install Python packages (pymumble-py3 preferred; falls back to pymumble)
-pip3 install pymumble-py3 pyaudio soundfile resampy gtts hidapi --break-system-packages
-
 # Clone repository
 git clone <your-repo-url>
 cd mumble-radio-gateway
 
-# Configure
-nano gateway_config.txt
-# Edit Mumble server settings, radio device, etc.
+# Run the installer (handles all dependencies automatically)
+bash scripts/install.sh
+```
 
-# Run
-python3 mumble_radio_gateway.py
+The installer handles:
+- System packages (Python, PortAudio, FFmpeg, HIDAPI, etc.)
+- ALSA loopback module (`snd-aloop`) pinned to `hw:4`, `hw:5`, `hw:6`
+- Python packages (`hid`, `numpy`, `pyaudio`, `soundfile`, `resampy`, `psutil`, `gtts`, `pymumble-py3`)
+- UDEV rules for AIOC USB audio + HID (PTT control)
+- Audio group membership and realtime scheduling limits
+- Darkice + WirePlumber configuration (if applicable)
+- Example `gateway_config.txt`
+
+> **Supported platforms:** Raspberry Pi (any model), Debian 12, Ubuntu 22.04+, any Debian-based Linux.
+
+> **Python 3.12+ note:** The installer patches the `pymumble` SSL layer automatically. No manual fix required.
+
+**Manual installation (alternative):**
+
+```bash
+sudo apt-get install -y python3 python3-pip portaudio19-dev libsndfile1 \
+    libhidapi-libusb0 libhidapi-dev ffmpeg
+# Install Python packages (pymumble-py3 preferred; falls back to pymumble)
+pip3 install pymumble-py3 hid pyaudio soundfile resampy gtts psutil --break-system-packages
 ```
 
 ### Basic Configuration
@@ -296,7 +306,7 @@ SDR_DUCK = true        # SDR1 ducking (silence when higher priority audio active
 
 # Optional second SDR receiver
 ENABLE_SDR2 = false    # SDR2 disabled by default
-SDR2_DEVICE_NAME = hw:3,1
+SDR2_DEVICE_NAME = hw:5,1
 SDR2_PRIORITY = 2      # Ducked by SDR1 and radio RX
 ```
 
@@ -307,15 +317,18 @@ SDR2_PRIORITY = 2      # Ducked by SDR1 and radio RX
 SDR audio uses ALSA loopback devices for piping audio from SDR software (like SDRconnect) into the gateway.
 
 ```bash
-# Load loopback module
-sudo modprobe snd-aloop
+# Load loopback module (pinned to hw:4, hw:5, hw:6)
+sudo modprobe snd-aloop enable=1,1,1 index=4,5,6
 
 # Make permanent
+echo "options snd-aloop enable=1,1,1 index=4,5,6" | sudo tee /etc/modprobe.d/snd-aloop.conf
 echo "snd-aloop" | sudo tee -a /etc/modules
 
 # Verify
 aplay -l | grep Loopback
 ```
+
+> The installer (`scripts/install.sh`) does all of this automatically.
 
 ### Loopback Device Pairing
 
@@ -327,30 +340,37 @@ ALSA loopback devices work in **pairs**. For dual SDR you need two separate loop
 ├──────────────────────────────────────────────┤
 │  hw:X,0 (playback) ↔ hw:X,1 (capture)       │
 │                                              │
-│  SDR1 software → hw:2,0                     │
-│  Gateway SDR1  ← hw:2,1                     │
+│  SDR1 software → hw:4,0                     │
+│  Gateway SDR1  ← hw:4,1                     │
 │                                              │
-│  SDR2 software → hw:3,0  (different card)   │
-│  Gateway SDR2  ← hw:3,1                     │
+│  SDR2 software → hw:5,0  (different card)   │
+│  Gateway SDR2  ← hw:5,1                     │
+│                                              │
+│  (installer pins loopback cards to hw:4,5,6) │
 └──────────────────────────────────────────────┘
 ```
 
-To get three loopback cards, load the module with `numlids=3`:
+To get three loopback cards pinned to fixed device numbers, use `enable=1,1,1 index=4,5,6`:
 ```bash
 # Write config first so the setting survives reboots
-echo "options snd-aloop numlids=3" | sudo tee /etc/modprobe.d/snd-aloop.conf
+echo "options snd-aloop enable=1,1,1 index=4,5,6" | sudo tee /etc/modprobe.d/snd-aloop.conf
 echo "snd-aloop" | sudo tee -a /etc/modules
 
-# Load (or reload) now
-sudo modprobe -r snd-aloop 2>/dev/null; sudo modprobe snd-aloop numlids=3
+# Stop audio services that may hold the module, then reload
+sudo systemctl stop pipewire wireplumber pulseaudio 2>/dev/null || true
+sudo modprobe -r snd-aloop 2>/dev/null; sudo modprobe snd-aloop enable=1,1,1 index=4,5,6
 ```
+
+> **Note:** `numlids=N` is a Raspberry Pi-only kernel parameter and is silently ignored on standard Debian/Ubuntu. Use `enable=1,1,1` instead — it works on all platforms.
+
+> **Pinned card numbers:** `index=4,5,6` ensures the loopback cards always appear at `hw:4`, `hw:5`, `hw:6` regardless of how many other audio cards are present. The installer applies this automatically.
 
 ### Configuration
 
 ```ini
 # SDR1 (cyan bar)
 ENABLE_SDR = true
-SDR_DEVICE_NAME = hw:2,1
+SDR_DEVICE_NAME = hw:4,1   # Loopback capture side (installer pins card 1 to hw:4)
 SDR_PRIORITY = 1           # Higher priority (ducks SDR2)
 SDR_DUCK = true            # Ducked by radio RX
 SDR_MIX_RATIO = 1.0
@@ -360,7 +380,7 @@ SDR_BUFFER_MULTIPLIER = 8
 
 # SDR2 (magenta bar) — disabled by default
 ENABLE_SDR2 = false
-SDR2_DEVICE_NAME = hw:3,1
+SDR2_DEVICE_NAME = hw:5,1  # Loopback capture side (installer pins card 2 to hw:5)
 SDR2_PRIORITY = 2          # Lower priority (ducked by SDR1)
 SDR2_DUCK = true           # Ducked by radio RX and SDR1
 SDR2_MIX_RATIO = 1.0
@@ -635,7 +655,7 @@ ENABLE_VAD = true            # Enable VAD (default: true)
 VAD_THRESHOLD = -45          # Threshold in dBFS (-50 to -20)
                              # More negative = more sensitive
 VAD_ATTACK = 0.05            # How fast to activate (seconds)
-VAD_RELEASE = 1              # Hold time after silence (seconds)
+VAD_RELEASE = 1.0            # Hold time after silence (seconds)
 VAD_MIN_DURATION = 0.25      # Minimum transmission length (seconds)
 ```
 
@@ -660,7 +680,7 @@ Both SDR inputs share the same set of parameters; SDR2 uses the `SDR2_` prefix.
 ```ini
 # ── SDR1 (cyan bar) ──────────────────────────────────
 ENABLE_SDR = true                # Enable SDR1
-SDR_DEVICE_NAME = hw:2,1         # ALSA capture device
+SDR_DEVICE_NAME = hw:4,1         # ALSA capture device (installer pins loopback 1 to hw:4)
 SDR_PRIORITY = 1                 # Duck priority (lower = higher priority)
 SDR_DUCK = true                  # Duck when radio RX or higher-priority SDR active
 SDR_MIX_RATIO = 1.0              # Volume when ducking disabled (0.0-1.0)
@@ -670,7 +690,7 @@ SDR_BUFFER_MULTIPLIER = 8        # Buffer size multiplier (1-16)
 
 # ── SDR2 (magenta bar) ───────────────────────────────
 ENABLE_SDR2 = false              # Enable SDR2 (disabled by default)
-SDR2_DEVICE_NAME = hw:3,1        # Must be a different device from SDR1
+SDR2_DEVICE_NAME = hw:5,1        # Must be a different device from SDR1 (installer pins loopback 2 to hw:5)
 SDR2_PRIORITY = 2                # Higher number = lower priority (ducked by SDR1)
 SDR2_DUCK = true                 # Duck when radio RX or SDR1 active
 SDR2_MIX_RATIO = 1.0
@@ -791,10 +811,63 @@ STREAM_RESTART_IDLE_TIME = 3        # When idle for N seconds
 
 # Diagnostics
 VERBOSE_LOGGING = false             # Detailed debug output
-STATUS_UPDATE_INTERVAL = 1          # Status bar update rate (seconds)
+STATUS_UPDATE_INTERVAL = 1.0        # Status bar update rate (seconds)
 ```
 
 ## Troubleshooting
+
+### WirePlumber / PipeWire Conflicts
+
+**Problem: DarkIce fails to open ALSA loopback (format error or "device busy")**
+
+WirePlumber (the PipeWire session manager) claims ALSA loopback devices and locks them to `S32_LE` format. DarkIce requires `S16_LE`, so it fails to open the device.
+
+Fix: install the WirePlumber exclusion rule (the installer does this automatically):
+```bash
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d
+cp scripts/99-disable-loopback.conf ~/.config/wireplumber/wireplumber.conf.d/
+systemctl --user restart wireplumber
+```
+
+**Problem: AIOC USB audio device not found by the gateway**
+
+WirePlumber can also claim the AIOC device, hiding it from PyAudio. The same `99-disable-loopback.conf` file excludes both the loopback and AIOC devices.
+
+**Problem: Loopback cards appear at wrong hw: numbers**
+
+After a fresh install the loopback cards may appear at `hw:0`, `hw:1`, `hw:2` instead of the expected `hw:4`, `hw:5`, `hw:6`. This happens when the module was loaded without the `index=4,5,6` parameter.
+
+```bash
+# Reload with correct parameters
+sudo systemctl stop pipewire wireplumber pulseaudio 2>/dev/null || true
+sudo modprobe -r snd-aloop
+sudo modprobe snd-aloop enable=1,1,1 index=4,5,6
+aplay -l | grep Loopback     # Should show hw:4, hw:5, hw:6
+```
+
+Use `scripts/loopback-status` to see all active loopback card assignments at a glance.
+
+### AIOC USB Interface Issues
+
+**Problem: PTT not working (gateway detects AIOC audio but PTT has no effect)**
+
+The AIOC PTT is controlled via USB HID (`/dev/hidraw*`). The udev rule must cover both the USB and HID subsystems:
+
+```bash
+cat /etc/udev/rules.d/99-aioc.rules
+# Should contain two rules: one for SUBSYSTEM=="usb" and one for SUBSYSTEM=="hidraw"
+# If only the USB rule is present, run the installer again or add:
+echo 'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="plugdev"' \
+    | sudo tee -a /etc/udev/rules.d/99-aioc.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+# Unplug and replug AIOC
+```
+
+### Python 3.12+ Compatibility
+
+**Problem: `ssl.wrap_socket` removed / `PROTOCOL_TLSv1_2` deprecated**
+
+`pymumble` uses SSL APIs removed in Python 3.12. The gateway applies a compatibility shim automatically on startup — no manual fix is required. If you see SSL-related import errors, ensure you are running `mumble_radio_gateway.py` directly rather than importing `pymumble` from other code.
 
 ### SDR Audio Issues
 
@@ -804,10 +877,11 @@ STATUS_UPDATE_INTERVAL = 1          # Status bar update rate (seconds)
 lsmod | grep snd_aloop
 
 # Load module if needed
-sudo modprobe snd-aloop
+sudo modprobe snd-aloop enable=1,1,1 index=4,5,6
 
-# Verify device exists
+# Verify device exists at expected hw: numbers
 arecord -l | grep Loopback
+scripts/loopback-status
 ```
 
 **Problem: SDR bar frozen**
@@ -889,12 +963,18 @@ arecord -l | grep Loopback
 
 Stream mixed audio to Icecast/Broadcastify:
 
+1. Install Darkice: `sudo apt-get install darkice lame`
+2. Copy the example config: `sudo cp scripts/darkice.cfg.example /etc/darkice.cfg`
+3. Edit `/etc/darkice.cfg` with your Broadcastify stream key and password
+4. Enable in gateway config:
+
 ```ini
 ENABLE_STREAM_OUTPUT = true
-STREAM_OUTPUT_PIPE = /tmp/gateway_stream.pcm
 ```
 
-Configure Darkice to read from the pipe. See `start.sh` for automatic setup.
+5. Use `start.sh` to launch the gateway and Darkice together
+
+**Important:** The installer configures WirePlumber to not manage the ALSA loopback device so DarkIce can open it in the required `S16_LE` format. If DarkIce fails with a format error, see the [WirePlumber troubleshooting section](#wireplumber--pipewire-conflicts).
 
 ### EchoLink Integration
 
@@ -942,10 +1022,23 @@ See `docs/TTS_TEXT_COMMANDS_GUIDE.md` for full documentation and examples.
 ```
 mumble-radio-gateway/
 ├── mumble_radio_gateway.py     # Main application
-├── gateway_config.txt           # Configuration file
-├── start.sh                     # Startup script (with Darkice)
+├── gateway_config.txt           # Configuration file (copy from examples/)
+├── start.sh                     # Startup script (launches gateway + Darkice)
 ├── README.md                    # This file
-├── gateway_flowchart.jpg        # Architecture diagram
+├── CLAUDE.md                    # AI assistant memory/instructions
+├── examples/
+│   └── gateway_config.txt       # Template configuration
+├── scripts/
+│   ├── install.sh               # Full installer (Raspberry Pi + Debian)
+│   ├── darkice.cfg.example      # Darkice/Broadcastify config template
+│   ├── 99-disable-loopback.conf # WirePlumber exclusion rules (ALSA loopback + AIOC)
+│   └── loopback-status          # Diagnostic: show all loopback card assignments
+├── docs/
+│   ├── MANUAL.txt               # Detailed user manual
+│   ├── TTS_TEXT_COMMANDS_GUIDE.md
+│   ├── THELINKBOX_SETUP.md
+│   ├── VAD_FEATURE.md
+│   └── LICENSE
 └── audio/                       # Announcement files directory
     ├── station_id.mp3
     ├── 1_welcome.mp3
@@ -986,6 +1079,28 @@ class MySource(AudioSource):
 - PyAudio: Python audio interface
 
 ## Changelog
+
+### Installer & Compatibility Overhaul
+
+**Installation**
+- New `scripts/install.sh` — single-command install supporting Raspberry Pi, Debian 12, Ubuntu 22.04+
+- ALSA loopback now pinned to `hw:4`, `hw:5`, `hw:6` via `enable=1,1,1 index=4,5,6` (previously `numlids=3` which is silently ignored on non-Pi kernels)
+- Python packages corrected: `hid` (not `hidapi`) for AIOC HID PTT; `pymumble-py3` with automatic fallback to `pymumble`
+- UDEV rules now cover both `SUBSYSTEM=="usb"` and `SUBSYSTEM=="hidraw"` — required for PTT HID access
+- WirePlumber exclusion rule (`scripts/99-disable-loopback.conf`) excludes both ALSA loopback and AIOC from session management — prevents DarkIce S32_LE lock and AIOC hiding from PyAudio
+- Installer is now fully non-fatal: `set -e` wrapped around non-critical steps; `sudo mkdir -p` guards; all fallback warnings without abort
+- DarkIce `scripts/darkice.cfg.example` no longer contains the word "password" in comments before the first section header — fixes DarkIce 1.5 parser crash
+- Darkice cfg path fixed: example is now in `scripts/darkice.cfg.example` (was `examples/darkice.cfg.example`)
+- Passwordless `sudo modprobe snd-aloop` configured via `/etc/sudoers.d/mumble-gateway` so `start.sh` never prompts for password
+
+**Python 3.12+ compatibility**
+- SSL shim applied before `pymumble` import: patches removed `ssl.wrap_socket()` and deprecated `ssl.PROTOCOL_TLSv1_2`
+
+**Bug fixes**
+- **Duck-out regression**: `sdr_active_at_transition` previously used `check_signal_instant()` on the raw loopback device, which always measured the SDR app's background noise as signal. This silenced the first ~1 s of every AIOC radio transmission. Fixed: uses `sdr_prev_included` (was the SDR actually in the previous mix frame?) instead of a raw level check
+- **Config parser crash on decimal values**: `VAD_RELEASE = 0.3` raised `ValueError: invalid literal for int()` because the default type was `int`. Fixed: `ValueError` falls back to `float()`; `VAD_RELEASE` default changed to `1.0`
+- **`global_muted` UnboundLocalError**: Variable was set inside `if self.sdr_source:` block but used in `if self.sdr2_source:` block — crashed when SDR1 was disabled. Fixed: set unconditionally before both SDR blocks
+- **VAD defaults updated**: `VAD_THRESHOLD` −40 → −45, `VAD_ATTACK` 0.1 → 0.05, `VAD_RELEASE` 1 → 1.0, `VAD_MIN_DURATION` 0.1 → 0.25
 
 ### Text Command Expansion
 
