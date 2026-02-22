@@ -215,7 +215,7 @@ with no attack delay, and the `PTT_ANNOUNCEMENT_DELAY` window handles key-up tim
 **Configuration:**
 ```ini
 SIGNAL_ATTACK_TIME  = 0.5   # seconds of continuous signal before duck
-SIGNAL_RELEASE_TIME = 1.0   # seconds of silence before SDR resumes
+SIGNAL_RELEASE_TIME = 2.0   # seconds of silence before SDR resumes
 SWITCH_PADDING_TIME = 1.0   # silence gap inserted at each transition
 ```
 
@@ -240,6 +240,14 @@ SWITCH_PADDING_TIME = 1.0   # silence gap inserted at each transition
 - **Broadcastify Support**: Live scanner feed
 - Mixed audio output via named pipe
 - Configurable bitrate and format
+
+### Speaker Output (Local Monitoring)
+- Mirrors radio RX audio to a local speaker/headphone device in real-time
+- Configurable device (by name, index, or empty for system default)
+- Independent mute toggle (`o` key) — does not affect Mumble or streaming
+- Volume control via `SPEAKER_VOLUME`
+- Status bar shows `SP:[bar]` level when enabled
+- WirePlumber exclusion automatically applied for USB audio devices (e.g. C-Media)
 
 ## Quick Start
 
@@ -308,6 +316,11 @@ SDR_DUCK = true        # SDR1 ducking (silence when higher priority audio active
 ENABLE_SDR2 = false    # SDR2 disabled by default
 SDR2_DEVICE_NAME = hw:5,1
 SDR2_PRIORITY = 2      # Ducked by SDR1 and radio RX
+
+# Optional local speaker monitoring (press 'o' to toggle mute at runtime)
+ENABLE_SPEAKER_OUTPUT = false
+SPEAKER_OUTPUT_DEVICE =    # Empty = system default; or device name/index
+SPEAKER_VOLUME = 1.0
 ```
 
 ## SDR Integration
@@ -409,6 +422,7 @@ Press keys during operation to control the gateway:
 - `s` = SDR1 Mute
 - `x` = SDR2 Mute
 - `m` = Global Mute (mutes all audio)
+- `o` = Toggle Speaker Output Mute
 
 ### SDR Controls
 - `d` = **Toggle SDR1 Ducking** (duck vs. mix mode)
@@ -437,7 +451,7 @@ Press keys during operation to control the gateway:
 ## Status Bar
 
 ```
-ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% SDR:[███--] 30% Vol:1.0x 1234567890 [D]
+ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% SDR:[███--] 30% SP:[██---] 24% Vol:1.0x 1234567890 [D]
 ```
 
 ### Status Indicators
@@ -461,6 +475,7 @@ ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% S
 | **RX:[bar]** | Green | Radio → Mumble (radio RX) |
 | **SDR1:[bar]** | Cyan | SDR1 receiver audio level |
 | **SDR2:[bar]** | Magenta | SDR2 receiver audio level (if enabled) |
+| **SP:[bar]** | White | Speaker output audio level (if enabled) |
 
 **Bar States:**
 ```
@@ -554,6 +569,7 @@ This creates responsive bars that show peaks immediately but decay smoothly.
 │  ├─→ Radio TX (AIOC + Auto-PTT)                                  │
 │  ├─→ Mumble TX                                                    │
 │  ├─→ Darkice Stream (Icecast/Broadcastify)                       │
+│  ├─→ Speaker Output (local monitoring, optional)                 │
 │  └─→ EchoLink TX (if enabled)                                    │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -624,9 +640,11 @@ Both SDRs go through the same pipeline independently, so SDR1 can be playing whi
 AUDIO_RATE = 48000           # Sample rate (Hz) - 48kHz recommended
 AUDIO_CHANNELS = 1           # Mono (1) recommended for radio
 AUDIO_BITS = 16              # Bit depth - standard
-AUDIO_CHUNK_SIZE = 9600      # Buffer size (samples)
+AUDIO_CHUNK_SIZE = 2400      # Buffer size (samples per 50ms chunk)
+                             # The AIOC input stream uses 8× this internally
+                             # (400ms PortAudio callback period) to absorb USB
+                             # timing jitter without exposing it to the main loop
                              # Larger = more stable, more latency
-                             # 9600 = 200ms at 48kHz (recommended)
 
 INPUT_VOLUME = 1.0           # Radio RX → Mumble volume (0.1 - 3.0)
 OUTPUT_VOLUME = 1.0          # Mumble → Radio TX volume (0.1 - 3.0)
@@ -642,8 +660,9 @@ OUTPUT_VOLUME = 1.0          # Mumble → Radio TX volume (0.1 - 3.0)
 MUMBLE_BITRATE = 96000
 
 # Variable Bit Rate — Opus adapts bitrate to content
-# true = lower bitrate during silence, higher during speech (recommended)
-MUMBLE_VBR = true
+# true = lower bitrate during silence, higher during speech
+# false = constant bitrate (more predictable; recommended for radio monitoring)
+MUMBLE_VBR = false
 ```
 
 > **Note:** The Opus encoder is also configured at startup with `complexity=10` (maximum quality, negligible CPU cost for mono voice) and `signal=voice` (voice-specific psychoacoustic tuning). These are not config file options — they are always applied.
@@ -789,6 +808,25 @@ STREAM_BITRATE = 16               # kbps (16 typical for scanner)
 STREAM_FORMAT = mp3               # mp3 or ogg
 ```
 
+### Speaker Output Settings
+
+```ini
+# Enable local speaker/headphone monitoring of radio RX audio
+ENABLE_SPEAKER_OUTPUT = false
+
+# Output device selection:
+#   empty  = system default output
+#   number = PyAudio device index
+#   text   = substring match on device name (e.g. "C-Media", "USB Audio")
+SPEAKER_OUTPUT_DEVICE =
+
+# Speaker volume multiplier (1.0 = unity gain)
+SPEAKER_VOLUME = 1.0
+```
+
+Toggle speaker mute at runtime with the `o` key. The `SP:[bar]` indicator
+appears in the status bar when speaker output is enabled.
+
 ### EchoLink Settings
 
 ```ini
@@ -918,7 +956,7 @@ scripts/loopback-status
 ### Audio Quality Issues
 
 **Problem: Choppy audio**
-- Increase `AUDIO_CHUNK_SIZE` (try 19200)
+- Increase `AUDIO_CHUNK_SIZE` (try 4800 or 9600)
 - Enable `ENABLE_STREAM_HEALTH = true`
 
 **Problem: Background noise**
@@ -930,7 +968,7 @@ scripts/loopback-status
 - For SDR: increase `SDR_AUDIO_BOOST`
 
 **Problem: -9999 ALSA errors**
-- Increase `AUDIO_CHUNK_SIZE` (try 9600 or 19200)
+- Increase `AUDIO_CHUNK_SIZE` (try 4800 or 9600)
 - Enable `ENABLE_STREAM_HEALTH = true`
 - Move AIOC to different USB port
 
@@ -1039,6 +1077,8 @@ mumble-radio-gateway/
 │   ├── THELINKBOX_SETUP.md
 │   ├── VAD_FEATURE.md
 │   └── LICENSE
+├── tools/
+│   └── aioc_loopback_test.py    # Standalone AIOC loopback diagnostic (drift stats, --list, --chunk, --out)
 └── audio/                       # Announcement files directory
     ├── station_id.mp3
     ├── 1_welcome.mp3
@@ -1112,6 +1152,43 @@ New Mumble text commands added:
 - `!restart` — cleanly restarts the gateway process; Darkice and FFmpeg are unaffected (same PID via `os.execv`)
 
 `!help` updated to list all commands.
+
+### AIOC Dropout Fix, PTT Click Suppression & Speaker Output
+
+**AIOC audio dropout fix**
+- Switched AIOC input stream from blocking reads to PortAudio callback mode
+- `frames_per_buffer` = `AUDIO_CHUNK_SIZE × 8` (400ms ALSA period) absorbs CM108/xHCI USB timing jitter — tested at <0.1ms drift over 48s
+- `get_audio()` slices 400ms blobs into 50ms sub-chunks with sleep-based pacing so the main loop runs at the correct rate
+- `AUDIO_CHUNK_SIZE` default changed: 9600 → 2400 (50ms; the 8× buffer is now applied internally, so the effective ALSA period is unchanged)
+
+**PTT click suppression**
+- Replaced one-shot `_ptt_just_changed` flag with a `_ptt_change_time` monotonic timestamp
+- Continuous gain envelope applied across all sub-chunks in the suppression window: muted for the first 30ms, linear ramp from 30ms to 130ms
+- Keyboard PTT queued via `_pending_ptt_state` so HID write runs between audio reads — prevents concurrent USB HID + isochronous audio clicks
+- `_ptt_change_time` set at all four PTT change sites: Mumble RX handler, pending-PTT apply, status-monitor release, and announcement auto-activation
+
+**Speaker/Mumble sync fix**
+- Force `should_transmit = True` during the 130ms suppression window so Mumble receives the muted/faded audio in lock-step with the speaker (which bypasses VAD); eliminates ~100ms permanent desync after each PTT event
+
+**Speaker Output feature**
+- New config keys: `ENABLE_SPEAKER_OUTPUT`, `SPEAKER_OUTPUT_DEVICE`, `SPEAKER_VOLUME`
+- `find_speaker_device()` resolves device string to PyAudio index (empty = default, numeric = index, text = name substring match)
+- `o` key toggles speaker mute; status bar shows `SP:[bar]` when enabled
+- WirePlumber exclusion for C-Media USB devices added to `scripts/99-disable-loopback.conf`
+
+**Announcement stability fixes**
+- `announcement_delay_active` and `_announcement_ptt_delay_until` now initialized in `__init__` (previously relied on `getattr` guards)
+- Safety clear added before `get_mixed_audio()` each iteration: clears stuck `announcement_delay_active` when `stop_playback()` is called during a delay window
+- `_ptt_change_time` now set when announcement auto-activates PTT (was missing, causing click on all announcement transmissions)
+
+**Default changes**
+- `AUDIO_CHUNK_SIZE`: 9600 → 2400 (50ms; 8× ALSA buffer applied internally)
+- `MUMBLE_BITRATE`: 32000 → 96000; `MUMBLE_VBR`: true → false (CBR)
+- `VAD_RELEASE`: 1.0 → 2.0; `SIGNAL_RELEASE_TIME`: 1.0 → 2.0
+
+**New tool: `tools/aioc_loopback_test.py`**
+- Standalone AIOC loopback diagnostic: reads AIOC audio, plays to speaker
+- Prints drift statistics per second; supports `--chunk`, `--out`, `--mode`, `--list`
 
 ### Recent Fixes & Improvements
 

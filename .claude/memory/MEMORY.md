@@ -21,9 +21,10 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - pymumble/pymumble_py3 — Mumble protocol; SSL shim applied before import for Python 3.12+
 
 ## Critical Settings (current defaults)
-- `MUMBLE_BITRATE = 32000`, `MUMBLE_VBR = false` (CBR)
-- `VAD_THRESHOLD = -45`, `VAD_ATTACK = 0.05`, `VAD_RELEASE = 1.0`, `VAD_MIN_DURATION = 0.25`
-- `AUDIO_CHUNK_SIZE = 9600` (200ms at 48kHz)
+- `MUMBLE_BITRATE = 96000`, `MUMBLE_VBR = false` (CBR)
+- `VAD_THRESHOLD = -45`, `VAD_ATTACK = 0.05`, `VAD_RELEASE = 2.0`, `VAD_MIN_DURATION = 0.25`
+- `AUDIO_CHUNK_SIZE = 2400` (50ms; 8× ALSA period applied internally = 400ms buffer)
+- `SIGNAL_RELEASE_TIME = 2.0`, `ENABLE_SDR2 = false`
 - SDR loopback: `hw:4,1` / `hw:5,1` / `hw:6,1` (capture side)
 
 ## ALSA Loopback Setup
