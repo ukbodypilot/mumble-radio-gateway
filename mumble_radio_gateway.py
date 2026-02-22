@@ -11,6 +11,7 @@ import time
 import signal
 import threading
 import collections
+import queue as _queue_mod
 from struct import Struct
 import select  # For non-blocking keyboard input
 import array as _array_mod
@@ -89,11 +90,11 @@ class Config:
             'MUMBLE_PASSWORD': '',
             'MUMBLE_CHANNEL': '',
             'AUDIO_RATE': 48000,
-            'AUDIO_CHUNK_SIZE': 9600,
+            'AUDIO_CHUNK_SIZE': 2400,
             'AUDIO_CHANNELS': 1,
             'AUDIO_BITS': 16,
             'MUMBLE_BITRATE': 96000,
-            'MUMBLE_VBR': True,
+            'MUMBLE_VBR': False,
             'MUMBLE_JITTER_BUFFER': 10,
             'AIOC_PTT_CHANNEL': 3,
             'PTT_RELEASE_DELAY': 0.5,
@@ -128,7 +129,7 @@ class Config:
             'ENABLE_VAD': True,
             'VAD_THRESHOLD': -45,
             'VAD_ATTACK': 0.05,  # float (seconds)
-            'VAD_RELEASE': 1.0,  # float (seconds)
+            'VAD_RELEASE': 2.0,  # float (seconds)
             'VAD_MIN_DURATION': 0.25,  # float (seconds)
             'ENABLE_STREAM_HEALTH': False,
             'STREAM_RESTART_INTERVAL': 60,
@@ -159,7 +160,7 @@ class Config:
             'SDR_BUFFER_MULTIPLIER': 8,  # Buffer size multiplier (8 = 8x normal buffer for smoother playback)
             'SDR_PRIORITY': 1,           # SDR priority for ducking (1 = higher priority, 2 = lower priority)
             # SDR2 Integration (second SDR receiver)
-            'ENABLE_SDR2': True,
+            'ENABLE_SDR2': False,
             'SDR2_DEVICE_NAME': 'hw:4,1',
             'SDR2_DUCK': True,
             'SDR2_MIX_RATIO': 1.0,
@@ -169,7 +170,7 @@ class Config:
             'SDR2_PRIORITY': 2,          # SDR2 priority for ducking (1 = higher, 2 = lower)
             # Signal Detection Hysteresis (prevents stuttering from rapid on/off)
             'SIGNAL_ATTACK_TIME': 0.5,   # Seconds of CONTINUOUS signal required before a source switch is allowed
-            'SIGNAL_RELEASE_TIME': 1.0,  # Seconds of continuous silence required before switching back
+            'SIGNAL_RELEASE_TIME': 2.0,  # Seconds of continuous silence required before switching back
             'SWITCH_PADDING_TIME': 1.0,  # Seconds of silence inserted at each transition (duck-out and duck-in)
             # EchoLink Integration (Phase 3B)
             'ENABLE_ECHOLINK': False,
@@ -189,6 +190,10 @@ class Config:
             'STREAM_DESCRIPTION': 'Radio to Mumble Gateway',
             'STREAM_BITRATE': 64,
             'STREAM_FORMAT': 'mp3',
+            # Speaker Output (local monitoring)
+            'ENABLE_SPEAKER_OUTPUT': False,
+            'SPEAKER_OUTPUT_DEVICE': '',   # '' = system default; or partial name e.g. 'USB Audio', 'hw:2,0'
+            'SPEAKER_VOLUME': 1.0,         # float multiplier
         }
         
         # Set defaults
@@ -312,7 +317,45 @@ class AIOCRadioSource(AudioSource):
         self.priority = 1  # Lower priority than file playback
         self.ptt_control = False  # Radio RX doesn't control PTT
         self.volume = config.INPUT_VOLUME
-        
+
+        # Queue for audio blobs delivered by PortAudio's callback thread.
+        # The ALSA period is opened at 8×AUDIO_CHUNK_SIZE so each callback
+        # delivers one 400ms blob.  get_audio() slices it into 50ms sub-chunks
+        # and sleeps between them to keep the main loop at the right rate.
+        self._chunk_queue = _queue_mod.Queue(maxsize=4)
+        # Pre-compute sizes for the hot callback path and get_audio() slicer.
+        self._chunk_bytes = config.AUDIO_CHUNK_SIZE * config.AUDIO_CHANNELS * 2  # 16-bit
+        self._chunk_secs = config.AUDIO_CHUNK_SIZE / config.AUDIO_RATE           # ~0.05 s
+        # Sub-chunk slicing state (accessed only from the get_audio() call site).
+        self._sub_buffer = b''
+        self._next_delivery = 0.0
+
+    def _audio_callback(self, in_data, frame_count, time_info, status):
+        """PortAudio input callback — invoked at each ALSA period (8×AUDIO_CHUNK_SIZE frames).
+
+        The stream is opened with frames_per_buffer=8×AUDIO_CHUNK_SIZE so the
+        ALSA ring buffer is ~1600ms deep, absorbing the USB timing jitter that
+        the CM108 chipset produces on Linux xHCI (verified: 400ms period gives
+        near-zero drift vs ~1700ms accumulated drift at 50ms period).  The full
+        blob is queued here; get_audio() slices it into 50ms sub-chunks and
+        sleeps between them to keep the main loop at the right rate.
+
+        Keep this method minimal — it runs in PortAudio's audio thread."""
+        if in_data:
+            if self._chunk_queue.full():
+                try:
+                    self._chunk_queue.get_nowait()
+                except _queue_mod.Empty:
+                    pass
+            try:
+                self._chunk_queue.put_nowait(in_data)
+            except _queue_mod.Full:
+                pass
+        return (None, pyaudio.paContinue)
+
+    def cleanup(self):
+        pass  # No resources to release; PortAudio stream is owned by the gateway
+
     def get_audio(self, chunk_size):
         """Get audio from radio via AIOC input stream"""
         # Reset the full-duplex cache every call so stale data is never forwarded
@@ -322,24 +365,28 @@ class AIOCRadioSource(AudioSource):
             return None, False
 
         try:
-            # Always read from the AIOC stream, even when muted.
-            # If we skip the read while muted the PyAudio buffer fills up,
-            # input_stream.is_active() returns False, the audio_transmit_loop
-            # raises "Stream inactive", and the mixer never runs — which means
-            # SDRSource.get_audio() is never called and the SDR bar freezes.
-            try:
-                data = self.gateway.input_stream.read(chunk_size, exception_on_overflow=False)
-            except IOError as io_err:
-                # Handle buffer overflow gracefully; absorb all other AIOC errors
-                # so they never propagate through the mixer and interrupt SDR audio.
-                if io_err.errno == -9981:  # Input overflow
-                    try:
-                        self.gateway.input_stream.read(chunk_size * 2, exception_on_overflow=False)
-                    except:
-                        pass
-                return None, False
-            except Exception:
-                return None, False
+            # Serve 50ms sub-chunks from the 200ms blobs delivered by the callback.
+            # When the sub-buffer is exhausted, block on the queue for the next blob
+            # (up to 250 ms — one full callback period plus margin).  Sleep between
+            # sub-chunks to pace the main loop at ~50ms per call without galloping.
+            cb = self._chunk_bytes
+            while len(self._sub_buffer) < cb:
+                try:
+                    blob = self._chunk_queue.get(timeout=0.800)  # > one full 400ms callback period
+                    self._sub_buffer += blob
+                    self._next_delivery = 0.0  # reset pacing after a real wait
+                except _queue_mod.Empty:
+                    self._sub_buffer = b''
+                    return None, False  # AIOC unavailable or stream stalled
+
+            # Pace delivery: sleep until this sub-chunk is due.
+            now = time.monotonic()
+            if self._next_delivery > now:
+                time.sleep(self._next_delivery - now)
+            self._next_delivery = time.monotonic() + self._chunk_secs
+
+            data = self._sub_buffer[:cb]
+            self._sub_buffer = self._sub_buffer[cb:]
 
             # Update capture time so stream-health checks stay happy
             self.gateway.last_audio_capture_time = time.time()
@@ -366,6 +413,19 @@ class AIOCRadioSource(AudioSource):
             # Apply audio processing
             data = self.gateway.process_audio_for_mumble(data)
 
+            # Apply click-suppression envelope for 150ms after any PTT state change.
+            # We use a time-based window (not a one-shot flag) because the sub-chunk
+            # slicing in get_audio() means the AIOC transient from the HID write can
+            # appear 1-3 sub-chunks after the flag would otherwise be cleared.
+            # Gain: 0 for first 30 ms, linearly ramps 0→1 from 30 ms to 130 ms.
+            t_since_ptt = time.monotonic() - self.gateway._ptt_change_time
+            if t_since_ptt < 0.130 and data:
+                arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                n = len(arr)
+                t_samples = t_since_ptt + np.arange(n, dtype=np.float32) / self.config.AUDIO_RATE
+                gain = np.clip((t_samples - 0.030) / 0.100, 0.0, 1.0)
+                data = (arr * gain).astype(np.int16).tobytes()
+
             # Cache the processed audio for full-duplex forwarding during PTT.
             # The transmit loop reads this directly so RX → Mumble works even if
             # VAD is blocking and regardless of ptt_active timing in the mixer.
@@ -377,6 +437,13 @@ class AIOCRadioSource(AudioSource):
             # Full-duplex: when the gateway is transmitting (PTT active), bypass
             # the VAD gate so radio RX still flows to Mumble via the normal path.
             if self.gateway.ptt_active:
+                should_transmit = True
+
+            # During the PTT click-suppression window, force the muted/faded audio
+            # through to Mumble even if VAD says no.  Without this, Mumble skips the
+            # ~130ms of silence while the speaker plays it, causing a permanent
+            # speaker/Mumble sync offset after every PTT event.
+            if time.monotonic() - self.gateway._ptt_change_time < 0.130:
                 should_transmit = True
 
             if should_transmit:
@@ -1944,6 +2011,16 @@ class MumbleRadioGateway:
         
         # Manual PTT control (keyboard toggle)
         self.manual_ptt_mode = False  # Manual PTT control (press 'p')
+        self._pending_ptt_state = None  # Queued PTT change (applied between audio reads)
+        self._ptt_change_time = 0.0  # Monotonic time of last PTT state change (for click suppression)
+        self.announcement_delay_active = False   # True while waiting for PTT relay to settle before announcing
+        self._announcement_ptt_delay_until = 0.0  # time.time() deadline for announcement delay
+
+        # Speaker output (local monitoring)
+        self.speaker_stream = None
+        self.speaker_muted = False
+        self.speaker_queue = None   # queue.Queue fed by main loop, drained by speaker thread
+        self.speaker_thread = None
 
         # Restart flag (set by !restart command, checked in main() after run() exits)
         self.restart_requested = False
@@ -2383,7 +2460,13 @@ class MumbleRadioGateway:
         # Don't key the radio if we're muted - that would broadcast silence!
         # Also don't auto-key if manual PTT mode is active
         if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
-            self.set_ptt_state(True)
+            # Queue the HID write to the audio thread (between audio reads) to
+            # avoid concurrent USB HID + isochronous audio on the AIOC device.
+            # Set ptt_active immediately so repeated Mumble callbacks don't
+            # queue a second activation before the first is processed.
+            self.ptt_active = True
+            self._pending_ptt_state = True
+            self._ptt_change_time = time.monotonic()
         
         # Play sound to AIOC output (to radio mic input)
         # But only if TX is not muted
@@ -2577,7 +2660,7 @@ class MumbleRadioGateway:
                     print(f"  [{i}] {info['name']} (in:{info['maxInputChannels']}, out:{info['maxOutputChannels']})")
                 
                 # Look for AIOC device by various names
-                if any(keyword in name for keyword in ['aioc', 'cm108', 'c-media', 'usb audio', 'usb sound']):
+                if any(keyword in name for keyword in ['aioc', 'all-in-one', 'cm108', 'usb audio', 'usb sound']):
                     if self.config.VERBOSE_LOGGING:
                         print(f"    → Potential AIOC device!")
                     if info['maxInputChannels'] > 0 and aioc_input_index is None:
@@ -2592,6 +2675,92 @@ class MumbleRadioGateway:
         p.terminate()
         return aioc_input_index, aioc_output_index
     
+    def find_speaker_device(self, p):
+        """Resolve SPEAKER_OUTPUT_DEVICE string to a (index, name) tuple (index may be None for default)."""
+        spec = self.config.SPEAKER_OUTPUT_DEVICE.strip()
+        if not spec:
+            return None, 'system default'
+        if spec.isdigit():
+            idx = int(spec)
+            try:
+                name = p.get_device_info_by_index(idx)['name']
+            except Exception:
+                name = spec
+            return idx, name
+        # Name search
+        if self.config.VERBOSE_LOGGING:
+            print("\nSearching for speaker output device...")
+            print("Available output devices:")
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            if self.config.VERBOSE_LOGGING:
+                print(f"  [{i}] {info['name']} (out:{info['maxOutputChannels']})")
+            if info['maxOutputChannels'] > 0 and spec.lower() in info['name'].lower():
+                return i, info['name']
+        print(f"Warning: Speaker output device '{spec}' not found -- using system default")
+        return None, 'system default'
+
+    def _speaker_enqueue(self, data):
+        """Apply SPEAKER_VOLUME and enqueue audio for the speaker output thread.
+        Non-blocking: drops the frame if the queue is full rather than stalling."""
+        if not self.speaker_queue or self.speaker_muted or not data:
+            return
+        try:
+            spk = data
+            if self.config.SPEAKER_VOLUME != 1.0:
+                arr = np.frombuffer(spk, dtype=np.int16).astype(np.float32)
+                spk = np.clip(arr * self.config.SPEAKER_VOLUME, -32768, 32767).astype(np.int16).tobytes()
+            self.speaker_queue.put_nowait(spk)
+        except Exception:
+            pass  # queue.Full → drop frame, never block the main loop
+
+    def _speaker_output_thread(self):
+        """Dedicated thread that drains the speaker queue and writes to hardware.
+        Decouples the speaker from main-loop timing so jitter in Mumble sends,
+        ALSA reads, or processing never starves the speaker hardware buffer."""
+        import queue
+        while True:
+            try:
+                chunk = self.speaker_queue.get(timeout=0.1)
+            except queue.Empty:
+                if not self.running:
+                    break
+                continue
+            if chunk is None:
+                break  # Shutdown sentinel
+            if self.speaker_stream and not self.speaker_muted:
+                try:
+                    self.speaker_stream.write(chunk, exception_on_underflow=False)
+                except Exception:
+                    pass
+
+    def open_speaker_output(self):
+        """Open optional local speaker monitoring output stream."""
+        if not self.config.ENABLE_SPEAKER_OUTPUT:
+            return
+        try:
+            device_index, device_name = self.find_speaker_device(self.pyaudio_instance)
+            self.speaker_stream = self.pyaudio_instance.open(
+                format=pyaudio.paInt16,
+                channels=self.config.AUDIO_CHANNELS,
+                rate=self.config.AUDIO_RATE,
+                output=True,
+                output_device_index=device_index,
+                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
+            )
+            import queue, threading
+            # 4 chunks × AUDIO_CHUNK_SIZE gives ~200ms of buffer headroom
+            self.speaker_queue = queue.Queue(maxsize=4)
+            self.speaker_thread = threading.Thread(
+                target=self._speaker_output_thread, daemon=True, name="speaker-out"
+            )
+            self.speaker_thread.start()
+            print(f"✓ Speaker output initialized OK")
+            print(f"  Device: {device_name}")
+        except Exception as e:
+            print(f"Warning: Speaker output failed to open: {e}")
+            self.speaker_stream = None
+
     def setup_audio(self):
         """Initialize PyAudio streams"""
         if self.config.VERBOSE_LOGGING:
@@ -2648,33 +2817,11 @@ class MumbleRadioGateway:
             else:
                 print("✓ Audio configured")
             
-            # Input stream (Radio → AIOC → Mumble)
-            # frames_per_buffer must match AUDIO_CHUNK_SIZE for input — this sets
-            # the ALSA period size.  Using a larger value (e.g. 4x) causes ALSA to
-            # accumulate that many samples before making them available, producing
-            # 800 ms bursts of audio followed by 800 ms of silence.  Keep at 1x.
-            self.input_stream = self.pyaudio_instance.open(
-                format=audio_format,
-                channels=self.config.AUDIO_CHANNELS,
-                rate=self.config.AUDIO_RATE,
-                input=True,
-                input_device_index=input_idx,
-                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
-                stream_callback=None  # Use blocking mode
-            )
-            
-            # Start the stream explicitly
-            if not self.input_stream.is_active():
-                self.input_stream.start_stream()
-            
-            # Initialize stream age
-            self.stream_age = time.time()
-            
-            # Message already shown in quiet mode above
-            if self.config.VERBOSE_LOGGING:
-                print(f"✓ Audio input configured")
-            
-            # Initialize radio source with mixer (only if AIOC available)
+            # Initialize radio source FIRST so we can pass its PortAudio callback
+            # to the input stream.  Callback mode lets PortAudio deliver audio in
+            # its own real-time thread (SCHED_FIFO when rtprio limits allow) rather
+            # than a Python reader thread that can be preempted by the OS scheduler.
+            # frames_per_buffer must stay at 1x AUDIO_CHUNK_SIZE (see note below).
             if self.aioc_available:
                 try:
                     self.radio_source = AIOCRadioSource(self.config, self)
@@ -2688,7 +2835,36 @@ class MumbleRadioGateway:
             else:
                 print("  Radio audio: DISABLED (AIOC not available)")
                 self.radio_source = None
-            
+
+            # Input stream (Radio → AIOC → Mumble).
+            # frames_per_buffer=4×AUDIO_CHUNK_SIZE sets the ALSA period to 200ms,
+            # giving an ~800ms ring buffer that absorbs the ~200ms USB stalls the
+            # CM108 chipset produces on Linux xHCI.  _audio_callback splits each
+            # 400ms delivery into 8×50ms sub-chunks before enqueueing.
+            aioc_callback = self.radio_source._audio_callback if self.radio_source else None
+            self.input_stream = self.pyaudio_instance.open(
+                format=audio_format,
+                channels=self.config.AUDIO_CHANNELS,
+                rate=self.config.AUDIO_RATE,
+                input=True,
+                input_device_index=input_idx,
+                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 8,
+                stream_callback=aioc_callback
+            )
+
+            # Start the stream explicitly
+            if not self.input_stream.is_active():
+                self.input_stream.start_stream()
+
+            # Initialize stream age
+            self.stream_age = time.time()
+
+            if self.config.VERBOSE_LOGGING:
+                mode = "callback" if aioc_callback else "blocking"
+                print(f"✓ Audio input configured ({mode} mode)")
+
+            self.open_speaker_output()
+
             # Initialize file playback source if enabled
             if self.config.ENABLE_PLAYBACK:
                 try:
@@ -2875,18 +3051,7 @@ class MumbleRadioGateway:
                                 frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4  # Larger buffer for smoother output
                             )
                             
-                            self.input_stream = self.pyaudio_instance.open(
-                                format=audio_format,
-                                channels=self.config.AUDIO_CHANNELS,
-                                rate=self.config.AUDIO_RATE,
-                                input=True,
-                                input_device_index=input_idx,
-                                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4  # Larger buffer for smoother output
-                            )
-                            
-                            print("✓ Audio initialized successfully after USB reset")
-                            
-                            # Initialize radio source with mixer
+                            # Initialize radio source first to get callback
                             try:
                                 self.radio_source = AIOCRadioSource(self.config, self)
                                 self.mixer.add_source(self.radio_source)
@@ -2895,6 +3060,19 @@ class MumbleRadioGateway:
                             except Exception as source_err:
                                 print(f"⚠ Warning: Could not initialize radio source: {source_err}")
                                 self.radio_source = None
+
+                            aioc_callback = self.radio_source._audio_callback if self.radio_source else None
+                            self.input_stream = self.pyaudio_instance.open(
+                                format=audio_format,
+                                channels=self.config.AUDIO_CHANNELS,
+                                rate=self.config.AUDIO_RATE,
+                                input=True,
+                                input_device_index=input_idx,
+                                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 8,
+                                stream_callback=aioc_callback
+                            )
+
+                            print("✓ Audio initialized successfully after USB reset")
                             
                             # Initialize file playback source if enabled
                             if self.config.ENABLE_PLAYBACK:
@@ -3474,6 +3652,17 @@ class MumbleRadioGateway:
         
         while self.running:
             try:
+                # ── Apply pending PTT state change ───────────────────────────────
+                # The keyboard thread queues PTT changes here instead of calling
+                # set_ptt_state() directly.  Applying it now (between audio reads)
+                # keeps the HID write off the USB bus while input_stream.read() is
+                # blocking, eliminating the USB contention that causes an audio click.
+                pending_ptt = self._pending_ptt_state
+                if pending_ptt is not None:
+                    self._pending_ptt_state = None
+                    self.set_ptt_state(pending_ptt)
+                    self._ptt_change_time = time.monotonic()  # Tell get_audio to fade in next chunk
+
                 # ── AIOC stream health management ────────────────────────────────
                 # These checks are AIOC-specific and must NOT block SDR audio.
                 # The mixer runs unconditionally below so SDR always reaches Mumble.
@@ -3503,6 +3692,15 @@ class MumbleRadioGateway:
                             print("\n[Diagnostic] AIOC stream inactive, restarting...")
                         self.restart_audio_input()
                         # Fall through — SDR still runs below
+
+                # Safety: clear announcement delay if its timer has expired.
+                # This handles the case where stop_playback() is called during
+                # the delay window — the PTT branch (which normally clears the
+                # flag) never runs when ptt_required is False, so without this
+                # check the flag stays True and the next announcement skips its
+                # first chunk on load.
+                if self.announcement_delay_active and time.time() >= self._announcement_ptt_delay_until:
+                    self.announcement_delay_active = False
 
                 # ── Mixer path: SDR always runs, AIOC contributes when healthy ──
                 if self.radio_source and self.mixer:
@@ -3550,13 +3748,13 @@ class MumbleRadioGateway:
                         # Activate PTT if not already active and not muted.
                         if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
                             self.set_ptt_state(True)
+                            self._ptt_change_time = time.monotonic()  # arm click suppression in AIOCRadioSource
                             self._announcement_ptt_delay_until = time.time() + self.config.PTT_ANNOUNCEMENT_DELAY
                             self.announcement_delay_active = True
 
                         # Clear the delay flag once the window has passed.
-                        if getattr(self, 'announcement_delay_active', False):
-                            if time.time() >= self._announcement_ptt_delay_until:
-                                self.announcement_delay_active = False
+                        if self.announcement_delay_active and time.time() >= self._announcement_ptt_delay_until:
+                            self.announcement_delay_active = False
 
                         # Send audio to radio output
                         if self.output_stream and not self.tx_muted:
@@ -3606,6 +3804,8 @@ class MumbleRadioGateway:
                                     self.stream_output.send_audio(rx_for_mumble)
                                 except Exception:
                                     pass
+                            if self.speaker_stream and not self.speaker_muted:
+                                self._speaker_enqueue(rx_for_mumble)
 
                         # Skip the normal RX→Mumble path below - this is TX audio
                         continue
@@ -3653,6 +3853,8 @@ class MumbleRadioGateway:
                     data = self.process_audio_for_mumble(data)
 
                     if not self.check_vad(data):
+                        # Speaker bypasses VAD — monitor even when Mumble is gated
+                        self._speaker_enqueue(data)
                         continue
 
                 else:
@@ -3663,6 +3865,10 @@ class MumbleRadioGateway:
 
                 # ── Common: reset error count and send to Mumble ─────────────────
                 consecutive_errors = 0
+
+                # Speaker output — enqueue mixed audio (silence always substituted,
+                # so the hardware buffer stays fed regardless of Mumble state)
+                self._speaker_enqueue(data)
 
                 if not self.mumble:
                     if self.mixer and self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
@@ -3802,7 +4008,7 @@ class MumbleRadioGateway:
                 print(f"  [Diagnostic] Opening new input stream (device {input_idx})...")
                 restart_os.dup2(devnull_fd, stderr_fd)
             
-            # Recreate input stream — keep frames_per_buffer at 1x (see initial open comment)
+            aioc_callback = self.radio_source._audio_callback if self.radio_source else None
             try:
                 self.input_stream = self.pyaudio_instance.open(
                     format=audio_format,
@@ -3810,10 +4016,10 @@ class MumbleRadioGateway:
                     rate=self.config.AUDIO_RATE,
                     input=True,
                     input_device_index=input_idx,
-                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
-                    stream_callback=None
+                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 8,
+                    stream_callback=aioc_callback
                 )
-                
+
                 if self.config.VERBOSE_LOGGING:
                     restart_os.dup2(saved_stderr_fd, stderr_fd)
                     print("  ✓ Audio input stream restarted")
@@ -3912,15 +4118,17 @@ class MumbleRadioGateway:
                 )
             
             if input_idx is not None:
+                aioc_callback = self.radio_source._audio_callback if self.radio_source else None
                 self.input_stream = self.pyaudio_instance.open(
                     format=audio_format,
                     channels=self.config.AUDIO_CHANNELS,
                     rate=self.config.AUDIO_RATE,
                     input=True,
                     input_device_index=input_idx,
-                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4  # Larger buffer for smoother output
+                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 8,
+                    stream_callback=aioc_callback
                 )
-            
+
             if self.config.VERBOSE_LOGGING:
                 print("  ✓ PyAudio fully restarted")
             
@@ -4050,11 +4258,20 @@ class MumbleRadioGateway:
                         self.config.ENABLE_ECHO_CANCELLATION = not self.config.ENABLE_ECHO_CANCELLATION
                     
                     elif char == 'p':
-                        # Toggle manual PTT mode
+                        # Toggle manual PTT mode.
+                        # Queue the HID write so it runs between audio reads in the
+                        # audio thread rather than concurrently with input_stream.read().
+                        # This prevents simultaneous USB HID + isochronous audio
+                        # transfers on the same AIOC composite device, which can
+                        # cause a brief audio click.
                         self.manual_ptt_mode = not self.manual_ptt_mode
-                        # Immediately apply the PTT state
-                        self.set_ptt_state(self.manual_ptt_mode)
-                    
+                        self._pending_ptt_state = self.manual_ptt_mode
+
+                    elif char == 'o':
+                        # Toggle speaker output mute
+                        if self.speaker_stream:
+                            self.speaker_muted = not self.speaker_muted
+
                     elif char in '0123456789':
                         # Play announcement 0-9
                         if self.playback_source:
@@ -4113,7 +4330,11 @@ class MumbleRadioGateway:
                 # (Don't keep PTT keyed when muted!)
                 # But don't release if in manual PTT mode
                 if current_time - self.last_sound_time > self.config.PTT_RELEASE_DELAY or self.tx_muted:
-                    self.set_ptt_state(False)
+                    # Queue the HID write to the audio thread.  Clear ptt_active
+                    # immediately so this block is not re-entered on the next tick.
+                    self.ptt_active = False
+                    self._pending_ptt_state = False
+                    self._ptt_change_time = time.monotonic()
             
             # Periodic status check and reporting (only if enabled)
             if status_check_interval > 0 and current_time - last_status_check >= status_check_interval:
@@ -4203,7 +4424,9 @@ class MumbleRadioGateway:
                     # Determine display state
                     # Mirror SDRSource.get_audio(): discard when individually muted OR globally muted
                     sdr_muted = self.sdr_muted or global_muted
-                    sdr_ducked = self.sdr_ducked if not sdr_muted else False
+                    # Only show DUCK when SDR has actual signal; silence on an idle
+                    # loopback looks the same as "ducked signal" but means nothing.
+                    sdr_ducked = self.sdr_ducked if not sdr_muted and current_sdr_level > 0 else False
                     
                     # Format: SDR1: (no mode indicator here - it goes in proc_flags)
                     sdr_bar = f" {WHITE}SDR1:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, ducked=sdr_ducked, color='cyan')
@@ -4219,7 +4442,7 @@ class MumbleRadioGateway:
                     
                     # Determine display state
                     sdr2_muted = self.sdr2_muted or global_muted
-                    sdr2_ducked = self.sdr2_ducked if not sdr2_muted else False
+                    sdr2_ducked = self.sdr2_ducked if not sdr2_muted and current_sdr2_level > 0 else False
                     
                     # Format: SDR2: with magenta color
                     sdr2_bar = f" {WHITE}SDR2:{RESET}" + self.format_level_bar(current_sdr2_level, muted=sdr2_muted, ducked=sdr2_ducked, color='magenta')
@@ -4259,10 +4482,17 @@ class MumbleRadioGateway:
                 file_status_info = ""
                 if self.playback_source:
                     file_status_info = " " + self.playback_source.get_file_status_string()
-                
+
+                # Speaker output indicator
+                sp_bar = ""
+                if self.config.ENABLE_SPEAKER_OUTPUT and self.speaker_stream:
+                    sp_bar = f" {WHITE}SP:{RESET}" + self.format_level_bar(
+                        self.tx_audio_level, muted=self.speaker_muted, color='cyan'
+                    )
+
                 # Extra padding to clear any orphaned text when line shortens
                 # Order: ...Vol → FileStatus → ProcessingFlags → Diagnostics
-                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sdr_bar}{sdr2_bar}{vol_info}{file_status_info}{proc_info}{diag}     ", end="", flush=True)
+                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{vol_info}{file_status_info}{proc_info}{diag}     ", end="", flush=True)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -4342,6 +4572,8 @@ class MumbleRadioGateway:
         print("  Proc:  'n'=Gate | 'f'=HPF | 'a'=AGC | 'w'=Wiener | 'e'=Echo")
         print("  SDR:   'd'=SDR1 Duck toggle")
         print("  PTT:   'p'=Manual PTT Toggle (override auto-PTT)")
+        if self.config.ENABLE_SPEAKER_OUTPUT:
+            print("  Spkr:  'o'=Speaker mute toggle")
         if self.config.ENABLE_PLAYBACK:
             print("  Play:  '1-9'=Announcements | '0'=StationID | '-'=Stop")
         print("=" * 60)
@@ -4446,6 +4678,21 @@ class MumbleRadioGateway:
             except Exception as e:
                 pass  # Suppress ALSA errors during shutdown
         
+        if self.speaker_queue:
+            try:
+                self.speaker_queue.put_nowait(None)  # Shutdown sentinel
+            except Exception:
+                pass
+        if self.speaker_thread and self.speaker_thread.is_alive():
+            self.speaker_thread.join(timeout=2.0)
+        if self.speaker_stream:
+            try:
+                if self.speaker_stream.is_active():
+                    self.speaker_stream.stop_stream()
+                self.speaker_stream.close()
+            except Exception:
+                pass
+
         if self.output_stream:
             try:
                 # Stop stream first

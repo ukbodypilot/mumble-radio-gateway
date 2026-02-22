@@ -47,12 +47,13 @@ MUMBLE_PASSWORD =
 # Examples: Radio, General/Radio
 MUMBLE_CHANNEL = 
 
-# Audio bitrate in bits/second
-# 40000 = good | 72000 = high (recommended) | 96000 = maximum
-MUMBLE_BITRATE = 32000
+# Opus encoder bitrate in bits/second (outgoing audio quality)
+# 40000 = good | 72000 = high | 96000 = maximum (recommended for radio)
+MUMBLE_BITRATE = 96000
 
 # Enable Opus Variable Bit Rate
-# true = adapts quality based on audio (recommended)
+# false = constant bitrate (recommended — more predictable bandwidth)
+# true  = adapts bitrate to content
 MUMBLE_VBR = false
 
 # ============================================================================
@@ -87,17 +88,14 @@ AUDIO_CHANNELS = 1
 # Bit depth: 16 = Standard (don't change)
 AUDIO_BITS = 16
 
-# Audio chunk size (samples) - CRITICAL FOR STABILITY
-# Controls latency vs stability tradeoff:
-#   480 =  10ms - Lowest latency (may have dropouts)
-#   960 =  20ms - Low latency
-#  1920 =  40ms - Balanced
-#  2400 =  50ms - Stable
-#  4800 = 100ms - High stability
-#  9600 = 200ms - Maximum stability (recommended for file playback)
-# Larger = smoother playback, more latency
-# If you get -9999 errors, increase this
-AUDIO_CHUNK_SIZE = 9600
+# Audio chunk size (samples) — processing granularity
+# The gateway uses 4× this value as the ALSA buffer period to absorb USB
+# timing jitter, then slices it back to this size for processing.
+# Tradeoff: smaller = lower latency, larger = more stable.
+#   480 =  10ms | 960 = 20ms | 1920 = 40ms
+#  2400 =  50ms (recommended) | 4800 = 100ms | 9600 = 200ms
+# If you get -9999 / overrun errors, increase this value.
+AUDIO_CHUNK_SIZE = 2400
 
 # ============================================================================
 # CORE: AUDIO LEVELS
@@ -118,7 +116,7 @@ OUTPUT_VOLUME = 1.0
 
 # Delay before activating PTT after audio detected (seconds)
 # Gives time for squelch tail to settle
-PTT_ACTIVATION_DELAY = 0.0
+PTT_ACTIVATION_DELAY = 0.1
 
 # Delay before releasing PTT after audio stops (seconds)
 # Prevents cutting off end of transmissions
@@ -139,7 +137,7 @@ VAD_THRESHOLD = -45
 
 # VAD timing
 VAD_ATTACK = 0.05   # How fast to activate (seconds)
-VAD_RELEASE = 1   # How long to hold after silence (seconds)
+VAD_RELEASE = 2   # How long to hold after silence (seconds)
 VAD_MIN_DURATION = 0.25  # Minimum transmission length (seconds)
 
 # ============================================================================
@@ -194,6 +192,11 @@ ENABLE_PLAYBACK = true
 # Gateway will scan this directory and auto-assign files to keys
 PLAYBACK_DIRECTORY = audio
 
+# Playback volume multiplier for announcement audio files
+# 1.0 = normal, 2.0 = double — audio is clipped to int16 range so
+# boosting beyond clipping only increases distortion, not perceived loudness
+PLAYBACK_VOLUME = 2.0
+
 # File Naming & Auto-Assignment:
 # 
 # Station ID (key 0):
@@ -215,6 +218,11 @@ PLAYBACK_DIRECTORY = audio
 #
 # On startup, gateway will display which file is assigned to each key
 # This mapping is shown just above the status bar
+
+# Delay after PTT key-up before announcement/file audio starts (seconds)
+# Gives the repeater or radio time to open squelch before audio begins
+# 0.5 = half second (default) | 0.0 = no delay
+PTT_ANNOUNCEMENT_DELAY = 0.5
 
 
 # ============================================================================
@@ -339,35 +347,38 @@ SDR2_AUDIO_BOOST = 1.0
 SDR2_BUFFER_MULTIPLIER = 8
 
 # ============================================================================
-# SIGNAL DETECTION HYSTERESIS (Anti-Stuttering)
+# SIGNAL DETECTION & SOURCE SWITCHING
 # ============================================================================
-# Prevents rapid on/off switching that causes audio stuttering when signal
-# briefly drops. Works like a gate with attack/release times.
+# Controls when and how the mixer switches between audio sources (e.g. when
+# radio RX arrives and ducks the SDR, or when it ends and SDR resumes).
 #
-# How it works:
-#   - Attack: Signal must be continuously present for this duration before
-#             the source is considered "active" and allowed to duck others
-#   - Release: Signal must be continuously absent for this duration before
-#              the source is considered "inactive" and stops ducking others
+# Attack  — how long a source must be CONTINUOUSLY active before a switch is
+#           allowed.  Any silence resets the timer, so brief transients or
+#           noise bursts never cause an unwanted switch.
 #
-# This prevents choppy/stuttering audio when:
-#   - SDR signal has brief dropouts
-#   - AIOC audio has noise gaps
-#   - Network jitter causes intermittent silence
+# Release — how long the interrupting source must be continuously silent
+#           before the original source is allowed to resume.  Prevents SDR
+#           from popping back on during natural speech pauses.
 #
-# Recommended values:
-#   - Fast response (may stutter): attack=0.05, release=0.2
-#   - Balanced (default):         attack=0.1,  release=0.5
-#   - Smooth (slow):              attack=0.2,  release=1.0
+# Padding — a brief silence inserted at EACH transition point (duck-out and
+#           duck-in).  Gives a clean audible break instead of an abrupt cut:
+#             duck-out: [SDR playing] → [silence] → [radio plays, SDR ducked]
+#             duck-in:  [radio silent] → [silence] → [SDR resumes]
+#
+# Recommended starting values:
+#   - Sensitive/fast:   attack=0.3, release=1.0, padding=0.1
+#   - Balanced:         attack=0.5, release=2.0, padding=1.0
+#   - Conservative:     attack=1.0, release=3.0, padding=1.0
 # ============================================================================
 
-# Attack time: How long signal must be present before considered active (seconds)
-# Lower = faster response, higher = more stable but slower to react
-SIGNAL_ATTACK_TIME = 0.1
+# Attack: seconds of CONTINUOUS signal required before a source switch is allowed
+SIGNAL_ATTACK_TIME = 0.5
 
-# Release time: How long signal must be absent before considered inactive (seconds)
-# Lower = faster release, higher = holds signal longer (prevents stuttering)
-SIGNAL_RELEASE_TIME = 0.5
+# Release: seconds of continuous silence required before switching back
+SIGNAL_RELEASE_TIME = 2
+
+# Padding: seconds of silence inserted at each transition (duck-out AND duck-in)
+SWITCH_PADDING_TIME = 1
 
 # ============================================================================
 # FEATURE: TEXT-TO-SPEECH & TEXT COMMANDS (Phase 4)
@@ -403,7 +414,7 @@ TTS_VOLUME = 1.0
 # Silence padding before TTS audio (seconds)
 # Prevents first words from being cut off due to PTT delay
 # 0.25 = quarter second of silence before speech starts
-PTT_TTS_DELAY = 0.25
+PTT_TTS_DELAY = 1.0
 
 
 # ============================================================================
@@ -423,13 +434,13 @@ PTT_TTS_DELAY = 0.25
 
 # Enable streaming to Broadcastify
 # Requires Darkice + FFmpeg running (see startup script)
-ENABLE_STREAM_OUTPUT = true
+ENABLE_STREAM_OUTPUT = false
 
-# Broadcastify server details (from your feed settings)
+# Broadcastify server details (from your feed settings page on broadcastify.com)
 STREAM_SERVER = audio9.broadcastify.com
 STREAM_PORT = 80
-STREAM_PASSWORD = 7jwb2ngc
-STREAM_MOUNT = /3pc56gsd8v4n
+STREAM_PASSWORD = your_feed_password
+STREAM_MOUNT = /your_feed_mount
 
 # Stream metadata (displayed on Broadcastify)
 STREAM_NAME = Radio Gateway
@@ -501,6 +512,34 @@ RADIO_TO_ECHOLINK = true    # Radio RX sent to EchoLink network
 #   MUMBLE_TO_ECHOLINK = true
 #   RADIO_TO_ECHOLINK = false
 
+
+# ============================================================================
+# FEATURE: SPEAKER OUTPUT (Local Monitoring)
+# ============================================================================
+# Plays incoming radio RX audio through a local speaker or headset so you
+# can monitor the radio without a Mumble client.
+#
+# Runtime control:
+#   'o' key = mute/unmute speaker output
+#
+# To find your device name, set VERBOSE_LOGGING = true and run the gateway.
+# It will list all available output devices on startup.
+#
+# SPEAKER_OUTPUT_DEVICE examples:
+#   (empty)       = system default output
+#   USB Audio     = partial name match (case-insensitive)
+#   hw:2,0        = raw ALSA device
+#   1             = raw PyAudio device index
+# ============================================================================
+
+# Enable local speaker monitoring of radio RX audio
+ENABLE_SPEAKER_OUTPUT = false
+
+# Output device: empty = system default, or partial device name / hw:N,M / index
+SPEAKER_OUTPUT_DEVICE =
+
+# Speaker volume multiplier (1.0 = unity gain)
+SPEAKER_VOLUME = 1.0
 
 # ============================================================================
 # ADVANCED: STREAM HEALTH MONITORING

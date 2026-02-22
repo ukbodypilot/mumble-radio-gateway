@@ -1,27 +1,71 @@
-# Bug History — Mumble Radio Gateway
+# Bug History
 
-## Audio Pipeline Bugs
-- **SDR burst/choppy audio**: `frames_per_buffer=153600` (16× chunk) caused ALSA DMA to fire every 3.2s. Fixed to `AUDIO_CHUNK_SIZE` (9600 = 200ms).
-- **Pop at SDR onset**: Old 0.1s attack timer dropped first chunk. Fixed: instant-attack (`check_signal_instant`, -50dB) + 10ms fade-in.
-- **Pop at SDR offset (timing-window bug)**: Fade-out triggered by `(hold_until - current_time) < chunk_dur` — missed when AIOC read took >200ms. Fixed: transition-based fade-out when `prev_included` flips False.
-- **SDR gated on AIOC failures**: Mixer was inside AIOC gate. Fixed: mixer runs unconditionally; AIOC errors absorbed in `get_audio()`.
-- **Sequential double-blocking (400ms loop)**: AIOC 200ms + SDR 200ms in same thread. Fixed: SDR background reader thread, `get_audio()` is non-blocking queue pop.
-- **GIL contention causing ALSA overruns**: Reader thread did numpy between reads, competing with main loop. Fixed: reader thread does read+append only; all processing in main thread.
-- **Mumble encoder starvation**: `data is None → continue` skipped `add_sound()`. Opus resets across gaps. Fixed: substitute silence, fall through to `add_sound()`.
-- **duck-out regression (all audio broken)**: `sdr_active_at_transition` used `check_signal_instant` on raw loopback — always True with SDR app running, silencing first 1s of every AIOC transmission. Fixed: use `sdr_prev_included` instead.
+## 2026-02-21 — AIOC USB timing jitter causing audio dropouts
+**Symptom:** Audible dropout glitches in radio RX audio every few seconds.
+**Cause:** CM108 chipset on Linux xHCI produces irregular USB frame delivery.
+With a 50ms ALSA period (AUDIO_CHUNK_SIZE=2400), jitter accumulates to ~1700ms
+of drift per 47s. arecord with `--buffer-size=19200` had zero xruns — confirming
+the issue is at the PortAudio/PyAudio layer, not the AIOC hardware itself.
+**Fix:** Switch input stream to PortAudio callback mode with
+`frames_per_buffer = AUDIO_CHUNK_SIZE * 8` (19200 frames = 400ms period).
+`AIOCRadioSource._audio_callback` stores each 400ms blob in `_chunk_queue`.
+`get_audio()` slices it into 50ms sub-chunks with `time.sleep()`-based pacing
+so the main loop still runs at the right rate. Tested: -0.1ms drift over 48s.
 
-## Config / Code Bugs
-- **Config parser crash on decimal**: `int('0.3')` raised ValueError, silently abandoning all config after that line. Fixed: `VAD_RELEASE: 1.0` default (float); parser tries `float()` fallback on ValueError.
-- **global_muted UnboundLocalError**: Set inside `if self.sdr_source:` block, used in `if self.sdr2_source:` block. Fixed: calculated before both blocks.
+## 2026-02-21 — PTT click/pop on manual toggle
+**Symptom:** Audible click in Mumble/speaker when pressing 'p' to toggle PTT.
+**Cause:** The AIOC HID write that keys the radio relay causes a brief transient
+on the USB isochronous audio path. The one-shot `_ptt_just_changed` flag was
+cleared before the blob containing the transient arrived from the sub-buffer.
+**Fix:** Replaced `_ptt_just_changed` bool with `_ptt_change_time` monotonic
+timestamp. `AIOCRadioSource.get_audio()` applies a continuous gain envelope
+(0 for 30ms, linear ramp 0→1 from 30→130ms) to all sub-chunks within 130ms
+of any PTT state change. The keyboard handler now queues the HID write via
+`_pending_ptt_state` so it runs between audio reads (no USB bus contention).
 
-## Installer Bugs
-- **numlids=3 silently ignored on Debian**: RPi kernel param, not standard. Fixed: `enable=1,1,1 index=4,5,6`.
-- **Loopback card count wrong**: `grep -c "Loopback"` counted 2 lines per card. Fixed: count `device 0` lines only.
-- **Installer aborted at step 5**: `set -e` + `sudo tee /etc/security/limits.d/...` failed (dir missing on minimal Debian). Fixed: `set +e` around step 5, `sudo mkdir -p` first.
-- **darkice.cfg never created**: Path pointed to `examples/darkice.cfg.example` but file is in `scripts/`. Fixed.
-- **DarkIce 1.5 parser crash**: Word "password" in comment before first `[section]` header → "no current section" crash. Fixed: removed from comment text.
-- **WirePlumber locks loopback to S32_LE**: DarkIce needs S16_LE. Fixed: WirePlumber rule disabling `alsa_card.platform-snd_aloop.*`.
-- **WirePlumber hides AIOC from PyAudio**: Fixed: WirePlumber rule disabling `alsa_card.usb-AIOC_*`.
-- **AIOC hidraw inaccessible**: udev rule only covered `SUBSYSTEM=="usb"`, not `SUBSYSTEM=="hidraw"`. PTT HID access requires hidraw. Fixed: added hidraw rule.
-- **Wrong Python HID package**: Installer installed `hidapi`; gateway uses `hid.Device` from `hid` package. Fixed.
-- **pymumble-py3 SSL broken on Python 3.12+**: `ssl.wrap_socket` removed, `ssl.PROTOCOL_TLSv1_2` deprecated. Fixed: monkey-patch before import.
+## 2026-02-21 — Speaker/Mumble desync after first PTT event
+**Symptom:** Speaker and Mumble audio start in sync but drift ~100ms apart
+permanently after the first PTT key-up or key-down event.
+**Cause:** Speaker output bypasses VAD (always receives audio), but Mumble is
+VAD-gated. During the 130ms click-suppression window (which applies silence/fade),
+VAD reports no signal so Mumble skips ~100ms of chunks that the speaker plays.
+**Fix:** Force `should_transmit = True` in `AIOCRadioSource.get_audio()` for the
+entire 130ms window so Mumble receives the muted audio and stays in lock-step
+with the speaker.
+
+## 2026-02-21 — No click suppression when announcement activates PTT
+**Symptom:** AIOC click audible on Mumble when an announcement file auto-keys PTT,
+even though manual PTT toggle was click-free.
+**Cause:** `_ptt_change_time` was only set in three places (Mumble RX handler,
+pending-PTT apply, status_monitor release). The announcement code path at line
+3739 called `set_ptt_state(True)` directly without updating `_ptt_change_time`,
+so the click suppression envelope in `AIOCRadioSource.get_audio()` never fired.
+**Fix:** Added `self._ptt_change_time = time.monotonic()` immediately after the
+`set_ptt_state(True)` call in the announcement PTT activation block.
+
+## 2026-02-21 — `announcement_delay_active` stuck True after stop_playback
+**Symptom:** After stopping playback mid-announcement, the next queued file would
+silently skip audio while returning `ptt_required=True`, keeping PTT active
+indefinitely if the delay timer had not yet expired.
+**Cause:** `announcement_delay_active` is cleared inside the PTT branch of
+`audio_transmit_loop`. When `stop_playback()` terminates the file, `ptt_required`
+becomes False and the loop exits the PTT branch — so the expiry check never ran.
+**Fix:** Added a safety clear before `get_mixed_audio()` on every loop iteration:
+if `announcement_delay_active` and the timer has expired, clear the flag.
+Also initialized both `announcement_delay_active` and `_announcement_ptt_delay_until`
+in `__init__` (previously used `getattr(..., False)` defensive guards).
+
+## 2026-02-21 — AIOC detection steals C-Media speaker device
+**Symptom:** `Warning: Speaker output failed to open: [Errno -9985] Device unavailable`
+**Cause:** `find_aioc_audio_device()` keyword list included `'c-media'`, which matched
+the C-Media USB Headphone Set before the real AIOC. The headset was then opened as
+both input and output AIOC streams, leaving it unavailable for speaker monitoring.
+**Fix:** Replaced `'c-media'` with `'all-in-one'` in the keyword list. The real AIOC
+("All-In-One-Cable: USB Audio") is still found via `'usb audio'` and `'all-in-one'`.
+
+## 2026-02-21 — SDR duck indicator triggered with no SDR source connected
+**Symptom:** Status bar showed `SDR1:[---DUCK---]` even with no SDR audio present.
+**Cause:** `sdr1_ducked` / `sdr2_ducked` status flags were not cleared when the
+corresponding SDR was muted or had no signal level.
+**Fix:** Conditional: `sdr1_ducked = self.sdr1_ducked if not sdr1_muted and current_sdr1_level > 0 else False`.
+Same pattern applied to `sdr2_ducked`.

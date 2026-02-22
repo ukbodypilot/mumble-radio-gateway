@@ -6,6 +6,8 @@ Update MEMORY.md and detail files at the end of every session and whenever a sig
 ## Project Overview
 Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Optional SDR input via ALSA loopback. Optional Broadcastify streaming via DarkIce. Python 3, runs on Raspberry Pi and Debian amd64.
 
+**Current machine:** PC, Debian 13 (Trixie), amd64 — moved from Raspberry Pi as of 2026-02-21.
+
 **Main file:** `mumble_radio_gateway.py` (~4500+ lines)
 **Installer:** `scripts/install.sh` (8 steps, targets Debian/Ubuntu/RPi)
 **Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
@@ -49,6 +51,14 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Needs audio group + realtime limits (`/etc/security/limits.d/audio-realtime.conf`)
 - udev: needs BOTH `SUBSYSTEM=="usb"` AND `SUBSYSTEM=="hidraw"` rules for AIOC
 
+## Speaker Output Feature (added 2026-02-21)
+- Config keys: `ENABLE_SPEAKER_OUTPUT`, `SPEAKER_OUTPUT_DEVICE`, `SPEAKER_VOLUME`
+- `find_speaker_device()` resolves device string → PyAudio index (empty=default, numeric=index, text=name match)
+- `open_speaker_output()` called from `setup_audio()` after radio source init
+- Audio written in both normal RX path and PTT/playback path in `audio_transmit_loop()`
+- Key `o` toggles `self.speaker_muted`; status bar shows `SP:[bar]` when enabled
+- Cleanup in `cleanup()` before `output_stream` close
+
 ## Known Bugs Fixed (details in bugs.md)
 - SDR burst audio (frames_per_buffer was 153600, fixed to 9600)
 - Mumble encoder starvation (send silence not None)
@@ -57,6 +67,19 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - global_muted UnboundLocalError in status_monitor_loop when SDR1 absent
 - DarkIce hidraw udev missing
 - WirePlumber AIOC grab
+- AIOC USB timing jitter causing dropouts: fixed by ALSA period 8×AUDIO_CHUNK_SIZE (19200 frames)
+- Speaker/Mumble desync after PTT: fixed by force-transmitting during 130ms click suppression window
+- PTT click on manual toggle: fixed with time-based envelope (_ptt_change_time timestamp)
+- Announcement PTT missing click suppression: fixed by setting _ptt_change_time at announcement PTT activation
+- announcement_delay_active stuck True after stop_playback: fixed by safety clear before mixer call
+
+## AIOC / AIOCRadioSource Architecture (key fix 2026-02-21)
+- Large ALSA period: `frames_per_buffer = AUDIO_CHUNK_SIZE * 8` (8×2400=19200 frames, 400ms buffer)
+- PortAudio callback stores full 400ms blob in `_chunk_queue` (maxsize=4)
+- `get_audio()` slices into 50ms sub-chunks with sleep-based pacing (`_next_delivery` timestamp)
+- Queue timeout = 0.800s (> one callback period) — returns None on timeout (AIOC unavailable)
+- PTT click suppression: `_ptt_change_time` monotonic timestamp; gain envelope 0 for 30ms, ramps 0→1 from 30ms→130ms
+- `_ptt_change_time` set in 4 places: Mumble RX handler, keyboard pending PTT apply, status_monitor PTT release, announcement PTT activation
 
 ## User Preferences
 - CBR Opus (not VBR) — cares about quality not bandwidth
