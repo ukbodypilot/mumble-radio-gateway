@@ -2,7 +2,7 @@
 MUMBLE RADIO GATEWAY - USER GUIDE
 ================================================================================
 
-VERSION: 3.0
+VERSION: 3.1
 Last Updated: February 2026
 
 ================================================================================
@@ -65,6 +65,7 @@ MUTE CONTROLS
 
   r = Toggle RX Mute (Radio → Mumble)
       Mutes audio coming FROM the radio to Mumble.
+      Note: the SP:[bar] will show zero when RX is muted (no audio reaches speaker).
 
   m = Global Mute Toggle
       Mutes BOTH directions at once.
@@ -74,6 +75,11 @@ MUTE CONTROLS
 
   x = Toggle SDR2 Mute
       Silences the SDR2 source.
+
+  o = Toggle Speaker Output Mute
+      Mutes the local speaker/headphone monitoring output.
+      Does not affect Mumble or streaming — monitoring only.
+      SP:[bar] shows [---MUTE---] when speaker is muted.
 
 PTT CONTROL
 -----------
@@ -172,6 +178,12 @@ SDR1:[bar] %
 
 SDR2:[bar] %
   Magenta bar — SDR2 audio level (only shown when SDR2 enabled).
+
+SP:[bar] %
+  Cyan bar — Speaker output audio level (only shown when ENABLE_SPEAKER_OUTPUT = true).
+  Tracks the actual mixed audio being sent to the speaker (AIOC RX + SDR + PTT),
+  not just the radio RX level. Decays to 0 when no audio is active.
+  Shows [---MUTE---] when speaker is muted with the 'o' key.
 
 Vol:X.Xx
   RX volume multiplier (adjust with , and . keys).
@@ -316,10 +328,14 @@ via ALSA loopback devices.
 
 SETUP
 -----
-  1. Load the ALSA loopback module (3 cards for up to 3 SDR channels):
-       echo "options snd-aloop numlids=3" | sudo tee /etc/modprobe.d/snd-aloop.conf
+  1. Load the ALSA loopback module (3 cards pinned to hw:4, hw:5, hw:6):
+       echo "options snd-aloop enable=1,1,1 index=4,5,6" | sudo tee /etc/modprobe.d/snd-aloop.conf
        echo "snd-aloop" | sudo tee -a /etc/modules
-       sudo modprobe -r snd-aloop 2>/dev/null; sudo modprobe snd-aloop numlids=3
+       sudo modprobe -r snd-aloop 2>/dev/null; sudo modprobe snd-aloop enable=1,1,1 index=4,5,6
+
+     Note: numlids=N is a Raspberry Pi-only parameter, silently ignored on standard
+     Debian/Ubuntu. Use enable=1,1,1 index=4,5,6 — works on all platforms and pins
+     the cards to fixed hw: numbers regardless of other audio devices.
 
   2. Verify cards created:
        aplay -l | grep Loopback
@@ -346,6 +362,32 @@ PRIORITY AND DUCKING
 
   File playback is deterministic and does NOT use the attack/release system —
   PTT fires immediately when a file starts.
+
+================================================================================
+RECENT CHANGES (v3.1)
+================================================================================
+
+AIOC AUDIO — PERIODIC DROPOUT FIX
+------------------------------------
+- Sub-chunk pacing now uses incremental timing so sleep overshoot cannot
+  accumulate across sub-chunks. The old approach drifted ~8 ms per 400 ms
+  blob, eventually draining the queue and producing a brief dropout every
+  few seconds.
+- AIOC queue depth increased (4 → 8 blobs) for more USB jitter headroom.
+
+SDR AUDIO — STUTTERING FIX
+----------------------------
+- Replaced deque(maxlen=4) with a bytearray ring buffer. The deque silently
+  dropped the oldest chunk when full, causing regular 750 ms on / 750 ms off
+  stuttering when the main loop was marginally slower than the SDR reader.
+- Reader thread now reads full ALSA periods (SDR_BUFFER_MULTIPLIER × chunk)
+  rather than one chunk at a time, reducing read call overhead.
+
+SP BAR — LEVEL TRACKING FIX
+------------------------------
+- SP:[bar] now shows the actual level of audio sent to the speaker (mixed
+  output), not the AIOC RX level. Previously the bar froze when RX was muted
+  with the 'r' key. Now it correctly decays to 0 when no audio is playing.
 
 ================================================================================
 RECENT CHANGES (v3.0)

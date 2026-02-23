@@ -242,11 +242,12 @@ SWITCH_PADDING_TIME = 1.0   # silence gap inserted at each transition
 - Configurable bitrate and format
 
 ### Speaker Output (Local Monitoring)
-- Mirrors radio RX audio to a local speaker/headphone device in real-time
+- Mirrors the mixed audio output to a local speaker/headphone device in real-time
+- The `SP:[bar]` reflects the actual audio being sent to the speaker (mixed RX + SDR + PTT), not just the AIOC RX level — so the bar stays live regardless of RX mute state
 - Configurable device (by name, index, or empty for system default)
 - Independent mute toggle (`o` key) — does not affect Mumble or streaming
 - Volume control via `SPEAKER_VOLUME`
-- Status bar shows `SP:[bar]` level when enabled
+- Status bar shows `SP:[bar]` level when enabled; decays to 0 when no audio is playing
 - WirePlumber exclusion automatically applied for USB audio devices (e.g. C-Media)
 
 ## Quick Start
@@ -475,7 +476,7 @@ ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% S
 | **RX:[bar]** | Green | Radio → Mumble (radio RX) |
 | **SDR1:[bar]** | Cyan | SDR1 receiver audio level |
 | **SDR2:[bar]** | Magenta | SDR2 receiver audio level (if enabled) |
-| **SP:[bar]** | White | Speaker output audio level (if enabled) |
+| **SP:[bar]** | Cyan | Speaker output audio level — tracks actual mixed output, not just radio RX (if enabled) |
 
 **Bar States:**
 ```
@@ -928,9 +929,10 @@ scripts/loopback-status
 - Verify correct device pairing (hw:X,0 ↔ hw:X,1)
 
 **Problem: Stuttering SDR audio**
-- Increase `SDR_BUFFER_MULTIPLIER` (try 16)
-- Check CPU usage (`htop`)
-- Ensure SDR software is outputting to correct device
+- The SDR reader uses a bytearray ring buffer (no longer a fixed-size deque) so individual chunks are never silently dropped when the main loop is briefly slower than the reader. If you still hear stuttering, check:
+  - CPU usage (`htop`) — high load can starve the reader thread
+  - Ensure SDR software is writing continuously to `hw:X,0` (not in burst mode)
+  - Try increasing `SDR_BUFFER_MULTIPLIER` (try 8 or 16) to widen the ALSA period
 
 **Problem: SDR always silent**
 - Press `d` to check if ducking is enabled (SDR1), check `SDR2_DUCK` in config for SDR2
@@ -1119,6 +1121,21 @@ class MySource(AudioSource):
 - PyAudio: Python audio interface
 
 ## Changelog
+
+### AIOC Pacing, SDR Ring Buffer & SP Bar Fix
+
+**AIOC audio — periodic dropout fix**
+- Sub-chunk pacing now uses incremental timing (`_next_delivery += chunk_secs`) instead of resetting to `now + chunk_secs` after each sleep. The old approach let sleep overshoot accumulate (≈1 ms × 8 chunks/blob) causing consumption to lag production and eventually drain the queue, producing a brief gap every few seconds.
+- Added snap-forward logic: if `_next_delivery` is more than one chunk behind after a stall, it snaps to now rather than delivering a burst of rapid-fire sub-chunks.
+- AIOC queue maxsize increased from 4 → 8 blobs (3.2 s headroom) to absorb occasional xHCI USB scheduling delays.
+
+**SDR audio — stuttering fix**
+- Replaced `deque(maxlen=4)` ring buffer with a `bytearray` protected by a `threading.Lock`. The old deque silently dropped the oldest chunk whenever the main loop fell behind, creating the characteristic 750 ms on / 750 ms off pattern.
+- Reader thread now reads full ALSA periods (`AUDIO_CHUNK_SIZE × SDR_BUFFER_MULTIPLIER` frames) rather than one chunk at a time, reducing ALSA read call overhead.
+- Ring buffer caps at 2 seconds; oldest data is trimmed if the reader gets too far ahead, preventing unbounded memory growth.
+
+**SP bar — level tracking fix**
+- `SP:[bar]` now tracks a dedicated `speaker_audio_level` updated in `_speaker_enqueue()` from the actual audio going to the speaker (mixed RX + SDR + PTT). Previously it showed `tx_audio_level` (AIOC RX only), which froze when the R key muted radio RX.
 
 ### Installer & Compatibility Overhaul
 
