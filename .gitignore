@@ -45,6 +45,7 @@ Thumbs.db
 
 # User configurations (don't commit passwords!)
 gateway_config_local.txt
+gateway_config.txt
 
 # Audio test files
 *.mp3

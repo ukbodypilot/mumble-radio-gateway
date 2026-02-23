@@ -322,7 +322,7 @@ class AIOCRadioSource(AudioSource):
         # The ALSA period is opened at 8×AUDIO_CHUNK_SIZE so each callback
         # delivers one 400ms blob.  get_audio() slices it into 50ms sub-chunks
         # and sleeps between them to keep the main loop at the right rate.
-        self._chunk_queue = _queue_mod.Queue(maxsize=4)
+        self._chunk_queue = _queue_mod.Queue(maxsize=8)
         # Pre-compute sizes for the hot callback path and get_audio() slicer.
         self._chunk_bytes = config.AUDIO_CHUNK_SIZE * config.AUDIO_CHANNELS * 2  # 16-bit
         self._chunk_secs = config.AUDIO_CHUNK_SIZE / config.AUDIO_RATE           # ~0.05 s
@@ -372,18 +372,29 @@ class AIOCRadioSource(AudioSource):
             cb = self._chunk_bytes
             while len(self._sub_buffer) < cb:
                 try:
-                    blob = self._chunk_queue.get(timeout=0.800)  # > one full 400ms callback period
+                    # Dynamic timeout: 2x one callback period (AUDIO_CHUNK_SIZE*8 frames at AUDIO_RATE)
+                    _queue_timeout = (self.config.AUDIO_CHUNK_SIZE * 8 / self.config.AUDIO_RATE) * 2
+                    blob = self._chunk_queue.get(timeout=_queue_timeout)
                     self._sub_buffer += blob
-                    self._next_delivery = 0.0  # reset pacing after a real wait
                 except _queue_mod.Empty:
                     self._sub_buffer = b''
                     return None, False  # AIOC unavailable or stream stalled
 
             # Pace delivery: sleep until this sub-chunk is due.
+            # Use incremental timing (_next_delivery += chunk_secs) to prevent
+            # drift from sleep overshoot accumulating across sub-chunks.
+            # Cap catch-up: if we're more than one chunk behind, snap forward
+            # to prevent a burst of rapid deliveries after a stall.
             now = time.monotonic()
-            if self._next_delivery > now:
+            if self._next_delivery <= 0.0:
+                # First delivery after init or stream restart — start pacing now
+                self._next_delivery = now
+            elif self._next_delivery > now:
                 time.sleep(self._next_delivery - now)
-            self._next_delivery = time.monotonic() + self._chunk_secs
+            elif now - self._next_delivery > self._chunk_secs:
+                # Too far behind (e.g. queue.get() blocked) — snap forward
+                self._next_delivery = now
+            self._next_delivery += self._chunk_secs
 
             data = self._sub_buffer[:cb]
             self._sub_buffer = self._sub_buffer[cb:]
@@ -1134,8 +1145,12 @@ class SDRSource(AudioSource):
         self.total_reads = 0
         self.last_stats_time = time.time()
 
-        # Background reader thread state
-        self._chunk_queue = collections.deque(maxlen=4)  # ~800ms of headroom
+        # Background reader thread state — bytearray ring buffer.
+        # The reader appends raw PCM; get_audio() slices off chunk_size pieces.
+        # A threading.Lock protects the buffer; the reader never blocks the main
+        # thread for more than a memcpy.
+        self._ring_buf = bytearray()
+        self._ring_lock = threading.Lock()
         self._reader_running = False
         self._reader_thread = None
 
@@ -1232,7 +1247,7 @@ class SDRSource(AudioSource):
                     rate=self.config.AUDIO_RATE,
                     input=True,
                     input_device_index=device_index,
-                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
+                    frames_per_buffer=buffer_size,
                     stream_callback=None
                 )
                 self.sdr_channels = sdr_channels  # Store for later use
@@ -1248,7 +1263,7 @@ class SDRSource(AudioSource):
                         rate=self.config.AUDIO_RATE,
                         input=True,
                         input_device_index=device_index,
-                        frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
+                        frames_per_buffer=buffer_size,
                         stream_callback=None
                     )
                     self.sdr_channels = sdr_channels
@@ -1263,7 +1278,8 @@ class SDRSource(AudioSource):
 
             # Start background reader thread so SDR ALSA reads run independently
             # of the main loop, preventing sequential double-blocking (AIOC + SDR).
-            self._chunk_queue.clear()
+            with self._ring_lock:
+                self._ring_buf.clear()
             self._reader_running = True
             self._reader_thread = threading.Thread(
                 target=self._reader_thread_func,
@@ -1283,21 +1299,36 @@ class SDRSource(AudioSource):
             return False
     
     def _reader_thread_func(self):
-        """Background thread: reads raw PCM from SDR ALSA stream and enqueues it.
+        """Background thread: reads raw PCM from SDR ALSA stream into a ring buffer.
 
         Intentionally does NO processing between reads — no numpy, no level
         calculation, no mute checks. The less work done between ALSA reads, the
         less chance the OS scheduler or Python GIL delays the next read and causes
         an ALSA overrun. All processing happens in get_audio() in the main thread.
         """
-        chunk_size = self.config.AUDIO_CHUNK_SIZE
+        # Read full ALSA periods to minimise read() call overhead.  With
+        # buffer_multiplier=4 this is 9600 frames = 200ms per read.
+        if self.name == "SDR2":
+            buf_mult = getattr(self.config, 'SDR2_BUFFER_MULTIPLIER', 4)
+        else:
+            buf_mult = getattr(self.config, 'SDR_BUFFER_MULTIPLIER', 4)
+        read_frames = self.config.AUDIO_CHUNK_SIZE * max(buf_mult, 1)
+        # Cap ring buffer at ~2 seconds of audio to bound memory
+        channels = getattr(self, 'sdr_channels', 1)
+        max_ring_bytes = self.config.AUDIO_RATE * channels * 2 * 2  # 2 seconds
+
         while self._reader_running:
             if not self.input_stream:
                 time.sleep(0.01)
                 continue
             try:
-                raw = self.input_stream.read(chunk_size, exception_on_overflow=False)
-                self._chunk_queue.append(raw)
+                raw = self.input_stream.read(read_frames, exception_on_overflow=False)
+                with self._ring_lock:
+                    self._ring_buf.extend(raw)
+                    # Trim oldest data if buffer grows too large
+                    if len(self._ring_buf) > max_ring_bytes:
+                        excess = len(self._ring_buf) - max_ring_bytes
+                        del self._ring_buf[:excess]
             except IOError:
                 self.overflow_count += 1
             except Exception:
@@ -1317,12 +1348,16 @@ class SDRSource(AudioSource):
         if not self.input_stream:
             return None, False
 
-        # Pop raw chunk — non-blocking, return None if reader hasn't produced yet.
-        # The main loop substitutes silence so the Mumble encoder stays fed.
-        try:
-            raw = self._chunk_queue.popleft()
-        except IndexError:
-            return None, False
+        # Slice one chunk from the ring buffer — non-blocking, return None if
+        # the reader hasn't produced enough data yet.  The main loop substitutes
+        # silence so the Mumble encoder stays fed.
+        channels = getattr(self, 'sdr_channels', 1)
+        need_bytes = chunk_size * channels * 2  # 16-bit samples
+        with self._ring_lock:
+            if len(self._ring_buf) < need_bytes:
+                return None, False
+            raw = bytes(self._ring_buf[:need_bytes])
+            del self._ring_buf[:need_bytes]
 
         # Muted: chunk was popped (keeps queue fresh/current), discard it.
         should_discard = self.muted or (self.gateway.tx_muted and self.gateway.rx_muted)
@@ -1382,7 +1417,8 @@ class SDRSource(AudioSource):
         self._reader_running = False
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=1.0)
-        self._chunk_queue.clear()
+        with self._ring_lock:
+            self._ring_buf.clear()
 
         if self.input_stream:
             try:
@@ -2021,6 +2057,7 @@ class MumbleRadioGateway:
         self.speaker_muted = False
         self.speaker_queue = None   # queue.Queue fed by main loop, drained by speaker thread
         self.speaker_thread = None
+        self.speaker_audio_level = 0  # Tracks actual speaker output level for status bar
 
         # Restart flag (set by !restart command, checked in main() after run() exits)
         self.restart_requested = False
@@ -2295,8 +2332,8 @@ class MumbleRadioGateway:
             
             # Attack and release coefficients (samples per second)
             chunks_per_second = self.config.AUDIO_RATE / self.config.AUDIO_CHUNK_SIZE
-            attack_coef = 1.0 / ((self.config.VAD_ATTACK / 1000.0) * chunks_per_second)
-            release_coef = 1.0 / ((self.config.VAD_RELEASE / 1000.0) * chunks_per_second)
+            attack_coef = 1.0 / (self.config.VAD_ATTACK * chunks_per_second)
+            release_coef = 1.0 / (self.config.VAD_RELEASE * chunks_per_second)
             
             # Update envelope follower
             if db_level > self.vad_envelope:
@@ -2320,7 +2357,7 @@ class MumbleRadioGateway:
                 # Below threshold
                 if self.vad_active:
                     # Check minimum duration
-                    open_duration = (current_time - self.vad_open_time) * 1000  # ms
+                    open_duration = current_time - self.vad_open_time  # seconds
                     if open_duration < self.config.VAD_MIN_DURATION:
                         # Haven't met minimum duration yet, stay open
                         return True
@@ -2329,7 +2366,7 @@ class MumbleRadioGateway:
                     if self.vad_close_time == 0:
                         self.vad_close_time = current_time
                     
-                    release_duration = (current_time - self.vad_close_time) * 1000  # ms
+                    release_duration = current_time - self.vad_close_time  # seconds
                     if release_duration < self.config.VAD_RELEASE:
                         # Still in release tail
                         return True
@@ -2710,6 +2747,12 @@ class MumbleRadioGateway:
             if self.config.SPEAKER_VOLUME != 1.0:
                 arr = np.frombuffer(spk, dtype=np.int16).astype(np.float32)
                 spk = np.clip(arr * self.config.SPEAKER_VOLUME, -32768, 32767).astype(np.int16).tobytes()
+            # Update speaker level for status bar (fast attack, slow decay)
+            current_level = self.calculate_audio_level(spk)
+            if current_level > self.speaker_audio_level:
+                self.speaker_audio_level = current_level
+            else:
+                self.speaker_audio_level = int(self.speaker_audio_level * 0.7 + current_level * 0.3)
             self.speaker_queue.put_nowait(spk)
         except Exception:
             pass  # queue.Full → drop frame, never block the main loop
@@ -4487,7 +4530,7 @@ class MumbleRadioGateway:
                 sp_bar = ""
                 if self.config.ENABLE_SPEAKER_OUTPUT and self.speaker_stream:
                     sp_bar = f" {WHITE}SP:{RESET}" + self.format_level_bar(
-                        self.tx_audio_level, muted=self.speaker_muted, color='cyan'
+                        self.speaker_audio_level, muted=self.speaker_muted, color='cyan'
                     )
 
                 # Extra padding to clear any orphaned text when line shortens

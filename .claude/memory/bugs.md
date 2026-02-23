@@ -63,6 +63,37 @@ both input and output AIOC streams, leaving it unavailable for speaker monitorin
 **Fix:** Replaced `'c-media'` with `'all-in-one'` in the keyword list. The real AIOC
 ("All-In-One-Cable: USB Audio") is still found via `'usb audio'` and `'all-in-one'`.
 
+## 2026-02-22 — Complete silence to Mumble (AUDIO_CHUNK_SIZE=9600)
+**Symptom:** No radio audio reaches Mumble at all.
+**Cause:** `AUDIO_CHUNK_SIZE` was changed from 2400 to 9600 in config. With 8× multiplier,
+ALSA period became 76800 frames (1.6s). The queue timeout was hardcoded to 0.800s,
+which always expired before the first callback blob arrived. `get_audio()` always
+returned `(None, False)`.
+**Fix:** Restored `AUDIO_CHUNK_SIZE = 2400`. Made queue timeout dynamic:
+`timeout = (AUDIO_CHUNK_SIZE * 8 / AUDIO_RATE) * 2` so it adapts to any chunk size.
+
+## 2026-02-22 — VAD units mismatch causes choppy audio
+**Symptom:** VAD opens/closes too aggressively — no smooth envelope, min-duration and
+release checks effectively disabled.
+**Cause:** Config values (VAD_ATTACK=0.02, VAD_RELEASE=0.3, VAD_MIN_DURATION=0.1) are in
+seconds. Code divided by 1000.0 (treating as ms), making attack_coef=10000 (clamped to 1.0,
+instant). Duration comparisons multiplied by 1000 (converting to ms) then compared to
+seconds values — e.g., 0.1s compared against 100ms.
+**Fix:** Removed `/ 1000.0` from attack/release coefficients. Removed `* 1000` from
+duration calculations, keeping everything in seconds.
+
+## 2026-02-22 — SDR buffer_multiplier computed but never used
+**Symptom:** SDR_BUFFER_MULTIPLIER config had no effect on audio buffering.
+**Cause:** `buffer_size = AUDIO_CHUNK_SIZE * buffer_multiplier` was computed but
+`frames_per_buffer=self.config.AUDIO_CHUNK_SIZE` was used instead.
+**Fix:** Changed `frames_per_buffer` to use `buffer_size` in both stereo and mono fallback paths.
+
+## 2026-02-22 — Duplicate SDR_BUFFER_MULTIPLIER config key
+**Symptom:** SDR1's buffer multiplier setting ignored.
+**Cause:** `SDR_BUFFER_MULTIPLIER = 16` appeared at both line 323 (SDR1 section) and
+line 354 (after SDR2 section). The second occurrence overwrote the first.
+**Fix:** Removed the duplicate entry at line 354.
+
 ## 2026-02-21 — SDR duck indicator triggered with no SDR source connected
 **Symptom:** Status bar showed `SDR1:[---DUCK---]` even with no SDR audio present.
 **Cause:** `sdr1_ducked` / `sdr2_ducked` status flags were not cleared when the

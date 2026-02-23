@@ -23,7 +23,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ## Critical Settings (current defaults)
 - `MUMBLE_BITRATE = 96000`, `MUMBLE_VBR = false` (CBR)
 - `VAD_THRESHOLD = -45`, `VAD_ATTACK = 0.05`, `VAD_RELEASE = 2.0`, `VAD_MIN_DURATION = 0.25`
-- `AUDIO_CHUNK_SIZE = 2400` (50ms; 8× ALSA period applied internally = 400ms buffer)
+- `AUDIO_CHUNK_SIZE = 2400` (50ms; 8× ALSA period applied internally = 400ms buffer) — was accidentally changed to 9600, causing total audio silence
 - `SIGNAL_RELEASE_TIME = 2.0`, `ENABLE_SDR2 = false`
 - SDR loopback: `hw:4,1` / `hw:5,1` / `hw:6,1` (capture side)
 
@@ -68,6 +68,10 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - global_muted UnboundLocalError in status_monitor_loop when SDR1 absent
 - DarkIce hidraw udev missing
 - WirePlumber AIOC grab
+- AUDIO_CHUNK_SIZE=9600 caused complete silence (queue timeout too short for callback period)
+- VAD units mismatch: config values in seconds were divided by 1000 (treated as ms), causing instant attack/release
+- SDR buffer_multiplier computed but never used as frames_per_buffer
+- Duplicate SDR_BUFFER_MULTIPLIER key in config (second overwrote first)
 - AIOC USB timing jitter causing dropouts: fixed by ALSA period 8×AUDIO_CHUNK_SIZE (19200 frames)
 - Speaker/Mumble desync after PTT: fixed by force-transmitting during 130ms click suppression window
 - PTT click on manual toggle: fixed with time-based envelope (_ptt_change_time timestamp)
@@ -78,7 +82,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Large ALSA period: `frames_per_buffer = AUDIO_CHUNK_SIZE * 8` (8×2400=19200 frames, 400ms buffer)
 - PortAudio callback stores full 400ms blob in `_chunk_queue` (maxsize=4)
 - `get_audio()` slices into 50ms sub-chunks with sleep-based pacing (`_next_delivery` timestamp)
-- Queue timeout = 0.800s (> one callback period) — returns None on timeout (AIOC unavailable)
+- Queue timeout = dynamic: `(AUDIO_CHUNK_SIZE * 8 / AUDIO_RATE) * 2` — adapts to any chunk size
 - PTT click suppression: `_ptt_change_time` monotonic timestamp; gain envelope 0 for 30ms, ramps 0→1 from 30ms→130ms
 - `_ptt_change_time` set in 4 places: Mumble RX handler, keyboard pending PTT apply, status_monitor PTT release, announcement PTT activation
 
