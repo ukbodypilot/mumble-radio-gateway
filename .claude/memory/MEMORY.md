@@ -8,10 +8,11 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 **Current machine:** PC, Debian 13 (Trixie), amd64 — moved from Raspberry Pi as of 2026-02-21.
 
-**Main file:** `mumble_radio_gateway.py` (~4500+ lines)
+**Main file:** `mumble_radio_gateway.py` (~4800 lines)
 **Installer:** `scripts/install.sh` (8 steps, targets Debian/Ubuntu/RPi)
 **Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
 **Start script:** `start.sh` (launches DarkIce + FFmpeg + gateway)
+**Git remote:** https://github.com/ukbodypilot/mumble-radio-gateway (branch: main)
 
 ## Key Architecture
 - `AIOCRadioSource` — reads from AIOC ALSA device (radio RX audio)
@@ -23,9 +24,11 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ## Critical Settings (current defaults)
 - `MUMBLE_BITRATE = 96000`, `MUMBLE_VBR = false` (CBR)
 - `VAD_THRESHOLD = -45`, `VAD_ATTACK = 0.05`, `VAD_RELEASE = 2.0`, `VAD_MIN_DURATION = 0.25`
-- `AUDIO_CHUNK_SIZE = 2400` (50ms; 8× ALSA period applied internally = 400ms buffer) — was accidentally changed to 9600, causing total audio silence
+- `AUDIO_CHUNK_SIZE = 2400` (50ms; 8× ALSA period applied internally = 400ms buffer)
 - `SIGNAL_RELEASE_TIME = 2.0`, `ENABLE_SDR2 = false`
-- SDR loopback: `hw:4,1` / `hw:5,1` / `hw:6,1` (capture side)
+- `STREAM_BITRATE = 16` (kbps, Broadcastify/scanner standard)
+- `NOISE_SUPPRESSION_METHOD = spectral`
+- SDR loopback default: `hw:6,1` (capture side); installer pins loopback to hw:4,5,6
 
 ## ALSA Loopback Setup
 - 3 cards pinned to hw:4, hw:5, hw:6 via `enable=1,1,1 index=4,5,6`
@@ -58,7 +61,26 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `open_speaker_output()` called from `setup_audio()` after radio source init
 - Audio written in both normal RX path and PTT/playback path in `audio_transmit_loop()`
 - Key `o` toggles `self.speaker_muted`; status bar shows `SP:[bar]` when enabled
+- `SP:[bar]` uses `speaker_audio_level` (updated in `_speaker_enqueue()`), NOT `tx_audio_level`
 - Cleanup in `cleanup()` before `output_stream` close
+
+## AIOC / AIOCRadioSource Architecture (key fix 2026-02-21, refined 2026-02-22)
+- Large ALSA period: `frames_per_buffer = AUDIO_CHUNK_SIZE * 8` (8×2400=19200 frames, 400ms buffer)
+- PortAudio callback stores full 400ms blob in `_chunk_queue` (maxsize=8)
+- `get_audio()` slices into 50ms sub-chunks with incremental pacing (`_next_delivery += chunk_secs`)
+- Pacing uses incremental timing (NOT `= now + chunk_secs`) to prevent sleep-overshoot drift accumulating
+- Snap-forward logic: if `_next_delivery` > 1 chunk behind, snap to now (prevents catch-up bursts)
+- Queue timeout = dynamic: `(AUDIO_CHUNK_SIZE * 8 / AUDIO_RATE) * 2` — adapts to any chunk size
+- PTT click suppression: `_ptt_change_time` monotonic timestamp; gain envelope 0 for 30ms, ramps 0→1 from 30ms→130ms
+- `_ptt_change_time` set in 4 places: Mumble RX handler, keyboard pending PTT apply, status_monitor PTT release, announcement PTT activation
+
+## SDRSource Architecture (ring buffer, 2026-02-22)
+- Reader thread uses `bytearray` ring buffer + `threading.Lock` (NOT deque)
+- Ring buffer replaces `deque(maxlen=4)` which silently dropped chunks causing 750ms on/off stutter
+- Reader reads full ALSA periods: `read_frames = AUDIO_CHUNK_SIZE * SDR_BUFFER_MULTIPLIER`
+- Ring buffer capped at 2 seconds; trims oldest data if exceeded
+- `get_audio()` slices `chunk_size * channels * 2` bytes from front of ring buffer (non-blocking)
+- Returns None immediately if ring buffer has insufficient data
 
 ## Known Bugs Fixed (details in bugs.md)
 - SDR burst audio (frames_per_buffer was 153600, fixed to 9600)
@@ -66,25 +88,25 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - duck-out regression (sdr_active_at_transition used check_signal_instant on noise)
 - Config parser crash on decimal in int-defaulted field (VAD_RELEASE = 0.3)
 - global_muted UnboundLocalError in status_monitor_loop when SDR1 absent
-- DarkIce hidraw udev missing
-- WirePlumber AIOC grab
-- AUDIO_CHUNK_SIZE=9600 caused complete silence (queue timeout too short for callback period)
-- VAD units mismatch: config values in seconds were divided by 1000 (treated as ms), causing instant attack/release
+- DarkIce hidraw udev missing; WirePlumber AIOC grab
+- AUDIO_CHUNK_SIZE=9600 caused complete silence (queue timeout too short)
+- VAD units mismatch (values in seconds divided by 1000, treated as ms)
 - SDR buffer_multiplier computed but never used as frames_per_buffer
-- Duplicate SDR_BUFFER_MULTIPLIER key in config (second overwrote first)
-- AIOC USB timing jitter causing dropouts: fixed by ALSA period 8×AUDIO_CHUNK_SIZE (19200 frames)
-- Speaker/Mumble desync after PTT: fixed by force-transmitting during 130ms click suppression window
-- PTT click on manual toggle: fixed with time-based envelope (_ptt_change_time timestamp)
-- Announcement PTT missing click suppression: fixed by setting _ptt_change_time at announcement PTT activation
+- Duplicate SDR_BUFFER_MULTIPLIER key in config
+- AIOC USB timing jitter dropouts: fixed by 8× ALSA period
+- Speaker/Mumble desync after PTT: fixed by force-transmitting during 130ms suppression window
+- PTT click on manual toggle: fixed with time-based envelope
+- Announcement PTT missing click suppression: fixed by setting _ptt_change_time at announcement activation
 - announcement_delay_active stuck True after stop_playback: fixed by safety clear before mixer call
+- AIOC periodic drops (~5s): fixed by incremental pacing + queue maxsize 4→8
+- SDR stuttering 750ms on/off: fixed by replacing deque with bytearray ring buffer
+- SP bar frozen on R-key mute: fixed by using speaker_audio_level not tx_audio_level
 
-## AIOC / AIOCRadioSource Architecture (key fix 2026-02-21)
-- Large ALSA period: `frames_per_buffer = AUDIO_CHUNK_SIZE * 8` (8×2400=19200 frames, 400ms buffer)
-- PortAudio callback stores full 400ms blob in `_chunk_queue` (maxsize=4)
-- `get_audio()` slices into 50ms sub-chunks with sleep-based pacing (`_next_delivery` timestamp)
-- Queue timeout = dynamic: `(AUDIO_CHUNK_SIZE * 8 / AUDIO_RATE) * 2` — adapts to any chunk size
-- PTT click suppression: `_ptt_change_time` monotonic timestamp; gain envelope 0 for 30ms, ramps 0→1 from 30ms→130ms
-- `_ptt_change_time` set in 4 places: Mumble RX handler, keyboard pending PTT apply, status_monitor PTT release, announcement PTT activation
+## Config Defaults (verified 2026-02-22)
+- All code defaults in `Config.load_config()` dict match `examples/gateway_config.txt`
+- Key alignments fixed this session: NOISE_SUPPRESSION_METHOD, STREAM_BITRATE, SDR_DEVICE_NAME,
+  ECHOLINK_TO_RADIO, MUMBLE_TO_ECHOLINK, SDR_BUFFER_MULTIPLIER comment, PLAYBACK_ANNOUNCEMENT_INTERVAL
+- `gateway_config.txt` is in `.gitignore` — never commit it
 
 ## User Preferences
 - CBR Opus (not VBR) — cares about quality not bandwidth

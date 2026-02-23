@@ -37,9 +37,8 @@ with the speaker.
 **Symptom:** AIOC click audible on Mumble when an announcement file auto-keys PTT,
 even though manual PTT toggle was click-free.
 **Cause:** `_ptt_change_time` was only set in three places (Mumble RX handler,
-pending-PTT apply, status_monitor release). The announcement code path at line
-3739 called `set_ptt_state(True)` directly without updating `_ptt_change_time`,
-so the click suppression envelope in `AIOCRadioSource.get_audio()` never fired.
+pending-PTT apply, status_monitor release). The announcement code path called
+`set_ptt_state(True)` directly without updating `_ptt_change_time`.
 **Fix:** Added `self._ptt_change_time = time.monotonic()` immediately after the
 `set_ptt_state(True)` call in the announcement PTT activation block.
 
@@ -60,43 +59,61 @@ in `__init__` (previously used `getattr(..., False)` defensive guards).
 **Cause:** `find_aioc_audio_device()` keyword list included `'c-media'`, which matched
 the C-Media USB Headphone Set before the real AIOC. The headset was then opened as
 both input and output AIOC streams, leaving it unavailable for speaker monitoring.
-**Fix:** Replaced `'c-media'` with `'all-in-one'` in the keyword list. The real AIOC
-("All-In-One-Cable: USB Audio") is still found via `'usb audio'` and `'all-in-one'`.
+**Fix:** Replaced `'c-media'` with `'all-in-one'` in the keyword list.
 
 ## 2026-02-22 — Complete silence to Mumble (AUDIO_CHUNK_SIZE=9600)
 **Symptom:** No radio audio reaches Mumble at all.
 **Cause:** `AUDIO_CHUNK_SIZE` was changed from 2400 to 9600 in config. With 8× multiplier,
 ALSA period became 76800 frames (1.6s). The queue timeout was hardcoded to 0.800s,
-which always expired before the first callback blob arrived. `get_audio()` always
-returned `(None, False)`.
+which always expired before the first callback blob arrived.
 **Fix:** Restored `AUDIO_CHUNK_SIZE = 2400`. Made queue timeout dynamic:
-`timeout = (AUDIO_CHUNK_SIZE * 8 / AUDIO_RATE) * 2` so it adapts to any chunk size.
+`timeout = (AUDIO_CHUNK_SIZE * 8 / AUDIO_RATE) * 2`.
 
 ## 2026-02-22 — VAD units mismatch causes choppy audio
-**Symptom:** VAD opens/closes too aggressively — no smooth envelope, min-duration and
-release checks effectively disabled.
-**Cause:** Config values (VAD_ATTACK=0.02, VAD_RELEASE=0.3, VAD_MIN_DURATION=0.1) are in
-seconds. Code divided by 1000.0 (treating as ms), making attack_coef=10000 (clamped to 1.0,
-instant). Duration comparisons multiplied by 1000 (converting to ms) then compared to
-seconds values — e.g., 0.1s compared against 100ms.
-**Fix:** Removed `/ 1000.0` from attack/release coefficients. Removed `* 1000` from
-duration calculations, keeping everything in seconds.
+**Symptom:** VAD opens/closes too aggressively — no smooth envelope.
+**Cause:** Config values in seconds divided by 1000.0 (treating as ms).
+**Fix:** Removed `/1000.0` from attack/release coefficients; removed `*1000` from
+duration calculations.
 
 ## 2026-02-22 — SDR buffer_multiplier computed but never used
-**Symptom:** SDR_BUFFER_MULTIPLIER config had no effect on audio buffering.
-**Cause:** `buffer_size = AUDIO_CHUNK_SIZE * buffer_multiplier` was computed but
-`frames_per_buffer=self.config.AUDIO_CHUNK_SIZE` was used instead.
-**Fix:** Changed `frames_per_buffer` to use `buffer_size` in both stereo and mono fallback paths.
+**Symptom:** SDR_BUFFER_MULTIPLIER config had no effect.
+**Cause:** `buffer_size = AUDIO_CHUNK_SIZE * buffer_multiplier` computed but
+`frames_per_buffer=self.config.AUDIO_CHUNK_SIZE` used instead.
+**Fix:** Changed `frames_per_buffer` to use `buffer_size`.
 
 ## 2026-02-22 — Duplicate SDR_BUFFER_MULTIPLIER config key
 **Symptom:** SDR1's buffer multiplier setting ignored.
-**Cause:** `SDR_BUFFER_MULTIPLIER = 16` appeared at both line 323 (SDR1 section) and
-line 354 (after SDR2 section). The second occurrence overwrote the first.
-**Fix:** Removed the duplicate entry at line 354.
+**Cause:** Key appeared twice in examples config; second overwrote first.
+**Fix:** Removed duplicate entry.
 
-## 2026-02-21 — SDR duck indicator triggered with no SDR source connected
-**Symptom:** Status bar showed `SDR1:[---DUCK---]` even with no SDR audio present.
-**Cause:** `sdr1_ducked` / `sdr2_ducked` status flags were not cleared when the
-corresponding SDR was muted or had no signal level.
-**Fix:** Conditional: `sdr1_ducked = self.sdr1_ducked if not sdr1_muted and current_sdr1_level > 0 else False`.
-Same pattern applied to `sdr2_ducked`.
+## 2026-02-22 — AIOC periodic drops every ~5 seconds
+**Symptom:** Small but noticeable audio dropouts in AIOC path every ~5 seconds,
+heard in both Mumble and speaker output.
+**Cause:** Sub-chunk pacing used `_next_delivery = time.monotonic() + chunk_secs`
+(absolute-from-now). Sleep overshoot (~1ms per chunk × 8 chunks/blob = ~8ms/blob)
+accumulated, causing consumption to slowly lag production and eventually drain
+the queue momentarily.
+**Fix:** Changed to incremental pacing: `_next_delivery += chunk_secs`. Added
+snap-forward: if `now - _next_delivery > chunk_secs`, snap to now to prevent
+catch-up bursts after a stall. Also increased queue maxsize 4→8.
+
+## 2026-02-22 — SDR audio stuttering (750ms on / 750ms off)
+**Symptom:** Regular pattern of ~750ms audio followed by ~750ms silence, repeating.
+**Cause:** `deque(maxlen=4)` silently dropped oldest chunks when appending to a
+full deque. The main loop ran slightly slower than 50ms per iteration (AIOC sleep
+overshoot), causing it to fall behind. Burst of 4 chunks from one ALSA period
+arrived before all 4 prior chunks were consumed; deque dropped old ones silently.
+**Fix:** Replaced `deque(maxlen=4)` with a `bytearray` ring buffer + `threading.Lock`.
+Reader thread reads full ALSA periods (`AUDIO_CHUNK_SIZE * SDR_BUFFER_MULTIPLIER`
+frames per read). Ring buffer caps at 2 seconds; trims oldest data if exceeded.
+`get_audio()` slices exactly `chunk_size * channels * 2` bytes from front.
+
+## 2026-02-22 — SP bar graph frozen when RX muted (R key)
+**Symptom:** SP:[bar] in status display stops updating (freezes) when radio RX
+is muted with the R key.
+**Cause:** SP bar displayed `tx_audio_level`, which is only updated inside
+`AIOCRadioSource.get_audio()`. When `rx_muted=True`, get_audio() returns early
+at line 401 before the level calculation, so `tx_audio_level` never updates.
+**Fix:** Added `speaker_audio_level` attribute, updated in `_speaker_enqueue()`
+from the actual audio sent to the speaker. SP bar now uses `speaker_audio_level`.
+When muted, silence is enqueued so the level naturally decays to 0.
