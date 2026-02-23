@@ -17,7 +17,7 @@
 #   3. Most other settings have sensible defaults
 #
 # Keyboard Controls (runtime):
-#   MUTE:    't' = TX | 'r' = RX | 'm' = Global | 's' = SDR1 | 'x' = SDR2
+#   MUTE:    't' = TX | 'r' = RX | 'm' = Global | 's' = SDR1 | 'x' = SDR2 | 'o' = Speaker
 #   AUDIO:   'v' = VAD | ',' = Vol- | '.' = Vol+
 #   SDR:     'd' = SDR1 Duck toggle
 #   PROCESS: 'n' = Gate | 'f' = HPF | 'a' = AGC | 'w' = Wiener | 'e' = Echo
@@ -219,6 +219,11 @@ PLAYBACK_VOLUME = 2.0
 # On startup, gateway will display which file is assigned to each key
 # This mapping is shown just above the status bar
 
+# Auto-play interval for station ID (seconds, 0 = disabled)
+# When non-zero, the station_id file (slot 0) plays automatically every N seconds
+# Example: 3600 = play station ID once per hour
+PLAYBACK_ANNOUNCEMENT_INTERVAL = 0
+
 # Delay after PTT key-up before announcement/file audio starts (seconds)
 # Gives the repeater or radio time to open squelch before audio begins
 # 0.5 = half second (default) | 0.0 = no delay
@@ -279,7 +284,7 @@ ENABLE_SDR = true
 #   2. Use the OPPOSITE subdevice number:
 #      SDRconnect → hw:2,0 means use hw:2,1
 #      SDRconnect → hw:2,1 means use hw:2,0
-SDR_DEVICE_NAME = hw:7,1
+SDR_DEVICE_NAME = hw:6,1
 
 # SDR1 priority for ducking (1 = higher priority, 2 = lower priority)
 # If SDR1_PRIORITY < SDR2_PRIORITY, SDR1 will duck SDR2 when both have audio
@@ -313,10 +318,10 @@ SDR_DISPLAY_GAIN = 1.0
 # 3.0 = 3x louder
 SDR_AUDIO_BOOST = 1.0
 
-# SDR1 buffer size multiplier (reserved, currently unused)
-# Note: frames_per_buffer is fixed at AUDIO_CHUNK_SIZE to prevent ALSA burst-mode
-# choppiness. Increasing this setting no longer helps with dropouts.
-# Use a larger AUDIO_CHUNK_SIZE instead (e.g. 9600 = 200ms, already recommended).
+# SDR1 buffer size multiplier — controls how many chunks the reader fetches per ALSA
+# read call (frames_per_buffer = AUDIO_CHUNK_SIZE × SDR_BUFFER_MULTIPLIER).
+# Larger values reduce ALSA read call overhead and absorb bursts more smoothly.
+# 4 = minimal | 8 = recommended | 16 = maximum stability
 SDR_BUFFER_MULTIPLIER = 8
 
 # -------- SDR2 Configuration --------
@@ -343,7 +348,7 @@ SDR2_DISPLAY_GAIN = 1.0
 # SDR2 audio volume boost
 SDR2_AUDIO_BOOST = 1.0
 
-# SDR2 buffer size multiplier (reserved, currently unused — see SDR_BUFFER_MULTIPLIER note)
+# SDR2 buffer size multiplier (same as SDR_BUFFER_MULTIPLIER above)
 SDR2_BUFFER_MULTIPLIER = 8
 
 # ============================================================================
@@ -488,8 +493,8 @@ ECHOLINK_TX_PIPE = /tmp/echolink_tx  # Gateway writes TO TheLinkBox
 
 # Audio routing options - configure exactly where EchoLink audio goes
 ECHOLINK_TO_MUMBLE = true   # EchoLink users heard on Mumble
-ECHOLINK_TO_RADIO = true    # EchoLink users heard on Radio (gateway will PTT)
-MUMBLE_TO_ECHOLINK = true   # Mumble users sent to EchoLink network
+ECHOLINK_TO_RADIO = false   # EchoLink users heard on Radio (gateway will PTT)
+MUMBLE_TO_ECHOLINK = false  # Mumble users sent to EchoLink network
 RADIO_TO_ECHOLINK = true    # Radio RX sent to EchoLink network
 
 # Common Configurations:

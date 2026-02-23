@@ -105,7 +105,7 @@ class Config:
             'AIOC_OUTPUT_DEVICE': -1,
             'ENABLE_AGC': False,
             'ENABLE_NOISE_SUPPRESSION': False,
-            'NOISE_SUPPRESSION_METHOD': 'none',
+            'NOISE_SUPPRESSION_METHOD': 'spectral',
             'NOISE_SUPPRESSION_STRENGTH': 0.5,
             'ENABLE_NOISE_GATE': False,
             'NOISE_GATE_THRESHOLD': -40,
@@ -188,7 +188,7 @@ class Config:
             'STREAM_MOUNT': '/radio',
             'STREAM_NAME': 'Radio Gateway',
             'STREAM_DESCRIPTION': 'Radio to Mumble Gateway',
-            'STREAM_BITRATE': 64,
+            'STREAM_BITRATE': 16,
             'STREAM_FORMAT': 'mp3',
             # Speaker Output (local monitoring)
             'ENABLE_SPEAKER_OUTPUT': False,
