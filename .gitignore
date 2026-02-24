@@ -43,14 +43,10 @@ Thumbs.db
 *.bak
 *~
 
-# User configurations (don't commit passwords!)
+# User configurations
 gateway_config_local.txt
-gateway_config.txt
 
-# Audio test files
-*.mp3
-*.wav
-*.ogg
+# Audio test files — tracked in audio/ (repo is private)
 
 # Downloads/temp
 node-*.tar.xz

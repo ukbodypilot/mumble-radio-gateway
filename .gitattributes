@@ -1,1 +1,1 @@
-gateway_config.txt filter=redact-config
+# No filters — repo is private, all files committed as-is

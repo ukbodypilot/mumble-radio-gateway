@@ -15,7 +15,7 @@ All machines use the same absolute path (`/home/user/Downloads/mumble-radio-gate
 If the path ever differs, copy `.claude/memory/` to `~/.claude/projects/$(echo "$PWD" | sed 's|/|-|g; s|^-||')/memory/`.
 
 ## Project Rules
-- `gateway_config.txt` IS committed so settings sync between machines, but `STREAM_PASSWORD` is automatically blanked by a git clean filter before it hits the index. The local file always keeps the real password. On each new machine, after cloning, run once: `git config filter.redact-config.clean 'sed "s/^STREAM_PASSWORD = .*/STREAM_PASSWORD = /"'`
+- `gateway_config.txt` IS committed — repo is private, full config including passwords syncs between machines
 - Never commit the `bak/` directory
 - Only commit when the user explicitly asks
 - Never auto-push

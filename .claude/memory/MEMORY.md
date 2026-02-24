@@ -121,10 +121,8 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - All code defaults in `Config.load_config()` dict match `examples/gateway_config.txt`
 - Key alignments fixed this session: NOISE_SUPPRESSION_METHOD, STREAM_BITRATE, SDR_DEVICE_NAME,
   ECHOLINK_TO_RADIO, MUMBLE_TO_ECHOLINK, SDR_BUFFER_MULTIPLIER comment, PLAYBACK_ANNOUNCEMENT_INTERVAL
-- `gateway_config.txt` IS committed — settings sync between machines via git
-- `STREAM_PASSWORD` is blanked by git clean filter before hitting the index (local file keeps real value)
-- On each new machine after clone: `git config filter.redact-config.clean 'sed "s/^STREAM_PASSWORD = .*/STREAM_PASSWORD = /"'`
-- Filter defined in `.gitattributes`; all machines use same absolute path so Claude auto-memory works
+- `gateway_config.txt` IS committed — repo is private, full config including passwords syncs between machines
+- `audio/` IS committed — repo is private, all audio files tracked
 
 ## User Preferences
 - CBR Opus (not VBR) — cares about quality not bandwidth
