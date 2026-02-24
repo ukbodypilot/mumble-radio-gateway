@@ -371,16 +371,19 @@ SDR2_BUFFER_MULTIPLIER = 8
 #             duck-in:  [radio silent] → [silence] → [SDR resumes]
 #
 # Recommended starting values:
-#   - Sensitive/fast:   attack=0.3, release=1.0, padding=0.1
-#   - Balanced:         attack=0.5, release=2.0, padding=1.0
-#   - Conservative:     attack=1.0, release=3.0, padding=1.0
+#   - Sensitive/fast:   attack=0.1, release=2.0, padding=0.1
+#   - Balanced:         attack=0.15, release=3.0, padding=1.0
+#   - Conservative:     attack=0.5, release=5.0, padding=1.0
 # ============================================================================
 
 # Attack: seconds of CONTINUOUS signal required before a source switch is allowed
-SIGNAL_ATTACK_TIME = 0.5
+# Lower = faster duck response when radio starts (0.15 = 150ms, ~3 audio chunks)
+SIGNAL_ATTACK_TIME = 0.15
 
 # Release: seconds of continuous silence required before switching back
-SIGNAL_RELEASE_TIME = 2
+# Higher = holds through longer gaps between radio transmissions
+# Total hold = SIGNAL_RELEASE_TIME + 1.0s internal hold timer
+SIGNAL_RELEASE_TIME = 3
 
 # Padding: seconds of silence inserted at each transition (duck-out AND duck-in)
 SWITCH_PADDING_TIME = 1

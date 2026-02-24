@@ -169,8 +169,8 @@ class Config:
             'SDR2_BUFFER_MULTIPLIER': 8,
             'SDR2_PRIORITY': 2,          # SDR2 priority for ducking (1 = higher, 2 = lower)
             # Signal Detection Hysteresis (prevents stuttering from rapid on/off)
-            'SIGNAL_ATTACK_TIME': 0.5,   # Seconds of CONTINUOUS signal required before a source switch is allowed
-            'SIGNAL_RELEASE_TIME': 2.0,  # Seconds of continuous silence required before switching back
+            'SIGNAL_ATTACK_TIME': 0.15,  # Seconds of CONTINUOUS signal required before a source switch is allowed
+            'SIGNAL_RELEASE_TIME': 3.0,  # Seconds of continuous silence required before switching back
             'SWITCH_PADDING_TIME': 1.0,  # Seconds of silence inserted at each transition (duck-out and duck-in)
             # EchoLink Integration (Phase 3B)
             'ENABLE_ECHOLINK': False,
@@ -218,7 +218,11 @@ class Config:
                         key, value = line.split('=', 1)
                         key = key.strip()
                         value = value.strip()
-                        
+
+                        # Strip surrounding quotes from string values
+                        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                            value = value[1:-1]
+
                         # Strip inline comments (everything after #)
                         if '#' in value:
                             value = value.split('#')[0].strip()
@@ -321,36 +325,29 @@ class AIOCRadioSource(AudioSource):
         # Queue for audio blobs delivered by PortAudio's callback thread.
         # The ALSA period is opened at 8×AUDIO_CHUNK_SIZE so each callback
         # delivers one 400ms blob.  get_audio() slices it into 50ms sub-chunks
-        # and sleeps between them to keep the main loop at the right rate.
+        # (non-blocking).  The main loop's 50ms self-clock handles pacing.
         self._chunk_queue = _queue_mod.Queue(maxsize=8)
         # Pre-compute sizes for the hot callback path and get_audio() slicer.
         self._chunk_bytes = config.AUDIO_CHUNK_SIZE * config.AUDIO_CHANNELS * 2  # 16-bit
         self._chunk_secs = config.AUDIO_CHUNK_SIZE / config.AUDIO_RATE           # ~0.05 s
         # Sub-chunk slicing state (accessed only from the get_audio() call site).
         self._sub_buffer = b''
-        self._next_delivery = 0.0
+        self._last_blocked_ms = 0.0  # instrumentation: how long get_audio blocked on blob fetch
 
     def _audio_callback(self, in_data, frame_count, time_info, status):
         """PortAudio input callback — invoked at each ALSA period (8×AUDIO_CHUNK_SIZE frames).
 
         The stream is opened with frames_per_buffer=8×AUDIO_CHUNK_SIZE so the
         ALSA ring buffer is ~1600ms deep, absorbing the USB timing jitter that
-        the CM108 chipset produces on Linux xHCI (verified: 400ms period gives
-        near-zero drift vs ~1700ms accumulated drift at 50ms period).  The full
-        blob is queued here; get_audio() slices it into 50ms sub-chunks and
-        sleeps between them to keep the main loop at the right rate.
+        the CM108 chipset produces on Linux xHCI.  The full blob is queued here;
+        get_audio() slices it into 50ms sub-chunks (non-blocking).
 
         Keep this method minimal — it runs in PortAudio's audio thread."""
         if in_data:
-            if self._chunk_queue.full():
-                try:
-                    self._chunk_queue.get_nowait()
-                except _queue_mod.Empty:
-                    pass
             try:
                 self._chunk_queue.put_nowait(in_data)
             except _queue_mod.Full:
-                pass
+                pass  # queue full — drop this (newest) blob to preserve ordering
         return (None, pyaudio.paContinue)
 
     def cleanup(self):
@@ -364,37 +361,37 @@ class AIOCRadioSource(AudioSource):
         if not self.gateway.input_stream or self.gateway.restarting_stream:
             return None, False
 
+        # Mute check BEFORE blob fetch — avoids blocking the main loop for
+        # 60ms to get data that would be thrown away.  Flush stale data so
+        # the sub-buffer is fresh when unmuted.
+        if self.gateway.rx_muted:
+            self._sub_buffer = b''
+            while not self._chunk_queue.empty():
+                try:
+                    self._chunk_queue.get_nowait()
+                except _queue_mod.Empty:
+                    break
+            self._last_blocked_ms = 0.0
+            return None, False
+
         try:
-            # Serve 50ms sub-chunks from the 200ms blobs delivered by the callback.
-            # When the sub-buffer is exhausted, block on the queue for the next blob
-            # (up to 250 ms — one full callback period plus margin).  Sleep between
-            # sub-chunks to pace the main loop at ~50ms per call without galloping.
+            # Serve 50ms sub-chunks from the 400ms blobs delivered by the callback.
+            # Non-blocking blob fetch: if no blob is ready at the boundary,
+            # return None and let the mixer use other sources for this tick.
+            # The self-clock in audio_transmit_loop handles pacing; blocking
+            # here steals time from the tick budget and delays SDR/speaker.
             cb = self._chunk_bytes
+            _need_blob = len(self._sub_buffer) < cb
+            if _need_blob:
+                _t0 = time.monotonic()
             while len(self._sub_buffer) < cb:
                 try:
-                    # Dynamic timeout: 2x one callback period (AUDIO_CHUNK_SIZE*8 frames at AUDIO_RATE)
-                    _queue_timeout = (self.config.AUDIO_CHUNK_SIZE * 8 / self.config.AUDIO_RATE) * 2
-                    blob = self._chunk_queue.get(timeout=_queue_timeout)
+                    blob = self._chunk_queue.get_nowait()
                     self._sub_buffer += blob
                 except _queue_mod.Empty:
-                    self._sub_buffer = b''
-                    return None, False  # AIOC unavailable or stream stalled
-
-            # Pace delivery: sleep until this sub-chunk is due.
-            # Use incremental timing (_next_delivery += chunk_secs) to prevent
-            # drift from sleep overshoot accumulating across sub-chunks.
-            # Cap catch-up: if we're more than one chunk behind, snap forward
-            # to prevent a burst of rapid deliveries after a stall.
-            now = time.monotonic()
-            if self._next_delivery <= 0.0:
-                # First delivery after init or stream restart — start pacing now
-                self._next_delivery = now
-            elif self._next_delivery > now:
-                time.sleep(self._next_delivery - now)
-            elif now - self._next_delivery > self._chunk_secs:
-                # Too far behind (e.g. queue.get() blocked) — snap forward
-                self._next_delivery = now
-            self._next_delivery += self._chunk_secs
+                    self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _need_blob else 0.0
+                    return None, False  # blob not ready yet — try next tick
+            self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _need_blob else 0.0
 
             data = self._sub_buffer[:cb]
             self._sub_buffer = self._sub_buffer[cb:]
@@ -403,11 +400,6 @@ class AIOCRadioSource(AudioSource):
             self.gateway.last_audio_capture_time = time.time()
             self.gateway.last_successful_read = time.time()
             self.gateway.audio_capture_active = True
-
-            # When muted: buffer drained (stream stays alive) but return nothing.
-            # _rx_cache stays None so full-duplex forwarding also respects mute.
-            if self.gateway.rx_muted:
-                return None, False
 
             # Calculate audio level (for status display)
             current_level = self.gateway.calculate_audio_level(data)
@@ -1145,12 +1137,14 @@ class SDRSource(AudioSource):
         self.total_reads = 0
         self.last_stats_time = time.time()
 
-        # Background reader thread state — bytearray ring buffer.
-        # The reader appends raw PCM; get_audio() slices off chunk_size pieces.
-        # A threading.Lock protects the buffer; the reader never blocks the main
-        # thread for more than a memcpy.
-        self._ring_buf = bytearray()
-        self._ring_lock = threading.Lock()
+        # Background reader thread feeds whole ALSA periods ("blobs") into a
+        # Queue.  The consumer slices them into 50ms chunks via a sub-buffer,
+        # using a blocking get(timeout) at blob boundaries to synchronize with
+        # the ALSA clock — same proven pattern as AIOCRadioSource.
+        self._chunk_queue = _queue_mod.Queue(maxsize=8)   # blobs (~1.6s at 200ms each)
+        self._sub_buffer = b''
+        self._chunk_bytes = config.AUDIO_CHUNK_SIZE * getattr(self, 'sdr_channels', 1) * 2
+        self._last_blocked_ms = 0.0  # instrumentation: how long get_audio blocked on blob fetch
         self._reader_running = False
         self._reader_thread = None
 
@@ -1225,21 +1219,22 @@ class SDRSource(AudioSource):
                     print(f"[{self.name}]   Or enable VERBOSE_LOGGING to see all devices")
                 return False
             
-            # Open input stream with larger buffer to prevent stuttering
+            # Open input stream in blocking mode with a reader thread.
+            # Use a large ALSA buffer (buffer_multiplier × chunk_size) for stable
+            # ALSA loopback operation.  The reader thread reads full ALSA periods
+            # and slices them into 50ms consumer chunks before queuing — this
+            # decouples bursty ALSA delivery from the main loop's steady cadence.
             buffer_multiplier = getattr(self.config, config_buffer_attr, 4)
             buffer_size = self.config.AUDIO_CHUNK_SIZE * buffer_multiplier
-            
-            # Note: Priority scheduling removed - let system manage all threads equally
-            # Manual priority tweaking was causing TTS glitches and display freezing
-            
+
             # Auto-detect supported channel count
             # Try stereo first, fall back to mono
             device_info = self.pyaudio.get_device_info_by_index(device_index)
             max_channels = device_info['maxInputChannels']
-            
+
             # Use 2 channels if supported (stereo), otherwise use 1 (mono)
             sdr_channels = min(2, max_channels)
-            
+
             try:
                 self.input_stream = self.pyaudio.open(
                     format=pyaudio.paInt16,
@@ -1251,6 +1246,7 @@ class SDRSource(AudioSource):
                     stream_callback=None
                 )
                 self.sdr_channels = sdr_channels  # Store for later use
+                self._chunk_bytes = self.config.AUDIO_CHUNK_SIZE * sdr_channels * 2
             except Exception as e:
                 # If 2 channels failed, try 1 channel
                 if sdr_channels == 2:
@@ -1267,9 +1263,10 @@ class SDRSource(AudioSource):
                         stream_callback=None
                     )
                     self.sdr_channels = sdr_channels
+                    self._chunk_bytes = self.config.AUDIO_CHUNK_SIZE * sdr_channels * 2
                 else:
                     raise
-            
+
             if self.config.VERBOSE_LOGGING:
                 print(f"[{self.name}] ✓ Audio input configured: {device_name}")
                 print(f"[{self.name}]   Channels: {sdr_channels} ({'stereo' if sdr_channels == 2 else 'mono'})")
@@ -1278,8 +1275,11 @@ class SDRSource(AudioSource):
 
             # Start background reader thread so SDR ALSA reads run independently
             # of the main loop, preventing sequential double-blocking (AIOC + SDR).
-            with self._ring_lock:
-                self._ring_buf.clear()
+            while not self._chunk_queue.empty():
+                try:
+                    self._chunk_queue.get_nowait()
+                except _queue_mod.Empty:
+                    break
             self._reader_running = True
             self._reader_thread = threading.Thread(
                 target=self._reader_thread_func,
@@ -1288,8 +1288,13 @@ class SDRSource(AudioSource):
             )
             self._reader_thread.start()
 
+            # Pre-fill: wait for 2 blobs so the sub-buffer has a cushion.
+            prefill_deadline = time.monotonic() + 1.0
+            while self._chunk_queue.qsize() < 2 and time.monotonic() < prefill_deadline:
+                time.sleep(0.01)
+
             if self.config.VERBOSE_LOGGING:
-                print(f"[{self.name}] ✓ Reader thread started")
+                print(f"[{self.name}] ✓ Reader thread started (queue: {self._chunk_queue.qsize()} chunks)")
 
             return True
             
@@ -1299,23 +1304,21 @@ class SDRSource(AudioSource):
             return False
     
     def _reader_thread_func(self):
-        """Background thread: reads raw PCM from SDR ALSA stream into a ring buffer.
+        """Background thread: reads raw PCM from SDR ALSA stream into a queue.
 
-        Intentionally does NO processing between reads — no numpy, no level
-        calculation, no mute checks. The less work done between ALSA reads, the
-        less chance the OS scheduler or Python GIL delays the next read and causes
-        an ALSA overrun. All processing happens in get_audio() in the main thread.
+        Queues entire ALSA periods ("blobs") without slicing.  The consumer
+        in get_audio() uses a sub-buffer to slice into 50ms chunks, with a
+        blocking get(timeout) at blob boundaries to synchronize with the ALSA
+        clock — same pattern as AIOCRadioSource.
+
+        Intentionally does NO audio processing — all numpy/level/mute work
+        happens in get_audio() in the main thread.
         """
-        # Read full ALSA periods to minimise read() call overhead.  With
-        # buffer_multiplier=4 this is 9600 frames = 200ms per read.
         if self.name == "SDR2":
             buf_mult = getattr(self.config, 'SDR2_BUFFER_MULTIPLIER', 4)
         else:
             buf_mult = getattr(self.config, 'SDR_BUFFER_MULTIPLIER', 4)
         read_frames = self.config.AUDIO_CHUNK_SIZE * max(buf_mult, 1)
-        # Cap ring buffer at ~2 seconds of audio to bound memory
-        channels = getattr(self, 'sdr_channels', 1)
-        max_ring_bytes = self.config.AUDIO_RATE * channels * 2 * 2  # 2 seconds
 
         while self._reader_running:
             if not self.input_stream:
@@ -1323,24 +1326,24 @@ class SDRSource(AudioSource):
                 continue
             try:
                 raw = self.input_stream.read(read_frames, exception_on_overflow=False)
-                with self._ring_lock:
-                    self._ring_buf.extend(raw)
-                    # Trim oldest data if buffer grows too large
-                    if len(self._ring_buf) > max_ring_bytes:
-                        excess = len(self._ring_buf) - max_ring_bytes
-                        del self._ring_buf[:excess]
+                if raw:
+                    try:
+                        self._chunk_queue.put_nowait(raw)
+                    except _queue_mod.Full:
+                        pass  # queue full — drop newest blob
             except IOError:
                 self.overflow_count += 1
+                time.sleep(0.01)  # back off to prevent CPU-burning hot loop
             except Exception:
-                time.sleep(0.002)
+                time.sleep(0.01)
 
     def get_audio(self, chunk_size):
         """Get processed audio from SDR receiver.
 
-        Pops raw bytes from the reader thread's queue, then does all processing
-        (stereo-to-mono, level metering, audio boost) here in the main thread.
-        Returns None immediately if the queue is empty — the main loop sends
-        silence to keep the Mumble encoder continuously fed.
+        Slices one 50ms consumer chunk from the sub-buffer.  When the sub-buffer
+        is empty, fetches the next ALSA blob from the reader thread's queue with
+        a blocking get(timeout=0.06).  This synchronizes the consumer to the ALSA
+        clock at blob boundaries — same pattern as AIOCRadioSource.
         """
         if not self.enabled:
             return None, False
@@ -1348,18 +1351,25 @@ class SDRSource(AudioSource):
         if not self.input_stream:
             return None, False
 
-        # Slice one chunk from the ring buffer — non-blocking, return None if
-        # the reader hasn't produced enough data yet.  The main loop substitutes
-        # silence so the Mumble encoder stays fed.
-        channels = getattr(self, 'sdr_channels', 1)
-        need_bytes = chunk_size * channels * 2  # 16-bit samples
-        with self._ring_lock:
-            if len(self._ring_buf) < need_bytes:
-                return None, False
-            raw = bytes(self._ring_buf[:need_bytes])
-            del self._ring_buf[:need_bytes]
+        cb = self._chunk_bytes
 
-        # Muted: chunk was popped (keeps queue fresh/current), discard it.
+        # Fill sub-buffer from blob queue when needed
+        _need_blob = len(self._sub_buffer) < cb
+        if _need_blob:
+            _t0 = time.monotonic()
+        while len(self._sub_buffer) < cb:
+            try:
+                blob = self._chunk_queue.get_nowait()
+                self._sub_buffer += blob
+            except _queue_mod.Empty:
+                self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _need_blob else 0.0
+                return None, False  # no data available
+        self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _need_blob else 0.0
+
+        raw = self._sub_buffer[:cb]
+        self._sub_buffer = self._sub_buffer[cb:]
+
+        # Muted: chunk was sliced (keeps sub-buffer fresh), discard it.
         should_discard = self.muted or (self.gateway.tx_muted and self.gateway.rx_muted)
         if should_discard:
             self.audio_level = max(0, int(self.audio_level * 0.7))
@@ -1417,8 +1427,7 @@ class SDRSource(AudioSource):
         self._reader_running = False
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=1.0)
-        with self._ring_lock:
-            self._ring_buf.clear()
+        self._sub_buffer = b''
 
         if self.input_stream:
             try:
@@ -1617,36 +1626,31 @@ class AudioMixer:
         ptt_audio = None      # Separate PTT audio
         non_ptt_audio = None  # Non-PTT, non-SDR audio (Radio RX etc)
         sdr_sources = {}      # Dictionary of SDR sources: name -> (audio, source_obj)
-        
+
+        # Phase 1: Non-SDR sources (Radio, FilePlayback, etc.)
+        # Get their audio first so we can compute the duck state before
+        # touching SDR ring buffers.
         for source in self.sources:
+            if source.name.startswith("SDR"):
+                continue
             if not source.enabled:
                 if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                     print(f"  [Mixer-Simultaneous] Skipping {source.name} (disabled)")
                 continue
-            
+
             audio, ptt = source.get_audio(chunk_size)
-            
-            # Debug what each source returns
+
             if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                 if audio is not None:
                     print(f"  [Mixer-Simultaneous] {source.name} returned audio ({len(audio)} bytes), PTT={ptt}")
                 else:
                     print(f"  [Mixer-Simultaneous] {source.name} returned None")
-            
+
             if audio is None:
                 continue
-            
+
             active_sources.append(source.name)
-            
-            # SDR audio is held separately so priority-based ducking can be applied
-            if source.name.startswith("SDR"):
-                # Apply mix_ratio to SDR audio when not ducking
-                if hasattr(source, 'mix_ratio') and source.mix_ratio != 1.0:
-                    arr_s = np.frombuffer(audio, dtype=np.int16).astype(np.float32)
-                    audio = np.clip(arr_s * source.mix_ratio, -32768, 32767).astype(np.int16).tobytes()
-                sdr_sources[source.name] = (audio, source)
-                continue  # Don't add to other buckets yet
-            
+
             # Separate PTT and non-PTT sources
             if ptt and source.ptt_control:
                 ptt_required = True
@@ -1659,7 +1663,10 @@ class AudioMixer:
                     non_ptt_audio = audio
                 else:
                     non_ptt_audio = self._mix_audio_streams(non_ptt_audio, audio, 0.5)
-        
+
+        # Collect SDR source names for duck state machine (audio fetched in Phase 2)
+        _sdr_source_names = [s.name for s in self.sources if s.name.startswith("SDR") and s.enabled]
+
         # --- SDR priority-based ducking decision ---
         # AIOC audio (Radio RX) and PTT audio always take priority over all SDRs
         # Between SDRs: lower sdr_priority number = higher priority (ducks others)
@@ -1740,7 +1747,12 @@ class AudioMixer:
             return state['has_signal']
         
         other_audio_active = (ptt_audio is not None) or (non_ptt_audio is not None)
-        
+
+        # Trace state tracking
+        _hold_fired = False
+        _radio_has_signal = False
+        _sdr_trace = {}
+
         # Check if other_audio actually has signal (not just zeros) with hysteresis.
         # PTT audio (file playback) is deterministic — when FilePlaybackSource returns data
         # it IS playing.  Applying attack hysteresis to it would delay SDR ducking AND would
@@ -1751,23 +1763,39 @@ class AudioMixer:
             ptt_is_active = ptt_audio is not None  # Deterministic: treat as active immediately
             non_ptt_has_signal = has_actual_audio(non_ptt_audio, "Radio") if non_ptt_audio else False
             other_audio_active = ptt_is_active or non_ptt_has_signal
+            _radio_has_signal = non_ptt_has_signal
 
             if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                 if non_ptt_audio and not non_ptt_has_signal:
                     print(f"  [Mixer] Non-PTT audio present but only silence - not ducking SDRs")
-        
+
         # --- Duck state machine with transition padding ---
         # Manages the AIOC/Radio/PTT vs SDR duck relationship.
         # When a transition occurs (ducking starts or stops), SWITCH_PADDING_TIME
         # seconds of silence are inserted so the changeover is never abrupt:
         #   duck-out: both SDR and radio are silenced → then radio takes over
-        #   duck-in:  SDR stays silent for padding → then SDR resumes
+        #   duck-in:  SDR resumes immediately (fade-in handles onset click)
         ds = self.duck_state.setdefault('aioc_vs_sdrs', {
             'is_ducked': False,
             'prev_signal': False,
             'padding_end_time': 0.0,
             'transition_type': None,   # 'out' = duck starting, 'in' = duck ending
+            '_radio_last_audio_time': 0.0,
         })
+
+        # Track when Radio/PTT last had audio.  AIOC delivers 400ms blobs with
+        # brief gaps between them — without a hold, each gap triggers a spurious
+        # duck-in/duck-out transition cycle (2 × SWITCH_PADDING_TIME of silence).
+        if other_audio_active:
+            ds['_radio_last_audio_time'] = current_time
+        elif ds.get('is_ducked', False):
+            # Radio was ducking SDRs — hold it stable through AIOC blob gaps.
+            # 1000ms covers two full blob periods (2 × 400ms) with margin.
+            # AIOC blob gaps can reach 800-850ms; 500ms was too short and
+            # caused spurious duck-in/duck-out transitions (SDR breakthrough).
+            if current_time - ds.get('_radio_last_audio_time', 0.0) < 1.0:
+                other_audio_active = True
+                _hold_fired = True
 
         prev_signal = ds['prev_signal']
         ds['prev_signal'] = other_audio_active
@@ -1779,27 +1807,56 @@ class AudioMixer:
             ds['is_ducked'] = True
             ds['padding_end_time'] = current_time + self.SWITCH_PADDING_TIME
             ds['transition_type'] = 'out'
+            # Only count SDR as "active" if it had genuine signal recently
+            # (hold timer still running).  SDR included only via sdr_is_sole_source
+            # with no real signal doesn't warrant transition silence — there's
+            # nothing audible to "clean break" from.
             ds['sdr_active_at_transition'] = any(
                 self.sdr_prev_included.get(name, False)
-                for name in sdr_sources.keys()
+                and current_time < self.sdr_hold_until.get(name, 0.0)
+                for name in _sdr_source_names
             )
             if self.config.VERBOSE_LOGGING:
                 print(f"  [Mixer] SDR duck-OUT: {self.SWITCH_PADDING_TIME:.2f}s transition silence "
                       f"(SDR active: {ds['sdr_active_at_transition']})")
         elif ds['is_ducked'] and not other_audio_active and prev_signal:
-            # Transition: other audio just went inactive → stop ducking SDRs
+            # Transition: other audio just went inactive → stop ducking SDRs.
+            # No padding on duck-in: SDR resumes immediately with fade-in
+            # (onset fade at line 1882 prevents click).  Duck-in padding would
+            # add a needless 1s gap between Radio stopping and SDR resuming.
             ds['is_ducked'] = False
-            ds['padding_end_time'] = current_time + self.SWITCH_PADDING_TIME
-            ds['transition_type'] = 'in'
+            ds['padding_end_time'] = 0.0
+            ds['transition_type'] = None
             if self.config.VERBOSE_LOGGING:
-                print(f"  [Mixer] SDR duck-IN:  {self.SWITCH_PADDING_TIME:.2f}s transition silence")
+                print(f"  [Mixer] SDR duck-IN: immediate (no padding)")
 
         in_padding = current_time < ds['padding_end_time']
         # Effective duck: still silencing SDRs either because a source is active
-        # OR because we're inside a padding window after a transition
+        # OR because we're inside a padding window after a transition.
+        # The hold above keeps is_ducked stable through AIOC inter-blob gaps,
+        # so brief blob delivery gaps don't fire spurious transitions.
+        # SDR stays ducked during those gaps (brief silence is acceptable).
         aioc_ducks_sdrs = ds['is_ducked'] or in_padding
         # During duck-out padding: silence ALL output so the switch is a clean break
         in_transition_out = in_padding and ds['transition_type'] == 'out'
+
+        # Phase 2: Fetch SDR audio.  Always call get_audio() to drain the
+        # ring buffer — ducked audio is stale and must be discarded so SDR
+        # starts with fresh/current audio when the duck releases.
+        for source in self.sources:
+            if not source.name.startswith("SDR"):
+                continue
+            if not source.enabled:
+                continue
+            audio, _ptt = source.get_audio(chunk_size)
+            sdr_duck = source.duck if hasattr(source, 'duck') else True
+            if aioc_ducks_sdrs and sdr_duck:
+                # Ducked — discard audio, pass None so ducking logic tracks state
+                sdr_sources[source.name] = (None, source)
+            else:
+                if audio is not None:
+                    active_sources.append(source.name)
+                sdr_sources[source.name] = (audio, source)
 
         sdr1_was_ducked = False
         sdr2_was_ducked = False
@@ -1839,6 +1896,7 @@ class AudioMixer:
             
             # Track ducking state for status bar
             if should_duck:
+                _sdr_trace[sdr_name] = {'ducked': True, 'inc': False, 'sig': False, 'hold': False, 'sole': False}
                 if sdr_name == "SDR1":
                     sdr1_was_ducked = True
                 elif sdr_name == "SDR2":
@@ -1860,7 +1918,18 @@ class AudioMixer:
                 if has_instant:
                     self.sdr_hold_until[sdr_name] = current_time + self.SIGNAL_RELEASE_TIME
                 hold_active = current_time < self.sdr_hold_until.get(sdr_name, 0.0)
-                include_sdr = has_instant or hold_active
+                # When SDR is the only source type (no radio RX or PTT audio),
+                # always include — signal gating only matters when mixing with
+                # higher-priority sources to avoid adding SDR noise to them.
+                sdr_is_sole_source = non_ptt_audio is None and ptt_audio is None
+                include_sdr = has_instant or hold_active or sdr_is_sole_source
+                _sdr_trace[sdr_name] = {'ducked': False, 'inc': include_sdr, 'sig': has_instant, 'hold': hold_active, 'sole': sdr_is_sole_source}
+
+                if sdr_audio is None:
+                    # No data from SDR right now — nothing to include or fade
+                    self.sdr_prev_included[sdr_name] = False
+                    continue
+
                 prev_included = self.sdr_prev_included.get(sdr_name, False)
 
                 if include_sdr:
@@ -1905,22 +1974,30 @@ class AudioMixer:
         elif non_ptt_audio is not None:
             mixed_audio = non_ptt_audio
 
-        # Duck-out transition padding: silence non-PTT output for SWITCH_PADDING_TIME
-        # ONLY when SDR was actually playing at the time of the transition.
-        # This creates a clean break at the SDR→radio handoff point.
-        #
-        # CRITICAL: Do NOT silence if no SDR was active — non_ptt_audio at this point
-        # IS the radio RX audio going to Mumble.  Silencing it unconditionally caused
-        # every new radio transmission to lose its first 1.0 s of audio to Mumble.
-        # SDRs are already muted via aioc_ducks_sdrs regardless of this flag.
-        if in_transition_out and not ptt_required and ds.get('sdr_active_at_transition', False):
-            mixed_audio = None
+        # Duck-out transition: SDRs are already silenced by aioc_ducks_sdrs.
+        # Do NOT silence mixed_audio here — that would throw away Radio audio
+        # for the entire SWITCH_PADDING_TIME (1s), causing a silence gap every
+        # time Radio returns after SDR was playing.
 
         # When PTT (file playback) wins the mix, non_ptt_audio (radio RX) is not
         # included in mixed_audio.  Carry it out separately so the transmit loop
         # can still forward it to Mumble — listeners hear the radio channel even
         # while an announcement is being transmitted.
         rx_audio = non_ptt_audio if ptt_required else None
+
+        # Store trace state for audio_trace instrumentation
+        self._last_trace_state = {
+            'dk': ds['is_ducked'],
+            'hold': _hold_fired,
+            'pad': in_padding,
+            'tOut': in_transition_out,
+            'sdrAT': ds.get('sdr_active_at_transition', False),
+            'oaa': other_audio_active,
+            'radioSig': _radio_has_signal,
+            'ducks': aioc_ducks_sdrs,
+            'ptt': ptt_required,
+            'sdrs': _sdr_trace,
+        }
 
         if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
             print(f"  [Mixer-Simultaneous] Result: {len(active_sources)} active sources, PTT={ptt_required}")
@@ -2055,12 +2132,21 @@ class MumbleRadioGateway:
         # Speaker output (local monitoring)
         self.speaker_stream = None
         self.speaker_muted = False
-        self.speaker_queue = None   # queue.Queue fed by main loop, drained by speaker thread
-        self.speaker_thread = None
+        self.speaker_queue = None   # queue.Queue fed by main loop, drained by PortAudio callback
         self.speaker_audio_level = 0  # Tracks actual speaker output level for status bar
 
         # Restart flag (set by !restart command, checked in main() after run() exits)
         self.restart_requested = False
+
+        # Audio trace instrumentation — lightweight per-tick records written on shutdown.
+        # Press 'i' to start/stop recording.  Data is dumped to tools/audio_trace.txt
+        # on Ctrl+C shutdown.
+        import collections as _collections_mod
+        self._audio_trace = _collections_mod.deque(maxlen=12000)  # ~10 minutes at 20Hz
+        self._audio_trace_t0 = 0.0  # set when recording starts
+        self._trace_recording = False  # toggled by 'i' key
+        self._spk_trace = _collections_mod.deque(maxlen=12000)  # speaker thread trace
+        self._trace_events = _collections_mod.deque(maxlen=500)  # key presses / mode changes
         
         # Audio processing state
         self.noise_profile = None  # For spectral subtraction
@@ -2739,7 +2825,8 @@ class MumbleRadioGateway:
 
     def _speaker_enqueue(self, data):
         """Apply SPEAKER_VOLUME and enqueue audio for the speaker output thread.
-        Non-blocking: drops the frame if the queue is full rather than stalling."""
+        Non-blocking: if queue is full, drop oldest chunk to absorb clock drift
+        between software timer and speaker hardware clock."""
         if not self.speaker_queue or self.speaker_muted or not data:
             return
         try:
@@ -2753,29 +2840,50 @@ class MumbleRadioGateway:
                 self.speaker_audio_level = current_level
             else:
                 self.speaker_audio_level = int(self.speaker_audio_level * 0.7 + current_level * 0.3)
+            # Absorb hw/sw clock drift: drain excess when queue gets deep.
+            # USB audio clocks can drift ~0.7% from software clock, accumulating
+            # ~1 extra chunk per 3.5s. Drain at 6 (not lower) to avoid frequent
+            # drops — one 200ms skip every ~14s is less audible than constant clicks.
+            _spk_qd = self.speaker_queue.qsize()
+            if _spk_qd >= 6:
+                while self.speaker_queue.qsize() > 2:
+                    try:
+                        self.speaker_queue.get_nowait()
+                    except Exception:
+                        break
             self.speaker_queue.put_nowait(spk)
         except Exception:
-            pass  # queue.Full → drop frame, never block the main loop
+            pass
 
-    def _speaker_output_thread(self):
-        """Dedicated thread that drains the speaker queue and writes to hardware.
-        Decouples the speaker from main-loop timing so jitter in Mumble sends,
-        ALSA reads, or processing never starves the speaker hardware buffer."""
-        import queue
-        while True:
-            try:
-                chunk = self.speaker_queue.get(timeout=0.1)
-            except queue.Empty:
-                if not self.running:
-                    break
-                continue
-            if chunk is None:
-                break  # Shutdown sentinel
-            if self.speaker_stream and not self.speaker_muted:
-                try:
-                    self.speaker_stream.write(chunk, exception_on_underflow=False)
-                except Exception:
-                    pass
+    def _speaker_callback(self, in_data, frame_count, time_info, status):
+        """PortAudio callback for speaker output.  Runs on PortAudio's own
+        real-time audio thread.  PortAudio maintains an internal buffer
+        (typically 2-3 periods ≈ 100-150ms) so brief GIL delays from other
+        Python threads (e.g. status bar) are absorbed without underruns."""
+        _cb_t0 = time.monotonic()
+        _expected_bytes = frame_count * self.config.AUDIO_CHANNELS * 2
+        try:
+            chunk = self.speaker_queue.get_nowait()
+            if self.speaker_muted:
+                chunk = b'\x00' * _expected_bytes
+            elif len(chunk) < _expected_bytes:
+                chunk = chunk + b'\x00' * (_expected_bytes - len(chunk))
+        except Exception:
+            chunk = b'\x00' * _expected_bytes  # silence on underrun
+
+        if self._trace_recording:
+            _qd = self.speaker_queue.qsize()
+            self._spk_trace.append((
+                _cb_t0 - self._audio_trace_t0,          # 0: time (s)
+                0.0,                                      # 1: wait_ms (n/a for callback)
+                (time.monotonic() - _cb_t0) * 1000,      # 2: callback_ms
+                _qd,                                      # 3: queue depth after get
+                len(chunk),                               # 4: data_len
+                False,                                    # 5: was_empty
+                self.speaker_muted,                       # 6: was_muted
+            ))
+
+        return (chunk, pyaudio.paContinue)
 
     def open_speaker_output(self):
         """Open optional local speaker monitoring output stream."""
@@ -2783,21 +2891,18 @@ class MumbleRadioGateway:
             return
         try:
             device_index, device_name = self.find_speaker_device(self.pyaudio_instance)
+            import queue
+            # 8 chunks × 50ms = 400ms of buffer headroom to absorb timing jitter
+            self.speaker_queue = queue.Queue(maxsize=8)
             self.speaker_stream = self.pyaudio_instance.open(
                 format=pyaudio.paInt16,
                 channels=self.config.AUDIO_CHANNELS,
                 rate=self.config.AUDIO_RATE,
                 output=True,
                 output_device_index=device_index,
-                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
+                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE,
+                stream_callback=self._speaker_callback,
             )
-            import queue, threading
-            # 4 chunks × AUDIO_CHUNK_SIZE gives ~200ms of buffer headroom
-            self.speaker_queue = queue.Queue(maxsize=4)
-            self.speaker_thread = threading.Thread(
-                target=self._speaker_output_thread, daemon=True, name="speaker-out"
-            )
-            self.speaker_thread.start()
             print(f"✓ Speaker output initialized OK")
             print(f"  Device: {device_name}")
         except Exception as e:
@@ -3692,8 +3797,44 @@ class MumbleRadioGateway:
         
         consecutive_errors = 0
         max_consecutive_errors = 10
-        
+
+        # 50ms self-clock: the main loop runs at this cadence regardless of
+        # whether sources return data.  Sources are non-blocking; this tick
+        # replaces the old pacing that was inside AIOCRadioSource.get_audio().
+        _TICK = self.config.AUDIO_CHUNK_SIZE / self.config.AUDIO_RATE  # 0.05s
+        _next_tick = time.monotonic()
+        _prev_tick_time = time.monotonic()
+        _trace = self._audio_trace  # local ref for speed
+
         while self.running:
+            # ── 50ms self-clock ──────────────────────────────────────────────
+            _now = time.monotonic()
+            _slept = 0.0
+            if _next_tick > _now:
+                _slept = _next_tick - _now
+                time.sleep(_slept)
+            elif _now - _next_tick > _TICK:
+                _next_tick = _now  # snap forward after stall
+            _next_tick += _TICK
+            _tick_start = time.monotonic()
+            _tick_dt = (_tick_start - _prev_tick_time) * 1000  # ms since last tick
+            _prev_tick_time = _tick_start
+
+            # Trace defaults — overwritten inside the try body as we progress
+            _tr_outcome = '?'
+            _tr_mumble_ms = 0.0
+            _tr_spk_ok = False
+            _tr_spk_qd = -1
+            _tr_data_rms = 0.0
+            _tr_mixer_got = False
+            _tr_mixer_ms = 0.0
+            _tr_mixer_state = {}
+            _tr_sdr_q = -1
+            _tr_sdr_sb = -1
+            _tr_aioc_q = -1
+            _tr_aioc_sb = -1
+            active_sources = []
+
             try:
                 # ── Apply pending PTT state change ───────────────────────────────
                 # The keyboard thread queues PTT changes here instead of calling
@@ -3745,34 +3886,48 @@ class MumbleRadioGateway:
                 if self.announcement_delay_active and time.time() >= self._announcement_ptt_delay_until:
                     self.announcement_delay_active = False
 
-                # ── Mixer path: SDR always runs, AIOC contributes when healthy ──
-                if self.radio_source and self.mixer:
+                # ── Mixer path: runs whenever the mixer exists (SDR-only is valid) ──
+                if self.mixer:
+                    # Snapshot source state BEFORE mixer call
+                    _tr_sdr_q = self.sdr_source._chunk_queue.qsize() if self.sdr_source and self.sdr_source.input_stream else -1
+                    _tr_sdr_sb = len(self.sdr_source._sub_buffer) if self.sdr_source and self.sdr_source.input_stream else -1
+                    _tr_aioc_q = self.radio_source._chunk_queue.qsize() if self.radio_source else -1
+                    _tr_aioc_sb = len(self.radio_source._sub_buffer) if self.radio_source else -1
+
+                    _tr_mixer_t0 = time.monotonic()
                     data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
+                    _tr_mixer_ms = (time.monotonic() - _tr_mixer_t0) * 1000
 
                     # Store SDR ducked states for status bar display
                     self.sdr_ducked = sdr1_was_ducked
                     self.sdr2_ducked = sdr2_was_ducked
 
+                    # Capture mixer internal state for trace
+                    if self._trace_recording and hasattr(self.mixer, '_last_trace_state'):
+                        _tr_mixer_state = self.mixer._last_trace_state.copy()
+                        _tr_mixer_state['rx_m'] = getattr(self, 'rx_muted', False)
+                        _tr_mixer_state['tx_m'] = getattr(self, 'tx_muted', False)
+                        _tr_mixer_state['sp_m'] = getattr(self, 'speaker_muted', False)
+                        _tr_mixer_state['gl_m'] = getattr(self, 'global_muted', False)
+
+                    _tr_mixer_got = data is not None
                     if data is None:
                         # No audio from any source — substitute silence so the Opus
                         # encoder receives a continuous stream at the correct rate.
-                        # Skipping add_sound() starves the codec and causes audible
-                        # glitches (distortion, "struggling" sound) when real audio
-                        # resumes because Opus resets its state across the gap.
                         data = b'\x00' * (self.config.AUDIO_CHUNK_SIZE * 2)
                         self.audio_capture_active = False
-                        # Fall through — add_sound(silence) runs at the bottom of the
-                        # loop, and stream_output also receives the silence frame there.
+                    else:
+                        # Mixer produced audio (from any source: AIOC, SDR, file).
+                        # Update health flags so the status monitor doesn't think
+                        # audio capture has stopped and trigger restart_audio_input().
+                        self.last_audio_capture_time = time.time()
+                        self.audio_capture_active = True
 
-                    # Debug: we got audio from mixer
-                    if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                        print(f"\n[Debug] Got audio from mixer: {len(data)} bytes, sources: {active_sources}, PTT={ptt_required}")
+                    _tr_outcome = 'mix'  # will be updated to sent/no_mumble/etc below
 
                     # Route audio based on PTT requirement
                     if ptt_required:
                         # PTT required (file playback) - send to radio TX output
-                        if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                            print(f"\n[Debug] PTT required - routing to radio TX")
 
                         # Update last sound time so PTT release timer works
                         self.last_sound_time = time.time()
@@ -3810,8 +3965,6 @@ class MumbleRadioGateway:
                                     self.output_stream.write(pcm, exception_on_overflow=False)
                                 except TypeError:
                                     self.output_stream.write(pcm)
-                                if self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                                    print(f"\n[Debug] Sent {len(pcm)} bytes to radio TX output")
                             except IOError as io_err:
                                 if self.config.VERBOSE_LOGGING:
                                     print(f"\n[Warning] Output stream buffer issue: {io_err}")
@@ -3851,6 +4004,7 @@ class MumbleRadioGateway:
                                 self._speaker_enqueue(rx_for_mumble)
 
                         # Skip the normal RX→Mumble path below - this is TX audio
+                        _tr_outcome = 'ptt'
                         continue
 
                     # No PTT required (radio RX / SDR) — falls through to Mumble send
@@ -3901,26 +4055,31 @@ class MumbleRadioGateway:
                         continue
 
                 else:
-                    # No mixer and no AIOC stream available — wait
+                    # No mixer and no AIOC stream available — self-clock still paces us
                     self.audio_capture_active = False
-                    time.sleep(0.1)
                     continue
 
                 # ── Common: reset error count and send to Mumble ─────────────────
                 consecutive_errors = 0
 
-                # Speaker output — enqueue mixed audio (silence always substituted,
-                # so the hardware buffer stays fed regardless of Mumble state)
+                # Trace: compute data RMS to distinguish real audio from silence
+                if self._trace_recording and data:
+                    _tr_arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                    _tr_data_rms = float(np.sqrt(np.mean(_tr_arr * _tr_arr))) if len(_tr_arr) > 0 else 0.0
+
+                # Speaker output — send whatever Mumble gets (real audio or silence).
+                # The speaker's PortAudio hardware buffer (~200ms) smooths timing.
+                if self.speaker_queue and not self.speaker_muted:
+                    _tr_spk_qd = self.speaker_queue.qsize()
                 self._speaker_enqueue(data)
+                _tr_spk_ok = True
 
                 if not self.mumble:
-                    if self.mixer and self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                        print(f"\n[Debug] Mumble not connected, cannot send audio")
+                    _tr_outcome = 'no_mumble'
                     continue
 
                 if not hasattr(self.mumble, 'sound_output') or self.mumble.sound_output is None:
-                    if self.mixer and self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                        print(f"\n[Debug] Mumble sound_output not initialized")
+                    _tr_outcome = 'no_sndout'
                     continue
 
                 if not hasattr(self.mumble.sound_output, 'encoder_framesize') or self.mumble.sound_output.encoder_framesize is None:
@@ -3928,13 +4087,16 @@ class MumbleRadioGateway:
                         print(f"\n⚠ Mumble codec still not ready (encoder_framesize is None)")
                         print(f"   Waiting for server negotiation to complete...")
                         print(f"   Check that MUMBLE_SERVER = {self.config.MUMBLE_SERVER} is correct")
+                    _tr_outcome = 'no_codec'
                     continue
 
                 try:
+                    _tr_m_t0 = time.monotonic()
                     self.mumble.sound_output.add_sound(data)
-                    if self.mixer and self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                        print(f"\n[Debug] Sent {len(data)} bytes to Mumble")
+                    _tr_mumble_ms = (time.monotonic() - _tr_m_t0) * 1000
+                    _tr_outcome = 'sent'
                 except Exception as send_err:
+                    _tr_outcome = 'send_err'
                     print(f"\n[Error] Failed to send to Mumble: {send_err}")
                     import traceback
                     traceback.print_exc()
@@ -3948,8 +4110,6 @@ class MumbleRadioGateway:
 
                 if self.stream_output and self.stream_output.connected:
                     try:
-                        if self.mixer and self.mixer.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
-                            print(f"\n[Debug] Sending {len(data)} bytes to Icecast stream")
                         self.stream_output.send_audio(data)
                     except Exception as stream_err:
                         if self.config.VERBOSE_LOGGING:
@@ -3958,6 +4118,7 @@ class MumbleRadioGateway:
             except Exception as e:
                 consecutive_errors += 1
                 self.audio_capture_active = False
+                _tr_outcome = 'exception'
 
                 error_type = type(e).__name__
                 error_msg = str(e)
@@ -3983,8 +4144,30 @@ class MumbleRadioGateway:
                     self.stream_restart_count += 1
                     consecutive_errors = 0
                     time.sleep(1)
-                else:
-                    time.sleep(0.1)
+                # else: self-clock at top of loop handles pacing
+            finally:
+                # ── Trace record (toggled by 'i' key) ──
+                if self._trace_recording:
+                    _trace.append((
+                        _tick_start - self._audio_trace_t0,  # 0: time (s)
+                        _tick_dt,                             # 1: tick interval (ms)
+                        _tr_sdr_q,                            # 2: SDR queue depth before
+                        _tr_sdr_sb,                           # 3: SDR sub-buffer bytes before
+                        _tr_aioc_q,                           # 4: AIOC queue depth before
+                        _tr_aioc_sb,                          # 5: AIOC sub-buffer bytes before
+                        _tr_mixer_got,                        # 6: mixer returned audio?
+                        ','.join(active_sources) if active_sources else '',  # 7: active sources
+                        _tr_mixer_ms,                         # 8: mixer call duration (ms)
+                        self.sdr_source._last_blocked_ms if self.sdr_source and self.sdr_source.input_stream else 0.0,  # 9: SDR blocked (ms)
+                        self.radio_source._last_blocked_ms if self.radio_source else 0.0,  # 10: AIOC blocked (ms)
+                        _tr_outcome,                          # 11: outcome (sent/no_mumble/no_sndout/no_codec/ptt/exception)
+                        _tr_mumble_ms,                        # 12: Mumble add_sound time (ms)
+                        _tr_spk_ok,                           # 13: speaker enqueue attempted?
+                        _tr_spk_qd,                           # 14: speaker queue depth before enqueue
+                        _tr_data_rms,                         # 15: RMS of data sent
+                        len(data) if data else 0,              # 16: data length (bytes)
+                        _tr_mixer_state,                       # 17: mixer internal state dict
+                    ))
     
     def restart_audio_input(self):
         """Attempt to restart the audio input stream"""
@@ -4208,10 +4391,12 @@ class MumbleRadioGateway:
                     if char == 't':
                         # Toggle TX mute (Mumble → Radio)
                         self.tx_muted = not self.tx_muted
-                    
+                        self._trace_events.append((time.monotonic(), 'tx_mute', 'on' if self.tx_muted else 'off'))
+
                     elif char == 'r':
                         # Toggle RX mute (Radio → Mumble)
                         self.rx_muted = not self.rx_muted
+                        self._trace_events.append((time.monotonic(), 'rx_mute', 'on' if self.rx_muted else 'off'))
                     
                     elif char == 'm':
                         # Global mute toggle
@@ -4223,12 +4408,14 @@ class MumbleRadioGateway:
                             # One or both unmuted → mute both
                             self.tx_muted = True
                             self.rx_muted = True
+                        self._trace_events.append((time.monotonic(), 'global_mute', f'tx={self.tx_muted} rx={self.rx_muted}'))
                     
                     elif char == 's':
                         # Toggle SDR mute
                         if self.sdr_source:
                             self.sdr_muted = not self.sdr_muted
                             self.sdr_source.muted = self.sdr_muted
+                            self._trace_events.append((time.monotonic(), 'sdr_mute', 'on' if self.sdr_muted else 'off'))
                             if self.config.VERBOSE_LOGGING:
                                 state = "MUTED" if self.sdr_muted else "UNMUTED"
                                 print(f"\n[SDR] {state}")
@@ -4248,6 +4435,7 @@ class MumbleRadioGateway:
                         if self.sdr2_source:
                             self.sdr2_muted = not self.sdr2_muted
                             self.sdr2_source.muted = self.sdr2_muted
+                            self._trace_events.append((time.monotonic(), 'sdr2_mute', 'on' if self.sdr2_muted else 'off'))
                             if self.config.VERBOSE_LOGGING:
                                 state = "MUTED" if self.sdr2_muted else "UNMUTED"
                                 print(f"\n[SDR2] {state}")
@@ -4309,11 +4497,26 @@ class MumbleRadioGateway:
                         # cause a brief audio click.
                         self.manual_ptt_mode = not self.manual_ptt_mode
                         self._pending_ptt_state = self.manual_ptt_mode
+                        self._trace_events.append((time.monotonic(), 'ptt', 'on' if self.manual_ptt_mode else 'off'))
+
+                    elif char == 'i':
+                        # Toggle audio trace recording
+                        self._trace_recording = not self._trace_recording
+                        if self._trace_recording:
+                            self._audio_trace.clear()
+                            self._spk_trace.clear()
+                            self._trace_events.clear()
+                            self._audio_trace_t0 = time.monotonic()
+                            print(f"\n[Trace] Recording STARTED (press 'i' again to stop)")
+                        else:
+                            print(f"\n[Trace] Recording STOPPED ({len(self._audio_trace)} ticks captured)")
+                        self._trace_events.append((time.monotonic(), 'trace', 'on' if self._trace_recording else 'off'))
 
                     elif char == 'o':
                         # Toggle speaker output mute
                         if self.speaker_stream:
                             self.speaker_muted = not self.speaker_muted
+                            self._trace_events.append((time.monotonic(), 'spk_mute', 'on' if self.speaker_muted else 'off'))
 
                     elif char in '0123456789':
                         # Play announcement 0-9
@@ -4360,13 +4563,14 @@ class MumbleRadioGateway:
     def status_monitor_loop(self):
         """Monitor PTT release timeout and audio transmit status"""
         # Note: Priority scheduling removed - system manages all threads
-        
+
         status_check_interval = self.config.STATUS_UPDATE_INTERVAL
         last_status_check = time.time()
-        
+
         while self.running:
+          try:
             current_time = time.time()
-            
+
             # Check PTT timeout or if TX is muted
             if self.ptt_active and not self.manual_ptt_mode:
                 # Release PTT if timeout OR if TX is muted
@@ -4378,7 +4582,7 @@ class MumbleRadioGateway:
                     self.ptt_active = False
                     self._pending_ptt_state = False
                     self._ptt_change_time = time.monotonic()
-            
+
             # Periodic status check and reporting (only if enabled)
             if status_check_interval > 0 and current_time - last_status_check >= status_check_interval:
                 last_status_check = current_time
@@ -4548,7 +4752,16 @@ class MumbleRadioGateway:
                     time.sleep(5)  # Wait before checking again
             
             time.sleep(0.1)
-    
+          except BaseException as _status_err:
+            # Log crash so it's visible in the trace, then keep running.
+            # Catch BaseException (not just Exception) so KeyboardInterrupt
+            # and other rare errors don't silently kill this thread.
+            try:
+                self._trace_events.append((time.monotonic(), 'STATUS_CRASH', str(_status_err)))
+            except Exception:
+                pass  # trace deque itself failed — don't let that kill us
+            time.sleep(1)
+
     def run(self):
         """Main application"""
         print("=" * 60)
@@ -4615,6 +4828,7 @@ class MumbleRadioGateway:
         print("  Proc:  'n'=Gate | 'f'=HPF | 'a'=AGC | 'w'=Wiener | 'e'=Echo")
         print("  SDR:   'd'=SDR1 Duck toggle")
         print("  PTT:   'p'=Manual PTT Toggle (override auto-PTT)")
+        print("  Trace: 'i'=Start/stop audio trace recording (writes tools/audio_trace.txt on exit)")
         if self.config.ENABLE_SPEAKER_OUTPUT:
             print("  Spkr:  'o'=Speaker mute toggle")
         if self.config.ENABLE_PLAYBACK:
@@ -4660,17 +4874,356 @@ class MumbleRadioGateway:
         finally:
             self.cleanup()
     
+    def _dump_audio_trace(self):
+        """Write audio trace to tools/audio_trace.txt on shutdown."""
+        trace = list(self._audio_trace)
+        if not trace:
+            return
+        import os, statistics
+        out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'audio_trace.txt')
+        try:
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        except Exception:
+            pass
+
+        # Column indices
+        T, DT, SQ, SSB, AQ, ASB, MGOT, MSRC, MMS, SBLK, ABLK, \
+            OUTCOME, MUMMS, SPKOK, SPKQD, DRMS, DLEN, MXST = range(18)
+
+        with open(out_path, 'w') as f:
+            dur = trace[-1][T] - trace[0][T] if len(trace) > 1 else 0
+            f.write(f"Audio Trace: {len(trace)} ticks, {dur:.1f}s\n")
+            f.write(f"{'='*90}\n\n")
+
+            # ── Summary statistics ──
+            dts = [r[DT] for r in trace]
+            mixer_got = sum(1 for r in trace if r[MGOT])
+            mixer_none = len(trace) - mixer_got
+            mixer_ms = [r[MMS] for r in trace]
+            sdr_blocked = [r[SBLK] for r in trace if r[SBLK] > 0]
+            aioc_blocked = [r[ABLK] for r in trace if r[ABLK] > 0]
+
+            f.write("TICK TIMING (target: 50.0ms)\n")
+            f.write(f"  count={len(dts)}  mean={statistics.mean(dts):.1f}ms  "
+                    f"stdev={statistics.stdev(dts):.1f}ms  min={min(dts):.1f}ms  max={max(dts):.1f}ms\n")
+            over_60 = sum(1 for d in dts if d > 60)
+            over_80 = sum(1 for d in dts if d > 80)
+            over_100 = sum(1 for d in dts if d > 100)
+            f.write(f"  >60ms: {over_60}  >80ms: {over_80}  >100ms: {over_100}\n\n")
+
+            f.write("MIXER OUTPUT\n")
+            f.write(f"  audio: {mixer_got} ({100*mixer_got/len(trace):.1f}%)  "
+                    f"silence: {mixer_none} ({100*mixer_none/len(trace):.1f}%)\n")
+            f.write(f"  call time: mean={statistics.mean(mixer_ms):.2f}ms  max={max(mixer_ms):.2f}ms\n\n")
+
+            # Source breakdown
+            src_counts = {}
+            for r in trace:
+                key = r[MSRC] if r[MSRC] else '(none)'
+                src_counts[key] = src_counts.get(key, 0) + 1
+            f.write("SOURCE BREAKDOWN\n")
+            for src, cnt in sorted(src_counts.items(), key=lambda x: -x[1]):
+                f.write(f"  {src}: {cnt} ({100*cnt/len(trace):.1f}%)\n")
+            f.write("\n")
+
+            # ── Downstream outcome ──
+            outcome_counts = {}
+            for r in trace:
+                o = r[OUTCOME]
+                outcome_counts[o] = outcome_counts.get(o, 0) + 1
+            f.write("DOWNSTREAM OUTCOME\n")
+            for o, cnt in sorted(outcome_counts.items(), key=lambda x: -x[1]):
+                f.write(f"  {o}: {cnt} ({100*cnt/len(trace):.1f}%)\n")
+            f.write("\n")
+
+            # Mumble send timing
+            mumble_ms = [r[MUMMS] for r in trace if r[OUTCOME] == 'sent' and r[MUMMS] > 0]
+            if mumble_ms:
+                f.write(f"MUMBLE add_sound()\n")
+                f.write(f"  count={len(mumble_ms)}  mean={statistics.mean(mumble_ms):.2f}ms  max={max(mumble_ms):.2f}ms\n\n")
+
+            # Speaker queue
+            spk_qds = [r[SPKQD] for r in trace if r[SPKQD] >= 0]
+            if spk_qds:
+                f.write(f"SPEAKER QUEUE DEPTH (at enqueue time)\n")
+                f.write(f"  min={min(spk_qds)}  mean={statistics.mean(spk_qds):.1f}  max={max(spk_qds)}\n")
+                spk_full = sum(1 for q in spk_qds if q >= 8)
+                f.write(f"  full (>=8): {spk_full} ({100*spk_full/len(spk_qds):.1f}%)\n\n")
+
+            # Data RMS
+            rms_vals = [r[DRMS] for r in trace if r[DRMS] > 0]
+            if rms_vals:
+                f.write(f"DATA RMS (non-zero only)\n")
+                f.write(f"  count={len(rms_vals)}/{len(trace)}  mean={statistics.mean(rms_vals):.0f}  "
+                        f"min={min(rms_vals):.0f}  max={max(rms_vals):.0f}\n")
+                zero_rms = sum(1 for r in trace if r[OUTCOME] == 'sent' and r[DRMS] == 0)
+                f.write(f"  sent with RMS=0 (silence): {zero_rms}\n\n")
+
+            # Data length
+            dlens = [r[DLEN] for r in trace if r[DLEN] > 0]
+            if dlens:
+                expected = self.config.AUDIO_CHUNK_SIZE * 2  # 4800 bytes for 50ms mono
+                wrong = sum(1 for d in dlens if d != expected)
+                f.write(f"DATA LENGTH (expected: {expected} bytes = {self.config.AUDIO_CHUNK_SIZE} frames)\n")
+                f.write(f"  count={len(dlens)}/{len(trace)}  min={min(dlens)}  max={max(dlens)}\n")
+                if wrong:
+                    f.write(f"  *** WRONG SIZE: {wrong} chunks ({100*wrong/len(dlens):.1f}%) ***\n")
+                    sizes = {}
+                    for d in dlens:
+                        sizes[d] = sizes.get(d, 0) + 1
+                    f.write(f"  size distribution: {dict(sorted(sizes.items()))}\n")
+                f.write("\n")
+
+            if sdr_blocked:
+                f.write(f"SDR BLOB FETCH (blocked {len(sdr_blocked)}/{len(trace)} ticks)\n")
+                f.write(f"  mean={statistics.mean(sdr_blocked):.1f}ms  max={max(sdr_blocked):.1f}ms\n\n")
+            else:
+                f.write("SDR BLOB FETCH: never blocked\n\n")
+
+            if aioc_blocked:
+                f.write(f"AIOC BLOB FETCH (blocked {len(aioc_blocked)}/{len(trace)} ticks)\n")
+                f.write(f"  mean={statistics.mean(aioc_blocked):.1f}ms  max={max(aioc_blocked):.1f}ms\n\n")
+            else:
+                f.write("AIOC BLOB FETCH: never blocked\n\n")
+
+            # SDR queue depth
+            sq_vals = [r[SQ] for r in trace if r[SQ] >= 0]
+            if sq_vals:
+                f.write(f"SDR QUEUE DEPTH\n")
+                f.write(f"  min={min(sq_vals)}  mean={statistics.mean(sq_vals):.1f}  max={max(sq_vals)}\n")
+                n = len(sq_vals)
+                q1 = statistics.mean(sq_vals[:n//4]) if n >= 4 else 0
+                q4 = statistics.mean(sq_vals[-n//4:]) if n >= 4 else 0
+                f.write(f"  first quarter={q1:.1f}  last quarter={q4:.1f}\n\n")
+
+            # AIOC queue depth
+            aq_vals = [r[AQ] for r in trace if r[AQ] >= 0]
+            if aq_vals:
+                f.write(f"AIOC QUEUE DEPTH\n")
+                f.write(f"  min={min(aq_vals)}  mean={statistics.mean(aq_vals):.1f}  max={max(aq_vals)}\n\n")
+
+            # ── Gap analysis ──
+            gaps = []
+            g = 0
+            for r in trace:
+                if not r[MGOT]:
+                    g += 1
+                else:
+                    if g > 0:
+                        gaps.append(g)
+                    g = 0
+            if g > 0:
+                gaps.append(g)
+            if gaps:
+                gap_ms = [x * 50 for x in gaps]
+                f.write(f"SILENCE GAPS (mixer): {len(gaps)} gaps\n")
+                f.write(f"  sizes (ticks): {gaps[:50]}\n")
+                f.write(f"  max gap: {max(gap_ms)}ms\n\n")
+            else:
+                f.write("SILENCE GAPS (mixer): none\n\n")
+
+            # ── Mixer state summary ──
+            has_state = any(r[MXST] for r in trace)
+            if has_state:
+                ducked_count = sum(1 for r in trace if r[MXST].get('dk', False))
+                hold_count = sum(1 for r in trace if r[MXST].get('hold', False))
+                pad_count = sum(1 for r in trace if r[MXST].get('pad', False))
+                tOut_count = sum(1 for r in trace if r[MXST].get('tOut', False))
+                ducks_count = sum(1 for r in trace if r[MXST].get('ducks', False))
+                radio_sig_count = sum(1 for r in trace if r[MXST].get('radioSig', False))
+                oaa_count = sum(1 for r in trace if r[MXST].get('oaa', False))
+                n = len(trace)
+                f.write("MIXER STATE\n")
+                f.write(f"  ducked: {ducked_count}/{n} ({100*ducked_count/n:.1f}%)  "
+                        f"hold_fired: {hold_count}/{n} ({100*hold_count/n:.1f}%)  "
+                        f"padding: {pad_count}/{n} ({100*pad_count/n:.1f}%)\n")
+                f.write(f"  trans_out: {tOut_count}/{n} ({100*tOut_count/n:.1f}%)  "
+                        f"aioc_ducks: {ducks_count}/{n} ({100*ducks_count/n:.1f}%)  "
+                        f"radio_signal: {radio_sig_count}/{n} ({100*radio_sig_count/n:.1f}%)\n")
+                f.write(f"  other_audio_active: {oaa_count}/{n} ({100*oaa_count/n:.1f}%)\n")
+
+                # Per-SDR state summary
+                sdr_names = set()
+                for r in trace:
+                    sdr_names.update(r[MXST].get('sdrs', {}).keys())
+                for sname in sorted(sdr_names):
+                    s_ducked = sum(1 for r in trace if r[MXST].get('sdrs', {}).get(sname, {}).get('ducked', False))
+                    s_inc = sum(1 for r in trace if r[MXST].get('sdrs', {}).get(sname, {}).get('inc', False))
+                    s_sig = sum(1 for r in trace if r[MXST].get('sdrs', {}).get(sname, {}).get('sig', False))
+                    s_hold = sum(1 for r in trace if r[MXST].get('sdrs', {}).get(sname, {}).get('hold', False))
+                    s_sole = sum(1 for r in trace if r[MXST].get('sdrs', {}).get(sname, {}).get('sole', False))
+                    f.write(f"  {sname}: ducked={s_ducked}  included={s_inc}  signal={s_sig}  "
+                            f"hold={s_hold}  sole_source={s_sole}\n")
+
+                # Mute state (usually constant, just show if any were active)
+                rx_m = sum(1 for r in trace if r[MXST].get('rx_m', False))
+                gl_m = sum(1 for r in trace if r[MXST].get('gl_m', False))
+                sp_m = sum(1 for r in trace if r[MXST].get('sp_m', False))
+                mutes = []
+                if rx_m: mutes.append(f"rx_muted={rx_m}")
+                if gl_m: mutes.append(f"global_muted={gl_m}")
+                if sp_m: mutes.append(f"speaker_muted={sp_m}")
+                if mutes:
+                    f.write(f"  mutes: {', '.join(mutes)}\n")
+                f.write("\n")
+
+            # ── Per-tick detail (first 200 + any anomalies) ──
+            #
+            # Mixer state column legend:
+            #   D=ducked H=hold P=padding T=trans_out A=aioc_ducks R=radio_sig O=other_active
+            #   Per SDR: D=ducked S=signal H=hold X=sole .=excluded I=included(no signal)
+            def _fmt_mxst(st):
+                """Format mixer state dict into compact string."""
+                if not st:
+                    return ''
+                flags = ''
+                flags += 'D' if st.get('dk') else '-'
+                flags += 'H' if st.get('hold') else '-'
+                flags += 'P' if st.get('pad') else '-'
+                flags += 'T' if st.get('tOut') else '-'
+                flags += 'A' if st.get('ducks') else '-'
+                flags += 'R' if st.get('radioSig') else '-'
+                flags += 'O' if st.get('oaa') else '-'
+                sdrs = st.get('sdrs', {})
+                for sname in sorted(sdrs.keys()):
+                    s = sdrs[sname]
+                    flags += ' '
+                    if s.get('ducked'):
+                        flags += 'D'
+                    elif s.get('inc'):
+                        if s.get('sig'):
+                            flags += 'S'
+                        elif s.get('hold'):
+                            flags += 'H'
+                        elif s.get('sole'):
+                            flags += 'X'
+                        else:
+                            flags += 'I'
+                    else:
+                        flags += '.'
+                return flags
+
+            f.write(f"{'='*120}\n")
+            f.write("PER-TICK DETAIL (first 200 ticks + anomalies)\n")
+            f.write(f"{'='*120}\n")
+            f.write("  State: D=ducked H=hold P=padding T=trans_out A=aioc_ducks R=radio_sig O=other_active\n")
+            f.write("  SDR:   D=ducked S=signal H=hold_inc X=sole_src I=inc(other) .=excluded\n\n")
+            hdr = (f"{'tick':>6} {'t(s)':>7} {'dt':>6} {'sdr_q':>5} {'sdr_sb':>6} "
+                   f"{'aioc_q':>6} {'aioc_sb':>7} {'mixer':>5} {'mix_ms':>6} "
+                   f"{'outcome':>10} {'m_ms':>5} {'spk_q':>5} {'rms':>7} {'dlen':>5} "
+                   f"{'sources':>12} {'state':>14}\n")
+            f.write(hdr)
+            f.write('-' * len(hdr) + '\n')
+            for i, r in enumerate(trace):
+                is_early = i < 200
+                expected_len = self.config.AUDIO_CHUNK_SIZE * 2
+                is_anomaly = (r[DT] > 80 or not r[MGOT] or r[MMS] > 20
+                              or r[OUTCOME] not in ('sent', 'mix')
+                              or r[MUMMS] > 5 or r[SPKQD] >= 7 or r[DRMS] == 0
+                              or (r[DLEN] > 0 and r[DLEN] != expected_len))
+                if is_early or is_anomaly:
+                    flag = '*' if is_anomaly and not is_early else ' '
+                    st = _fmt_mxst(r[MXST]) if len(r) > MXST else ''
+                    f.write(f"{i:>5}{flag} {r[T]:7.3f} {r[DT]:6.1f} {r[SQ]:5} {r[SSB]:6} "
+                            f"{r[AQ]:6} {r[ASB]:7} {'audio' if r[MGOT] else 'NONE':>5} "
+                            f"{r[MMS]:6.1f} "
+                            f"{r[OUTCOME]:>10} {r[MUMMS]:5.1f} {r[SPKQD]:5} {r[DRMS]:7.0f} "
+                            f"{r[DLEN]:5} {r[MSRC]:>12} {st}\n")
+
+            # ── Events (key presses / mode changes) ──
+            events = list(self._trace_events)
+            if events:
+                f.write(f"\n{'='*90}\n")
+                f.write(f"EVENTS ({len(events)})\n")
+                f.write(f"{'='*90}\n")
+                for ts, etype, evalue in events:
+                    rel = ts - self._audio_trace_t0 if self._audio_trace_t0 > 0 else 0
+                    f.write(f"  {rel:8.3f}s  {etype:<15} {evalue}\n")
+
+            # ── Speaker thread trace ──
+            spk = list(self._spk_trace)
+            if spk:
+                ST, SWAIT, SWR, SQD, SDLEN, SEMPTY, SMUTED = range(7)
+                writes = [r for r in spk if not r[SEMPTY]]
+                empties = [r for r in spk if r[SEMPTY]]
+                f.write(f"\n{'='*90}\n")
+                f.write(f"SPEAKER THREAD ({len(spk)} iterations, {len(writes)} writes, {len(empties)} empty waits)\n")
+                f.write(f"{'='*90}\n")
+                if writes:
+                    wait_ms = [r[SWAIT] for r in writes]
+                    write_ms = [r[SWR] for r in writes if r[SWR] >= 0]
+                    intervals = [spk[i+1][ST] - spk[i][ST] for i in range(len(spk)-1)
+                                 if not spk[i][SEMPTY] and not spk[i+1][SEMPTY]] if len(spk) > 1 else [0.05]
+                    f.write(f"\n  WRITE TIMING\n")
+                    if write_ms:
+                        f.write(f"    stream.write(): mean={statistics.mean(write_ms):.1f}ms  "
+                                f"min={min(write_ms):.1f}ms  max={max(write_ms):.1f}ms\n")
+                    f.write(f"    queue.get() wait: mean={statistics.mean(wait_ms):.1f}ms  "
+                            f"max={max(wait_ms):.1f}ms\n")
+                    if intervals:
+                        int_ms = [i * 1000 for i in intervals]
+                        f.write(f"    write interval: mean={statistics.mean(int_ms):.1f}ms  "
+                                f"stdev={statistics.stdev(int_ms):.1f}ms  max={max(int_ms):.1f}ms\n")
+                    dlens = set(r[SDLEN] for r in writes)
+                    f.write(f"    data lengths: {sorted(dlens)}\n")
+                    # Gaps: consecutive empties
+                    spk_gaps = []
+                    g = 0
+                    for r in spk:
+                        if r[SEMPTY]:
+                            g += 1
+                        else:
+                            if g > 0:
+                                spk_gaps.append(g)
+                            g = 0
+                    if g > 0:
+                        spk_gaps.append(g)
+                    if spk_gaps:
+                        f.write(f"    empty gaps: {len(spk_gaps)} (max {max(spk_gaps)} consecutive empties = "
+                                f"{max(spk_gaps) * 100:.0f}ms)\n")
+                    else:
+                        f.write(f"    empty gaps: none\n")
+
+                    # Per-write detail (first 100 + anomalies)
+                    f.write(f"\n  {'idx':>5} {'t(s)':>7} {'wait':>6} {'write':>6} {'qd':>3} {'len':>5} {'notes':>10}\n")
+                    f.write(f"  {'-'*50}\n")
+                    for i, r in enumerate(writes):
+                        is_early = i < 100
+                        is_anomaly = (r[SWR] > 80 or r[SWAIT] > 80 or r[SQD] >= 7 or r[SWR] < 0)
+                        if is_early or is_anomaly:
+                            notes = ''
+                            if r[SWR] < 0:
+                                notes = 'ERR'
+                            elif r[SWR] > 60:
+                                notes = 'SLOW'
+                            elif r[SQD] >= 7:
+                                notes = 'FULL'
+                            flag = '*' if is_anomaly and not is_early else ' '
+                            f.write(f"  {i:>4}{flag} {r[ST]:7.3f} {r[SWAIT]:6.1f} {r[SWR]:6.1f} "
+                                    f"{r[SQD]:3} {r[SDLEN]:5} {notes:>10}\n")
+
+            f.write(f"\n{'='*90}\n")
+            f.write(f"End of trace ({len(trace)} main ticks, {len(spk) if spk else 0} speaker iterations)\n")
+
+        print(f"\n  Audio trace written to: {out_path}")
+
     def cleanup(self):
         """Clean up resources"""
+        # Dump audio trace before anything else
+        try:
+            self._dump_audio_trace()
+        except Exception as e:
+            print(f"\n  [Warning] Failed to write audio trace: {e}")
+
         if self.config.VERBOSE_LOGGING:
             print("\nCleaning up...")
-        
+
         # Signal threads to stop
         self.running = False
-        
+
         # Give threads time to finish current operations
         time.sleep(0.2)
-        
+
         # Close stream output pipe first (before stopping other things)
         if hasattr(self, 'stream_output') and self.stream_output:
             try:
@@ -4721,13 +5274,6 @@ class MumbleRadioGateway:
             except Exception as e:
                 pass  # Suppress ALSA errors during shutdown
         
-        if self.speaker_queue:
-            try:
-                self.speaker_queue.put_nowait(None)  # Shutdown sentinel
-            except Exception:
-                pass
-        if self.speaker_thread and self.speaker_thread.is_alive():
-            self.speaker_thread.join(timeout=2.0)
         if self.speaker_stream:
             try:
                 if self.speaker_stream.is_active():
