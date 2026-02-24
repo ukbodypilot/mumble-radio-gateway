@@ -9,21 +9,13 @@ Also mirror the updated files into `.claude/memory/` inside this project directo
 
 Read MEMORY.md at the start of each session to restore context.
 
-### Moving to a new machine
-The memory files are included in `.claude/memory/` in this repo. On a new machine, after cloning/unzipping, restore them:
+### Moving to a new machine (same path)
+All machines use the same absolute path (`/home/user/Downloads/mumble-radio-gateway-main`), so Claude Code's auto-memory path is identical. After cloning, run the two commands in the sync section below and memory works automatically.
 
-```bash
-# Adjust <project-path> to match where the project lives on the new machine
-DEST=~/.claude/projects/$(echo "$PWD" | sed 's|/|-|g; s|^-||')/memory
-mkdir -p "$DEST"
-cp .claude/memory/MEMORY.md "$DEST/"
-cp .claude/memory/bugs.md "$DEST/"
-```
-
-Or manually copy `.claude/memory/` to the path that Claude Code derives from the project's absolute path.
+If the path ever differs, copy `.claude/memory/` to `~/.claude/projects/$(echo "$PWD" | sed 's|/|-|g; s|^-||')/memory/`.
 
 ## Project Rules
-- Never commit `gateway_config.txt` — it contains local machine-specific settings
+- `gateway_config.txt` IS committed so settings sync between machines, but `STREAM_PASSWORD` is automatically blanked by a git clean filter before it hits the index. The local file always keeps the real password. On each new machine, after cloning, run once: `git config filter.redact-config.clean 'sed "s/^STREAM_PASSWORD = .*/STREAM_PASSWORD = /"'`
 - Never commit the `bak/` directory
 - Only commit when the user explicitly asks
 - Never auto-push
