@@ -323,24 +323,25 @@ class AIOCRadioSource(AudioSource):
         self.volume = config.INPUT_VOLUME
 
         # Queue for audio blobs delivered by PortAudio's callback thread.
-        # The ALSA period is opened at 8×AUDIO_CHUNK_SIZE so each callback
-        # delivers one 400ms blob.  get_audio() slices it into 50ms sub-chunks
-        # (non-blocking).  The main loop's 50ms self-clock handles pacing.
-        self._chunk_queue = _queue_mod.Queue(maxsize=8)
+        # The ALSA period is opened at 4×AUDIO_CHUNK_SIZE so each callback
+        # delivers one 200ms blob.  get_audio() pre-buffers 2 blobs (400ms)
+        # before first serve, then slices into 50ms sub-chunks (non-blocking).
+        self._chunk_queue = _queue_mod.Queue(maxsize=16)
+        self._blob_mult = 4  # ALSA period = 4×AUDIO_CHUNK_SIZE
+        self._blob_bytes = config.AUDIO_CHUNK_SIZE * self._blob_mult * config.AUDIO_CHANNELS * 2
         # Pre-compute sizes for the hot callback path and get_audio() slicer.
         self._chunk_bytes = config.AUDIO_CHUNK_SIZE * config.AUDIO_CHANNELS * 2  # 16-bit
         self._chunk_secs = config.AUDIO_CHUNK_SIZE / config.AUDIO_RATE           # ~0.05 s
         # Sub-chunk slicing state (accessed only from the get_audio() call site).
         self._sub_buffer = b''
+        self._prebuffering = True   # Wait for 2 blobs before first serve
         self._last_blocked_ms = 0.0  # instrumentation: how long get_audio blocked on blob fetch
 
     def _audio_callback(self, in_data, frame_count, time_info, status):
-        """PortAudio input callback — invoked at each ALSA period (8×AUDIO_CHUNK_SIZE frames).
+        """PortAudio input callback — invoked at each ALSA period (4×AUDIO_CHUNK_SIZE frames).
 
-        The stream is opened with frames_per_buffer=8×AUDIO_CHUNK_SIZE so the
-        ALSA ring buffer is ~1600ms deep, absorbing the USB timing jitter that
-        the CM108 chipset produces on Linux xHCI.  The full blob is queued here;
-        get_audio() slices it into 50ms sub-chunks (non-blocking).
+        Each callback delivers a 200ms blob.  get_audio() pre-buffers 2 blobs
+        (400ms cushion) before starting to serve, then slices into 50ms sub-chunks.
 
         Keep this method minimal — it runs in PortAudio's audio thread."""
         if in_data:
@@ -366,6 +367,7 @@ class AIOCRadioSource(AudioSource):
         # the sub-buffer is fresh when unmuted.
         if self.gateway.rx_muted:
             self._sub_buffer = b''
+            self._prebuffering = True
             while not self._chunk_queue.empty():
                 try:
                     self._chunk_queue.get_nowait()
@@ -375,23 +377,32 @@ class AIOCRadioSource(AudioSource):
             return None, False
 
         try:
-            # Serve 50ms sub-chunks from the 400ms blobs delivered by the callback.
-            # Non-blocking blob fetch: if no blob is ready at the boundary,
-            # return None and let the mixer use other sources for this tick.
-            # The self-clock in audio_transmit_loop handles pacing; blocking
-            # here steals time from the tick budget and delays SDR/speaker.
+            # Eagerly drain all available blobs from queue into the sub-buffer.
+            # This is critical for the pre-buffer gate: the old loop only fetched
+            # when sub_buffer < chunk_bytes, which starved the pre-buffer check.
             cb = self._chunk_bytes
-            _need_blob = len(self._sub_buffer) < cb
-            if _need_blob:
-                _t0 = time.monotonic()
-            while len(self._sub_buffer) < cb:
+            _t0 = time.monotonic()
+            _fetched = False
+            while True:
                 try:
                     blob = self._chunk_queue.get_nowait()
                     self._sub_buffer += blob
+                    _fetched = True
                 except _queue_mod.Empty:
-                    self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _need_blob else 0.0
-                    return None, False  # blob not ready yet — try next tick
-            self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _need_blob else 0.0
+                    break
+            self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _fetched else 0.0
+
+            # Pre-buffer gate: after the sub-buffer empties, accumulate 2 blobs
+            # (400ms cushion) before serving.  This absorbs USB delivery jitter
+            # that causes late blob arrivals at the start of reception.
+            if self._prebuffering:
+                if len(self._sub_buffer) < self._blob_bytes * 2:
+                    return None, False  # still accumulating
+                self._prebuffering = False
+
+            if len(self._sub_buffer) < cb:
+                self._prebuffering = True  # depleted — re-enter prebuffer
+                return None, False
 
             data = self._sub_buffer[:cb]
             self._sub_buffer = self._sub_buffer[cb:]
@@ -1783,7 +1794,7 @@ class AudioMixer:
             '_radio_last_audio_time': 0.0,
         })
 
-        # Track when Radio/PTT last had audio.  AIOC delivers 400ms blobs with
+        # Track when Radio/PTT last had audio.  AIOC delivers 200ms blobs with
         # brief gaps between them — without a hold, each gap triggers a spurious
         # duck-in/duck-out transition cycle (2 × SWITCH_PADDING_TIME of silence).
         if other_audio_active:
@@ -2985,10 +2996,9 @@ class MumbleRadioGateway:
                 self.radio_source = None
 
             # Input stream (Radio → AIOC → Mumble).
-            # frames_per_buffer=4×AUDIO_CHUNK_SIZE sets the ALSA period to 200ms,
-            # giving an ~800ms ring buffer that absorbs the ~200ms USB stalls the
-            # CM108 chipset produces on Linux xHCI.  _audio_callback splits each
-            # 400ms delivery into 8×50ms sub-chunks before enqueueing.
+            # frames_per_buffer=4×AUDIO_CHUNK_SIZE sets the ALSA period to 200ms.
+            # _audio_callback queues each 200ms blob; get_audio() pre-buffers 2
+            # blobs (400ms cushion) then slices into 50ms sub-chunks.
             aioc_callback = self.radio_source._audio_callback if self.radio_source else None
             self.input_stream = self.pyaudio_instance.open(
                 format=audio_format,
@@ -2996,7 +3006,7 @@ class MumbleRadioGateway:
                 rate=self.config.AUDIO_RATE,
                 input=True,
                 input_device_index=input_idx,
-                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 8,
+                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
                 stream_callback=aioc_callback
             )
 
@@ -3216,7 +3226,7 @@ class MumbleRadioGateway:
                                 rate=self.config.AUDIO_RATE,
                                 input=True,
                                 input_device_index=input_idx,
-                                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 8,
+                                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
                                 stream_callback=aioc_callback
                             )
 
@@ -3792,6 +3802,18 @@ class MumbleRadioGateway:
     
     def audio_transmit_loop(self):
         """Continuously capture audio from sources and send to Mumble via mixer"""
+        # Elevate this thread to realtime scheduling so the 50ms tick isn't
+        # delayed when the terminal window loses desktop focus.  Only this
+        # thread needs it — it feeds both Mumble and the speaker callback.
+        try:
+            os.sched_setscheduler(0, os.SCHED_RR, os.sched_param(10))
+            print("  Audio thread: SCHED_RR (realtime, priority 10)")
+        except (PermissionError, OSError):
+            try:
+                os.nice(-10)
+                print("  Audio thread: nice -10")
+            except (PermissionError, OSError):
+                pass  # best-effort
         if self.config.VERBOSE_LOGGING:
             print("✓ Audio transmit thread started (with mixer)")
         
@@ -4242,7 +4264,7 @@ class MumbleRadioGateway:
                     rate=self.config.AUDIO_RATE,
                     input=True,
                     input_device_index=input_idx,
-                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 8,
+                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
                     stream_callback=aioc_callback
                 )
 
@@ -4351,7 +4373,7 @@ class MumbleRadioGateway:
                     rate=self.config.AUDIO_RATE,
                     input=True,
                     input_device_index=input_idx,
-                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 8,
+                    frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
                     stream_callback=aioc_callback
                 )
 

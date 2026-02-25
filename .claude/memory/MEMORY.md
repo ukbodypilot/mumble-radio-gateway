@@ -8,7 +8,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 **Current machine:** PC, Debian 13 (Trixie), amd64 — moved from Raspberry Pi as of 2026-02-21.
 
-**Main file:** `mumble_radio_gateway.py` (~4800 lines)
+**Main file:** `mumble_radio_gateway.py` (~4900 lines)
 **Installer:** `scripts/install.sh` (8 steps, targets Debian/Ubuntu/RPi)
 **Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
 **Start script:** `start.sh` (launches DarkIce + FFmpeg + gateway)
@@ -24,7 +24,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ## Critical Settings (current defaults)
 - `MUMBLE_BITRATE = 96000`, `MUMBLE_VBR = false` (CBR)
 - `VAD_THRESHOLD = -45`, `VAD_ATTACK = 0.05`, `VAD_RELEASE = 2.0`, `VAD_MIN_DURATION = 0.25`
-- `AUDIO_CHUNK_SIZE = 2400` (50ms; 8× ALSA period applied internally = 400ms buffer)
+- `AUDIO_CHUNK_SIZE = 2400` (50ms; 4× ALSA period = 200ms blobs, 2-blob pre-buffer = 400ms cushion)
 - `SIGNAL_ATTACK_TIME = 0.15`, `SIGNAL_RELEASE_TIME = 3.0` (total hold 4.0s with 1.0s internal timer)
 - `ENABLE_SDR2 = false`
 - `STREAM_BITRATE = 16` (kbps, Broadcastify/scanner standard)
@@ -65,14 +65,24 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `_speaker_enqueue()` applies volume, level metering, and clock drift drain (threshold 6→2)
 - Key `o` toggles `self.speaker_muted`; status bar shows `SP:[bar]` when enabled
 - `SP:[bar]` uses `speaker_audio_level` (updated in `_speaker_enqueue()`), NOT `tx_audio_level`
+- Speaker drops when terminal loses focus: Linux desktop deprioritizes background processes → transmit loop starved → speaker callback underruns
 
-## AIOC / AIOCRadioSource Architecture (key fix 2026-02-21, refined 2026-02-24)
-- Large ALSA period: `frames_per_buffer = AUDIO_CHUNK_SIZE * 8` (8×2400=19200 frames, 400ms buffer)
-- PortAudio callback stores full 400ms blob in `_chunk_queue` (maxsize=8)
-- `get_audio()` slices into 50ms sub-chunks; non-blocking (get_nowait) since main loop self-clocks
-- rx_muted check BEFORE blob fetch — flushes stale data so buffer is fresh when unmuted
+## AIOC / AIOCRadioSource Architecture (refactored 2026-02-25)
+- ALSA period: `frames_per_buffer = AUDIO_CHUNK_SIZE * 4` (4×2400=9600 frames, 200ms blobs)
+- PortAudio callback stores 200ms blob in `_chunk_queue` (maxsize=16)
+- **Pre-buffer gate**: `_prebuffering=True` at init/mute/depletion; won't serve until sub_buffer >= 2 blobs (400ms cushion)
+- `get_audio()` eagerly drains ALL queued blobs into sub_buffer every tick (critical: old loop only fetched when sub_buffer < chunk_bytes, which starved the pre-buffer check)
+- Once pre-buffer satisfied, slices into 50ms sub-chunks normally
+- rx_muted check BEFORE blob fetch — flushes stale data + resets prebuffering
 - PTT click suppression: `_ptt_change_time` monotonic timestamp; gain envelope 0 for 30ms, ramps 0→1 from 30ms→130ms
 - `_ptt_change_time` set in 4 places: Mumble RX handler, keyboard pending PTT apply, status_monitor PTT release, announcement PTT activation
+- **Previous 8× approach** had 400ms blobs but no cushion — USB delivery jitter caused 400-450ms silence gaps at start of reception
+
+## Audio Thread Realtime Priority (added 2026-02-25)
+- `audio_transmit_loop()` sets `SCHED_RR` priority 10 on its own thread at startup
+- Falls back to `nice -10` if no root/CAP_SYS_NICE, else silent
+- Only the audio transmit thread is elevated — status bar, keyboard, etc. stay normal
+- Fixes speaker drops when terminal window loses desktop focus
 
 ## SDRSource Architecture (queue + sub-buffer, 2026-02-22/24)
 - Reader thread reads full ALSA periods into `_chunk_queue` (maxsize=8, ~1.6s at 200ms each)
@@ -90,42 +100,25 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Duck-OUT transition: no longer silences mixed_audio (was throwing away 1s of Radio audio)
 - Trace instrumentation: 18-field tuple per tick, MXST dict captures full duck/signal/mute state
 
+## Sub-Chunk Trace Instrumentation (added 2026-02-25)
+- Activated for first 2s after 'i' press (`_trace_detailed_until` deadline)
+- Per-tick: zero_count, max_zero_run, min/max sample, boundary jump
+- Flags: ZERO_RUN (>2ms), BOUNDARY (>5000), MOSTLY_ZERO (>50%)
+- Used to prove mixer output data was clean — drops were in speaker output path
+
 ## Known Bugs Fixed (details in bugs.md)
-- SDR burst audio (frames_per_buffer was 153600, fixed to 9600)
-- Mumble encoder starvation (send silence not None)
-- duck-out regression (sdr_active_at_transition used check_signal_instant on noise)
-- Config parser crash on decimal in int-defaulted field (VAD_RELEASE = 0.3)
-- global_muted UnboundLocalError in status_monitor_loop when SDR1 absent
-- DarkIce hidraw udev missing; WirePlumber AIOC grab
-- AUDIO_CHUNK_SIZE=9600 caused complete silence (queue timeout too short)
-- VAD units mismatch (values in seconds divided by 1000, treated as ms)
-- SDR buffer_multiplier computed but never used as frames_per_buffer
-- Duplicate SDR_BUFFER_MULTIPLIER key in config
-- AIOC USB timing jitter dropouts: fixed by 8× ALSA period
-- Speaker/Mumble desync after PTT: fixed by force-transmitting during 130ms suppression window
-- PTT click on manual toggle: fixed with time-based envelope
-- Announcement PTT missing click suppression: fixed by setting _ptt_change_time at announcement activation
-- announcement_delay_active stuck True after stop_playback: fixed by safety clear before mixer call
-- AIOC periodic drops (~5s): fixed by incremental pacing + queue maxsize 4→8
-- SDR stuttering 750ms on/off: fixed by replacing deque with bytearray ring buffer
-- SP bar frozen on R-key mute: fixed by using speaker_audio_level not tx_audio_level
-- Status bar freeze after ~7-10s: mixer path didn't update last_audio_capture_time; STOP branch triggered restart loop
-- Speaker GIL contention drops: converted from blocking-write thread to PortAudio callback mode
-- Config parser quote stripping: string values with quotes weren't matched against device names
-- Duck-OUT transition silencing Radio for 1s: removed mixed_audio = None during padding
-- SDR breakthrough during AIOC blob gaps: hold timer too short (500ms→1000ms)
-- SDR not resuming after duck release: ring buffer drained during ducking; now always drain (real-time, no stale audio)
-- SDR bleeding at Radio start: SIGNAL_ATTACK_TIME too slow (0.5→0.15s)
+See bugs.md for full list. Key recent fixes:
+- AIOC 400-450ms silence gaps at reception start: reduced period 8×→4× with 2-blob pre-buffer
+- Speaker drops on window defocus: SCHED_RR on audio transmit thread
+- FFT resampling for speaker 48k→44.1k: planned but reverted with other changes (not yet re-applied)
+- FilePlayback: cache, staging, fade, PTT leak fixes (all 2026-02-24)
 
 ## Config Defaults (verified 2026-02-24)
 - All code defaults in `Config.load_config()` dict match `examples/gateway_config.txt`
-- Key alignments fixed this session: NOISE_SUPPRESSION_METHOD, STREAM_BITRATE, SDR_DEVICE_NAME,
-  ECHOLINK_TO_RADIO, MUMBLE_TO_ECHOLINK, SDR_BUFFER_MULTIPLIER comment, PLAYBACK_ANNOUNCEMENT_INTERVAL
-- `gateway_config.txt` IS committed — repo is private, full config including passwords syncs between machines
-- `audio/` IS committed — repo is private, all audio files tracked
+- `gateway_config.txt` IS committed — repo is private, passwords sync between machines
 
 ## User Preferences
 - CBR Opus (not VBR) — cares about quality not bandwidth
 - Commits requested explicitly — never auto-commit
 - Concise responses, no emojis
-- bak/ is local — never commit it
+- bak/ is local — never commit it (gateway_config.txt IS committed, repo is private)

@@ -87,141 +87,70 @@ duration calculations.
 **Fix:** Removed duplicate entry.
 
 ## 2026-02-22 — AIOC periodic drops every ~5 seconds
-**Symptom:** Small but noticeable audio dropouts in AIOC path every ~5 seconds,
-heard in both Mumble and speaker output.
-**Cause:** Sub-chunk pacing used `_next_delivery = time.monotonic() + chunk_secs`
-(absolute-from-now). Sleep overshoot (~1ms per chunk × 8 chunks/blob = ~8ms/blob)
-accumulated, causing consumption to slowly lag production and eventually drain
-the queue momentarily.
-**Fix:** Changed to incremental pacing: `_next_delivery += chunk_secs`. Added
-snap-forward: if `now - _next_delivery > chunk_secs`, snap to now to prevent
-catch-up bursts after a stall. Also increased queue maxsize 4→8.
+**Symptom:** Small but noticeable audio dropouts in AIOC path every ~5 seconds.
+**Cause:** Sub-chunk pacing used absolute-from-now timing. Sleep overshoot accumulated.
+**Fix:** Changed to incremental pacing with snap-forward. Queue maxsize 4→8.
 
 ## 2026-02-22 — SDR audio stuttering (750ms on / 750ms off)
-**Symptom:** Regular pattern of ~750ms audio followed by ~750ms silence, repeating.
-**Cause:** `deque(maxlen=4)` silently dropped oldest chunks when appending to a
-full deque. The main loop ran slightly slower than 50ms per iteration (AIOC sleep
-overshoot), causing it to fall behind. Burst of 4 chunks from one ALSA period
-arrived before all 4 prior chunks were consumed; deque dropped old ones silently.
-**Fix:** Replaced `deque(maxlen=4)` with a `bytearray` ring buffer + `threading.Lock`.
-Reader thread reads full ALSA periods (`AUDIO_CHUNK_SIZE * SDR_BUFFER_MULTIPLIER`
-frames per read). Ring buffer caps at 2 seconds; trims oldest data if exceeded.
-`get_audio()` slices exactly `chunk_size * channels * 2` bytes from front.
+**Symptom:** Regular pattern of ~750ms audio followed by ~750ms silence.
+**Cause:** `deque(maxlen=4)` silently dropped oldest chunks when full.
+**Fix:** Replaced with `bytearray` ring buffer + `threading.Lock`.
 
 ## 2026-02-24 — Status bar freezes after ~7-10 seconds
-**Symptom:** Status bar stops updating ~7-10s after gateway starts; audio continues
-fine. Gateway still responds to Ctrl-C.
-**Cause:** Mixer path in `audio_transmit_loop` never updated `last_audio_capture_time`
-or `audio_capture_active`. These flags were only set inside `AIOCRadioSource.get_audio()`
-(line 400). When AIOC returned None (no radio signal), the timestamp stayed at 0 or
-went stale. After 10 seconds, `status_monitor_loop` entered the STOP branch which
-called `restart_audio_input()` + `continue`, permanently skipping the status bar print.
-**Fix:** Added `self.last_audio_capture_time = time.time()` and
-`self.audio_capture_active = True` in the mixer's `else` branch (when data is not None).
-Also hardened the status_monitor exception handler: `BaseException` instead of
-`Exception`, with nested try/except on the trace event append.
+**Symptom:** Status bar stops updating; audio continues fine.
+**Cause:** Mixer path never updated `last_audio_capture_time`. STOP branch triggered restart loop.
+**Fix:** Added timestamp updates in mixer's else branch.
 
 ## 2026-02-24 — Speaker output drops from GIL contention
-**Symptom:** Small audio drops in speaker output, correlated with status bar draws.
-When status bar froze, audio became perfect.
-**Cause:** Speaker used a blocking-write thread (`_speaker_output_thread`) that needed
-GIL between writes for `queue.get()`. Status bar's `print(flush=True)` held GIL for
-5-10ms during string construction, causing speaker hardware buffer underruns.
-**Fix:** Converted speaker output from blocking-write thread to PortAudio callback
-mode (`_speaker_callback`). PortAudio callbacks run on a C thread with internal
-buffering (2-3 periods), absorbing GIL delays. Also added clock drift drain logic
-in `_speaker_enqueue()` (threshold 6→drain to 2) to absorb sw/hw clock drift.
+**Symptom:** Small audio drops correlated with status bar draws.
+**Cause:** Blocking-write speaker thread needed GIL between writes.
+**Fix:** Converted to PortAudio callback mode with internal buffering.
 
 ## 2026-02-24 — Config parser didn't strip quotes from string values
 **Symptom:** `SPEAKER_OUTPUT_DEVICE = "c-media"` not matching device name.
-**Cause:** Config parser included surrounding quotes in the value string, so
-case-insensitive match against `C-Media USB Headphone Set` failed.
-**Fix:** Added quote stripping in `load_config()` before comment stripping and type
-conversion.
+**Fix:** Added quote stripping in `load_config()`.
 
-## 2026-02-22 — SP bar graph frozen when RX muted (R key)
-**Symptom:** SP:[bar] in status display stops updating (freezes) when radio RX
-is muted with the R key.
-**Cause:** SP bar displayed `tx_audio_level`, which is only updated inside
-`AIOCRadioSource.get_audio()`. When `rx_muted=True`, get_audio() returns early
-at line 401 before the level calculation, so `tx_audio_level` never updates.
-**Fix:** Added `speaker_audio_level` attribute, updated in `_speaker_enqueue()`
-from the actual audio sent to the speaker. SP bar now uses `speaker_audio_level`.
-When muted, silence is enqueued so the level naturally decays to 0.
+## 2026-02-24 — SP bar graph frozen when RX muted (R key)
+**Fix:** Added `speaker_audio_level`, updated in `_speaker_enqueue()`.
 
-## 2026-02-24 — Status bar freezes after ~7-10 seconds
-**Symptom:** Status bar stops updating ~7-10s after gateway starts; audio continues
-fine. Gateway still responds to Ctrl-C.
-**Cause:** Mixer path in `audio_transmit_loop` never updated `last_audio_capture_time`
-or `audio_capture_active`. These flags were only set inside `AIOCRadioSource.get_audio()`
-(line 400). When AIOC returned None (no radio signal), the timestamp stayed at 0 or
-went stale. After 10 seconds, `status_monitor_loop` entered the STOP branch which
-called `restart_audio_input()` + `continue`, permanently skipping the status bar print.
-**Fix:** Added `self.last_audio_capture_time = time.time()` and
-`self.audio_capture_active = True` in the mixer's `else` branch (when data is not None).
-Also hardened the status_monitor exception handler: `BaseException` instead of
-`Exception`, with nested try/except on the trace event append.
-
-## 2026-02-24 — Speaker output drops from GIL contention
-**Symptom:** Small audio drops in speaker output, correlated with status bar draws.
-When status bar froze, audio became perfect.
-**Cause:** Speaker used a blocking-write thread (`_speaker_output_thread`) that needed
-GIL between writes for `queue.get()`. Status bar's `print(flush=True)` held GIL for
-5-10ms during string construction, causing speaker hardware buffer underruns.
-**Fix:** Converted speaker output from blocking-write thread to PortAudio callback
-mode (`_speaker_callback`). PortAudio callbacks run on a C thread with internal
-buffering (2-3 periods), absorbing GIL delays. Also added clock drift drain logic
-in `_speaker_enqueue()` (threshold 6→drain to 2) to absorb sw/hw clock drift.
-
-## 2026-02-24 — Config parser didn't strip quotes from string values
-**Symptom:** `SPEAKER_OUTPUT_DEVICE = "c-media"` not matching device name.
-**Cause:** Config parser included surrounding quotes in the value string, so
-case-insensitive match against `C-Media USB Headphone Set` failed.
-**Fix:** Added quote stripping in `load_config()` before comment stripping and type
-conversion.
-
-## 2026-02-24 — Mixer drops SDR audio when below -50dB signal threshold
-**Symptom:** 21.1% silence gaps (up to 850ms) in audio stream when AIOC has no data
-and SDR is the only active source.
-**Cause:** `_mix_simultaneous()` uses `check_signal_instant()` with -50dB threshold
-to decide whether to include SDR audio. When AIOC is between blob deliveries (no
-radio RX), SDR is the only source but its audio near -50dB gets excluded by the gate.
-`non_ptt_audio` stays None → `mixed_audio` stays None → silence sent to Mumble.
-**Fix:** Added `sdr_is_sole_source = non_ptt_audio is None and ptt_audio is None`
-check. When SDR is the only source type, always include it regardless of signal level.
-Signal gating only matters when mixing with higher-priority sources to avoid adding
-SDR noise.
-
-## 2026-02-24 — Duck-OUT transition silences Radio audio for 1s
-**Symptom:** ~3.1s of silence gaps (62 ticks) every time Radio returns after SDR
-was playing. Trace showed `D-PTARO D D` state with NONE output.
-**Cause:** `_mix_simultaneous()` set `mixed_audio = None` during duck-OUT transition
-padding. SDRs were already silenced by `aioc_ducks_sdrs`, so this additionally
-threw away the Radio audio for the entire SWITCH_PADDING_TIME (1s).
-**Fix:** Removed the `mixed_audio = None` line during duck-OUT transitions.
+## 2026-02-24 — Duck-OUT transition silencing Radio for 1s
+**Fix:** Removed `mixed_audio = None` during duck-OUT transitions.
 
 ## 2026-02-24 — SDR breakthrough during AIOC inter-blob gaps
-**Symptom:** SDR plays for 300-350ms during active radio reception when AIOC has
-a blob delivery gap exceeding the hold timer.
-**Cause:** Hold timer (500ms) was shorter than AIOC blob gaps (up to 850ms).
-When the hold expired mid-gap, the duck released, SDR played briefly, then the
-next AIOC blob re-engaged the duck.
-**Fix:** Increased hold timer from 500ms to 1000ms (covers 2× blob period).
+**Fix:** Increased hold timer from 500ms to 1000ms.
 
 ## 2026-02-24 — SDR bleeding at start of Radio transmission
-**Symptom:** SDR audible for ~500ms at the beginning of each Radio transmission.
-**Cause:** `SIGNAL_ATTACK_TIME = 0.5` required 500ms of continuous above-threshold
-audio before `has_actual_audio("Radio")` returned True. During those 500ms, SDRs
-were not ducked and both played simultaneously.
-**Fix:** Reduced `SIGNAL_ATTACK_TIME` from 0.5 to 0.15 (150ms, ~3 audio chunks).
-Also increased `SIGNAL_RELEASE_TIME` from 2.0 to 3.0 for longer inter-transmission
-hold (total 4.0s with 1.0s internal hold timer).
+**Fix:** Reduced `SIGNAL_ATTACK_TIME` from 0.5 to 0.15.
 
 ## 2026-02-24 — Source loop restructure for real-time SDR handling
-**Symptom:** After extended AIOC ducking, SDR had no data when duck released (ring
-buffer was drained during ducking). Also, ring buffer accumulated stale audio.
-**Cause:** Original single source loop called `get_audio()` for ALL sources before
-computing duck state. Ducked SDR audio was consumed and discarded.
-**Fix:** Split source loop: Phase 1 collects non-SDR audio, duck state computed,
-Phase 2 fetches SDR audio. Always call `get_audio()` (real-time: discard stale
-ducked audio, don't accumulate it). SDR starts fresh when duck releases.
+**Fix:** Split source loop into Phase 1 (non-SDR) → duck state → Phase 2 (SDR).
+
+## 2026-02-24 — FilePlayback fixes (load stall, transitions, clicks, cache)
+- Preload worker thread eliminates initial decode stall
+- Staging buffer for instant clip transitions (no I/O on mixer thread)
+- Startup audio cache pre-decodes all 10 slots at init
+- 5ms fade-in/fade-out via `_apply_boundary_fade()`
+- PTT leak fix: check ptt_active in get_audio()
+
+## 2026-02-25 — AIOC 400-450ms silence gaps at start of reception
+**Symptom:** Trace showed 2 gaps of 400-450ms during active radio reception.
+AIOC blobs arriving every ~850ms instead of ~400ms at start, then catching up.
+**Cause:** With 8× ALSA period (400ms blobs), no delivery cushion. If a blob
+arrives even 50ms late, sub-buffer is already empty → full 400ms silence gap.
+**Fix:** Reduced period from 8× to 4× (200ms blobs). Added pre-buffer gate:
+accumulate 2 blobs (400ms) before first serve. Queue maxsize 8→16.
+get_audio() now eagerly drains ALL queued blobs every tick (critical fix — old
+loop only fetched when sub_buffer < chunk_bytes, which starved pre-buffer).
+**IMPORTANT:** First attempt caused "total disaster" (no audio at all) because
+the while loop condition `< cb` prevented fetching enough for the pre-buffer
+threshold. Fixed by replacing with unconditional eager drain loop.
+
+## 2026-02-25 — Speaker drops when terminal loses desktop focus
+**Symptom:** ~10 micro-drops per second in speaker output when terminal window
+not focused. Audio perfect when focused. Mumble path unaffected.
+**Cause:** Linux CFS scheduler deprioritizes background processes. The Python
+audio transmit loop thread gets less CPU time, can't maintain 50ms tick rate,
+speaker callback starves.
+**Fix:** `audio_transmit_loop()` sets `SCHED_RR` (realtime round-robin, priority 10)
+on its own thread at startup. Falls back to `nice -10` if no root. Only this
+thread is elevated — status bar, keyboard handler etc. stay at normal priority.
