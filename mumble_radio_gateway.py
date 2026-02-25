@@ -1895,11 +1895,14 @@ class AudioMixer:
                         print(f"  [Mixer] {sdr_name} ducked by AIOC/Radio/PTT audio")
                 else:
                     # Rule 2: Higher priority SDR (lower number) ducks lower priority SDRs
-                    # Only check SDRs that have actual signal (not just silence)
+                    # Only duck if the higher-priority SDR has actual signal —
+                    # not when it's included merely because it's the sole source type
                     for other_name, other_tuple in sdrs_to_include.items():
                         other_source = other_tuple[1]
                         other_priority = getattr(other_source, 'sdr_priority', 99)
-                        if other_priority < sdr_priority:
+                        other_trace = _sdr_trace.get(other_name, {})
+                        other_has_signal = other_trace.get('sig') or other_trace.get('hold')
+                        if other_priority < sdr_priority and other_has_signal:
                             should_duck = True
                             if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                                 print(f"  [Mixer] {sdr_name} (priority {sdr_priority}) ducked by {other_name} (priority {other_priority})")

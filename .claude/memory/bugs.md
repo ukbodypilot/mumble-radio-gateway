@@ -145,6 +145,17 @@ loop only fetched when sub_buffer < chunk_bytes, which starved pre-buffer).
 the while loop condition `< cb` prevented fetching enough for the pre-buffer
 threshold. Fixed by replacing with unconditional eager drain loop.
 
+## 2026-02-25 — SDR2 ducked by SDR1 when SDR1 source sends silence
+**Symptom:** SDR2 remains ducked whenever SDR1 is connected, even if SDR1's
+source is sending silence. Only manually muting SDR1 (key 's') lets SDR2 play.
+**Cause:** Rule 2 SDR-vs-SDR ducking checked if the higher-priority SDR was in
+`sdrs_to_include`, but SDR1 gets included when `sdr_is_sole_source` is True
+(no radio/PTT active) regardless of actual signal. The code never verified that
+SDR1 had actual audio before ducking SDR2.
+**Fix:** Added `_sdr_trace` lookup in the Rule 2 loop: only duck if the
+higher-priority SDR has `sig` (instant signal) or `hold` (recent signal hold).
+SDR1 included only because it's the sole source type no longer ducks SDR2.
+
 ## 2026-02-25 — Speaker drops when terminal loses desktop focus
 **Symptom:** ~10 micro-drops per second in speaker output when terminal window
 not focused. Audio perfect when focused. Mumble path unaffected.

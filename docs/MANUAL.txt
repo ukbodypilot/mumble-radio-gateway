@@ -2,7 +2,7 @@
 MUMBLE RADIO GATEWAY - USER GUIDE
 ================================================================================
 
-VERSION: 3.1
+VERSION: 3.2
 Last Updated: February 2026
 
 ================================================================================
@@ -346,8 +346,12 @@ SETUP
 PRIORITY AND DUCKING
 --------------------
   Radio RX (AIOC)  → ducks all SDRs when active
-  SDR1 (priority 1) → ducks SDR2 when both have signal
-  SDR2 (priority 2) → lowest, ducked by SDR1 and radio
+  SDR1 (priority 1) → ducks SDR2 only when SDR1 has actual signal
+  SDR2 (priority 2) → lowest, ducked by SDR1 (with signal) and radio
+
+  Note: SDR1 being connected/enabled does NOT duck SDR2. Ducking only fires
+  when SDR1 has audio above the noise floor (-50 dB threshold). If SDR1's
+  source is sending silence, SDR2 plays through normally.
 
   Ducking uses a three-stage gate (applies to SDR sources only):
 
@@ -362,6 +366,23 @@ PRIORITY AND DUCKING
 
   File playback is deterministic and does NOT use the attack/release system —
   PTT fires immediately when a file starts.
+
+================================================================================
+RECENT CHANGES (v3.2)
+================================================================================
+
+SDR DUCKING — SDR2 STAYS DUCKED WHEN SDR1 SENDS SILENCE (BUG FIX)
+-------------------------------------------------------------------
+- Fixed: SDR2 was incorrectly ducked whenever SDR1 was connected, even if
+  SDR1's source was sending silence (e.g. SDR software running but no signal).
+  Manually muting SDR1 was the only workaround.
+- Cause: The inter-SDR ducking check only tested whether SDR1 was present in
+  the mix, not whether it had actual audio. SDR1 is always included when it is
+  the sole active source type, even if silent, which incorrectly triggered the
+  duck rule for SDR2.
+- Fix: SDR2 is now only ducked when SDR1 has a signal above the -50 dB noise
+  floor, or within the SIGNAL_RELEASE_TIME hold window after signal drops.
+  SDR1 connected-but-silent no longer suppresses SDR2.
 
 ================================================================================
 RECENT CHANGES (v3.1)
@@ -538,8 +559,12 @@ SOLUTION:
 
 PROBLEM: SDR2 always ducked by SDR1
 SOLUTION:
-  - Set SDR2_DUCK = false to mix alongside SDR1
-  - Or set both SDR_PRIORITY = SDR2_PRIORITY to disable inter-SDR ducking
+  - SDR1 only ducks SDR2 when it has actual signal (above -50 dB). If SDR1's
+    source is connected but sending silence, SDR2 should play through. If not,
+    check whether SDR1 has a real signal on it (level bar shows > 0%).
+  - If SDR1 genuinely has signal and you want both to play: set SDR2_DUCK = false
+    to mix SDR2 alongside SDR1 regardless of priority.
+  - Or set both SDR_PRIORITY = SDR2_PRIORITY to disable inter-SDR ducking.
 
 PROBLEM: Too much background noise transmitted to Mumble
 SOLUTION:

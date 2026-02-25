@@ -155,7 +155,7 @@ Two SDR inputs can run simultaneously with configurable priority:
 │  PRIORITY HIERARCHY                                          │
 │                                                              │
 │  1. Radio RX (AIOC)  ← always top priority, ducks all SDRs  │
-│  2. SDR1 (priority=1) ← ducks SDR2 if both have signal      │
+│  2. SDR1 (priority=1) ← ducks SDR2 only when SDR1 has signal │
 │  3. SDR2 (priority=2) ← lowest, ducked by SDR1 and radio    │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -940,7 +940,8 @@ scripts/loopback-status
 - Check `SDR_AUDIO_BOOST` / `SDR2_AUDIO_BOOST` (try 2.0)
 
 **Problem: SDR2 never plays (always ducked by SDR1)**
-- Check `SDR_PRIORITY` and `SDR2_PRIORITY` — if SDR1 has a lower number it will always duck SDR2 when both have signal
+- SDR1 only ducks SDR2 when it has actual signal above -50 dB. If SDR1's source is connected but sending silence, SDR2 should play through — check whether SDR1 shows a non-zero level bar
+- Check `SDR_PRIORITY` and `SDR2_PRIORITY` — if SDR1 has a lower number it ducks SDR2 when SDR1 has signal
 - Set `SDR2_DUCK = false` to mix SDR2 alongside SDR1 regardless of priority
 - Or set both priorities equal (e.g. both = 1) to disable inter-SDR ducking
 
