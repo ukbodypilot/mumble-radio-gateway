@@ -1467,93 +1467,102 @@ class SDRSource(AudioSource):
 
 
 class RemoteAudioServer:
-    """TCP server that sends mixed audio to a single connected client."""
+    """Connects out to a remote client and sends mixed audio over TCP.
+
+    REMOTE_AUDIO_HOST = destination IP of the client machine.
+    The server initiates the TCP connection and pushes length-prefixed PCM.
+    Reconnects automatically if the link drops.
+    """
     def __init__(self, config):
         self.config = config
-        self.host = config.REMOTE_AUDIO_HOST or ''
+        self.host = config.REMOTE_AUDIO_HOST
         self.port = int(config.REMOTE_AUDIO_PORT)
         self.connected = False
-        self.client_address = None
-        self._server_socket = None
-        self._client_socket = None
-        self._accept_thread = None
+        self.client_address = None  # "host:port" when connected
+        self._socket = None
+        self._connect_thread = None
         self._running = False
+        self._reconnect_interval = float(getattr(config, 'REMOTE_AUDIO_RECONNECT_INTERVAL', 5.0))
 
     def start(self):
-        """Bind, listen, and spawn accept thread."""
-        import socket
-        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_socket.settimeout(1.0)
-        self._server_socket.bind((self.host, self.port))
-        self._server_socket.listen(1)
+        """Spawn connection thread that connects out to the client."""
+        if not self.host:
+            print("⚠ REMOTE_AUDIO_HOST not set — server has no destination to connect to")
+            return
         self._running = True
-        self._accept_thread = threading.Thread(
-            target=self._accept_loop, name="RemoteAudio-accept", daemon=True
+        self._connect_thread = threading.Thread(
+            target=self._connect_loop, name="RemoteAudio-connect", daemon=True
         )
-        self._accept_thread.start()
-        bind_addr = self.host or '0.0.0.0'
-        print(f"✓ Remote audio server listening on {bind_addr}:{self.port}")
+        self._connect_thread.start()
+        print(f"✓ Remote audio server will connect to {self.host}:{self.port}")
 
-    def _accept_loop(self):
-        """Accept one client at a time; replace previous if new one connects."""
+    def _connect_loop(self):
+        """Connect to the client, reconnect on failure."""
         import socket
         while self._running:
             try:
-                client, addr = self._server_socket.accept()
-                # Close previous client if any
-                if self._client_socket:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2.0)
+                sock.connect((self.host, self.port))
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock.settimeout(None)  # blocking sends are fine
+                self._socket = sock
+                self.client_address = f"{self.host}:{self.port}"
+                self.connected = True
+                print(f"\n[RemoteAudio] Connected to client {self.client_address}")
+                # Stay in this loop until send_audio detects a broken pipe
+                while self._running and self.connected:
+                    time.sleep(0.5)
+            except Exception:
+                pass
+            finally:
+                self.connected = False
+                self.client_address = None
+                if self._socket:
                     try:
-                        self._client_socket.close()
+                        self._socket.close()
                     except Exception:
                         pass
-                client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                self._client_socket = client
-                self.client_address = f"{addr[0]}:{addr[1]}"
-                self.connected = True
-                print(f"\n[RemoteAudio] Client connected from {self.client_address}")
-            except socket.timeout:
-                continue
-            except Exception:
-                if self._running:
-                    time.sleep(0.5)
+                    self._socket = None
+            if self._running:
+                time.sleep(self._reconnect_interval)
 
     def send_audio(self, pcm_data):
         """Send length-prefixed PCM to connected client. Non-blocking on failure."""
-        if not self._client_socket:
+        sock = self._socket
+        if not sock:
             return
         import struct
         try:
             header = struct.pack('>I', len(pcm_data))
-            self._client_socket.sendall(header + pcm_data)
+            sock.sendall(header + pcm_data)
         except Exception:
-            # Client disconnected
+            # Link broken — trigger reconnect
+            self.connected = False
+            self._socket = None
             try:
-                self._client_socket.close()
+                sock.close()
             except Exception:
                 pass
-            self._client_socket = None
-            self.connected = False
-            self.client_address = None
 
     def cleanup(self):
-        """Close all sockets."""
+        """Close socket."""
         self._running = False
-        if self._client_socket:
-            try:
-                self._client_socket.close()
-            except Exception:
-                pass
-        if self._server_socket:
-            try:
-                self._server_socket.close()
-            except Exception:
-                pass
         self.connected = False
+        sock = self._socket
+        self._socket = None
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
 
 
 class RemoteAudioSource(AudioSource):
-    """Receives audio from a RemoteAudioServer over TCP.
+    """Listens for a TCP connection from a RemoteAudioServer and receives audio.
+
+    REMOTE_AUDIO_HOST = bind address ('' or unset → 0.0.0.0, all interfaces).
+    The server connects in; this end accepts and reads length-prefixed PCM.
 
     Name starts with 'SDR' so the mixer's duck system automatically handles it
     the same way it handles SDR1/SDR2 sources.
@@ -1578,9 +1587,18 @@ class RemoteAudioSource(AudioSource):
         self._chunk_bytes = config.AUDIO_CHUNK_SIZE * 2  # 16-bit mono
         self._reader_running = False
         self._reader_thread = None
+        self._listen_socket = None
 
     def setup_audio(self):
-        """Start the TCP reader thread."""
+        """Bind listen socket and start the reader/accept thread."""
+        import socket
+        bind_host = self.config.REMOTE_AUDIO_HOST or '0.0.0.0'
+        port = int(self.config.REMOTE_AUDIO_PORT)
+        self._listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listen_socket.settimeout(1.0)
+        self._listen_socket.bind((bind_host, port))
+        self._listen_socket.listen(1)
         self._reader_running = True
         self._reader_thread = threading.Thread(
             target=self._reader_thread_func,
@@ -1588,36 +1606,33 @@ class RemoteAudioSource(AudioSource):
             daemon=True
         )
         self._reader_thread.start()
+        print(f"✓ Remote audio client listening on {bind_host}:{port}")
         return True
 
     def _reader_thread_func(self):
-        """Connect to server, read length-prefixed PCM, queue blobs, reconnect on failure."""
+        """Accept connections from the server and read length-prefixed PCM."""
         import socket, struct
-        host = self.config.REMOTE_AUDIO_HOST
-        port = int(self.config.REMOTE_AUDIO_PORT)
-        reconnect_interval = float(self.config.REMOTE_AUDIO_RECONNECT_INTERVAL)
 
         while self._reader_running:
-            sock = None
+            # Wait for the server to connect in
+            conn = None
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2.0)
-                sock.connect((host, port))
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                sock.settimeout(2.0)
+                conn, addr = self._listen_socket.accept()
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                conn.settimeout(2.0)
                 self.server_connected = True
-                print(f"\n[SDRSV] Connected to remote audio server {host}:{port}")
+                print(f"\n[SDRSV] Server connected from {addr[0]}:{addr[1]}")
 
                 while self._reader_running:
                     # Read 4-byte length header
-                    header = self._recv_exact(sock, 4)
+                    header = self._recv_exact(conn, 4)
                     if header is None:
                         break
                     msg_len = struct.unpack('>I', header)[0]
                     if msg_len == 0 or msg_len > 96000:
                         break  # sanity check
                     # Read PCM payload
-                    payload = self._recv_exact(sock, msg_len)
+                    payload = self._recv_exact(conn, msg_len)
                     if payload is None:
                         break
                     try:
@@ -1632,19 +1647,18 @@ class RemoteAudioSource(AudioSource):
                             self._chunk_queue.put_nowait(payload)
                         except _queue_mod.Full:
                             pass
+            except socket.timeout:
+                continue
             except Exception as e:
                 if self._reader_running and self.config.VERBOSE_LOGGING:
                     print(f"\n[SDRSV] Connection error: {e}")
             finally:
                 self.server_connected = False
-                if sock:
+                if conn:
                     try:
-                        sock.close()
+                        conn.close()
                     except Exception:
                         pass
-
-            if self._reader_running:
-                time.sleep(reconnect_interval)
 
     @staticmethod
     def _recv_exact(sock, n):
@@ -1726,8 +1740,13 @@ class RemoteAudioSource(AudioSource):
             return "SDRSV: Disconnected"
 
     def cleanup(self):
-        """Stop reader thread."""
+        """Stop reader thread and close listen socket."""
         self._reader_running = False
+        if self._listen_socket:
+            try:
+                self._listen_socket.close()
+            except Exception:
+                pass
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2.0)
         self._sub_buffer = b''
@@ -3430,30 +3449,32 @@ class MumbleRadioGateway:
             remote_role = getattr(self.config, 'REMOTE_AUDIO_ROLE', 'disabled').lower().strip("'\"")
             if remote_role == 'server':
                 try:
-                    self.remote_audio_server = RemoteAudioServer(self.config)
-                    self.remote_audio_server.start()
+                    host = self.config.REMOTE_AUDIO_HOST
+                    if not host:
+                        print("⚠ Warning: REMOTE_AUDIO_HOST not set — server needs a destination IP")
+                    else:
+                        self.remote_audio_server = RemoteAudioServer(self.config)
+                        self.remote_audio_server.start()
                 except Exception as e:
                     print(f"⚠ Warning: Could not start remote audio server: {e}")
                     self.remote_audio_server = None
             elif remote_role == 'client':
                 try:
-                    host = self.config.REMOTE_AUDIO_HOST
-                    if not host:
-                        print("⚠ Warning: REMOTE_AUDIO_HOST not set, cannot start remote audio client")
+                    bind_host = self.config.REMOTE_AUDIO_HOST or '0.0.0.0'
+                    port = self.config.REMOTE_AUDIO_PORT
+                    print(f"Initializing remote audio client (listening on {bind_host}:{port})...")
+                    self.remote_audio_source = RemoteAudioSource(self.config, self)
+                    if self.remote_audio_source.setup_audio():
+                        self.remote_audio_source.enabled = True
+                        self.remote_audio_source.duck = self.config.REMOTE_AUDIO_DUCK
+                        self.remote_audio_source.sdr_priority = int(self.config.REMOTE_AUDIO_PRIORITY)
+                        self.mixer.add_source(self.remote_audio_source)
+                        print(f"✓ Remote audio source (SDRSV) added to mixer")
+                        print(f"  Priority: {self.config.REMOTE_AUDIO_PRIORITY}")
+                        print(f"  Press 'g' to mute/unmute remote audio")
                     else:
-                        print(f"Initializing remote audio client (server: {host}:{self.config.REMOTE_AUDIO_PORT})...")
-                        self.remote_audio_source = RemoteAudioSource(self.config, self)
-                        if self.remote_audio_source.setup_audio():
-                            self.remote_audio_source.enabled = True
-                            self.remote_audio_source.duck = self.config.REMOTE_AUDIO_DUCK
-                            self.remote_audio_source.sdr_priority = int(self.config.REMOTE_AUDIO_PRIORITY)
-                            self.mixer.add_source(self.remote_audio_source)
-                            print(f"✓ Remote audio source (SDRSV) added to mixer")
-                            print(f"  Priority: {self.config.REMOTE_AUDIO_PRIORITY}")
-                            print(f"  Press 'g' to mute/unmute remote audio")
-                        else:
-                            print("⚠ Warning: Could not initialize remote audio source")
-                            self.remote_audio_source = None
+                        print("⚠ Warning: Could not initialize remote audio source")
+                        self.remote_audio_source = None
                 except Exception as e:
                     print(f"⚠ Warning: Could not initialize remote audio client: {e}")
                     self.remote_audio_source = None
