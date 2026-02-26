@@ -469,7 +469,7 @@ Press keys during operation to control the gateway:
 ## Status Bar
 
 ```
-ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% SDR1:[███--] 30% SP:[██---] 24% Vol:1.0x 1234567890 [D]
+ACTIVE: ✓ M:✓ PTT:-- VAD:✗  -48dB TX:███---  32% RX:██----  24% SP:██----  24% SDR1:███---  30% Vol:1.0x 1234567890 [D]
 ```
 
 ### Status Indicators
@@ -487,21 +487,23 @@ ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% S
 
 ### Audio Level Bars
 
+Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL
+
 | Bar | Color | Meaning |
 |-----|-------|---------|
 | **TX:[bar]** | Red | Mumble → Radio (radio TX) |
 | **RX:[bar]** | Green | Radio → Mumble (radio RX) |
+| **SP:[bar]** | Cyan | Speaker output audio level — tracks actual mixed output, not just radio RX (if enabled) |
 | **SDR1:[bar]** | Cyan | SDR1 receiver audio level |
 | **SDR2:[bar]** | Magenta | SDR2 receiver audio level (if enabled) |
-| **SP:[bar]** | Cyan | Speaker output audio level — tracks actual mixed output, not just radio RX (if enabled) |
 | **SV:[bar]** | Yellow | Remote Audio Link — server mode: audio level being sent to remote client |
 | **CL:[bar]** | Green | Remote Audio Link — client mode: audio level received from remote server (SDRSV) |
 
 **Bar States:**
 ```
-Normal:  [███---] 45%   ← Active audio (6-char bar, 3-digit % suffix)
-Muted:   -MUTE-  M      ← Channel muted
-Ducked:  -DUCK-  D      ← SDR being ducked (SDR only)
+Normal:  ███---  45%   ← Active audio (6-char bar, space, 3-digit % suffix)
+Muted:   -MUTE- M      ← Channel muted (M suffix)
+Ducked:  -DUCK- D      ← SDR being ducked (D suffix, SDR only)
 ```
 
 **All bars have fixed width** (11 visible characters: 6-char bar + space + 4-char suffix) to prevent line length changes.
@@ -532,7 +534,8 @@ Flags appear in yellow brackets at the end: `[N,F,A,D]`
 |-----------|---------|
 | **Vol:1.0x** | RX volume multiplier |
 | **R:5** | Stream restart count (only if >0) |
-| **W:2** | SDR watchdog recovery count (only if >0; appended after SDR bar) |
+| **S:2** | DarkIce restart count (only if >0) |
+| **W2** | SDR watchdog recovery count (only if >0; appended directly after SDR bar, no colon) |
 
 ## Audio Level Calculation
 

@@ -144,7 +144,7 @@ STATUS LINE
 ================================================================================
 
 Example:
-  ACTIVE: ✓ M:✓ PTT:ON VAD:🔊 -28dB TX:[████--] 55% RX:[██----] 28% SDR1:[████] 60% Vol:1.0x 1234567890 [D]
+  ACTIVE: ✓ M:✓ PTT:  ON VAD:🔊  -28dB TX:████--  55% RX:██----  28% SP:██----  24% SDR1:████--  60% Vol:1.0x 1234567890 [D]
 
 Breakdown:
 ----------
@@ -169,6 +169,8 @@ VAD:🔊 / VAD:-- / VAD:✗
   ✗   = VAD disabled (continuous transmission)
   -XXdB = Current audio level in dBFS
 
+Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL
+
 TX:[bar] %
   Red bar — Mumble → Radio TX audio level.
 
@@ -176,18 +178,18 @@ RX:[bar] %
   Green bar — Radio → Mumble RX audio level.
   Shows 0% when VAD is blocking (no signal detected).
 
-SDR1:[bar] %
-  Cyan bar — SDR1 audio level.
-  Shows [---MUTE---] when muted, [---DUCK---] when ducked.
-
-SDR2:[bar] %
-  Magenta bar — SDR2 audio level (only shown when SDR2 enabled).
-
 SP:[bar] %
   Cyan bar — Speaker output audio level (only shown when ENABLE_SPEAKER_OUTPUT = true).
   Tracks the actual mixed audio being sent to the speaker (AIOC RX + SDR + PTT),
   not just the radio RX level. Decays to 0 when no audio is active.
-  Shows [---MUTE---] when speaker is muted with the 'o' key.
+  Shows "-MUTE- M   " when speaker is muted with the 'o' key.
+
+SDR1:[bar] %
+  Cyan bar — SDR1 audio level.
+  Shows "-MUTE- M   " when muted, "-DUCK- D   " when ducked.
+
+SDR2:[bar] %
+  Magenta bar — SDR2 audio level (only shown when SDR2 enabled).
 
 SV:[bar] %
   Yellow bar — Remote Audio Link, server mode only (REMOTE_AUDIO_ROLE = server).
@@ -197,8 +199,8 @@ SV:[bar] %
 CL:[bar] %
   Green bar — Remote Audio Link, client mode only (REMOTE_AUDIO_ROLE = client).
   Shows the SDRSV received audio level.
-  Shows -MUTE- when muted with the 'c' key.
-  Shows -DUCK- when SDRSV is being ducked by a higher-priority source.
+  Shows "-MUTE- M   " when muted with the 'c' key.
+  Shows "-DUCK- D   " when SDRSV is being ducked by a higher-priority source.
 
 Vol:X.Xx
   RX volume multiplier (adjust with , and . keys).
@@ -223,7 +225,10 @@ Vol:X.Xx
 R:n
   Stream restart count. Only shown if > 0.
 
-W:n (after SDR bar)
+S:n
+  DarkIce restart count. Only shown if > 0.
+
+Wn (after SDR bar, no colon)
   SDR watchdog recovery count. Only shown if > 0.
   Indicates the watchdog has attempted to recover from a stalled ALSA read.
   See SDR WATCHDOG section above.
