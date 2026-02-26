@@ -2,7 +2,7 @@
 MUMBLE RADIO GATEWAY - USER GUIDE
 ================================================================================
 
-VERSION: 3.2
+VERSION: 3.3
 Last Updated: February 2026
 
 ================================================================================
@@ -208,6 +208,11 @@ Vol:X.Xx
 R:n
   Stream restart count. Only shown if > 0.
 
+W:n (after SDR bar)
+  SDR watchdog recovery count. Only shown if > 0.
+  Indicates the watchdog has attempted to recover from a stalled ALSA read.
+  See SDR WATCHDOG section above.
+
 ================================================================================
 CONFIGURATION FILE: gateway_config.txt
 ================================================================================
@@ -366,6 +371,44 @@ PRIORITY AND DUCKING
 
   File playback is deterministic and does NOT use the attack/release system —
   PTT fires immediately when a file starts.
+
+WATCHDOG
+--------
+  After extended runtime, snd-aloop can get stuck — input_stream.read() either
+  blocks forever or throws IOError on every attempt. The SDR reader thread
+  silently retries, the main loop sees an empty queue, and only a restart
+  (previously: a reboot) recovered it.
+
+  The watchdog detects this and attempts staged recovery:
+
+    Stage 1 — Reopen stream: close and reopen the ALSA device (200ms settle)
+    Stage 2 — Reinitialize PyAudio: terminate and restart the PyAudio instance
+    Stage 3 — Reload kernel module (SDR_WATCHDOG_MODPROBE = true only):
+               sudo modprobe -r snd-aloop, wait 1s, sudo modprobe snd-aloop
+
+  Config:
+    SDR_WATCHDOG_TIMEOUT     = 10   # seconds with no successful read → recovery
+    SDR_WATCHDOG_MAX_RESTARTS = 5   # give up after this many failed attempts
+    SDR_WATCHDOG_MODPROBE    = false # enable stage 3 (needs sudoers entry)
+
+  Status bar shows W<N> appended after the SDR bar when N recoveries have occurred.
+  If all stages fail on every attempt and MAX_RESTARTS is reached, the SDR source
+  stays silent. Use !restart or Ctrl+C to recover manually at that point.
+
+  To enable stage 3 (module reload), add to /etc/sudoers.d/gateway-loopback:
+    <user> ALL=(ALL) NOPASSWD: /sbin/modprobe -r snd-aloop, /sbin/modprobe snd-aloop
+
+================================================================================
+RECENT CHANGES (v3.3)
+================================================================================
+
+SDR LOOPBACK WATCHDOG
+----------------------
+- New: watchdog in SDRSource detects stalled ALSA loopback reads.
+  Three-stage recovery: reopen stream → reinit PyAudio → reload snd-aloop module.
+  Status bar shows W<N> when recovery has been attempted.
+- Config: SDR_WATCHDOG_TIMEOUT (10s), SDR_WATCHDOG_MAX_RESTARTS (5),
+  SDR_WATCHDOG_MODPROBE (false). Same settings for SDR2 with SDR2_ prefix.
 
 ================================================================================
 RECENT CHANGES (v3.2)
@@ -550,6 +593,17 @@ SOLUTION:
   - Check snd-aloop is loaded: lsmod | grep snd_aloop
   - Verify device exists: arecord -l | grep Loopback
   - Confirm SDR software outputs to hw:X,0 (not hw:X,1)
+
+PROBLEM: SDR goes silent after running for hours
+SOLUTION:
+  - snd-aloop can get stuck after extended runtime
+  - The watchdog detects this after SDR_WATCHDOG_TIMEOUT seconds (default 10s)
+    and attempts staged recovery automatically
+  - Status bar shows W1, W2, ... when recovery attempts are in progress
+  - If status bar shows W5 (or SDR_WATCHDOG_MAX_RESTARTS), the watchdog gave up
+    → use !restart or Ctrl+C and restart the gateway
+  - For fully automatic recovery including module reload, set
+    SDR_WATCHDOG_MODPROBE = true and add the sudoers entry (see config)
 
 PROBLEM: SDR always ducked (never plays)
 SOLUTION:

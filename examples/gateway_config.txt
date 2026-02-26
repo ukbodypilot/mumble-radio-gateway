@@ -324,6 +324,27 @@ SDR_AUDIO_BOOST = 1.0
 # 4 = recommended | 8 = extra stability | 16 = maximum (high latency)
 SDR_BUFFER_MULTIPLIER = 4
 
+# SDR1 loopback watchdog — detects stalled ALSA reads and attempts staged recovery.
+# After extended runtime, snd-aloop can get stuck (reads block forever or throw IOError
+# on every attempt). The watchdog detects this and tries to recover automatically.
+#
+# Recovery stages (tried in order until one succeeds):
+#   Stage 1: Close and reopen the ALSA stream
+#   Stage 2: Terminate and reinitialize PyAudio entirely
+#   Stage 3: Reload the snd-aloop kernel module via sudo modprobe (see below)
+#
+# TIMEOUT      — seconds with no successful ALSA read before recovery is triggered
+# MAX_RESTARTS — max total recovery attempts before giving up (gateway keeps running,
+#                SDR source stays silent — use !restart or Ctrl+C to recover manually)
+# MODPROBE     — enable stage 3 (kernel module reload). Requires a sudoers entry:
+#                  <user> ALL=(ALL) NOPASSWD: /sbin/modprobe -r snd-aloop, /sbin/modprobe snd-aloop
+#                Add to /etc/sudoers.d/gateway-loopback (use visudo to edit safely)
+#
+# Status bar shows W<N> after the SDR bar when recovery has been attempted.
+SDR_WATCHDOG_TIMEOUT = 10
+SDR_WATCHDOG_MAX_RESTARTS = 5
+SDR_WATCHDOG_MODPROBE = false
+
 # -------- SDR2 Configuration --------
 # Enable SDR2 audio input (second SDR receiver)
 ENABLE_SDR2 = false
@@ -350,6 +371,11 @@ SDR2_AUDIO_BOOST = 1.0
 
 # SDR2 buffer size multiplier (same as SDR_BUFFER_MULTIPLIER above)
 SDR2_BUFFER_MULTIPLIER = 4
+
+# SDR2 loopback watchdog (same behaviour as SDR_WATCHDOG_* above)
+SDR2_WATCHDOG_TIMEOUT = 10
+SDR2_WATCHDOG_MAX_RESTARTS = 5
+SDR2_WATCHDOG_MODPROBE = false
 
 # ============================================================================
 # SIGNAL DETECTION & SOURCE SWITCHING
@@ -590,6 +616,15 @@ STATUS_UPDATE_INTERVAL = 1
 #   • PTT activates too quickly: Increase PTT_ACTIVATION_DELAY
 #   • PTT releases too quickly: Increase PTT_RELEASE_DELAY
 #   • PTT doesn't activate: Check AIOC_PTT_CHANNEL (try 1, 2, or 3)
+#
+# SDR STALL ISSUES (after extended runtime):
+#   • SDR suddenly goes silent after running for hours: snd-aloop got stuck
+#     The watchdog will detect this after SDR_WATCHDOG_TIMEOUT seconds and
+#     attempt staged recovery (reopen stream → reinit PyAudio → reload module)
+#   • Status bar shows W1, W2, etc.: recovery attempts have been made
+#   • After SDR_WATCHDOG_MAX_RESTARTS failures, use !restart or Ctrl+C
+#   • To enable module-reload recovery: set SDR_WATCHDOG_MODPROBE = true and
+#     add the sudoers entry (see SDR_WATCHDOG_MODPROBE comment above)
 #
 # STREAMING ISSUES:
 #   • Stream offline: Check Darkice is running (ps aux | grep darkice)

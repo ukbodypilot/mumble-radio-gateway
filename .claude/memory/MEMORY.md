@@ -6,7 +6,7 @@ Update MEMORY.md and detail files at the end of every session and whenever a sig
 ## Project Overview
 Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Optional SDR input via ALSA loopback. Optional Broadcastify streaming via DarkIce. Python 3, runs on Raspberry Pi and Debian amd64.
 
-**Main file:** `mumble_radio_gateway.py` (~4500+ lines)
+**Main file:** `mumble_radio_gateway.py` (~4800+ lines)
 **Installer:** `scripts/install.sh` (8 steps, targets Debian/Ubuntu/RPi)
 **Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
 **Start script:** `start.sh` (launches DarkIce + FFmpeg + gateway)
@@ -26,7 +26,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `AUDIO_CHUNK_SIZE = 9600` (200ms at 48kHz)
 - SDR loopback: `hw:4,1` / `hw:5,1` / `hw:6,1` (capture side)
 - `SDR_BUFFER_MULTIPLIER = 4` (was 8/16, reduced for latency)
-- AIOC pre-buffer: 1 blob / 200ms (was 2 / 400ms)
+- AIOC pre-buffer: 3 blobs / 600ms (bumped to cover missed USB deliveries)
 - AIOC TX output buffer: 2× chunk (was 4×)
 - Speaker queue: maxsize=6, drain threshold=4
 

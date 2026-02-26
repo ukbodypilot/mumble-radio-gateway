@@ -513,6 +513,7 @@ Flags appear in yellow brackets at the end: `[N,F,A,D]`
 |-----------|---------|
 | **Vol:1.0x** | RX volume multiplier |
 | **R:5** | Stream restart count (only if >0) |
+| **W:2** | SDR watchdog recovery count (only if >0; appended after SDR bar) |
 
 ## Audio Level Calculation
 
@@ -633,6 +634,38 @@ Is a higher-priority SDR active (lower priority number)?
 
 Both SDRs go through the same pipeline independently, so SDR1 can be playing while SDR2 is ducked, or vice versa.
 
+### SDR Loopback Watchdog
+
+After extended runtime, the `snd-aloop` kernel module can get stuck — reads block forever or throw `IOError` on every attempt. The watchdog detects this and recovers automatically.
+
+**Recovery stages** (tried in order until one succeeds):
+
+| Stage | Action | Notes |
+|-------|--------|-------|
+| 1 | Reopen ALSA stream | 200ms settle time |
+| 2 | Reinitialize PyAudio entirely | 500ms settle time |
+| 3 | Reload `snd-aloop` kernel module | Requires `SDR_WATCHDOG_MODPROBE = true` + sudoers entry |
+
+**Configuration:**
+```ini
+SDR_WATCHDOG_TIMEOUT     = 10      # seconds with no successful read → recovery
+SDR_WATCHDOG_MAX_RESTARTS = 5      # give up after this many total attempts
+SDR_WATCHDOG_MODPROBE    = false   # enable stage 3 (kernel module reload)
+
+# Same settings for SDR2 with SDR2_ prefix
+SDR2_WATCHDOG_TIMEOUT     = 10
+SDR2_WATCHDOG_MAX_RESTARTS = 5
+SDR2_WATCHDOG_MODPROBE    = false
+```
+
+**Stage 3 sudoers setup** (only needed if `SDR_WATCHDOG_MODPROBE = true`):
+```bash
+# Add to /etc/sudoers.d/gateway-loopback (use visudo)
+<user> ALL=(ALL) NOPASSWD: /sbin/modprobe -r snd-aloop, /sbin/modprobe snd-aloop
+```
+
+**Status bar:** `W<N>` appears after the SDR bar when N watchdog recoveries have occurred. If all stages fail and `MAX_RESTARTS` is reached, the SDR goes silent — use `!restart` or Ctrl+C to recover manually.
+
 ## Configuration Reference
 
 ### Core Audio Settings
@@ -717,6 +750,16 @@ SDR2_MIX_RATIO = 1.0
 SDR2_DISPLAY_GAIN = 1.0
 SDR2_AUDIO_BOOST = 1.0
 SDR2_BUFFER_MULTIPLIER = 8
+
+# ── Watchdog (both SDRs) ──────────────────────────────
+# Detects stalled ALSA reads after extended runtime; attempts staged recovery.
+SDR_WATCHDOG_TIMEOUT      = 10    # Seconds with no read before recovery fires
+SDR_WATCHDOG_MAX_RESTARTS = 5     # Give up after this many total attempts
+SDR_WATCHDOG_MODPROBE     = false # Enable stage 3: reload snd-aloop via sudo
+
+SDR2_WATCHDOG_TIMEOUT      = 10
+SDR2_WATCHDOG_MAX_RESTARTS = 5
+SDR2_WATCHDOG_MODPROBE     = false
 ```
 
 **Priority rules:**
@@ -939,6 +982,15 @@ scripts/loopback-status
 - Press `s` (SDR1) or `x` (SDR2) to ensure the SDR is not muted
 - Check `SDR_AUDIO_BOOST` / `SDR2_AUDIO_BOOST` (try 2.0)
 
+**Problem: SDR goes silent after running for hours (no audio, bar stuck at 0%)**
+
+`snd-aloop` can get stuck after extended runtime — reads block or throw `IOError` on every attempt. The watchdog detects this automatically:
+
+1. Check the status bar for `W1`, `W2`, etc. after the SDR bar — this shows recovery attempts in progress
+2. If the bar shows `W5` (or `SDR_WATCHDOG_MAX_RESTARTS`), the watchdog gave up — use `!restart` or Ctrl+C
+3. For fully automatic recovery including kernel module reload, set `SDR_WATCHDOG_MODPROBE = true` and add the sudoers entry (see [SDR Loopback Watchdog](#sdr-loopback-watchdog))
+4. Increase `SDR_WATCHDOG_TIMEOUT` if the watchdog triggers too aggressively (e.g. during brief SDR software gaps)
+
 **Problem: SDR2 never plays (always ducked by SDR1)**
 - SDR1 only ducks SDR2 when it has actual signal above -50 dB. If SDR1's source is connected but sending silence, SDR2 should play through — check whether SDR1 shows a non-zero level bar
 - Check `SDR_PRIORITY` and `SDR2_PRIORITY` — if SDR1 has a lower number it ducks SDR2 when SDR1 has signal
@@ -1122,6 +1174,18 @@ class MySource(AudioSource):
 - PyAudio: Python audio interface
 
 ## Changelog
+
+### SDR Loopback Watchdog
+
+After extended runtime, `snd-aloop` can get stuck — `input_stream.read()` blocks forever or throws `IOError` on every attempt. The SDR reader thread retried silently; the main loop saw an empty queue (indistinguishable from "no audio"); only a reboot recovered it.
+
+**New:** `SDRSource.check_watchdog()` is called from `status_monitor_loop` (~1s interval) and triggers staged recovery when no successful ALSA read has occurred for `SDR_WATCHDOG_TIMEOUT` seconds (default 10):
+
+- **Stage 1** — Close and reopen the ALSA input stream (200ms ALSA settle)
+- **Stage 2** — Terminate and reinitialize PyAudio entirely (500ms settle)
+- **Stage 3** — `sudo modprobe -r snd-aloop` + `sudo modprobe snd-aloop` + full reinit (requires `SDR_WATCHDOG_MODPROBE = true` and a sudoers entry)
+
+Recovery stops after `SDR_WATCHDOG_MAX_RESTARTS` (default 5) total attempts. Status bar shows `W<N>` after the SDR bar when N recoveries have been attempted. Config applies independently to SDR1 and SDR2 via `SDR_WATCHDOG_*` and `SDR2_WATCHDOG_*` keys.
 
 ### AIOC Pacing, SDR Ring Buffer & SP Bar Fix
 
