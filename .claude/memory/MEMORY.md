@@ -106,7 +106,8 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - CBR Opus (not VBR) — cares about quality not bandwidth
 - Commits requested explicitly — never auto-commit
 - Concise responses, no emojis
-- **gateway_config.txt is NOT committed** — it is in .gitignore (was committed while repo was private; removed from history when repo went public)
+- **gateway_config.txt is NOT committed** — it is in .gitignore (removed from history when repo went public)
 - **NEVER commit Broadcastify stream key/password** (STREAM_PASSWORD, STREAM_MOUNT)
+- **Claude must check for gateway_config.txt at session start** — if missing, ask user for source machine IP/user and scp it: `scp user@host:~/Downloads/mumble-radio-gateway/gateway_config.txt .`
 - bak/ is not committed
 - Fixed-width status bar is important

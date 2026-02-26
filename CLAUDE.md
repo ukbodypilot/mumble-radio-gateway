@@ -18,6 +18,17 @@ cp .claude/memory/* ~/.claude/projects/-home-user-Downloads-mumble-radio-gateway
 ```
 Claude Code's auto-memory path: `~/.claude/projects/-home-user-Downloads-mumble-radio-gateway/memory/`
 
+### Syncing gateway_config.txt between machines (Claude's responsibility)
+`gateway_config.txt` is NOT in the repo. At the start of every session, check whether it exists:
+```bash
+ls gateway_config.txt
+```
+If it is missing, ask the user for the source machine's IP/hostname and username, then fetch it:
+```bash
+scp user@source-ip:~/Downloads/mumble-radio-gateway/gateway_config.txt .
+```
+Do NOT proceed with gateway work until the config file is present — the gateway will not run without it.
+
 ## Project Rules
 - `gateway_config.txt` is in `.gitignore` — NEVER commit it (repo is public; it contains stream keys and passwords)
 - NEVER commit Broadcastify credentials (STREAM_PASSWORD, STREAM_MOUNT) or any other secrets
