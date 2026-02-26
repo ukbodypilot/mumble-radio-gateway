@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="395" height="156">
+  <rect width="100%" height="100%" fill="#1a1a1a" rx="4"/>
+  <text font-family="&apos;Courier New&apos;, Courier, monospace" font-size="13">
+    <tspan x="12" y="24"><tspan fill="#ffffff">TX:</tspan><tspan fill="#ff5555">████--</tspan><tspan fill="#cccccc"> </tspan><tspan fill="#ffff55"> 67%</tspan><tspan fill="#cccccc">   </tspan><tspan fill="#777777">← Mumble→Radio  (red)</tspan></tspan>
+    <tspan x="12" y="44"><tspan fill="#ffffff">RX:</tspan><tspan fill="#55ff55">███---</tspan><tspan fill="#cccccc"> </tspan><tspan fill="#ffff55"> 50%</tspan><tspan fill="#cccccc">   </tspan><tspan fill="#777777">← Radio→Mumble  (green)</tspan></tspan>
+    <tspan x="12" y="64"><tspan fill="#ffffff">SP:</tspan><tspan fill="#55ffff">██----</tspan><tspan fill="#cccccc"> </tspan><tspan fill="#ffff55"> 34%</tspan><tspan fill="#cccccc">   </tspan><tspan fill="#777777">← Speaker out   (cyan)</tspan></tspan>
+    <tspan x="12" y="84"><tspan fill="#ffffff">SDR1:</tspan><tspan fill="#55ffff">██----</tspan><tspan fill="#cccccc"> </tspan><tspan fill="#ffff55"> 34%</tspan><tspan fill="#cccccc">   </tspan><tspan fill="#777777">← SDR receiver  (cyan)</tspan></tspan>
+    <tspan x="12" y="104"></tspan>
+    <tspan x="12" y="124"><tspan fill="#ffffff">SDR1:</tspan><tspan fill="#55ffff">-MUTE-</tspan><tspan fill="#cccccc"> </tspan><tspan fill="#55ffff">M   </tspan><tspan fill="#cccccc">   </tspan><tspan fill="#777777">← muted</tspan></tspan>
+    <tspan x="12" y="144"><tspan fill="#ffffff">SDR1:</tspan><tspan fill="#55ffff">-DUCK-</tspan><tspan fill="#cccccc"> </tspan><tspan fill="#55ffff">D   </tspan><tspan fill="#cccccc">   </tspan><tspan fill="#777777">← ducked</tspan></tspan>
+  </text>
+</svg>
