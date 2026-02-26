@@ -101,6 +101,13 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ## Status Bar
 - format_level_bar() must return fixed-width (11 visible chars: 6-char bar + space + 4-char suffix)
 - User cares about fixed-width status line — always verify all return paths match
+- Bar display order in status line: TX → RX → SP → SDR1 → SDR2 → SV or CL
+- Bars have NO brackets in output — just `████--  67%` not `[████--] 67%`
+- Watchdog indicator appended directly after SDR bar: `W2` not `W:2` (no colon)
+- S:n diagnostic = DarkIce restart count (separate from R:n stream restarts)
+- ANSI colors: WHITE=\033[97m labels, GREEN=\033[92m active, RED=\033[91m TX bar,
+  CYAN=\033[96m SDR/SP bars, YELLOW=\033[93m percentages/dB, GRAY=\033[90m inactive
+- README uses ```ansi fenced blocks; MANUAL.txt has raw ESC bytes for terminal rendering
 
 ## User Preferences
 - CBR Opus (not VBR) — cares about quality not bandwidth
