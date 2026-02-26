@@ -468,8 +468,8 @@ Press keys during operation to control the gateway:
 
 ## Status Bar
 
-```
-ACTIVE: ✓ M:✓ PTT:-- VAD:✗  -48dB TX:███---  32% RX:██----  24% SP:██----  24% SDR1:███---  30% Vol:1.0x 1234567890 [D]
+```ansi
+[97mACTIVE:[0m [92m✓[0m [97mM:[0m[92m✓[0m [97mPTT:[0m  [92mON[0m [97mVAD:[0m[92m🔊[0m [93m -28[0m[97mdB[0m [97mTX:[0m[91m████--[0m [93m 67%[0m [97mRX:[0m[92m███---[0m [93m 50%[0m [97mSP:[0m[96m██----[0m [93m 34%[0m [97mSDR1:[0m[96m██----[0m [93m 34%[0m [97mVol:[0m[93m1.0[0m[97mx[0m [92m1[0m[92m2[0m[97m3[0m[97m4[0m[97m5[0m[97m6[0m[97m7[0m[97m8[0m[97m9[0m[92m0[0m [97m[[0m[93mD[0m[97m][0m
 ```
 
 ### Status Indicators
@@ -500,10 +500,10 @@ Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL
 | **CL:[bar]** | Green | Remote Audio Link — client mode: audio level received from remote server (SDRSV) |
 
 **Bar States:**
-```
-Normal:  ███---  45%   ← Active audio (6-char bar, space, 3-digit % suffix)
-Muted:   -MUTE- M      ← Channel muted (M suffix)
-Ducked:  -DUCK- D      ← SDR being ducked (D suffix, SDR only)
+```ansi
+Normal:  [96m████--[0m [93m 67%[0m   ← Active audio (6-char bar, space, 3-digit % suffix)
+Muted:   [96m-MUTE-[0m [96mM   [0m   ← Channel muted (M suffix)
+Ducked:  [96m-DUCK-[0m [96mD   [0m   ← SDR being ducked (D suffix, SDR only)
 ```
 
 **All bars have fixed width** (11 visible characters: 6-char bar + space + 4-char suffix) to prevent line length changes.
