@@ -194,6 +194,7 @@ class Config:
             'ENABLE_SPEAKER_OUTPUT': False,
             'SPEAKER_OUTPUT_DEVICE': '',   # '' = system default; or partial name e.g. 'USB Audio', 'hw:2,0'
             'SPEAKER_VOLUME': 1.0,         # float multiplier
+            'SPEAKER_START_MUTED': True,   # Start with speaker muted (toggle with 's' key)
         }
         
         # Set defaults
@@ -1896,10 +1897,14 @@ class AudioMixer:
                 else:
                     # Rule 2: Higher priority SDR (lower number) ducks lower priority SDRs
                     # Only duck if the higher-priority SDR has actual signal —
-                    # not when it's included merely because it's the sole source type
-                    for other_name, other_tuple in sdrs_to_include.items():
-                        other_source = other_tuple[1]
-                        other_priority = getattr(other_source, 'sdr_priority', 99)
+                    # not when it's included merely because it's the sole source type.
+                    # Check ALL previously-processed SDRs (not just those with data
+                    # in sdrs_to_include) so hold timers from data-starved sources
+                    # still duck lower-priority SDRs.
+                    for other_name, (_, other_source_obj) in sorted_sdrs:
+                        if other_name == sdr_name:
+                            break  # only check sources processed before this one
+                        other_priority = getattr(other_source_obj, 'sdr_priority', 99)
                         other_trace = _sdr_trace.get(other_name, {})
                         other_has_signal = other_trace.get('sig') or other_trace.get('hold')
                         if other_priority < sdr_priority and other_has_signal:
@@ -2145,7 +2150,7 @@ class MumbleRadioGateway:
 
         # Speaker output (local monitoring)
         self.speaker_stream = None
-        self.speaker_muted = False
+        self.speaker_muted = self.config.SPEAKER_START_MUTED
         self.speaker_queue = None   # queue.Queue fed by main loop, drained by PortAudio callback
         self.speaker_audio_level = 0  # Tracks actual speaker output level for status bar
 
@@ -3100,8 +3105,6 @@ class MumbleRadioGateway:
             if self.config.ENABLE_SDR2:
                 try:
                     print("Initializing SDR2 audio source...")
-                    print(f"  SDR2_DEVICE_NAME from config: {self.config.SDR2_DEVICE_NAME}")
-                    print(f"  SDR2_PRIORITY from config: {self.config.SDR2_PRIORITY}")
                     self.sdr2_source = SDRSource(self.config, self, name="SDR2", sdr_priority=self.config.SDR2_PRIORITY)
                     if self.sdr2_source.setup_audio():
                         # Set initial state from config
@@ -3120,7 +3123,7 @@ class MumbleRadioGateway:
                         print(f"  Press 'x' to mute/unmute SDR2")
                     else:
                         print("⚠ Warning: Could not initialize SDR2 audio")
-                        print(f"  Device hw:4,1 not found or already in use")
+                        print(f"  Device {self.config.SDR2_DEVICE_NAME} not found or already in use")
                         print(f"  Try: arecord -l | grep Loopback")
                         print(f"  SDR2 will show as disabled in status bar")
                         # Keep the source object but disable it so status bar shows
@@ -4705,7 +4708,7 @@ class MumbleRadioGateway:
                 
                 # SDR2 bar: Show SDR2 audio level (MAGENTA color for differentiation)
                 sdr2_bar = ""
-                if self.sdr2_source:
+                if self.sdr2_source and self.sdr2_source.enabled:
                     # Always read current level directly from source
                     if hasattr(self.sdr2_source, 'audio_level'):
                         current_sdr2_level = self.sdr2_source.audio_level
