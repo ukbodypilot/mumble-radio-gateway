@@ -2548,11 +2548,11 @@ class MumbleRadioGateway:
 
         # Show MUTE if muted (fixed width, colored)
         if muted:
-            return f"{bar_color}-MUTE-{RESET} {bar_color}M  {RESET}"
+            return f"{bar_color}-MUTE-{RESET} {bar_color}M   {RESET}"
 
         # Show DUCK if ducked (fixed width, colored) - for SDR only
         if ducked:
-            return f"{bar_color}-DUCK-{RESET} {bar_color}D  {RESET}"
+            return f"{bar_color}-DUCK-{RESET} {bar_color}D   {RESET}"
 
         # Create a 6-character bar graph
         bar_length = 6
