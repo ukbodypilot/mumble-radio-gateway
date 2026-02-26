@@ -2401,6 +2401,7 @@ class MumbleRadioGateway:
         self.start_time = time.time()  # Track gateway start time for uptime
         self.aioc_device = None
         self.mumble = None
+        self.secondary_mode = os.environ.get('GATEWAY_FEED_OCCUPIED') == '1'
         self.pyaudio_instance = None
         self.input_stream = None
         self.output_stream = None
@@ -3602,8 +3603,20 @@ class MumbleRadioGateway:
     
     def setup_mumble(self):
         """Initialize Mumble connection"""
+
+        if self.secondary_mode:
+            print()
+            print("=" * 60)
+            print("  SECONDARY MODE — this machine is not the active gateway")
+            print("  Reason: Broadcastify feed already live on another server")
+            print("  Mumble: DISABLED (username would conflict)")
+            print("  DarkIce: DISABLED (mountpoint already occupied)")
+            print("  Audio bridge (FFmpeg/loopback) still running.")
+            print("=" * 60)
+            return True
+
         print(f"\nConnecting to Mumble: {self.config.MUMBLE_SERVER}:{self.config.MUMBLE_PORT}...")
-        
+
         try:
             # Test if server is reachable first
             import socket
@@ -3733,6 +3746,16 @@ class MumbleRadioGateway:
             return True
             
         except Exception as e:
+            if 'already in use' in str(e).lower() or 'username already' in str(e).lower():
+                self.secondary_mode = True
+                print()
+                print("=" * 60)
+                print("  SECONDARY MODE — this machine is not the active gateway")
+                print(f"  Reason: Mumble username '{self.config.MUMBLE_USERNAME}' already connected")
+                print("  Mumble: DISABLED (username conflict)")
+                print("  Hint: DarkIce may also fail if the Broadcastify feed is already live.")
+                print("=" * 60)
+                return True
             print(f"\n✗ MUMBLE CONNECTION FAILED: {e}")
             print(f"\n  Configuration:")
             print(f"    Server: {self.config.MUMBLE_SERVER}")
@@ -5082,17 +5105,18 @@ class MumbleRadioGateway:
                     # Format: SDR2: with magenta color
                     sdr2_bar = f" {WHITE}SDR2:{RESET}" + self.format_level_bar(current_sdr2_level, muted=sdr2_muted, ducked=sdr2_ducked, color='magenta')
                 
-                # Remote audio bar (server: CL with tx level; client: SV with rx level)
+                # Remote audio bar (server: SV with tx level; client: CL with rx level)
                 remote_bar = ""
                 if self.remote_audio_server:
-                    # Server: show audio level being sent (same as tx_audio_level)
-                    cl_level = self.tx_audio_level if self.remote_audio_server.connected else 0
-                    remote_bar = f" {WHITE}CL:{RESET}" + self.format_level_bar(cl_level, color='yellow')
+                    # This machine is the server — show audio level being sent to client
+                    sv_level = self.tx_audio_level if self.remote_audio_server.connected else 0
+                    remote_bar = f" {WHITE}SV:{RESET}" + self.format_level_bar(sv_level, color='yellow')
                 elif self.remote_audio_source:
-                    current_sv_level = getattr(self.remote_audio_source, 'audio_level', 0)
-                    sv_muted = self.remote_audio_muted or global_muted
-                    sv_ducked = self.remote_audio_ducked if not sv_muted and current_sv_level > 0 else False
-                    remote_bar = f" {WHITE}SV:{RESET}" + self.format_level_bar(current_sv_level, muted=sv_muted, ducked=sv_ducked, color='green')
+                    # This machine is the client — show audio level received from server
+                    current_cl_level = getattr(self.remote_audio_source, 'audio_level', 0)
+                    cl_muted = self.remote_audio_muted or global_muted
+                    cl_ducked = self.remote_audio_ducked if not cl_muted and current_cl_level > 0 else False
+                    remote_bar = f" {WHITE}CL:{RESET}" + self.format_level_bar(current_cl_level, muted=cl_muted, ducked=cl_ducked, color='green')
 
                 # Add diagnostics if there have been restarts (fixed width: always 6 chars like " R:123" or "      ")
                 # This prevents the status line from jumping when restarts occur
@@ -5187,9 +5211,15 @@ class MumbleRadioGateway:
         
         print()
         print("=" * 60)
-        print("Gateway Active!")
-        print("  Mumble → AIOC output → Radio TX (auto PTT)")
-        print("  Radio RX → AIOC input → Mumble (VOX)")
+        if self.secondary_mode:
+            print("Gateway Active! (SECONDARY / STANDBY MODE)")
+            print("  Mumble: DISABLED — username already connected on primary")
+            print("  DarkIce: DISABLED — Broadcastify feed already live on primary")
+            print("  Radio RX/TX and SDR sources still active locally.")
+        else:
+            print("Gateway Active!")
+            print("  Mumble → AIOC output → Radio TX (auto PTT)")
+            print("  Radio RX → AIOC input → Mumble (VOX)")
         
         # Show audio processing status
         processing_enabled = []

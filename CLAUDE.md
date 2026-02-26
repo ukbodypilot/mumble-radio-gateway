@@ -9,10 +9,14 @@ Also mirror the updated files into `.claude/memory/` inside this project directo
 
 Read MEMORY.md at the start of each session to restore context.
 
-### Moving to a new machine (same path)
-All machines use the same absolute path (`/home/user/Downloads/mumble-radio-gateway-main`), so Claude Code's auto-memory path is identical. After cloning, run the two commands in the sync section below and memory works automatically.
-
-If the path ever differs, copy `.claude/memory/` to `~/.claude/projects/$(echo "$PWD" | sed 's|/|-|g; s|^-||')/memory/`.
+### Moving to a new machine
+Clone to `/home/user/Downloads/mumble-radio-gateway` (git clone, not zip download).
+After cloning, sync memory with:
+```
+mkdir -p ~/.claude/projects/-home-user-Downloads-mumble-radio-gateway/memory/
+cp .claude/memory/* ~/.claude/projects/-home-user-Downloads-mumble-radio-gateway/memory/
+```
+Claude Code's auto-memory path: `~/.claude/projects/-home-user-Downloads-mumble-radio-gateway/memory/`
 
 ## Project Rules
 - `gateway_config.txt` IS committed — repo is private, full config including passwords syncs between machines
