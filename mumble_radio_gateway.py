@@ -2544,25 +2544,22 @@ class MumbleRadioGateway:
             bar_color = GREEN
         
         # All return paths have EXACTLY the same visible character width:
-        # [12 chars] + space + 4 chars = 17 visible characters total
-        
+        # 6-char bar + space + 4 chars = 11 visible characters total
+
         # Show MUTE if muted (fixed width, colored)
         if muted:
-            # [---MUTE---] + 2 spaces + "M  " (M with 2 trailing spaces for alignment)
-            return f"{WHITE}[{bar_color}---MUTE---{WHITE}]{RESET}  {bar_color}M  {RESET}"
-        
+            return f"{bar_color}-MUTE-{RESET} {bar_color}M  {RESET}"
+
         # Show DUCK if ducked (fixed width, colored) - for SDR only
         if ducked:
-            # [---DUCK---] + 2 spaces + "D  " (D with 2 trailing spaces for alignment)
-            return f"{WHITE}[{bar_color}---DUCK---{WHITE}]{RESET}  {bar_color}D  {RESET}"
-        
-        # Create a 10-character bar graph
-        bar_length = 10
+            return f"{bar_color}-DUCK-{RESET} {bar_color}D  {RESET}"
+
+        # Create a 6-character bar graph
+        bar_length = 6
         filled = int((level / 100.0) * bar_length)
-        
-        # [bar graph] + space + "XXX%" (always 4 chars: 3 digits right-aligned + %)
+
         bar = '█' * filled + '-' * (bar_length - filled)
-        return f"{WHITE}[{bar_color}{bar}{WHITE}]{RESET} {YELLOW}{level:3d}%{RESET}"
+        return f"{bar_color}{bar}{RESET} {YELLOW}{level:3d}%{RESET}"
     
     def apply_highpass_filter(self, pcm_data):
         """Apply high-pass filter to remove low-frequency rumble"""
