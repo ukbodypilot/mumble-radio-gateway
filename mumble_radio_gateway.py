@@ -2862,7 +2862,6 @@ class MumbleRadioGateway:
     def set_ptt_state(self, state_on):
         """Control AIOC PTT"""
         if not self.aioc_device:
-            print(f"\n[PTT] ✗ No AIOC device available!")
             return
         
         try:
@@ -4956,15 +4955,19 @@ class MumbleRadioGateway:
                         self.config.ENABLE_ECHO_CANCELLATION = not self.config.ENABLE_ECHO_CANCELLATION
                     
                     elif char == 'p':
-                        # Toggle manual PTT mode.
-                        # Queue the HID write so it runs between audio reads in the
-                        # audio thread rather than concurrently with input_stream.read().
-                        # This prevents simultaneous USB HID + isochronous audio
-                        # transfers on the same AIOC composite device, which can
-                        # cause a brief audio click.
-                        self.manual_ptt_mode = not self.manual_ptt_mode
-                        self._pending_ptt_state = self.manual_ptt_mode
-                        self._trace_events.append((time.monotonic(), 'ptt', 'on' if self.manual_ptt_mode else 'off'))
+                        # Toggle manual PTT mode (requires AIOC)
+                        if not self.aioc_device:
+                            if self.config.VERBOSE_LOGGING:
+                                print(f"\n[Keyboard] PTT disabled — no AIOC device")
+                        else:
+                            # Queue the HID write so it runs between audio reads in the
+                            # audio thread rather than concurrently with input_stream.read().
+                            # This prevents simultaneous USB HID + isochronous audio
+                            # transfers on the same AIOC composite device, which can
+                            # cause a brief audio click.
+                            self.manual_ptt_mode = not self.manual_ptt_mode
+                            self._pending_ptt_state = self.manual_ptt_mode
+                            self._trace_events.append((time.monotonic(), 'ptt', 'on' if self.manual_ptt_mode else 'off'))
 
                     elif char == 'i':
                         # Toggle audio trace recording
@@ -4986,8 +4989,11 @@ class MumbleRadioGateway:
                             self._trace_events.append((time.monotonic(), 'spk_mute', 'on' if self.speaker_muted else 'off'))
 
                     elif char in '0123456789':
-                        # Play announcement 0-9
-                        if self.playback_source:
+                        # Play announcement 0-9 (requires AIOC for radio TX)
+                        if not self.aioc_device:
+                            if self.config.VERBOSE_LOGGING:
+                                print(f"\n[Keyboard] Announcement keys disabled — no AIOC device")
+                        elif self.playback_source:
                             # Use the stored path from file_status
                             stored_path = self.playback_source.file_status[char]['path']
                             stored_filename = self.playback_source.file_status[char].get('filename', '')
