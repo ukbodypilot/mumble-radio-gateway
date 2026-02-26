@@ -89,6 +89,15 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - REMOTE_AUDIO_PRIORITY must be 0 to duck SDR1 (priority 1) and SDR2 (priority 2)
 - set_ptt_state silently returns when no AIOC (no error spam)
 
+## SDR Loopback Watchdog
+- Detects stalled ALSA loopback reads (snd-aloop getting stuck after extended runtime)
+- Config: `SDR_WATCHDOG_TIMEOUT` (10s), `SDR_WATCHDOG_MAX_RESTARTS` (5), `SDR_WATCHDOG_MODPROBE` (false)
+- Staged recovery: stage 1=reopen stream, stage 2=reinit PyAudio, stage 3=reload snd-aloop module
+- Stage 3 requires sudoers entry: `<user> ALL=(ALL) NOPASSWD: /sbin/modprobe -r snd-aloop, /sbin/modprobe snd-aloop`
+- check_watchdog() called from status_monitor_loop (~1s interval)
+- Status bar shows `W<N>` after SDR bar when recovery count > 0
+- Helper methods: _stop_reader, _close_stream, _start_reader, _find_device, _open_stream
+
 ## Status Bar
 - format_level_bar() must return fixed-width (11 visible chars: 6-char bar + space + 4-char suffix)
 - User cares about fixed-width status line — always verify all return paths match

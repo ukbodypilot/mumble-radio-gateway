@@ -159,6 +159,9 @@ class Config:
             'SDR_AUDIO_BOOST': 1.0,      # Actual audio volume boost (1.0 = no change, 2.0 = 2x louder)
             'SDR_BUFFER_MULTIPLIER': 4,  # Buffer size multiplier (4 = 4x normal buffer, ~200ms per ALSA read)
             'SDR_PRIORITY': 1,           # SDR priority for ducking (1 = higher priority, 2 = lower priority)
+            'SDR_WATCHDOG_TIMEOUT': 10,        # seconds with no successful read before recovery
+            'SDR_WATCHDOG_MAX_RESTARTS': 5,    # max recovery attempts before giving up
+            'SDR_WATCHDOG_MODPROBE': False,    # enable kernel module reload (requires sudoers entry)
             # SDR2 Integration (second SDR receiver)
             'ENABLE_SDR2': False,
             'SDR2_DEVICE_NAME': 'hw:4,1',
@@ -168,6 +171,9 @@ class Config:
             'SDR2_AUDIO_BOOST': 1.0,
             'SDR2_BUFFER_MULTIPLIER': 4,
             'SDR2_PRIORITY': 2,          # SDR2 priority for ducking (1 = higher, 2 = lower)
+            'SDR2_WATCHDOG_TIMEOUT': 10,
+            'SDR2_WATCHDOG_MAX_RESTARTS': 5,
+            'SDR2_WATCHDOG_MODPROBE': False,
             # Signal Detection Hysteresis (prevents stuttering from rapid on/off)
             'SIGNAL_ATTACK_TIME': 0.15,  # Seconds of CONTINUOUS signal required before a source switch is allowed
             'SIGNAL_RELEASE_TIME': 3.0,  # Seconds of continuous silence required before switching back
@@ -1158,6 +1164,13 @@ class SDRSource(AudioSource):
         self.total_reads = 0
         self.last_stats_time = time.time()
 
+        # Loopback watchdog — detects stalled ALSA reads and attempts recovery
+        self._last_successful_read = time.monotonic()
+        self._watchdog_restarts = 0
+        self._watchdog_stage = 0      # 0=healthy, 1=reopen, 2=reinit pyaudio, 3=reload module
+        self._recovering = False
+        self._watchdog_gave_up = False
+
         # Background reader thread feeds whole ALSA periods ("blobs") into a
         # Queue.  The consumer slices them into 50ms chunks via a sub-buffer,
         # using a blocking get(timeout) at blob boundaries to synchronize with
@@ -1348,6 +1361,7 @@ class SDRSource(AudioSource):
             try:
                 raw = self.input_stream.read(read_frames, exception_on_overflow=False)
                 if raw:
+                    self._last_successful_read = time.monotonic()
                     try:
                         self._chunk_queue.put_nowait(raw)
                     except _queue_mod.Full:
@@ -1464,6 +1478,274 @@ class SDRSource(AudioSource):
                 self.pyaudio.terminate()
             except Exception:
                 pass  # Suppress errors
+
+    def _stop_reader(self):
+        """Stop the background reader thread and clear buffers."""
+        self._reader_running = False
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2.0)
+        self._sub_buffer = b''
+        while not self._chunk_queue.empty():
+            try:
+                self._chunk_queue.get_nowait()
+            except _queue_mod.Empty:
+                break
+
+    def _close_stream(self):
+        """Close the ALSA input stream safely."""
+        if self.input_stream:
+            try:
+                if self.input_stream.is_active():
+                    self.input_stream.stop_stream()
+                time.sleep(0.05)
+                self.input_stream.close()
+            except Exception:
+                pass
+            self.input_stream = None
+
+    def _start_reader(self):
+        """Start the background reader thread and pre-fill."""
+        if self.name == "SDR2":
+            buf_mult = getattr(self.config, 'SDR2_BUFFER_MULTIPLIER', 4)
+        else:
+            buf_mult = getattr(self.config, 'SDR_BUFFER_MULTIPLIER', 4)
+
+        self._reader_running = True
+        self._reader_thread = threading.Thread(
+            target=self._reader_thread_func,
+            name=f"{self.name}-reader",
+            daemon=True
+        )
+        self._reader_thread.start()
+
+        # Pre-fill: wait for 2 blobs
+        prefill_deadline = time.monotonic() + 1.0
+        while self._chunk_queue.qsize() < 2 and time.monotonic() < prefill_deadline:
+            time.sleep(0.01)
+
+    def _find_device(self):
+        """Find the SDR ALSA device. Returns (device_index, device_name) or (None, None)."""
+        if self.name == "SDR2":
+            config_device_attr = 'SDR2_DEVICE_NAME'
+        else:
+            config_device_attr = 'SDR_DEVICE_NAME'
+
+        target_name = getattr(self.config, config_device_attr, '')
+        if not target_name:
+            return None, None
+
+        for i in range(self.pyaudio.get_device_count()):
+            info = self.pyaudio.get_device_info_by_index(i)
+            if info['maxInputChannels'] > 0:
+                name_lower = info['name'].lower()
+                # Extract hw device from target if format is hw:Name,X,Y
+                if target_name.startswith('hw:') and ',' in target_name:
+                    parts = target_name.split(',')
+                    if len(parts) >= 2:
+                        hw_device = f"hw:{parts[-2]},{parts[-1]}"
+                        if hw_device in name_lower:
+                            return i, info['name']
+                if target_name.lower() in name_lower:
+                    return i, info['name']
+
+        return None, None
+
+    def _open_stream(self, device_index):
+        """Open ALSA input stream on given device. Returns True on success."""
+        import pyaudio
+        if self.name == "SDR2":
+            config_buffer_attr = 'SDR2_BUFFER_MULTIPLIER'
+        else:
+            config_buffer_attr = 'SDR_BUFFER_MULTIPLIER'
+
+        buffer_multiplier = getattr(self.config, config_buffer_attr, 4)
+        buffer_size = self.config.AUDIO_CHUNK_SIZE * buffer_multiplier
+
+        device_info = self.pyaudio.get_device_info_by_index(device_index)
+        max_channels = device_info['maxInputChannels']
+        sdr_channels = min(2, max_channels)
+
+        try:
+            self.input_stream = self.pyaudio.open(
+                format=pyaudio.paInt16,
+                channels=sdr_channels,
+                rate=self.config.AUDIO_RATE,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=buffer_size,
+                stream_callback=None
+            )
+            self.sdr_channels = sdr_channels
+            self._chunk_bytes = self.config.AUDIO_CHUNK_SIZE * sdr_channels * 2
+            return True
+        except Exception:
+            if sdr_channels == 2:
+                try:
+                    sdr_channels = 1
+                    self.input_stream = self.pyaudio.open(
+                        format=pyaudio.paInt16,
+                        channels=sdr_channels,
+                        rate=self.config.AUDIO_RATE,
+                        input=True,
+                        input_device_index=device_index,
+                        frames_per_buffer=buffer_size,
+                        stream_callback=None
+                    )
+                    self.sdr_channels = sdr_channels
+                    self._chunk_bytes = self.config.AUDIO_CHUNK_SIZE * sdr_channels * 2
+                    return True
+                except Exception:
+                    return False
+            return False
+
+    def _restart_stream(self, stage):
+        """Attempt staged recovery of the ALSA loopback.
+
+        Stage 1: Reopen stream (close + reopen ALSA device)
+        Stage 2: Reinitialize PyAudio entirely
+        Stage 3: Reload snd-aloop kernel module (requires SDR_WATCHDOG_MODPROBE=true)
+
+        Returns True on success, False on failure.
+        """
+        import pyaudio as _pyaudio_mod
+
+        if stage == 1:
+            print(f"\n[{self.name}] Watchdog: stage 1 recovery — reopening ALSA stream")
+            try:
+                self._stop_reader()
+                self._close_stream()
+                time.sleep(0.2)  # ALSA settle
+                dev_idx, dev_name = self._find_device()
+                if dev_idx is None:
+                    print(f"[{self.name}] Watchdog: stage 1 failed — device not found")
+                    return False
+                if not self._open_stream(dev_idx):
+                    print(f"[{self.name}] Watchdog: stage 1 failed — could not open stream")
+                    return False
+                self._start_reader()
+                print(f"[{self.name}] Watchdog: stage 1 success — stream reopened ({dev_name})")
+                return True
+            except Exception as e:
+                print(f"[{self.name}] Watchdog: stage 1 failed — {e}")
+                return False
+
+        elif stage == 2:
+            print(f"\n[{self.name}] Watchdog: stage 2 recovery — reinitializing PyAudio")
+            try:
+                self._stop_reader()
+                self._close_stream()
+                if self.pyaudio:
+                    try:
+                        self.pyaudio.terminate()
+                    except Exception:
+                        pass
+                time.sleep(0.5)
+                self.pyaudio = _pyaudio_mod.PyAudio()
+                dev_idx, dev_name = self._find_device()
+                if dev_idx is None:
+                    print(f"[{self.name}] Watchdog: stage 2 failed — device not found")
+                    return False
+                if not self._open_stream(dev_idx):
+                    print(f"[{self.name}] Watchdog: stage 2 failed — could not open stream")
+                    return False
+                self._start_reader()
+                print(f"[{self.name}] Watchdog: stage 2 success — PyAudio reinitialized ({dev_name})")
+                return True
+            except Exception as e:
+                print(f"[{self.name}] Watchdog: stage 2 failed — {e}")
+                return False
+
+        elif stage == 3:
+            if self.name == "SDR2":
+                modprobe_enabled = getattr(self.config, 'SDR2_WATCHDOG_MODPROBE', False)
+            else:
+                modprobe_enabled = getattr(self.config, 'SDR_WATCHDOG_MODPROBE', False)
+            if not modprobe_enabled:
+                return False
+
+            print(f"\n[{self.name}] Watchdog: stage 3 recovery — reloading snd-aloop kernel module")
+            try:
+                import subprocess
+                self._stop_reader()
+                self._close_stream()
+                if self.pyaudio:
+                    try:
+                        self.pyaudio.terminate()
+                    except Exception:
+                        pass
+                    self.pyaudio = None
+
+                result = subprocess.run(['sudo', 'modprobe', '-r', 'snd-aloop'],
+                                        timeout=10, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"[{self.name}] Watchdog: modprobe -r failed: {result.stderr.strip()}")
+                    # Continue anyway — module may not have been loaded
+                time.sleep(1.0)
+
+                result = subprocess.run(['sudo', 'modprobe', 'snd-aloop'],
+                                        timeout=10, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"[{self.name}] Watchdog: modprobe load failed: {result.stderr.strip()}")
+                    return False
+                time.sleep(1.0)  # Wait for devices to re-appear
+
+                self.pyaudio = _pyaudio_mod.PyAudio()
+                dev_idx, dev_name = self._find_device()
+                if dev_idx is None:
+                    print(f"[{self.name}] Watchdog: stage 3 failed — device not found after reload")
+                    return False
+                if not self._open_stream(dev_idx):
+                    print(f"[{self.name}] Watchdog: stage 3 failed — could not open stream")
+                    return False
+                self._start_reader()
+                print(f"[{self.name}] Watchdog: stage 3 success — module reloaded ({dev_name})")
+                return True
+            except Exception as e:
+                print(f"[{self.name}] Watchdog: stage 3 failed — {e}")
+                return False
+
+        return False
+
+    def check_watchdog(self):
+        """Check for stalled ALSA reads and attempt staged recovery.
+
+        Called from status_monitor_loop (~once per second).
+        """
+        if self._recovering or self._watchdog_gave_up:
+            return
+
+        if self.name == "SDR2":
+            timeout = getattr(self.config, 'SDR2_WATCHDOG_TIMEOUT', 10)
+            max_restarts = getattr(self.config, 'SDR2_WATCHDOG_MAX_RESTARTS', 5)
+        else:
+            timeout = getattr(self.config, 'SDR_WATCHDOG_TIMEOUT', 10)
+            max_restarts = getattr(self.config, 'SDR_WATCHDOG_MAX_RESTARTS', 5)
+
+        elapsed = time.monotonic() - self._last_successful_read
+        if elapsed < timeout:
+            self._watchdog_stage = 0  # healthy
+            return
+
+        if self._watchdog_restarts >= max_restarts:
+            if not self._watchdog_gave_up:
+                print(f"\n[{self.name}] Watchdog: gave up after {max_restarts} recovery attempts")
+                self._watchdog_gave_up = True
+            return
+
+        self._recovering = True
+        try:
+            # Try stages in order until one succeeds
+            for stage in (1, 2, 3):
+                if self._restart_stream(stage):
+                    self._watchdog_restarts += 1
+                    self._last_successful_read = time.monotonic()
+                    self._watchdog_stage = 0
+                    return
+            # All stages failed
+            self._watchdog_restarts += 1
+            print(f"[{self.name}] Watchdog: all recovery stages failed (attempt {self._watchdog_restarts}/{max_restarts})")
+        finally:
+            self._recovering = False
 
 
 class RemoteAudioServer:
@@ -5147,7 +5429,9 @@ class MumbleRadioGateway:
                     
                     # Format: SDR1: (no mode indicator here - it goes in proc_flags)
                     sdr_bar = f" {WHITE}SDR1:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, ducked=sdr_ducked, color='cyan')
-                
+                    if self.sdr_source._watchdog_restarts > 0:
+                        sdr_bar += f"{YELLOW}W{self.sdr_source._watchdog_restarts}{RESET}"
+
                 # SDR2 bar: Show SDR2 audio level (MAGENTA color for differentiation)
                 sdr2_bar = ""
                 if self.sdr2_source and self.sdr2_source.enabled:
@@ -5163,7 +5447,9 @@ class MumbleRadioGateway:
                     
                     # Format: SDR2: with magenta color
                     sdr2_bar = f" {WHITE}SDR2:{RESET}" + self.format_level_bar(current_sdr2_level, muted=sdr2_muted, ducked=sdr2_ducked, color='magenta')
-                
+                    if self.sdr2_source._watchdog_restarts > 0:
+                        sdr2_bar += f"{YELLOW}W{self.sdr2_source._watchdog_restarts}{RESET}"
+
                 # Remote audio bar (server: SV with tx level; client: CL with rx level)
                 remote_bar = ""
                 if self.remote_audio_server:
@@ -5249,6 +5535,12 @@ class MumbleRadioGateway:
                 elif pid != self._darkice_pid:
                     self._darkice_pid = pid  # PID changed (external restart)
 
+            # SDR loopback watchdog checks
+            if self.sdr_source and self.sdr_source.enabled:
+                self.sdr_source.check_watchdog()
+            if self.sdr2_source and self.sdr2_source.enabled:
+                self.sdr2_source.check_watchdog()
+
             time.sleep(0.1)
           except BaseException as _status_err:
             # Log crash so it's visible in the trace, then keep running.
@@ -5319,7 +5611,19 @@ class MumbleRadioGateway:
             print(f"  Stream Health: Auto-restart every {self.config.STREAM_RESTART_INTERVAL}s (when idle {self.config.STREAM_RESTART_IDLE_TIME}s+)")
         else:
             print(f"  Stream Health: DISABLED (may experience -9999 errors if streams get stuck)")
-        
+
+        # Show SDR watchdog status
+        if self.sdr_source and self.sdr_source.enabled:
+            wt = self.config.SDR_WATCHDOG_TIMEOUT
+            wm = self.config.SDR_WATCHDOG_MAX_RESTARTS
+            mp = self.config.SDR_WATCHDOG_MODPROBE
+            print(f"  SDR1 Watchdog: {wt}s timeout, {wm} max restarts, modprobe={'ON' if mp else 'OFF'}")
+        if self.sdr2_source and self.sdr2_source.enabled:
+            wt = self.config.SDR2_WATCHDOG_TIMEOUT
+            wm = self.config.SDR2_WATCHDOG_MAX_RESTARTS
+            mp = self.config.SDR2_WATCHDOG_MODPROBE
+            print(f"  SDR2 Watchdog: {wt}s timeout, {wm} max restarts, modprobe={'ON' if mp else 'OFF'}")
+
         # Print file mapping if playback is enabled
         if self.config.ENABLE_PLAYBACK and hasattr(self, 'playback_source') and self.playback_source:
             print()  # Blank line
