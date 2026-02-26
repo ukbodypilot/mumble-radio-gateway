@@ -157,7 +157,7 @@ class Config:
             'SDR_MIX_RATIO': 1.0,        # Volume/mix ratio when ducking is disabled (1.0 = full volume)
             'SDR_DISPLAY_GAIN': 1.0,     # Display sensitivity multiplier (1.0 = normal, higher = more sensitive bar)
             'SDR_AUDIO_BOOST': 1.0,      # Actual audio volume boost (1.0 = no change, 2.0 = 2x louder)
-            'SDR_BUFFER_MULTIPLIER': 8,  # Buffer size multiplier (8 = 8x normal buffer for smoother playback)
+            'SDR_BUFFER_MULTIPLIER': 4,  # Buffer size multiplier (4 = 4x normal buffer, ~200ms per ALSA read)
             'SDR_PRIORITY': 1,           # SDR priority for ducking (1 = higher priority, 2 = lower priority)
             # SDR2 Integration (second SDR receiver)
             'ENABLE_SDR2': False,
@@ -166,7 +166,7 @@ class Config:
             'SDR2_MIX_RATIO': 1.0,
             'SDR2_DISPLAY_GAIN': 1.0,
             'SDR2_AUDIO_BOOST': 1.0,
-            'SDR2_BUFFER_MULTIPLIER': 8,
+            'SDR2_BUFFER_MULTIPLIER': 4,
             'SDR2_PRIORITY': 2,          # SDR2 priority for ducking (1 = higher, 2 = lower)
             # Signal Detection Hysteresis (prevents stuttering from rapid on/off)
             'SIGNAL_ATTACK_TIME': 0.15,  # Seconds of CONTINUOUS signal required before a source switch is allowed
@@ -334,7 +334,7 @@ class AIOCRadioSource(AudioSource):
 
         # Queue for audio blobs delivered by PortAudio's callback thread.
         # The ALSA period is opened at 4×AUDIO_CHUNK_SIZE so each callback
-        # delivers one 200ms blob.  get_audio() pre-buffers 2 blobs (400ms)
+        # delivers one 200ms blob.  get_audio() pre-buffers 1 blob (200ms)
         # before first serve, then slices into 50ms sub-chunks (non-blocking).
         self._chunk_queue = _queue_mod.Queue(maxsize=16)
         self._blob_mult = 4  # ALSA period = 4×AUDIO_CHUNK_SIZE
@@ -344,14 +344,14 @@ class AIOCRadioSource(AudioSource):
         self._chunk_secs = config.AUDIO_CHUNK_SIZE / config.AUDIO_RATE           # ~0.05 s
         # Sub-chunk slicing state (accessed only from the get_audio() call site).
         self._sub_buffer = b''
-        self._prebuffering = True   # Wait for 2 blobs before first serve
+        self._prebuffering = True   # Wait for 1 blob before first serve
         self._last_blocked_ms = 0.0  # instrumentation: how long get_audio blocked on blob fetch
 
     def _audio_callback(self, in_data, frame_count, time_info, status):
         """PortAudio input callback — invoked at each ALSA period (4×AUDIO_CHUNK_SIZE frames).
 
-        Each callback delivers a 200ms blob.  get_audio() pre-buffers 2 blobs
-        (400ms cushion) before starting to serve, then slices into 50ms sub-chunks.
+        Each callback delivers a 200ms blob.  get_audio() pre-buffers 1 blob
+        (200ms cushion) before starting to serve, then slices into 50ms sub-chunks.
 
         Keep this method minimal — it runs in PortAudio's audio thread."""
         if in_data:
@@ -402,11 +402,11 @@ class AIOCRadioSource(AudioSource):
                     break
             self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _fetched else 0.0
 
-            # Pre-buffer gate: after the sub-buffer empties, accumulate 2 blobs
-            # (400ms cushion) before serving.  This absorbs USB delivery jitter
+            # Pre-buffer gate: after the sub-buffer empties, accumulate 1 blob
+            # (200ms cushion) before serving.  This absorbs USB delivery jitter
             # that causes late blob arrivals at the start of reception.
             if self._prebuffering:
-                if len(self._sub_buffer) < self._blob_bytes * 2:
+                if len(self._sub_buffer) < self._blob_bytes:
                     return None, False  # still accumulating
                 self._prebuffering = False
 
@@ -3172,10 +3172,9 @@ class MumbleRadioGateway:
                 self.speaker_audio_level = int(self.speaker_audio_level * 0.7 + current_level * 0.3)
             # Absorb hw/sw clock drift: drain excess when queue gets deep.
             # USB audio clocks can drift ~0.7% from software clock, accumulating
-            # ~1 extra chunk per 3.5s. Drain at 6 (not lower) to avoid frequent
-            # drops — one 200ms skip every ~14s is less audible than constant clicks.
+            # ~1 extra chunk per 3.5s. Drain at 4 to keep latency bounded.
             _spk_qd = self.speaker_queue.qsize()
-            if _spk_qd >= 6:
+            if _spk_qd >= 4:
                 while self.speaker_queue.qsize() > 2:
                     try:
                         self.speaker_queue.get_nowait()
@@ -3222,8 +3221,8 @@ class MumbleRadioGateway:
         try:
             device_index, device_name = self.find_speaker_device(self.pyaudio_instance)
             import queue
-            # 8 chunks × 50ms = 400ms of buffer headroom to absorb timing jitter
-            self.speaker_queue = queue.Queue(maxsize=8)
+            # 6 chunks × 50ms = 300ms of buffer headroom to absorb timing jitter
+            self.speaker_queue = queue.Queue(maxsize=6)
             self.speaker_stream = self.pyaudio_instance.open(
                 format=pyaudio.paInt16,
                 channels=self.config.AUDIO_CHANNELS,
@@ -3287,10 +3286,10 @@ class MumbleRadioGateway:
                 rate=self.config.AUDIO_RATE,
                 output=True,
                 output_device_index=output_idx,
-                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4  # 4x buffer for smooth playback
+                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 2  # 2x buffer for smooth playback
             )
             if self.config.VERBOSE_LOGGING:
-                latency_ms = (self.config.AUDIO_CHUNK_SIZE * 4 / self.config.AUDIO_RATE) * 1000
+                latency_ms = (self.config.AUDIO_CHUNK_SIZE * 2 / self.config.AUDIO_RATE) * 1000
                 print(f"✓ Audio output configured ({latency_ms:.1f}ms buffer)")
             else:
                 print("✓ Audio configured")
@@ -3316,8 +3315,8 @@ class MumbleRadioGateway:
 
             # Input stream (Radio → AIOC → Mumble).
             # frames_per_buffer=4×AUDIO_CHUNK_SIZE sets the ALSA period to 200ms.
-            # _audio_callback queues each 200ms blob; get_audio() pre-buffers 2
-            # blobs (400ms cushion) then slices into 50ms sub-chunks.
+            # _audio_callback queues each 200ms blob; get_audio() pre-buffers 1
+            # blob (200ms cushion) then slices into 50ms sub-chunks.
             aioc_callback = self.radio_source._audio_callback if self.radio_source else None
             self.input_stream = self.pyaudio_instance.open(
                 format=audio_format,

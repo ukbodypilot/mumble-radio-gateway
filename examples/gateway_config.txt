@@ -321,8 +321,8 @@ SDR_AUDIO_BOOST = 1.0
 # SDR1 buffer size multiplier — controls how many chunks the reader fetches per ALSA
 # read call (frames_per_buffer = AUDIO_CHUNK_SIZE × SDR_BUFFER_MULTIPLIER).
 # Larger values reduce ALSA read call overhead and absorb bursts more smoothly.
-# 4 = minimal | 8 = recommended | 16 = maximum stability
-SDR_BUFFER_MULTIPLIER = 8
+# 4 = recommended | 8 = extra stability | 16 = maximum (high latency)
+SDR_BUFFER_MULTIPLIER = 4
 
 # -------- SDR2 Configuration --------
 # Enable SDR2 audio input (second SDR receiver)
@@ -349,7 +349,7 @@ SDR2_DISPLAY_GAIN = 1.0
 SDR2_AUDIO_BOOST = 1.0
 
 # SDR2 buffer size multiplier (same as SDR_BUFFER_MULTIPLIER above)
-SDR2_BUFFER_MULTIPLIER = 8
+SDR2_BUFFER_MULTIPLIER = 4
 
 # ============================================================================
 # SIGNAL DETECTION & SOURCE SWITCHING
