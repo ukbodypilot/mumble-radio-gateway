@@ -15,14 +15,12 @@
 - **SDR2 failure shown as silent (indistinguishable)**: When SDR2 `setup_audio()` returns False, object kept with `enabled=False` but status bar checked only `if self.sdr2_source:` — showed `SDR2:[----------] 0%` identical to a working-but-silent source. Fixed: gate on `self.sdr2_source.enabled` so failed/disabled SDR2 is omitted from status bar.
 - **SDR2 error message hardcoded `hw:4,1`**: Warning on init failure always printed the default device name regardless of config. Fixed: use `self.config.SDR2_DEVICE_NAME`.
 - **SDR2 init leftover debug prints**: Two unconditional prints dumping `SDR2_DEVICE_NAME from config:` and `SDR2_PRIORITY from config:` were not guarded by VERBOSE_LOGGING. Removed.
+- **Announcement/PTT keys spam errors without AIOC**: Pressing 0-9 or 'p' without AIOC queued file playback → `set_ptt_state()` printed "[PTT] No AIOC device available!" every 50ms tick because it returned without setting `ptt_active`, causing re-trigger. Fixed: keyboard handler rejects keys when `aioc_device` is absent; `set_ptt_state` silently returns.
+- **Status bar width shift on mute/duck**: Muted/ducked bars were 10 visible chars vs normal bars at 11. Fixed: padded M/D suffix to 4 chars (`M   ` / `D   `).
 
 ## Config / Code Bugs
 - **Config parser crash on decimal**: `int('0.3')` raised ValueError, silently abandoning all config after that line. Fixed: `VAD_RELEASE: 1.0` default (float); parser tries `float()` fallback on ValueError.
 - **global_muted UnboundLocalError**: Set inside `if self.sdr_source:` block, used in `if self.sdr2_source:` block. Fixed: calculated before both blocks.
-
-## start.sh Bugs
-- **DarkIce 403/forbidden stops entire stack**: When Broadcastify mountpoint is already occupied (feed live on another server), DarkIce exits with "forbidden" and start.sh called `cleanup` and exited. Fixed: detect "forbidden/mountpoint occupied/maximum sources" in `/tmp/darkice.log`; if matched, clear `DARKICE_PID`, export `GATEWAY_FEED_OCCUPIED=1`, and continue.
-- **Mumble "Username already in use" when secondary machine starts**: Primary gateway already holds the Mumble username. Secondary machine crashed with unhandled `ConnectionRejectedError`. Fixed: `setup_mumble()` checks `GATEWAY_FEED_OCCUPIED` env var first (skips connection entirely), and also catches `ConnectionRejectedError` with "already in use" as fallback. Both paths set `self.secondary_mode = True` and return `True` so the gateway continues. Startup banner shows "SECONDARY / STANDBY MODE" with clear reason for both disablements.
 
 ## Installer Bugs
 - **numlids=3 silently ignored on Debian**: RPi kernel param, not standard. Fixed: `enable=1,1,1 index=4,5,6`.

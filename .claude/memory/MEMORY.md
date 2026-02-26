@@ -25,6 +25,10 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `VAD_THRESHOLD = -45`, `VAD_ATTACK = 0.05`, `VAD_RELEASE = 1.0`, `VAD_MIN_DURATION = 0.25`
 - `AUDIO_CHUNK_SIZE = 9600` (200ms at 48kHz)
 - SDR loopback: `hw:4,1` / `hw:5,1` / `hw:6,1` (capture side)
+- `SDR_BUFFER_MULTIPLIER = 4` (was 8/16, reduced for latency)
+- AIOC pre-buffer: 1 blob / 200ms (was 2 / 400ms)
+- AIOC TX output buffer: 2× chunk (was 4×)
+- Speaker queue: maxsize=6, drain threshold=4
 
 ## ALSA Loopback Setup
 - 3 cards pinned to hw:4, hw:5, hw:6 via `enable=1,1,1 index=4,5,6`
@@ -61,6 +65,8 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - WirePlumber AIOC grab
 - SDR2 duck-through on SDR1 buffer gaps (duck check only looked at sdrs_to_include)
 - WirePlumber grabs loopback on reboot if config not deployed
+- Announcement/PTT keys spammed errors without AIOC (keys now gated on aioc_device)
+- Status bar width shifted on mute/duck (fixed-width padding)
 
 ## Deployment Notes
 - WirePlumber config (`scripts/99-disable-loopback.conf`) must be copied to
@@ -72,8 +78,24 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - pymumble sends voice via TCP tunnel (UDPTUNNEL), not actual UDP.
   `set_receive_sound(True)` must be called before `start()` or `sound_output` is None.
 
+## Latency Audit (completed)
+- Opus/pymumble path is tight — no changes needed (20ms frames, 10ms loop, TCP_NODELAY)
+- RemoteAudioServer/Source path already low-latency (immediate send, no accumulation)
+- MUMBLE_JITTER_BUFFER config exists but is dead code — pymumble has no such API
+- CBR vs VBR: no latency difference, user prefers CBR for quality
+
+## Ducking Notes
+- SDR ducking uses strict `<` on sdr_priority — equal priorities mix, don't duck
+- REMOTE_AUDIO_PRIORITY must be 0 to duck SDR1 (priority 1) and SDR2 (priority 2)
+- set_ptt_state silently returns when no AIOC (no error spam)
+
+## Status Bar
+- format_level_bar() must return fixed-width (11 visible chars: 6-char bar + space + 4-char suffix)
+- User cares about fixed-width status line — always verify all return paths match
+
 ## User Preferences
 - CBR Opus (not VBR) — cares about quality not bandwidth
 - Commits requested explicitly — never auto-commit
 - Concise responses, no emojis
 - gateway_config.txt IS committed (repo is private); bak/ is not
+- Fixed-width status bar is important
