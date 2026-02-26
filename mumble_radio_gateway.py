@@ -195,6 +195,15 @@ class Config:
             'SPEAKER_OUTPUT_DEVICE': '',   # '' = system default; or partial name e.g. 'USB Audio', 'hw:2,0'
             'SPEAKER_VOLUME': 1.0,         # float multiplier
             'SPEAKER_START_MUTED': True,   # Start with speaker muted (toggle with 's' key)
+            # Remote Audio Link (server sends mixed audio to client over TCP)
+            'REMOTE_AUDIO_ROLE': 'disabled',       # 'server', 'client', or 'disabled'
+            'REMOTE_AUDIO_HOST': '',               # Server: bind addr; Client: server IP
+            'REMOTE_AUDIO_PORT': 9600,
+            'REMOTE_AUDIO_DUCK': True,
+            'REMOTE_AUDIO_PRIORITY': 3,            # sdr_priority for ducking (configurable)
+            'REMOTE_AUDIO_DISPLAY_GAIN': 1.0,
+            'REMOTE_AUDIO_AUDIO_BOOST': 1.0,
+            'REMOTE_AUDIO_RECONNECT_INTERVAL': 5.0,
         }
         
         # Set defaults
@@ -1457,6 +1466,273 @@ class SDRSource(AudioSource):
                 pass  # Suppress errors
 
 
+class RemoteAudioServer:
+    """TCP server that sends mixed audio to a single connected client."""
+    def __init__(self, config):
+        self.config = config
+        self.host = config.REMOTE_AUDIO_HOST or ''
+        self.port = int(config.REMOTE_AUDIO_PORT)
+        self.connected = False
+        self.client_address = None
+        self._server_socket = None
+        self._client_socket = None
+        self._accept_thread = None
+        self._running = False
+
+    def start(self):
+        """Bind, listen, and spawn accept thread."""
+        import socket
+        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server_socket.settimeout(1.0)
+        self._server_socket.bind((self.host, self.port))
+        self._server_socket.listen(1)
+        self._running = True
+        self._accept_thread = threading.Thread(
+            target=self._accept_loop, name="RemoteAudio-accept", daemon=True
+        )
+        self._accept_thread.start()
+        bind_addr = self.host or '0.0.0.0'
+        print(f"✓ Remote audio server listening on {bind_addr}:{self.port}")
+
+    def _accept_loop(self):
+        """Accept one client at a time; replace previous if new one connects."""
+        import socket
+        while self._running:
+            try:
+                client, addr = self._server_socket.accept()
+                # Close previous client if any
+                if self._client_socket:
+                    try:
+                        self._client_socket.close()
+                    except Exception:
+                        pass
+                client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self._client_socket = client
+                self.client_address = f"{addr[0]}:{addr[1]}"
+                self.connected = True
+                print(f"\n[RemoteAudio] Client connected from {self.client_address}")
+            except socket.timeout:
+                continue
+            except Exception:
+                if self._running:
+                    time.sleep(0.5)
+
+    def send_audio(self, pcm_data):
+        """Send length-prefixed PCM to connected client. Non-blocking on failure."""
+        if not self._client_socket:
+            return
+        import struct
+        try:
+            header = struct.pack('>I', len(pcm_data))
+            self._client_socket.sendall(header + pcm_data)
+        except Exception:
+            # Client disconnected
+            try:
+                self._client_socket.close()
+            except Exception:
+                pass
+            self._client_socket = None
+            self.connected = False
+            self.client_address = None
+
+    def cleanup(self):
+        """Close all sockets."""
+        self._running = False
+        if self._client_socket:
+            try:
+                self._client_socket.close()
+            except Exception:
+                pass
+        if self._server_socket:
+            try:
+                self._server_socket.close()
+            except Exception:
+                pass
+        self.connected = False
+
+
+class RemoteAudioSource(AudioSource):
+    """Receives audio from a RemoteAudioServer over TCP.
+
+    Name starts with 'SDR' so the mixer's duck system automatically handles it
+    the same way it handles SDR1/SDR2 sources.
+    """
+    def __init__(self, config, gateway):
+        super().__init__("SDRSV", config)
+        self.gateway = gateway
+        self.priority = 2  # Same as SDR sources in the mixer
+        self.sdr_priority = int(config.REMOTE_AUDIO_PRIORITY)
+        self.ptt_control = False
+        self.volume = 1.0
+        self.mix_ratio = 1.0
+        self.duck = config.REMOTE_AUDIO_DUCK
+        self.enabled = True
+        self.muted = False
+
+        self.audio_level = 0
+        self.server_connected = False
+
+        self._chunk_queue = _queue_mod.Queue(maxsize=16)
+        self._sub_buffer = b''
+        self._chunk_bytes = config.AUDIO_CHUNK_SIZE * 2  # 16-bit mono
+        self._reader_running = False
+        self._reader_thread = None
+
+    def setup_audio(self):
+        """Start the TCP reader thread."""
+        self._reader_running = True
+        self._reader_thread = threading.Thread(
+            target=self._reader_thread_func,
+            name="SDRSV-reader",
+            daemon=True
+        )
+        self._reader_thread.start()
+        return True
+
+    def _reader_thread_func(self):
+        """Connect to server, read length-prefixed PCM, queue blobs, reconnect on failure."""
+        import socket, struct
+        host = self.config.REMOTE_AUDIO_HOST
+        port = int(self.config.REMOTE_AUDIO_PORT)
+        reconnect_interval = float(self.config.REMOTE_AUDIO_RECONNECT_INTERVAL)
+
+        while self._reader_running:
+            sock = None
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2.0)
+                sock.connect((host, port))
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock.settimeout(2.0)
+                self.server_connected = True
+                print(f"\n[SDRSV] Connected to remote audio server {host}:{port}")
+
+                while self._reader_running:
+                    # Read 4-byte length header
+                    header = self._recv_exact(sock, 4)
+                    if header is None:
+                        break
+                    msg_len = struct.unpack('>I', header)[0]
+                    if msg_len == 0 or msg_len > 96000:
+                        break  # sanity check
+                    # Read PCM payload
+                    payload = self._recv_exact(sock, msg_len)
+                    if payload is None:
+                        break
+                    try:
+                        self._chunk_queue.put_nowait(payload)
+                    except _queue_mod.Full:
+                        # Drop oldest to keep queue fresh
+                        try:
+                            self._chunk_queue.get_nowait()
+                        except _queue_mod.Empty:
+                            pass
+                        try:
+                            self._chunk_queue.put_nowait(payload)
+                        except _queue_mod.Full:
+                            pass
+            except Exception as e:
+                if self._reader_running and self.config.VERBOSE_LOGGING:
+                    print(f"\n[SDRSV] Connection error: {e}")
+            finally:
+                self.server_connected = False
+                if sock:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+
+            if self._reader_running:
+                time.sleep(reconnect_interval)
+
+    @staticmethod
+    def _recv_exact(sock, n):
+        """Receive exactly n bytes from socket, or return None on disconnect."""
+        data = b''
+        while len(data) < n:
+            try:
+                chunk = sock.recv(n - len(data))
+            except Exception:
+                return None
+            if not chunk:
+                return None
+            data += chunk
+        return data
+
+    def get_audio(self, chunk_size):
+        """Drain queue, slice sub-buffer, level metering, audio boost."""
+        if not self.enabled:
+            return None, False
+
+        # Skip queue lock entirely when not connected — nothing to drain
+        if not self.server_connected and not self._sub_buffer:
+            return None, False
+
+        cb = self._chunk_bytes
+
+        # Fill sub-buffer from queue
+        while len(self._sub_buffer) < cb:
+            try:
+                blob = self._chunk_queue.get_nowait()
+                self._sub_buffer += blob
+            except _queue_mod.Empty:
+                return None, False
+
+        raw = self._sub_buffer[:cb]
+        self._sub_buffer = self._sub_buffer[cb:]
+
+        # Muted: keep draining but discard
+        should_discard = self.muted or (self.gateway.tx_muted and self.gateway.rx_muted)
+        if should_discard:
+            self.audio_level = max(0, int(self.audio_level * 0.7))
+            return None, False
+
+        # Level metering and audio boost
+        arr = np.frombuffer(raw, dtype=np.int16)
+        if len(arr) > 0:
+            farr = arr.astype(np.float32)
+            rms = float(np.sqrt(np.mean(farr * farr)))
+            if rms > 0:
+                db = 20 * _math_mod.log10(rms / 32767.0)
+                raw_level = max(0, min(100, (db + 60) * (100 / 60)))
+            else:
+                raw_level = 0
+            display_gain = float(self.config.REMOTE_AUDIO_DISPLAY_GAIN)
+            display_level = min(100, int(raw_level * display_gain))
+            if display_level > self.audio_level:
+                self.audio_level = display_level
+            else:
+                self.audio_level = int(self.audio_level * 0.7 + display_level * 0.3)
+
+            audio_boost = float(self.config.REMOTE_AUDIO_AUDIO_BOOST)
+            if audio_boost != 1.0:
+                arr = np.clip(farr * audio_boost, -32768, 32767).astype(np.int16)
+                raw = arr.tobytes()
+
+        return raw, False  # Never triggers PTT
+
+    def is_active(self):
+        return self.enabled and not self.muted and self.server_connected
+
+    def get_status(self):
+        if not self.enabled:
+            return "SDRSV: Disabled"
+        elif self.muted:
+            return "SDRSV: Muted"
+        elif self.server_connected:
+            return f"SDRSV: Connected ({self.audio_level}%)"
+        else:
+            return "SDRSV: Disconnected"
+
+    def cleanup(self):
+        """Stop reader thread."""
+        self._reader_running = False
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2.0)
+        self._sub_buffer = b''
+
+
 class StreamOutputSource:
     """Stream audio output to named pipe for Darkice"""
     def __init__(self, config, gateway):
@@ -1581,18 +1857,18 @@ class AudioMixer:
     def get_mixed_audio(self, chunk_size):
         """
         Get mixed audio from all enabled sources.
-        Returns: (mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked)
+        Returns: (mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked)
         """
         self.call_count += 1
-        
+
         # Debug output every 100 calls
         if self.call_count % 100 == 0 and self.config.VERBOSE_LOGGING:
             print(f"\n[Mixer Debug] Called {self.call_count} times, {len(self.sources)} sources")
             for src in self.sources:
                 print(f"  Source: {src.name}, enabled={src.enabled}, priority={src.priority}")
-        
+
         if not self.sources:
-            return None, False, [], False, False, None
+            return None, False, [], False, False, None, False
 
         # Priority mode: only use highest priority active source
         if self.mixing_mode == 'priority':
@@ -1613,12 +1889,12 @@ class AudioMixer:
                         print(f"  [Mixer] {source.name} returned None (no audio)")
 
                 if audio is not None:
-                    return audio, ptt and source.ptt_control, [source.name], False, False, None
+                    return audio, ptt and source.ptt_control, [source.name], False, False, None, False
 
             # No sources had audio
             if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                 print(f"  [Mixer] No sources returned audio")
-            return None, False, [], False, False, None
+            return None, False, [], False, False, None, False
 
         # Simultaneous mode: mix all active sources
         elif self.mixing_mode == 'simultaneous':
@@ -1628,7 +1904,7 @@ class AudioMixer:
         elif self.mixing_mode == 'duck':
             return self._mix_with_ducking(chunk_size)
 
-        return None, False, [], False, False, None
+        return None, False, [], False, False, None, False
     
     def _mix_simultaneous(self, chunk_size):
         """Mix all active sources together with SDR priority-based ducking"""
@@ -1872,6 +2148,7 @@ class AudioMixer:
 
         sdr1_was_ducked = False
         sdr2_was_ducked = False
+        sdrsv_was_ducked = False
 
         # First pass: determine which SDRs should be ducked
         sdrs_to_include = {}  # SDRs that will actually be mixed
@@ -1920,6 +2197,8 @@ class AudioMixer:
                     sdr1_was_ducked = True
                 elif sdr_name == "SDR2":
                     sdr2_was_ducked = True
+                elif sdr_name == "SDRSV":
+                    sdrsv_was_ducked = True
             else:
                 # Instant attack + held release for SDR inclusion.
                 #
@@ -2021,7 +2300,7 @@ class AudioMixer:
         if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
             print(f"  [Mixer-Simultaneous] Result: {len(active_sources)} active sources, PTT={ptt_required}")
 
-        return mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio
+        return mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked
     
     def _mix_with_ducking(self, chunk_size):
         """Mix with ducking: reduce lower priority sources"""
@@ -2061,7 +2340,7 @@ class AudioMixer:
             else:
                 mixed_audio = self._mix_audio_streams(mixed_audio, audio, 0.5)
         
-        return mixed_audio, ptt_required, active_sources, False, False, None
+        return mixed_audio, ptt_required, active_sources, False, False, None, False
 
     def _mix_audio_streams(self, audio1, audio2, ratio=0.5):
         """Mix two audio streams together"""
@@ -2183,6 +2462,10 @@ class MumbleRadioGateway:
         self.sdr2_muted = False  # SDR2-specific mute
         self.sdr2_ducked = False  # Is SDR2 currently being ducked (status display)
         self.sdr2_audio_level = 0  # SDR2 audio level for status bar
+        self.remote_audio_server = None   # RemoteAudioServer (role=server)
+        self.remote_audio_source = None   # RemoteAudioSource (role=client)
+        self.remote_audio_muted = False   # Client: mute toggle
+        self.remote_audio_ducked = False  # Client: ducked state for status bar
         self.aioc_available = False  # Track if AIOC is connected
     
     def calculate_audio_level(self, pcm_data):
@@ -2229,6 +2512,8 @@ class MumbleRadioGateway:
             bar_color = CYAN
         elif color == 'magenta':
             bar_color = MAGENTA
+        elif color == 'yellow':
+            bar_color = YELLOW
         else:
             bar_color = GREEN
         
@@ -3140,7 +3425,39 @@ class MumbleRadioGateway:
                 self.sdr2_source = None
                 if self.config.VERBOSE_LOGGING:
                     print("  SDR2 audio: DISABLED (set ENABLE_SDR2 = true to enable)")
-            
+
+            # Initialize Remote Audio Link
+            remote_role = getattr(self.config, 'REMOTE_AUDIO_ROLE', 'disabled').lower().strip("'\"")
+            if remote_role == 'server':
+                try:
+                    self.remote_audio_server = RemoteAudioServer(self.config)
+                    self.remote_audio_server.start()
+                except Exception as e:
+                    print(f"⚠ Warning: Could not start remote audio server: {e}")
+                    self.remote_audio_server = None
+            elif remote_role == 'client':
+                try:
+                    host = self.config.REMOTE_AUDIO_HOST
+                    if not host:
+                        print("⚠ Warning: REMOTE_AUDIO_HOST not set, cannot start remote audio client")
+                    else:
+                        print(f"Initializing remote audio client (server: {host}:{self.config.REMOTE_AUDIO_PORT})...")
+                        self.remote_audio_source = RemoteAudioSource(self.config, self)
+                        if self.remote_audio_source.setup_audio():
+                            self.remote_audio_source.enabled = True
+                            self.remote_audio_source.duck = self.config.REMOTE_AUDIO_DUCK
+                            self.remote_audio_source.sdr_priority = int(self.config.REMOTE_AUDIO_PRIORITY)
+                            self.mixer.add_source(self.remote_audio_source)
+                            print(f"✓ Remote audio source (SDRSV) added to mixer")
+                            print(f"  Priority: {self.config.REMOTE_AUDIO_PRIORITY}")
+                            print(f"  Press 'g' to mute/unmute remote audio")
+                        else:
+                            print("⚠ Warning: Could not initialize remote audio source")
+                            self.remote_audio_source = None
+                except Exception as e:
+                    print(f"⚠ Warning: Could not initialize remote audio client: {e}")
+                    self.remote_audio_source = None
+
             # Initialize EchoLink source if enabled (Phase 3B)
             if self.config.ENABLE_ECHOLINK:
                 try:
@@ -3923,12 +4240,13 @@ class MumbleRadioGateway:
                     _tr_aioc_sb = len(self.radio_source._sub_buffer) if self.radio_source else -1
 
                     _tr_mixer_t0 = time.monotonic()
-                    data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
+                    data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
                     _tr_mixer_ms = (time.monotonic() - _tr_mixer_t0) * 1000
 
                     # Store SDR ducked states for status bar display
                     self.sdr_ducked = sdr1_was_ducked
                     self.sdr2_ducked = sdr2_was_ducked
+                    self.remote_audio_ducked = sdrsv_was_ducked
 
                     # Capture mixer internal state for trace
                     if self._trace_recording and hasattr(self.mixer, '_last_trace_state'):
@@ -4026,6 +4344,11 @@ class MumbleRadioGateway:
                             if self.stream_output and self.stream_output.connected:
                                 try:
                                     self.stream_output.send_audio(rx_for_mumble)
+                                except Exception:
+                                    pass
+                            if self.remote_audio_server and self.remote_audio_server.connected:
+                                try:
+                                    self.remote_audio_server.send_audio(rx_for_mumble)
                                 except Exception:
                                     pass
                             if self.speaker_stream and not self.speaker_muted:
@@ -4142,6 +4465,12 @@ class MumbleRadioGateway:
                     except Exception as stream_err:
                         if self.config.VERBOSE_LOGGING:
                             print(f"\n[Stream] Send error: {stream_err}")
+
+                if self.remote_audio_server and self.remote_audio_server.connected:
+                    try:
+                        self.remote_audio_server.send_audio(data)
+                    except Exception:
+                        pass
 
             except Exception as e:
                 consecutive_errors += 1
@@ -4468,6 +4797,16 @@ class MumbleRadioGateway:
                                 state = "MUTED" if self.sdr2_muted else "UNMUTED"
                                 print(f"\n[SDR2] {state}")
                     
+                    elif char == 'g':
+                        # Toggle remote audio mute (client only)
+                        if self.remote_audio_source:
+                            self.remote_audio_muted = not self.remote_audio_muted
+                            self.remote_audio_source.muted = self.remote_audio_muted
+                            self._trace_events.append((time.monotonic(), 'remote_mute', 'on' if self.remote_audio_muted else 'off'))
+                            if self.config.VERBOSE_LOGGING:
+                                state = "MUTED" if self.remote_audio_muted else "UNMUTED"
+                                print(f"\n[SDRSV] {state}")
+
                     elif char == 'v':
                         # Toggle VAD on/off
                         self.config.ENABLE_VAD = not self.config.ENABLE_VAD
@@ -4722,6 +5061,18 @@ class MumbleRadioGateway:
                     # Format: SDR2: with magenta color
                     sdr2_bar = f" {WHITE}SDR2:{RESET}" + self.format_level_bar(current_sdr2_level, muted=sdr2_muted, ducked=sdr2_ducked, color='magenta')
                 
+                # Remote audio bar (server: CL with tx level; client: SV with rx level)
+                remote_bar = ""
+                if self.remote_audio_server:
+                    # Server: show audio level being sent (same as tx_audio_level)
+                    cl_level = self.tx_audio_level if self.remote_audio_server.connected else 0
+                    remote_bar = f" {WHITE}CL:{RESET}" + self.format_level_bar(cl_level, color='yellow')
+                elif self.remote_audio_source:
+                    current_sv_level = getattr(self.remote_audio_source, 'audio_level', 0)
+                    sv_muted = self.remote_audio_muted or global_muted
+                    sv_ducked = self.remote_audio_ducked if not sv_muted and current_sv_level > 0 else False
+                    remote_bar = f" {WHITE}SV:{RESET}" + self.format_level_bar(current_sv_level, muted=sv_muted, ducked=sv_ducked, color='green')
+
                 # Add diagnostics if there have been restarts (fixed width: always 6 chars like " R:123" or "      ")
                 # This prevents the status line from jumping when restarts occur
                 if self.stream_restart_count > 0:
@@ -4767,7 +5118,7 @@ class MumbleRadioGateway:
 
                 # Extra padding to clear any orphaned text when line shortens
                 # Order: ...Vol → FileStatus → ProcessingFlags → Diagnostics
-                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{vol_info}{file_status_info}{proc_info}{diag}     ", end="", flush=True)
+                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{vol_info}{file_status_info}{proc_info}{diag}     ", end="", flush=True)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -5291,7 +5642,23 @@ class MumbleRadioGateway:
                     print("  SDR2 audio closed")
             except Exception as e:
                 pass  # Suppress ALSA errors during shutdown
-        
+
+        if self.remote_audio_source:
+            try:
+                self.remote_audio_source.cleanup()
+                if self.config.VERBOSE_LOGGING:
+                    print("  Remote audio source closed")
+            except Exception:
+                pass
+
+        if self.remote_audio_server:
+            try:
+                self.remote_audio_server.cleanup()
+                if self.config.VERBOSE_LOGGING:
+                    print("  Remote audio server closed")
+            except Exception:
+                pass
+
         if self.input_stream:
             try:
                 # Stop stream first (prevents ALSA mmap errors)
