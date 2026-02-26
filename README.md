@@ -179,10 +179,11 @@ SDR2_DUCK = true        # SDR2: ducked by radio RX and SDR1
 
 **Status bar during dual SDR operation:**
 ```
-SDR1:[███----] 45%  SDR2:[--DUCK--]  D    ← SDR2 ducked by SDR1
-SDR1:[--DUCK-]  D   SDR2:[--DUCK--]  D    ← both ducked by radio RX
-SDR1:[███----] 45%  SDR2:[██-----] 30%    ← both playing (mixed)
+SDR1:[███---] 45%  SDR2:-DUCK- D      ← SDR2 ducked by SDR1
+SDR1:-DUCK- D      SDR2:-DUCK- D      ← both ducked by radio RX
+SDR1:[███---] 45%  SDR2:[██----] 30%  ← both playing (mixed)
 ```
+*(The bar is always 6 characters wide; `-DUCK-` and `-MUTE-` replace the filled bar in their respective states.)*
 
 ### Source Switching — Attack, Release & Transition Padding
 
@@ -442,7 +443,6 @@ Press keys during operation to control the gateway:
 - `a` = Toggle AGC
 - `w` = Toggle Wiener Filter (spectral noise suppression)
 - `e` = Toggle Echo Cancellation
-- `x` = Toggle Stream Health Management
 
 ### File Playback Controls
 - `1-9` = Play announcement files
@@ -452,7 +452,7 @@ Press keys during operation to control the gateway:
 ## Status Bar
 
 ```
-ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% SDR:[███--] 30% SP:[██---] 24% Vol:1.0x 1234567890 [D]
+ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% SDR1:[███--] 30% SP:[██---] 24% Vol:1.0x 1234567890 [D]
 ```
 
 ### Status Indicators
@@ -480,12 +480,12 @@ ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% S
 
 **Bar States:**
 ```
-Normal:  [███-------] 30%   ← Active audio
-Muted:   [---MUTE---]  M    ← Channel muted
-Ducked:  [---DUCK---]  D    ← SDR being ducked (SDR only)
+Normal:  [███---] 45%   ← Active audio (6-char bar, 3-digit % suffix)
+Muted:   -MUTE-  M      ← Channel muted
+Ducked:  -DUCK-  D      ← SDR being ducked (SDR only)
 ```
 
-**All bars have fixed width** (17 characters) to prevent line length changes.
+**All bars have fixed width** (11 visible characters: 6-char bar + space + 4-char suffix) to prevent line length changes.
 
 ### File Status (0-9)
 - **Green number** = File loaded
@@ -739,7 +739,7 @@ SDR_DUCK = true                  # Duck when radio RX or higher-priority SDR act
 SDR_MIX_RATIO = 1.0              # Volume when ducking disabled (0.0-1.0)
 SDR_DISPLAY_GAIN = 1.0           # Status bar sensitivity (1.0-10.0)
 SDR_AUDIO_BOOST = 1.0            # Actual volume boost (1.0-10.0)
-SDR_BUFFER_MULTIPLIER = 8        # Buffer size multiplier (1-16)
+SDR_BUFFER_MULTIPLIER = 4        # Buffer size multiplier (4=recommended, 8=extra stability)
 
 # ── SDR2 (magenta bar) ───────────────────────────────
 ENABLE_SDR2 = false              # Enable SDR2 (disabled by default)
@@ -749,7 +749,7 @@ SDR2_DUCK = true                 # Duck when radio RX or SDR1 active
 SDR2_MIX_RATIO = 1.0
 SDR2_DISPLAY_GAIN = 1.0
 SDR2_AUDIO_BOOST = 1.0
-SDR2_BUFFER_MULTIPLIER = 8
+SDR2_BUFFER_MULTIPLIER = 4
 
 # ── Watchdog (both SDRs) ──────────────────────────────
 # Detects stalled ALSA reads after extended runtime; attempts staged recovery.
@@ -772,17 +772,17 @@ SDR2_WATCHDOG_MODPROBE     = false
 ```ini
 # Attack: continuous signal required before a duck switch is triggered.
 # Any silence resets this timer — prevents transient noises causing a switch.
-SIGNAL_ATTACK_TIME = 0.5         # seconds (default 0.5)
+SIGNAL_ATTACK_TIME = 0.15        # seconds (default 0.15)
 
 # Release: continuous silence required before SDR resumes after a duck.
 # Prevents SDR popping back on during natural speech pauses.
-SIGNAL_RELEASE_TIME = 2.0        # seconds (default 2.0)
+SIGNAL_RELEASE_TIME = 3.0        # seconds (default 3.0)
 
 # Padding: silence inserted at each transition (duck-out AND duck-in).
 # Creates a clean audible break so changeovers are never jarring.
 #   duck-out: [SDR] → silence → [radio takes over]
 #   duck-in:  [radio ends] → silence → [SDR resumes]
-SWITCH_PADDING_TIME = 0.2        # seconds (default 0.2)
+SWITCH_PADDING_TIME = 1.0        # seconds (default 1.0)
 ```
 
 ### File Playback Settings

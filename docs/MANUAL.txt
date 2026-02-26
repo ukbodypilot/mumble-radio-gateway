@@ -267,8 +267,8 @@ SDR Inputs:
   SDR2_AUDIO_BOOST   = 1.0
 
 Source Switching Hysteresis (SDR ducking):
-  SIGNAL_ATTACK_TIME  = 0.5  # Continuous signal before duck fires (seconds)
-  SIGNAL_RELEASE_TIME = 1.0  # Continuous silence before SDR resumes (seconds)
+  SIGNAL_ATTACK_TIME  = 0.15 # Continuous signal before duck fires (seconds)
+  SIGNAL_RELEASE_TIME = 3.0  # Continuous silence before SDR resumes (seconds)
   SWITCH_PADDING_TIME = 1.0  # Silence gap inserted at each transition (seconds)
 
 File Playback:
