@@ -4398,6 +4398,13 @@ class MumbleRadioGateway:
                             if self.speaker_stream and not self.speaker_muted:
                                 self._speaker_enqueue(rx_for_mumble)
 
+                        # Send mixed audio (file playback) to remote client even during PTT
+                        if self.remote_audio_server and self.remote_audio_server.connected:
+                            try:
+                                self.remote_audio_server.send_audio(data)
+                            except Exception:
+                                pass
+
                         # Skip the normal RX→Mumble path below - this is TX audio
                         _tr_outcome = 'ptt'
                         continue
@@ -4469,6 +4476,14 @@ class MumbleRadioGateway:
                 self._speaker_enqueue(data)
                 _tr_spk_ok = True
 
+                # Remote audio server send — must be BEFORE Mumble checks so it
+                # works even when Mumble is not connected (e.g. secondary mode).
+                if self.remote_audio_server and self.remote_audio_server.connected:
+                    try:
+                        self.remote_audio_server.send_audio(data)
+                    except Exception:
+                        pass
+
                 if not self.mumble:
                     _tr_outcome = 'no_mumble'
                     continue
@@ -4509,12 +4524,6 @@ class MumbleRadioGateway:
                     except Exception as stream_err:
                         if self.config.VERBOSE_LOGGING:
                             print(f"\n[Stream] Send error: {stream_err}")
-
-                if self.remote_audio_server and self.remote_audio_server.connected:
-                    try:
-                        self.remote_audio_server.send_audio(data)
-                    except Exception:
-                        pass
 
             except Exception as e:
                 consecutive_errors += 1
