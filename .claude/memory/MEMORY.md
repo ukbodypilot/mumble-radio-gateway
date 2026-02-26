@@ -106,5 +106,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - CBR Opus (not VBR) — cares about quality not bandwidth
 - Commits requested explicitly — never auto-commit
 - Concise responses, no emojis
-- gateway_config.txt IS committed (repo is private); bak/ is not
+- **gateway_config.txt is NOT committed** — it is in .gitignore (was committed while repo was private; removed from history when repo went public)
+- **NEVER commit Broadcastify stream key/password** (STREAM_PASSWORD, STREAM_MOUNT)
+- bak/ is not committed
 - Fixed-width status bar is important

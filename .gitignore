@@ -43,10 +43,11 @@ Thumbs.db
 *.bak
 *~
 
-# User configurations
+# User configurations — never commit (contains secrets: stream keys, passwords)
+gateway_config.txt
 gateway_config_local.txt
 
-# Audio test files — tracked in audio/ (repo is private)
+# Audio test files
 
 # Downloads/temp
 node-*.tar.xz

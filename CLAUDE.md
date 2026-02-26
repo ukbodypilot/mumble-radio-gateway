@@ -19,7 +19,9 @@ cp .claude/memory/* ~/.claude/projects/-home-user-Downloads-mumble-radio-gateway
 Claude Code's auto-memory path: `~/.claude/projects/-home-user-Downloads-mumble-radio-gateway/memory/`
 
 ## Project Rules
-- `gateway_config.txt` IS committed — repo is private, full config including passwords syncs between machines
+- `gateway_config.txt` is in `.gitignore` — NEVER commit it (repo is public; it contains stream keys and passwords)
+- NEVER commit Broadcastify credentials (STREAM_PASSWORD, STREAM_MOUNT) or any other secrets
+- To sync config between machines: copy the file manually (scp/rsync) — do NOT commit it
 - Never commit the `bak/` directory
 - Only commit when the user explicitly asks
 - Never auto-push
