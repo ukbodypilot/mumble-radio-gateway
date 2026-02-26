@@ -107,7 +107,12 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - S:n diagnostic = DarkIce restart count (separate from R:n stream restarts)
 - ANSI colors: WHITE=\033[97m labels, GREEN=\033[92m active, RED=\033[91m TX bar,
   CYAN=\033[96m SDR/SP bars, YELLOW=\033[93m percentages/dB, GRAY=\033[90m inactive
-- README uses ```ansi fenced blocks; MANUAL.txt has raw ESC bytes for terminal rendering
+- README uses SVG images (docs/img/) for colored examples — GitHub renders SVG in color
+  correctly; ansi fenced code blocks do NOT work in GitHub README (ESC bytes show as ?)
+- MANUAL.txt has raw ESC bytes for terminal rendering (cat/less -R)
+- SVG generator script: python3 with tspan fill= per color segment; dark bg #1a1a1a, rx=4
+  Terminal palette: white=#ffffff green=#55ff55 red=#ff5555 yellow=#ffff55 cyan=#55ffff
+  gray=#777777 orange=#cc8800 default=#cccccc; char_w = font_size * 0.601
 
 ## User Preferences
 - CBR Opus (not VBR) — cares about quality not bandwidth
