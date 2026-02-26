@@ -2487,6 +2487,12 @@ class MumbleRadioGateway:
         self.remote_audio_muted = False   # Client: mute toggle
         self.remote_audio_ducked = False  # Client: ducked state for status bar
         self.aioc_available = False  # Track if AIOC is connected
+
+        # DarkIce process monitoring (auto-restart if it dies)
+        self._darkice_pid = None          # PID when initially detected
+        self._darkice_was_running = False  # True if DarkIce was alive at startup
+        self._darkice_restart_count = 0
+        self._last_darkice_check = 0
     
     def calculate_audio_level(self, pcm_data):
         """Calculate RMS audio level from PCM data (0-100 scale)"""
@@ -3523,7 +3529,15 @@ class MumbleRadioGateway:
                     self.stream_output = None
             else:
                 self.stream_output = None
-            
+
+            # Detect running DarkIce for process monitoring
+            if self.config.ENABLE_STREAM_OUTPUT:
+                pid = self._find_darkice_pid()
+                if pid:
+                    self._darkice_pid = pid
+                    self._darkice_was_running = True
+                    print(f"  DarkIce detected (PID {pid})")
+
             return True
             
         except Exception as e:
@@ -4579,6 +4593,40 @@ class MumbleRadioGateway:
                         _tr_mixer_state,                       # 17: mixer internal state dict
                     ))
     
+    def _find_darkice_pid(self):
+        """Find a running DarkIce process. Returns PID (int) or None."""
+        import subprocess
+        try:
+            result = subprocess.run(['pgrep', '-x', 'darkice'],
+                                    capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                # pgrep may return multiple PIDs — take the first
+                return int(result.stdout.strip().splitlines()[0])
+        except Exception:
+            pass
+        return None
+
+    def _restart_darkice(self):
+        """Restart DarkIce after it has died."""
+        import subprocess
+        try:
+            subprocess.Popen(
+                ['darkice', '-c', '/etc/darkice.cfg'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(3)
+            pid = self._find_darkice_pid()
+            self._darkice_restart_count += 1
+            if pid:
+                self._darkice_pid = pid
+                print(f"\n  DarkIce restarted (PID {pid}), total restarts: {self._darkice_restart_count}")
+            else:
+                print(f"\n  DarkIce restart failed — process not found after launch")
+        except Exception as e:
+            self._darkice_restart_count += 1
+            print(f"\n  DarkIce restart error: {e}")
+
     def restart_audio_input(self):
         """Attempt to restart the audio input stream"""
         # Suppress ALL stderr during restart (ALSA is very noisy)
@@ -5133,6 +5181,9 @@ class MumbleRadioGateway:
                     diag = f" {WHITE}R:{YELLOW}{self.stream_restart_count}{RESET}"
                 else:
                     diag = "      "  # 6 spaces to match " R:XX" width
+                # DarkIce restart count
+                if self._darkice_restart_count > 0:
+                    diag += f" {WHITE}S:{YELLOW}{self._darkice_restart_count}{RESET}"
                 
                 # Show VAD level in dB if enabled (white label, yellow numbers, fixed width: always 6 chars like " -100dB" or "      ")
                 vad_info = f" {YELLOW}{self.vad_envelope:4.0f}{RESET}{WHITE}dB{RESET}" if self.config.ENABLE_VAD else "       "
@@ -5184,6 +5235,18 @@ class MumbleRadioGateway:
                     self.restart_audio_input()
                     time.sleep(5)  # Wait before checking again
             
+            # DarkIce health check (every 10s — pgrep spawns a process)
+            if (self._darkice_was_running and
+                    self.config.ENABLE_STREAM_OUTPUT and
+                    current_time - self._last_darkice_check > 10):
+                self._last_darkice_check = current_time
+                pid = self._find_darkice_pid()
+                if not pid:
+                    print("\n\u26a0 DarkIce has stopped — restarting...")
+                    self._restart_darkice()
+                elif pid != self._darkice_pid:
+                    self._darkice_pid = pid  # PID changed (external restart)
+
             time.sleep(0.1)
           except BaseException as _status_err:
             # Log crash so it's visible in the trace, then keep running.
