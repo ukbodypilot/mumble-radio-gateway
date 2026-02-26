@@ -334,7 +334,7 @@ class AIOCRadioSource(AudioSource):
 
         # Queue for audio blobs delivered by PortAudio's callback thread.
         # The ALSA period is opened at 4×AUDIO_CHUNK_SIZE so each callback
-        # delivers one 200ms blob.  get_audio() pre-buffers 2 blobs (400ms)
+        # delivers one 200ms blob.  get_audio() pre-buffers 3 blobs (600ms)
         # before first serve, then slices into 50ms sub-chunks (non-blocking).
         self._chunk_queue = _queue_mod.Queue(maxsize=16)
         self._blob_mult = 4  # ALSA period = 4×AUDIO_CHUNK_SIZE
@@ -344,14 +344,14 @@ class AIOCRadioSource(AudioSource):
         self._chunk_secs = config.AUDIO_CHUNK_SIZE / config.AUDIO_RATE           # ~0.05 s
         # Sub-chunk slicing state (accessed only from the get_audio() call site).
         self._sub_buffer = b''
-        self._prebuffering = True   # Wait for 2 blobs before first serve
+        self._prebuffering = True   # Wait for 3 blobs before first serve
         self._last_blocked_ms = 0.0  # instrumentation: how long get_audio blocked on blob fetch
 
     def _audio_callback(self, in_data, frame_count, time_info, status):
         """PortAudio input callback — invoked at each ALSA period (4×AUDIO_CHUNK_SIZE frames).
 
-        Each callback delivers a 200ms blob.  get_audio() pre-buffers 2 blobs
-        (400ms cushion) before starting to serve, then slices into 50ms sub-chunks.
+        Each callback delivers a 200ms blob.  get_audio() pre-buffers 3 blobs
+        (600ms cushion) before starting to serve, then slices into 50ms sub-chunks.
 
         Keep this method minimal — it runs in PortAudio's audio thread."""
         if in_data:
@@ -402,11 +402,11 @@ class AIOCRadioSource(AudioSource):
                     break
             self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _fetched else 0.0
 
-            # Pre-buffer gate: after the sub-buffer empties, accumulate 2 blobs
-            # (400ms cushion) before serving.  This absorbs USB delivery jitter
-            # that causes late blob arrivals at the start of reception.
+            # Pre-buffer gate: after the sub-buffer empties, accumulate 3 blobs
+            # (600ms cushion) before serving.  This absorbs USB delivery jitter
+            # and periodic missed blob deliveries from the AIOC.
             if self._prebuffering:
-                if len(self._sub_buffer) < self._blob_bytes * 2:
+                if len(self._sub_buffer) < self._blob_bytes * 3:
                     return None, False  # still accumulating
                 self._prebuffering = False
 
@@ -3311,8 +3311,8 @@ class MumbleRadioGateway:
 
             # Input stream (Radio → AIOC → Mumble).
             # frames_per_buffer=4×AUDIO_CHUNK_SIZE sets the ALSA period to 200ms.
-            # _audio_callback queues each 200ms blob; get_audio() pre-buffers 2
-            # blobs (400ms cushion) then slices into 50ms sub-chunks.
+            # _audio_callback queues each 200ms blob; get_audio() pre-buffers 3
+            # blobs (600ms cushion) then slices into 50ms sub-chunks.
             aioc_callback = self.radio_source._audio_callback if self.radio_source else None
             self.input_stream = self.pyaudio_instance.open(
                 format=audio_format,
