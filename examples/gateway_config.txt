@@ -378,6 +378,66 @@ SDR2_WATCHDOG_MAX_RESTARTS = 5
 SDR2_WATCHDOG_MODPROBE = false
 
 # ============================================================================
+# FEATURE: REMOTE AUDIO LINK
+# ============================================================================
+# Links two gateway instances over TCP.
+#
+# ROLES:
+#   server — This machine dials OUT to the client's IP and pushes its
+#             mixed audio (radio RX + SDR + file playback) continuously.
+#             Status bar shows SV:[yellow bar].
+#
+#   client — This machine listens for an inbound TCP connection from the
+#             server. Received audio enters the local mixer as source "SDRSV"
+#             with full duck/priority support. Status bar shows CL:[green bar].
+#             Press 'c' to mute/unmute SDRSV at runtime.
+#
+#   disabled — No remote audio link (default).
+#
+# CONNECTION MODEL:
+#   Server dials OUT to client (server = audio sender, client = receiver).
+#   Audio flows one way: server → client.
+#
+#   Server config:            Client config:
+#     ROLE = server             ROLE = client
+#     HOST = <client IP>        HOST = (blank = all interfaces)
+#     PORT = 9600               PORT = 9600
+#
+# PRIORITY (client side):
+#   SDRSV participates in duck/priority alongside SDR1/SDR2.
+#   REMOTE_AUDIO_PRIORITY = 3 (default) → ducked by radio RX, SDR1, SDR2
+#   REMOTE_AUDIO_PRIORITY = 0           → ducks SDR1 and SDR2 when active
+#
+# FIREWALL (client machine must allow inbound TCP on the port):
+#   sudo ufw allow 9600/tcp
+# ============================================================================
+
+# Role: 'server', 'client', or 'disabled'
+REMOTE_AUDIO_ROLE = disabled
+
+# Server: IP of the client machine
+# Client: bind address (leave blank to listen on all interfaces)
+REMOTE_AUDIO_HOST =
+
+# TCP port (must match on both server and client)
+REMOTE_AUDIO_PORT = 9600
+
+# Client: duck SDRSV when higher-priority sources are active
+REMOTE_AUDIO_DUCK = true
+
+# Client: sdr_priority for ducking (0 = highest, ducks SDR1/SDR2; 3 = lowest, default)
+REMOTE_AUDIO_PRIORITY = 3
+
+# Client: status bar display sensitivity multiplier
+REMOTE_AUDIO_DISPLAY_GAIN = 1.0
+
+# Client: volume boost for received audio (1.0 = no change)
+REMOTE_AUDIO_AUDIO_BOOST = 1.0
+
+# Server: seconds between reconnect attempts if link drops
+REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0
+
+# ============================================================================
 # SIGNAL DETECTION & SOURCE SWITCHING
 # ============================================================================
 # Controls when and how the mixer switches between audio sources (e.g. when

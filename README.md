@@ -26,22 +26,28 @@ A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-
   │  Radio RX (P1)  │──────────►║  Radio RX            ║  Mixed     ┌──────────────────┐
   │  AIOC USB       │           ║    > SDR1 (P1)       ╠───────────►│  Stream Output   │
   └─────────────────┘           ║      > SDR2 (P2)     ║            │  Darkice /       │
-                                ║                      ║            │  Broadcastify    │
-  ┌─────────────────┐           ║  Attack/Release/     ║            └──────────────────┘
-  │  SDR1 (P2)      │──────────►║  Padding transitions ║
-  │  ALSA Loopback  │  [DUCK]   ║                      ║  EchoLink  ┌──────────────────┐
-  │  ■ cyan bar     │           ║  Audio Processing:   ╠───────────►│  EchoLink TX     │
-  └─────────────────┘           ║  VAD · Noise Gate    ║            │  Named Pipes     │
-                                ║  AGC · HPF           ║            └──────────────────┘
-  ┌─────────────────┐           ║  Wiener · Echo Canc  ║
-  │  SDR2 (P2)      │──────────►║                      ║
-  │  ALSA Loopback  │  [DUCK]   ╚══════════════════════╝
-  │  ■ magenta bar  │
-  └─────────────────┘           Duck priority:  Radio RX  >  SDR1 (P1)  >  SDR2 (P2)
+                                ║      > SDRSV (P3)    ║            │  Broadcastify    │
+  ┌─────────────────┐           ║                      ║            └──────────────────┘
+  │  SDR1 (P2)      │──────────►║  Attack/Release/     ║
+  │  ALSA Loopback  │  [DUCK]   ║  Padding transitions ║  EchoLink  ┌──────────────────┐
+  │  ■ cyan bar     │           ║                      ╠───────────►│  EchoLink TX     │
+  └─────────────────┘           ║  Audio Processing:   ║            │  Named Pipes     │
+                                ║  VAD · Noise Gate    ║            └──────────────────┘
+  ┌─────────────────┐           ║  AGC · HPF           ║
+  │  SDR2 (P2)      │──────────►║  Wiener · Echo Canc  ║  TCP out   ┌──────────────────┐
+  │  ALSA Loopback  │  [DUCK]   ║                      ╠───────────►│  Remote Client   │
+  │  ■ magenta bar  │           ╚══════════════════════╝            │  (role=client)   │
+  └─────────────────┘                                               │  SV:[yellow bar] │
+                                Duck priority:                      └──────────────────┘
+  ┌─────────────────┐             Radio RX > SDR1 (P1) > SDR2 (P2) > SDRSV (P3)
+  │  SDRSV (P3)     │──────────►
+  │  Remote Audio   │  [DUCK]   Each duck transition uses attack / release / padding:
+  │  TCP (role=cl.) │  ■ green    [source active] → silence gap → [audio switches]
+  └─────────────────┘             [source silent ] → silence gap → [audio restores]
 
-  ┌─────────────────┐           Each duck transition uses attack / release / padding:
-  │  EchoLink (P3)  │──────────►  [source active] → silence gap → [audio switches]
-  │  Named Pipes    │             [source silent ] → silence gap → [audio restores]
+  ┌─────────────────┐
+  │  EchoLink (P4)  │──────────►
+  │  Named Pipes    │
   └─────────────────┘
 ```
 
@@ -50,6 +56,7 @@ A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [SDR Integration](#sdr-integration)
+- [Remote Audio Link](#remote-audio-link)
 - [Keyboard Controls](#keyboard-controls)
 - [Status Bar](#status-bar)
 - [Architecture](#architecture)
@@ -75,7 +82,8 @@ Priority 1           → Mumble RX        [PTT → Radio TX, direct path]
 Priority 1           → Radio RX         [→ Mumble TX, no PTT]
 Priority 2           → SDR1 Receiver    [→ Mumble TX, with ducking]
 Priority 2           → SDR2 Receiver    [→ Mumble TX, with ducking]
-Priority 3 (Lowest)  → EchoLink        [→ Mumble TX]
+Priority 3 (default) → SDRSV            [→ Mumble TX, Remote Audio Link client]
+Priority 4 (Lowest)  → EchoLink        [→ Mumble TX]
 ```
 
 #### 1. **File Playback** (Priority 0, PTT enabled)
@@ -109,7 +117,15 @@ Priority 3 (Lowest)  → EchoLink        [→ Mumble TX]
    - Suppressed when TX is muted (`t` key) or manual PTT mode is active
    - This is the primary gateway path: **Mumble users speak → radio transmits**
 
-#### 6. **EchoLink** (Priority 3)
+#### 6. **Remote Audio Link / SDRSV** (Priority 3, configurable)
+   - Links two gateway instances over TCP — one sends, one receives
+   - **Server** (`role=server`): dials out to the client and streams mixed audio (radio RX + SDR)
+   - **Client** (`role=client`): listens for the server, receives audio as source "SDRSV" into the mixer
+   - Participates fully in the duck/priority system — configurable priority vs SDR1/SDR2
+   - Status bar: server shows `SV:[yellow]`, client shows `CL:[green]`
+   - `c` key mutes/unmutes SDRSV on the client
+
+#### 7. **EchoLink** (Priority 4)
    - Named pipe integration
    - TheLinkBox compatible
    - Optional routing to/from Mumble and Radio
@@ -423,6 +439,7 @@ Press keys during operation to control the gateway:
 - `r` = RX Mute (Radio → Mumble)
 - `s` = SDR1 Mute
 - `x` = SDR2 Mute
+- `c` = Remote Audio Mute (SDRSV — client mode only)
 - `m` = Global Mute (mutes all audio)
 - `o` = Toggle Speaker Output Mute
 
@@ -477,6 +494,8 @@ ACTIVE: ✓ M:✓ PTT:-- VAD:✗ -48dB TX:[███--] 32% RX:[██---] 24% S
 | **SDR1:[bar]** | Cyan | SDR1 receiver audio level |
 | **SDR2:[bar]** | Magenta | SDR2 receiver audio level (if enabled) |
 | **SP:[bar]** | Cyan | Speaker output audio level — tracks actual mixed output, not just radio RX (if enabled) |
+| **SV:[bar]** | Yellow | Remote Audio Link — server mode: audio level being sent to remote client |
+| **CL:[bar]** | Green | Remote Audio Link — client mode: audio level received from remote server (SDRSV) |
 
 **Bar States:**
 ```
@@ -665,6 +684,82 @@ SDR2_WATCHDOG_MODPROBE    = false
 ```
 
 **Status bar:** `W<N>` appears after the SDR bar when N watchdog recoveries have occurred. If all stages fail and `MAX_RESTARTS` is reached, the SDR goes silent — use `!restart` or Ctrl+C to recover manually.
+
+## Remote Audio Link
+
+The Remote Audio Link connects two gateway instances over TCP so one machine's audio feeds into the other's mixer. This is useful for:
+
+- **Primary + secondary gateway**: Primary has AIOC + radio + Mumble. Secondary has only SDR or no radio. Secondary (client) receives the primary's radio RX as a mixer source alongside its own SDR.
+- **Remote monitoring**: Listen to a gateway's radio RX on any machine on the LAN/VPN without needing a full Mumble setup.
+- **Multi-site relay**: Two gateways at different sites; one sends its mixed audio to the other for rebroadcast.
+
+### Connection Model
+
+```
+  SERVER machine                              CLIENT machine
+  REMOTE_AUDIO_ROLE = server                  REMOTE_AUDIO_ROLE = client
+  REMOTE_AUDIO_HOST = <client IP>             REMOTE_AUDIO_HOST = '' (all interfaces)
+  REMOTE_AUDIO_PORT = 9600                    REMOTE_AUDIO_PORT = 9600
+
+  ┌────────────────────────────┐              ┌────────────────────────────┐
+  │  Radio RX (AIOC)           │              │  Local SDR1/SDR2           │
+  │  SDR mix                   │              │                            │
+  │  File playback             │    TCP       │  SDRSV source (remote)     │
+  │                            │  ─────────► │  feeds into local mixer    │
+  │  RemoteAudioServer         │  port 9600   │  RemoteAudioSource         │
+  │  SV:[yellow bar]           │              │  CL:[green bar]            │
+  │                            │              │  'c' to mute/unmute        │
+  └────────────────────────────┘              └────────────────────────────┘
+
+  Server dials OUT to client.  Client listens for inbound connection.
+  Audio flows one way only: server → client.
+  Server auto-reconnects every REMOTE_AUDIO_RECONNECT_INTERVAL seconds if link drops.
+```
+
+> **Note:** The naming is from the audio perspective. The "server" is the audio *source* (it initiates the TCP connection and pushes audio). The "client" is the audio *sink* (it accepts the connection and receives audio into its mixer). This is the reverse of a typical client-server model.
+
+### Priority and Ducking on the Client
+
+The SDRSV source participates in the duck system with `REMOTE_AUDIO_PRIORITY` controlling its rank:
+
+```
+Default (REMOTE_AUDIO_PRIORITY = 3):
+  Radio RX > SDR1 (P=1) > SDR2 (P=2) > SDRSV (P=3)
+  → SDRSV is ducked by radio RX, SDR1, and SDR2
+
+To let SDRSV take priority over SDR1/SDR2 (REMOTE_AUDIO_PRIORITY = 0):
+  Radio RX > SDRSV (P=0) > SDR1 (P=1) > SDR2 (P=2)
+  → SDRSV ducks the local SDRs when it has audio
+```
+
+`REMOTE_AUDIO_DUCK = true` (default) means SDRSV is silenced when any higher-priority source is active.
+Set `REMOTE_AUDIO_DUCK = false` to always mix SDRSV at full volume regardless of other sources.
+
+### Configuration
+
+```ini
+# ── Server machine (sends audio) ─────────────────────
+REMOTE_AUDIO_ROLE = server
+REMOTE_AUDIO_HOST = 192.168.1.50  # IP of the client machine
+REMOTE_AUDIO_PORT = 9600
+
+# ── Client machine (receives audio into mixer) ────────
+REMOTE_AUDIO_ROLE = client
+REMOTE_AUDIO_HOST =               # Leave blank to listen on all interfaces
+REMOTE_AUDIO_PORT = 9600
+REMOTE_AUDIO_DUCK = true          # Duck SDRSV when higher-priority sources are active
+REMOTE_AUDIO_PRIORITY = 3         # sdr_priority (0=highest; ducks SDR1/SDR2 if < their priority)
+REMOTE_AUDIO_DISPLAY_GAIN = 1.0   # Status bar sensitivity
+REMOTE_AUDIO_AUDIO_BOOST = 1.0    # Volume boost for received audio
+REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0  # Seconds between reconnect attempts (server only)
+```
+
+### Firewall
+
+The client machine must accept inbound TCP on `REMOTE_AUDIO_PORT` (default 9600):
+```bash
+sudo ufw allow 9600/tcp
+```
 
 ## Configuration Reference
 
@@ -871,6 +966,19 @@ SPEAKER_VOLUME = 1.0
 Toggle speaker mute at runtime with the `o` key. The `SP:[bar]` indicator
 appears in the status bar when speaker output is enabled.
 
+### Remote Audio Link Settings
+
+```ini
+REMOTE_AUDIO_ROLE = disabled          # 'server', 'client', or 'disabled'
+REMOTE_AUDIO_HOST =                   # Server: client IP. Client: bind addr (blank = all)
+REMOTE_AUDIO_PORT = 9600              # TCP port (must match on both ends)
+REMOTE_AUDIO_DUCK = true              # Client: duck SDRSV when higher-priority sources active
+REMOTE_AUDIO_PRIORITY = 3            # Client: sdr_priority for ducking (0 = highest)
+REMOTE_AUDIO_DISPLAY_GAIN = 1.0      # Client: status bar sensitivity
+REMOTE_AUDIO_AUDIO_BOOST = 1.0       # Client: volume boost for received audio
+REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0 # Server: seconds between reconnect attempts
+```
+
 ### EchoLink Settings
 
 ```ini
@@ -996,6 +1104,24 @@ scripts/loopback-status
 - Check `SDR_PRIORITY` and `SDR2_PRIORITY` — if SDR1 has a lower number it ducks SDR2 when SDR1 has signal
 - Set `SDR2_DUCK = false` to mix SDR2 alongside SDR1 regardless of priority
 - Or set both priorities equal (e.g. both = 1) to disable inter-SDR ducking
+
+### Remote Audio Link Issues
+
+**Problem: CL bar stays at 0% / no audio on client**
+- Check server is running with `REMOTE_AUDIO_ROLE = server` and `REMOTE_AUDIO_HOST` set to the client's IP
+- Check client firewall allows inbound TCP on `REMOTE_AUDIO_PORT` (default 9600)
+- Verify both machines use the same port number
+- Check `REMOTE_AUDIO_DUCK` — SDRSV may be ducked by a local SDR that has signal
+
+**Problem: SV bar shows 0 (server not connected)**
+- Client machine may not be running or not listening yet — server retries every `REMOTE_AUDIO_RECONNECT_INTERVAL` seconds automatically
+- Check that `REMOTE_AUDIO_HOST` on the server points to the correct client IP
+- Check network connectivity: `ping <client IP>` from server machine
+
+**Problem: SDRSV always ducked**
+- Lower `REMOTE_AUDIO_PRIORITY` (try 0 to give it top SDR priority)
+- Or set `REMOTE_AUDIO_DUCK = false` to always mix regardless of other sources
+- Press `c` to verify SDRSV is not manually muted
 
 ### TTS Issues
 

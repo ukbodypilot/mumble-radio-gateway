@@ -76,6 +76,10 @@ MUTE CONTROLS
   x = Toggle SDR2 Mute
       Silences the SDR2 source.
 
+  c = Toggle Remote Audio Mute (SDRSV — client mode only)
+      Silences the remote audio source received from the server machine.
+      Has no effect if REMOTE_AUDIO_ROLE is not 'client'.
+
   o = Toggle Speaker Output Mute
       Mutes the local speaker/headphone monitoring output.
       Does not affect Mumble or streaming — monitoring only.
@@ -184,6 +188,17 @@ SP:[bar] %
   Tracks the actual mixed audio being sent to the speaker (AIOC RX + SDR + PTT),
   not just the radio RX level. Decays to 0 when no audio is active.
   Shows [---MUTE---] when speaker is muted with the 'o' key.
+
+SV:[bar] %
+  Yellow bar — Remote Audio Link, server mode only (REMOTE_AUDIO_ROLE = server).
+  Shows the audio level currently being sent to the remote client.
+  Shows 0 when the client is not connected.
+
+CL:[bar] %
+  Green bar — Remote Audio Link, client mode only (REMOTE_AUDIO_ROLE = client).
+  Shows the SDRSV received audio level.
+  Shows -MUTE- when muted with the 'c' key.
+  Shows -DUCK- when SDRSV is being ducked by a higher-priority source.
 
 Vol:X.Xx
   RX volume multiplier (adjust with , and . keys).
@@ -397,6 +412,92 @@ WATCHDOG
 
   To enable stage 3 (module reload), add to /etc/sudoers.d/gateway-loopback:
     <user> ALL=(ALL) NOPASSWD: /sbin/modprobe -r snd-aloop, /sbin/modprobe snd-aloop
+
+================================================================================
+REMOTE AUDIO LINK
+================================================================================
+
+Links two gateway instances over TCP so one machine's audio feeds into the
+other's mixer as a standard source (named SDRSV) with full duck/priority support.
+
+ROLES
+-----
+  REMOTE_AUDIO_ROLE = server
+    This machine dials OUT to the client's IP and pushes mixed audio
+    (radio RX + SDR + file playback) continuously over TCP.
+    Status bar shows SV:[yellow bar] — level of audio being sent.
+
+  REMOTE_AUDIO_ROLE = client
+    This machine listens for an inbound TCP connection from the server.
+    Received audio enters the mixer as source "SDRSV".
+    Status bar shows CL:[green bar] — level of audio received.
+    Press 'c' to mute/unmute SDRSV at runtime.
+
+  REMOTE_AUDIO_ROLE = disabled (default)
+    No remote audio link. Neither server nor client.
+
+CONNECTION MODEL
+
+  Server machine                     Client machine
+  ─────────────                      ──────────────
+  REMOTE_AUDIO_HOST = <client IP>    REMOTE_AUDIO_HOST = (blank)
+  REMOTE_AUDIO_PORT = 9600           REMOTE_AUDIO_PORT = 9600
+
+  Server connects OUT ─── TCP 9600 ──► Client accepts inbound
+
+  Audio flows one way: server → client.
+  Server auto-reconnects if the link drops (REMOTE_AUDIO_RECONNECT_INTERVAL).
+  Client firewall must allow inbound TCP on the configured port.
+
+PRIORITY AND DUCKING (client side)
+-----------------------------------
+  SDRSV participates in the same duck system as SDR1/SDR2.
+  REMOTE_AUDIO_PRIORITY controls its rank:
+
+    REMOTE_AUDIO_PRIORITY = 3  (default — lowest, ducked by everything)
+      Radio RX > SDR1 (P1) > SDR2 (P2) > SDRSV (P3)
+
+    REMOTE_AUDIO_PRIORITY = 0  (highest — ducks SDR1 and SDR2)
+      Radio RX > SDRSV (P0) > SDR1 (P1) > SDR2 (P2)
+
+  REMOTE_AUDIO_DUCK = true (default): SDRSV silenced when higher-priority
+    sources are active.
+  REMOTE_AUDIO_DUCK = false: always mixed at full volume.
+
+CONFIGURATION
+-------------
+
+  Server:
+    REMOTE_AUDIO_ROLE = server
+    REMOTE_AUDIO_HOST = 192.168.1.50   # IP of the client machine
+    REMOTE_AUDIO_PORT = 9600
+    REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0
+
+  Client:
+    REMOTE_AUDIO_ROLE = client
+    REMOTE_AUDIO_HOST =                # blank = listen on all interfaces
+    REMOTE_AUDIO_PORT = 9600
+    REMOTE_AUDIO_DUCK = true
+    REMOTE_AUDIO_PRIORITY = 3
+    REMOTE_AUDIO_DISPLAY_GAIN = 1.0
+    REMOTE_AUDIO_AUDIO_BOOST = 1.0
+
+TROUBLESHOOTING
+---------------
+  CL bar stays 0 / no audio on client:
+    - Check server has REMOTE_AUDIO_HOST pointing to the client's IP
+    - Check client firewall allows inbound TCP on REMOTE_AUDIO_PORT
+    - SDRSV may be ducked — check local SDR levels or set REMOTE_AUDIO_DUCK = false
+
+  SV bar shows 0 (server not connected):
+    - Client may not be running yet — server retries automatically
+    - Check REMOTE_AUDIO_HOST on server is correct
+    - Test: nc -l 9600 on client, see if server connects
+
+  SDRSV always ducked:
+    - Lower REMOTE_AUDIO_PRIORITY (try 0)
+    - Or set REMOTE_AUDIO_DUCK = false
+    - Press 'c' to confirm SDRSV is not manually muted
 
 ================================================================================
 RECENT CHANGES (v3.3)

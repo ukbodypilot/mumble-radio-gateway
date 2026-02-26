@@ -5637,6 +5637,8 @@ class MumbleRadioGateway:
         print("  SDR:   'd'=SDR1 Duck toggle")
         print("  PTT:   'p'=Manual PTT Toggle (override auto-PTT)")
         print("  Trace: 'i'=Start/stop audio trace recording (writes tools/audio_trace.txt on exit)")
+        if getattr(self.config, 'REMOTE_AUDIO_ROLE', 'disabled').lower() == 'client' and self.remote_audio_source:
+            print("  Remote: 'c'=Remote audio (SDRSV) mute toggle")
         if self.config.ENABLE_SPEAKER_OUTPUT:
             print("  Spkr:  'o'=Speaker mute toggle")
         if self.config.ENABLE_PLAYBACK:
