@@ -32,6 +32,9 @@ if [ "$EUID" -eq 0 ]; then
     echo ""
 fi
 
+# Cache sudo credentials once up front (avoids repeat password prompts)
+sudo -v
+
 # 1. Kill any existing processes
 echo "[1/7] Checking for existing processes..."
 pkill -9 darkice 2>/dev/null && echo "  Killed existing Darkice"
