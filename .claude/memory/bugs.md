@@ -10,6 +10,7 @@
 - **Mumble encoder starvation**: `data is None → continue` skipped `add_sound()`. Opus resets across gaps. Fixed: substitute silence, fall through to `add_sound()`.
 - **duck-out regression (all audio broken)**: `sdr_active_at_transition` used `check_signal_instant` on raw loopback — always True with SDR app running, silencing first 1s of every AIOC transmission. Fixed: use `sdr_prev_included` instead.
 - **SDR2 duck-through on SDR1 buffer gaps**: SDR-to-SDR duck check iterated `sdrs_to_include` (only sources with actual audio data). When SDR1's buffer ran dry between bursty deliveries, SDR1 wasn't in `sdrs_to_include` (get_audio returned None → `continue` at line 1942), so SDR2 didn't see SDR1's active hold timer and played through. Fixed: iterate `sorted_sdrs` (all processed SDRs) instead, checking `_sdr_trace` which is populated even when audio is None.
+- **AIOC audio output stale state**: AIOC USB audio output gets stuck after extended runtime or PipeWire/WirePlumber interaction — PTT keys radio via HID but no audio reaches radio. `speaker-test -D hw:N,0` also produces no audio. Not a software bug — hardware state issue. Fixed: added USB reset (sysfs authorized cycle) to start.sh step 3.
 
 ## Status Bar / UI Bugs
 - **SDR2 failure shown as silent (indistinguishable)**: When SDR2 `setup_audio()` returns False, object kept with `enabled=False` but status bar checked only `if self.sdr2_source:` — showed `SDR2:[----------] 0%` identical to a working-but-silent source. Fixed: gate on `self.sdr2_source.enabled` so failed/disabled SDR2 is omitted from status bar.
@@ -17,10 +18,12 @@
 - **SDR2 init leftover debug prints**: Two unconditional prints dumping `SDR2_DEVICE_NAME from config:` and `SDR2_PRIORITY from config:` were not guarded by VERBOSE_LOGGING. Removed.
 - **Announcement/PTT keys spam errors without AIOC**: Pressing 0-9 or 'p' without AIOC queued file playback → `set_ptt_state()` printed "[PTT] No AIOC device available!" every 50ms tick because it returned without setting `ptt_active`, causing re-trigger. Fixed: keyboard handler rejects keys when `aioc_device` is absent; `set_ptt_state` silently returns.
 - **Status bar width shift on mute/duck**: Muted/ducked bars were 10 visible chars vs normal bars at 11. Fixed: padded M/D suffix to 4 chars (`M   ` / `D   `).
+- **PTT trace always showed RMS=0**: The RMS measurement point in audio_transmit_loop was after the PTT branch `continue`, so it never executed for PTT ticks. Trace showed RMS=0 for all file playback/announcement ticks, making it look like silence was being sent. Fixed: added RMS measurement inside the PTT branch itself.
 
 ## Config / Code Bugs
 - **Config parser crash on decimal**: `int('0.3')` raised ValueError, silently abandoning all config after that line. Fixed: `VAD_RELEASE: 1.0` default (float); parser tries `float()` fallback on ValueError.
 - **global_muted UnboundLocalError**: Set inside `if self.sdr_source:` block, used in `if self.sdr2_source:` block. Fixed: calculated before both blocks.
+- **NetworkAnnouncementSource missing muted check**: `get_audio()` checked `self.enabled` but not `self.muted`, so pressing 'a' to mute wouldn't stop audio flow. Fixed: added `self.muted` check.
 
 ## Installer Bugs
 - **numlids=3 silently ignored on Debian**: RPi kernel param, not standard. Fixed: `enable=1,1,1 index=4,5,6`.
