@@ -67,6 +67,7 @@ A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-
 - [Status Bar](#status-bar)
 - [Architecture](#architecture)
 - [Configuration Reference](#configuration-reference)
+- [Windows Audio Client](#windows-audio-client)
 - [Troubleshooting](#troubleshooting)
 - [Advanced Features](#advanced-features)
 
@@ -491,7 +492,7 @@ Press keys during operation to control the gateway:
 
 | Indicator | Meaning |
 |-----------|---------|
-| **ACTIVE/IDLE/STOP** | Audio capture status (✓/⚠/✗) |
+| **✓/⚠/✗** | Audio capture active/idle/stopped |
 | **M:✓/✗** | Mumble connected/disconnected |
 | **PTT:ON/--** | Push-to-talk active/inactive |
 | **PTT:M-ON** | Manual PTT mode active |
@@ -834,6 +835,7 @@ ENABLE_ANNOUNCE_INPUT = false          # Enable the listener (default off)
 ANNOUNCE_INPUT_PORT = 9601             # TCP port
 ANNOUNCE_INPUT_HOST =                  # Bind address (blank = all interfaces)
 ANNOUNCE_INPUT_THRESHOLD = -45.0       # dBFS below which frames are treated as silence
+ANNOUNCE_INPUT_VOLUME = 4.0            # Volume multiplier for announcement audio (clipped to int16)
 ```
 
 ### Status Bar
@@ -845,6 +847,39 @@ ANNOUNCE_INPUT_THRESHOLD = -45.0       # dBFS below which frames are treated as 
 ```bash
 sudo ufw allow 9601/tcp
 ```
+
+## Windows Audio Client
+
+`windows_audio_client.py` is a standalone sender that captures audio from a local Windows input device (e.g. VB-Audio Virtual Cable) and streams it to the gateway over TCP.
+
+### Setup
+
+```bash
+pip install sounddevice numpy
+python windows_audio_client.py [gateway_host] [gateway_port]
+```
+
+On first run the script prompts for:
+1. **Operating mode** — SDR input source (port 9600) or Announcement source (port 9601)
+2. **Audio device** — selects from available input devices
+3. **Gateway host/port** — IP or hostname of the gateway machine
+
+Selections are saved to `windows_audio_client.json` for subsequent runs.
+
+### Keyboard Controls
+
+| Key | Action |
+|-----|--------|
+| `l` | Toggle LIVE/IDLE — LIVE sends real audio (red status), IDLE sends silence (green status) |
+
+The client starts in IDLE mode. Press `l` to go live and begin sending audio to the gateway.
+
+### Wire Format
+
+Same length-prefixed PCM as the Remote Audio Link:
+- 48000 Hz, mono, 16-bit signed little-endian PCM
+- 2400 frames per chunk (4800 bytes)
+- Each chunk prefixed with a 4-byte big-endian uint32 length
 
 ## Configuration Reference
 
@@ -1082,6 +1117,10 @@ ANNOUNCE_INPUT_HOST =
 # announcements without keying the radio.
 # Range: -60 (very sensitive) to -20 (loud signals only)
 ANNOUNCE_INPUT_THRESHOLD = -45.0
+
+# Volume multiplier applied to incoming announcement audio before
+# routing to radio TX.  Higher values make announcements louder.
+ANNOUNCE_INPUT_VOLUME = 4.0
 ```
 
 **How it works:**

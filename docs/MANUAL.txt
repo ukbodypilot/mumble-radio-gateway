@@ -156,12 +156,12 @@ STATUS LINE
 ================================================================================
 
 Example:
-  [97mACTIVE:[0m [92m✓[0m [97mM:[0m[92m✓[0m [97mPTT:[0m  [92mON[0m [97mVAD:[0m[92m🔊[0m [93m -28[0m[97mdB[0m [97mTX:[0m[91m████--[0m [93m 67%[0m [97mRX:[0m[92m███---[0m [93m 50%[0m [97mSP:[0m[96m██----[0m [93m 34%[0m [97mSDR1:[0m[96m██----[0m [93m 34%[0m [97mVol:[0m[93m1.0[0m[97mx[0m [92m1[0m[92m2[0m[97m3[0m[97m4[0m[97m5[0m[97m6[0m[97m7[0m[97m8[0m[97m9[0m[92m0[0m [97m[[0m[93mD[0m[97m][0m
+  [92m✓[0m [97mM:[0m[92m✓[0m [97mPTT:[0m  [92mON[0m [97mVAD:[0m[92m🔊[0m [93m -28[0m[97mdB[0m [97mTX:[0m[91m████--[0m [93m 67%[0m [97mRX:[0m[92m███---[0m [93m 50%[0m [97mSP:[0m[96m██----[0m [93m 34%[0m [97mSDR1:[0m[96m██----[0m [93m 34%[0m [97mVol:[0m[93m1.0[0m[97mx[0m [92m1[0m[92m2[0m[97m3[0m[97m4[0m[97m5[0m[97m6[0m[97m7[0m[97m8[0m[97m9[0m[92m0[0m [97m[[0m[93mD[0m[97m][0m
 
 Breakdown:
 ----------
 
-ACTIVE / IDLE / STOPPED
+✓ / ⚠ / ✗
   ✓ = Audio capture working
   ⚠ = Audio idle
   ✗ = Audio stopped (will auto-restart)
@@ -585,6 +585,7 @@ CONFIGURATION
   ANNOUNCE_INPUT_PORT      = 9601   # TCP port to listen on
   ANNOUNCE_INPUT_HOST      =        # Bind address (blank = 0.0.0.0)
   ANNOUNCE_INPUT_THRESHOLD = -45.0  # dBFS; below this = silence
+  ANNOUNCE_INPUT_VOLUME    = 4.0   # Volume multiplier (clipped to int16)
 
   The threshold range -60 (very sensitive) to -20 (only loud audio).
   Default -45.0 matches VAD_THRESHOLD.
@@ -611,6 +612,42 @@ TROUBLESHOOTING
   Radio keys on silence / idle connection:
     - Raise ANNOUNCE_INPUT_THRESHOLD (e.g. -30) to require louder audio
     - Check sender is not streaming DC offset or a low-level noise floor
+
+================================================================================
+WINDOWS AUDIO CLIENT
+================================================================================
+
+windows_audio_client.py is a standalone sender that captures audio from a local
+Windows input device (e.g. VB-Audio Virtual Cable) and streams it to the gateway
+over TCP. It works on Windows, Linux, and macOS.
+
+SETUP
+-----
+  pip install sounddevice numpy
+  python windows_audio_client.py [gateway_host] [gateway_port]
+
+  On first run the script prompts for:
+    1. Operating mode — SDR input source (port 9600) or Announcement (port 9601)
+    2. Audio device — selects from available input devices
+    3. Gateway host/port — IP or hostname of the gateway machine
+
+  Selections are saved to windows_audio_client.json for subsequent runs.
+
+KEYBOARD CONTROLS
+-----------------
+  l = Toggle LIVE/IDLE
+
+  LIVE (red)  — real audio is captured and sent to the gateway
+  IDLE (green) — silence is sent (connection stays open)
+
+  The client starts in IDLE mode. Press 'l' to go live.
+
+WIRE FORMAT
+-----------
+  Same length-prefixed PCM as the Remote Audio Link:
+    4 bytes  big-endian uint32 — payload length in bytes
+    N bytes  raw PCM           — 48000 Hz, mono, 16-bit signed LE
+    2400 frames per chunk (4800 bytes)
 
 ================================================================================
 RECENT CHANGES (v3.4)
