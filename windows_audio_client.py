@@ -15,6 +15,9 @@ Two modes:
 Protocol: length-prefixed PCM — [4-byte big-endian uint32 length][PCM payload]
 Audio: 48000 Hz, mono, 16-bit signed little-endian PCM, 2400 frames per chunk.
 
+Keyboard controls:
+  l = Toggle LIVE/IDLE — when LIVE, real audio is sent; when IDLE, silence is sent
+
 Usage:
     pip install sounddevice
     python windows_audio_client.py [gateway_host] [gateway_port]
@@ -29,6 +32,7 @@ import os
 import socket
 import struct
 import sys
+import threading
 import time
 
 try:
@@ -46,11 +50,19 @@ SAMPLE_RATE = 48000
 CHANNELS = 1
 FRAMES_PER_BUFFER = 2400  # 2400 frames x 2 bytes = 4800 bytes per chunk
 RECONNECT_INTERVAL = 5  # seconds between connection attempts
+SILENCE = b'\x00' * (FRAMES_PER_BUFFER * 2)  # 4800 bytes of silence
 
 MODE_SDR = "sdr"
 MODE_ANNOUNCE = "announce"
 DEFAULT_PORTS = {MODE_SDR: 9600, MODE_ANNOUNCE: 9601}
 MODE_LABELS = {MODE_SDR: "SDR input source", MODE_ANNOUNCE: "Announcement source"}
+
+# ANSI colors
+RED = "\033[91m"
+GREEN = "\033[92m"
+WHITE = "\033[97m"
+GRAY = "\033[90m"
+RESET = "\033[0m"
 
 CONFIG_FILENAME = "windows_audio_client.json"
 
@@ -76,6 +88,41 @@ def save_config(cfg):
     path = _config_path()
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
+
+# ---------------------------------------------------------------------------
+# Keyboard input (cross-platform)
+# ---------------------------------------------------------------------------
+def _keyboard_listener(state):
+    """Background thread: read single keypresses and update shared state."""
+    try:
+        # Windows
+        import msvcrt
+        while state["running"]:
+            if msvcrt.kbhit():
+                ch = msvcrt.getch()
+                try:
+                    ch = ch.decode("utf-8", errors="ignore").lower()
+                except Exception:
+                    ch = ""
+                if ch == "l":
+                    state["live"] = not state["live"]
+            time.sleep(0.05)
+    except ImportError:
+        # Unix / Linux / macOS
+        import tty
+        import termios
+        import select
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            while state["running"]:
+                if select.select([sys.stdin], [], [], 0.05)[0]:
+                    ch = sys.stdin.read(1).lower()
+                    if ch == "l":
+                        state["live"] = not state["live"]
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 # ---------------------------------------------------------------------------
 # Device selection
@@ -227,7 +274,15 @@ def main():
     print(f"Device : {dev_name} (index {dev_index})")
     print(f"Gateway: {host}:{port}")
     print(f"Format : {SAMPLE_RATE} Hz, mono, 16-bit, {FRAMES_PER_BUFFER} frames/chunk")
+    print(f"\nKeys: 'l' = toggle LIVE/IDLE")
     print("Press Ctrl+C to stop.\n")
+
+    # --- Shared state for keyboard thread -----------------------------------
+    state = {"live": False, "running": True}
+
+    # Start keyboard listener
+    kb_thread = threading.Thread(target=_keyboard_listener, args=(state,), daemon=True)
+    kb_thread.start()
 
     # --- Open audio stream --------------------------------------------------
     stream = sd.RawInputStream(
@@ -283,10 +338,14 @@ def main():
                 print(f"\nAudio read error: {e}")
                 break
 
+            # Choose what to send based on LIVE state
+            is_live = state["live"]
+            send_pcm = pcm if is_live else SILENCE
+
             # Send
             try:
-                header = struct.pack(">I", len(pcm))
-                sock.sendall(header + pcm)
+                header = struct.pack(">I", len(send_pcm))
+                sock.sendall(header + send_pcm)
             except Exception:
                 print(f"\nDisconnected from {host}:{port}")
                 try:
@@ -296,15 +355,20 @@ def main():
                 sock = None
                 continue
 
-            # Level meter on one line
+            # Status line: state + level meter
+            if is_live:
+                status = f"{RED}LIVE{RESET}"
+            else:
+                status = f"{GREEN}IDLE{RESET}"
             db = rms_db(pcm)
             bar = level_bar(db)
-            sys.stdout.write(f"\r  [{bar}] {db:+6.1f} dBFS ")
+            sys.stdout.write(f"\r  {status}  [{bar}] {db:+6.1f} dBFS ")
             sys.stdout.flush()
 
     except KeyboardInterrupt:
         print("\n\nShutting down.")
     finally:
+        state["running"] = False
         stream.stop()
         stream.close()
         if sock:
