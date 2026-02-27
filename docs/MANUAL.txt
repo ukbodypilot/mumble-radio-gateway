@@ -2,7 +2,7 @@
 MUMBLE RADIO GATEWAY - USER GUIDE
 ================================================================================
 
-VERSION: 3.3
+VERSION: 3.4
 Last Updated: February 2026
 
 ================================================================================
@@ -18,6 +18,7 @@ a Mumble voice chat server. It provides:
 - Voice Activity Detection (Radio RX → Mumble)
 - Dual SDR receiver inputs with independent priority ducking
 - File playback / announcement system (10 slots, keys 0-9)
+- Network Announcement Input (TCP port 9601) — audio-gated PTT to radio from any TCP sender
 - Text commands via Mumble chat (!speak, !play, !files, !stop, !mute, !id, !restart, !status, !help)
 - EchoLink bridge via named pipes (TheLinkBox compatible)
 - Broadcastify / Icecast live streaming
@@ -41,6 +42,13 @@ Sources are mixed with the following priority hierarchy:
                 Announcement files (WAV, MP3, FLAC). Triggers PTT.
                 Radio RX continues flowing to Mumble during playback.
                 PTT_ANNOUNCEMENT_DELAY holds audio until radio is keyed.
+
+  Priority 0  — Network Announcement Input (ANNIN, TCP port 9601)
+                Inbound TCP stream; same wire format as Remote Audio Link.
+                Audio-gated PTT: silence frames consumed but discarded.
+                PTT fires only when audio exceeds ANNOUNCE_INPUT_THRESHOLD.
+                Connection may remain open between announcements.
+                PTT released after PTT_RELEASE_DELAY when audio stops.
 
   Priority 1  — Radio RX (AIOC)
                 Audio from radio → forwarded to Mumble TX and stream output.
@@ -169,7 +177,7 @@ VAD:🔊 / VAD:-- / VAD:✗
   ✗   = VAD disabled (continuous transmission)
   -XXdB = Current audio level in dBFS
 
-Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL
+Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL → AN
 
 TX:[bar] %
   Red bar — Mumble → Radio TX audio level.
@@ -201,6 +209,11 @@ CL:[bar] %
   Shows the SDRSV received audio level.
   Shows "-MUTE- M   " when muted with the 'c' key.
   Shows "-DUCK- D   " when SDRSV is being ducked by a higher-priority source.
+
+AN:[bar] %
+  Red bar — Network Announcement Input (ENABLE_ANNOUNCE_INPUT = true only).
+  Shows live audio level when a sender is connected and transmitting.
+  Shows 0% when no client is connected.
 
 Vol:X.Xx
   RX volume multiplier (adjust with , and . keys).
@@ -296,6 +309,12 @@ File Playback:
   PLAYBACK_DIRECTORY            = ./audio/
   PLAYBACK_ANNOUNCEMENT_INTERVAL = 0   # seconds (0 = disabled)
 
+Network Announcement Input (TCP port 9601):
+  ENABLE_ANNOUNCE_INPUT    = false  # Enable inbound announcement listener
+  ANNOUNCE_INPUT_PORT      = 9601   # TCP port
+  ANNOUNCE_INPUT_HOST      =        # Bind address (blank = all interfaces)
+  ANNOUNCE_INPUT_THRESHOLD = -45.0  # dBFS silence floor (-60 sensitive, -20 loud only)
+
 Text-to-Speech:
   ENABLE_TTS          = true
   ENABLE_TEXT_COMMANDS = true
@@ -335,6 +354,15 @@ File / Announcement → Radio (TX Path — via mixer):
   4. After delay, actual audio flows to AIOC output → Radio TX.
   5. Concurrent Radio RX still forwarded to Mumble during playback.
   6. PTT released when file finishes (after PTT_RELEASE_DELAY).
+
+Network Announcement Input → Radio (TX Path — TCP port 9601):
+  1. Sender connects to gateway on port 9601, streams length-prefixed PCM.
+  2. Each chunk is level-checked against ANNOUNCE_INPUT_THRESHOLD.
+  3. Below threshold: chunk discarded, PTT stays unkeyed (silence pass-through).
+  4. Above threshold: PTT keyed, audio routed to AIOC output → Radio TX.
+  5. PTT_ANNOUNCEMENT_DELAY applies on first key-up (same as file playback).
+  6. PTT released after PTT_RELEASE_DELAY once audio drops below threshold.
+  7. Connection remains open; next burst of audio re-keys PTT automatically.
 
 Radio → Mumble (RX Path):
   1. Audio captured from radio output → AIOC input
@@ -503,6 +531,99 @@ TROUBLESHOOTING
     - Lower REMOTE_AUDIO_PRIORITY (try 0)
     - Or set REMOTE_AUDIO_DUCK = false
     - Press 'c' to confirm SDRSV is not manually muted
+
+================================================================================
+ANNOUNCEMENT INPUT (TCP port 9601)
+================================================================================
+
+Allows any TCP client on the network to push audio directly to the radio
+transmitter. Unlike file playback or Mumble, the connection can remain open
+continuously; PTT is activated only when actual audio is present.
+
+OVERVIEW
+--------
+  The gateway listens on TCP port 9601 (configurable). A sender connects,
+  streams length-prefixed 16-bit mono PCM, and disconnects when done.
+  The gateway silently discards silence frames so idle connections do not
+  key the radio. When real audio arrives, PTT is keyed and the audio is
+  sent to the AIOC output (radio microphone input).
+
+WIRE FORMAT
+-----------
+  Identical to REMOTE_AUDIO_ROLE = client:
+    4 bytes  big-endian uint32  — payload length in bytes
+    N bytes  raw PCM            — 16-bit signed mono at AUDIO_RATE
+
+  Example (Python):
+    import struct, socket
+    sock = socket.create_connection(("gateway-ip", 9601))
+    while playing:
+        pcm = get_next_chunk()   # bytes, 16-bit mono 48 kHz
+        sock.sendall(struct.pack(">I", len(pcm)) + pcm)
+
+PTT BEHAVIOUR
+-------------
+  1. Client sends silence (below ANNOUNCE_INPUT_THRESHOLD):
+       → frames consumed and discarded; radio stays unkeyed.
+
+  2. Audio rises above ANNOUNCE_INPUT_THRESHOLD:
+       → PTT keyed; PTT_ANNOUNCEMENT_DELAY window opens.
+       → After delay, audio flows to radio TX.
+
+  3. Audio drops below threshold / client disconnects:
+       → PTT held for PTT_RELEASE_DELAY then released.
+
+  4. Next burst from same (or new) connection repeats from step 1.
+
+CONFIGURATION
+-------------
+  ENABLE_ANNOUNCE_INPUT    = false  # Set true to enable
+  ANNOUNCE_INPUT_PORT      = 9601   # TCP port to listen on
+  ANNOUNCE_INPUT_HOST      =        # Bind address (blank = 0.0.0.0)
+  ANNOUNCE_INPUT_THRESHOLD = -45.0  # dBFS; below this = silence
+
+  The threshold range -60 (very sensitive) to -20 (only loud audio).
+  Default -45.0 matches VAD_THRESHOLD.
+
+STATUS BAR
+----------
+  AN:[bar] appears after the Remote Audio / CL bar when enabled.
+  Red bar — shows live level when sender connected and transmitting.
+  Shows 0% when no client is connected.
+
+FIREWALL
+--------
+  Client machine must allow inbound TCP on the configured port:
+    sudo ufw allow 9601/tcp
+
+TROUBLESHOOTING
+---------------
+  Radio not keying:
+    - Check sender is above ANNOUNCE_INPUT_THRESHOLD (try -60 to be safe)
+    - Confirm ENABLE_ANNOUNCE_INPUT = true and gateway restarted
+    - Check AN: bar — if 0% with client connected, audio is below threshold
+    - AIOC absent: PTT silently skipped (expected — no error printed)
+
+  Radio keys on silence / idle connection:
+    - Raise ANNOUNCE_INPUT_THRESHOLD (e.g. -30) to require louder audio
+    - Check sender is not streaming DC offset or a low-level noise floor
+
+================================================================================
+RECENT CHANGES (v3.4)
+================================================================================
+
+NETWORK ANNOUNCEMENT INPUT (TCP port 9601)
+------------------------------------------
+- New: NetworkAnnouncementSource (ANNIN) listens for inbound TCP connections
+  on port 9601. Sender streams length-prefixed 16-bit mono PCM; gateway
+  activates PTT and routes audio to the radio transmitter.
+- Audio-gated: silence frames below ANNOUNCE_INPUT_THRESHOLD are consumed
+  and discarded without keying PTT. Connection can remain open between
+  announcements.
+- PTT released after PTT_RELEASE_DELAY when audio stops.
+- Status bar: AN:[red bar] when ENABLE_ANNOUNCE_INPUT = true.
+- Config: ENABLE_ANNOUNCE_INPUT, ANNOUNCE_INPUT_PORT (9601),
+  ANNOUNCE_INPUT_HOST, ANNOUNCE_INPUT_THRESHOLD (-45.0 dBFS default).
 
 ================================================================================
 RECENT CHANGES (v3.3)

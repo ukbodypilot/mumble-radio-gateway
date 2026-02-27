@@ -49,6 +49,12 @@ A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-
   │  EchoLink (P4)  │──────────►
   │  Named Pipes    │
   └─────────────────┘
+
+  ┌─────────────────┐  PTT (audio-gated)
+  │  ANNIN (P0)     │──────────►  Radio TX only (bypasses Mumble/SDR)
+  │  TCP port 9601  │  Silence frames consumed but not transmitted.
+  │  ■ red bar      │  PTT held for PTT_RELEASE_DELAY after audio stops.
+  └─────────────────┘
 ```
 
 ## Table of Contents
@@ -78,6 +84,7 @@ A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-
 
 ```
 Priority 0 (Highest) → File Playback    [PTT → Radio TX]
+Priority 0 (Highest) → ANNIN            [PTT → Radio TX, audio-gated — TCP port 9601]
 Priority 1           → Mumble RX        [PTT → Radio TX, direct path]
 Priority 1           → Radio RX         [→ Mumble TX, no PTT]
 Priority 2           → SDR1 Receiver    [→ Mumble TX, with ducking]
@@ -125,7 +132,16 @@ Priority 4 (Lowest)  → EchoLink        [→ Mumble TX]
    - Status bar: server shows `SV:[yellow]`, client shows `CL:[green]`
    - `c` key mutes/unmutes SDRSV on the client
 
-#### 7. **EchoLink** (Priority 4)
+#### 7. **Network Announcement Input / ANNIN** (Priority 0, PTT enabled)
+   - Listens on TCP port 9601 for inbound connections
+   - Same wire format as Remote Audio Link (4-byte big-endian length header + 16-bit mono PCM)
+   - **Audio-gated PTT**: silence frames are consumed but discarded; PTT fires only when audio exceeds `ANNOUNCE_INPUT_THRESHOLD`
+   - Stream can stay connected between announcements without keying the radio
+   - PTT released after `PTT_RELEASE_DELAY` once audio stops
+   - Status bar: `AN:[red bar]` when enabled
+   - No AIOC required to listen; if AIOC is absent, audio is received but PTT is silently skipped
+
+#### 8. **EchoLink** (Priority 4)
    - Named pipe integration
    - TheLinkBox compatible
    - Optional routing to/from Mumble and Radio
@@ -485,7 +501,7 @@ Press keys during operation to control the gateway:
 
 ### Audio Level Bars
 
-Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL
+Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL → AN
 
 | Bar | Color | Meaning |
 |-----|-------|---------|
@@ -496,6 +512,7 @@ Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL
 | **SDR2:[bar]** | Magenta | SDR2 receiver audio level (if enabled) |
 | **SV:[bar]** | Yellow | Remote Audio Link — server mode: audio level being sent to remote client |
 | **CL:[bar]** | Green | Remote Audio Link — client mode: audio level received from remote server (SDRSV) |
+| **AN:[bar]** | Red | Announcement Input — audio level from TCP port 9601 (only shown when `ENABLE_ANNOUNCE_INPUT = true`; shows 0 when no client connected) |
 
 **Bar States:**
 
@@ -562,6 +579,7 @@ This creates responsive bars that show peaks immediately but decay smoothly.
 │                         AUDIO INPUTS                              │
 ├──────────────────────────────────────────────────────────────────┤
 │  Priority 0:  File Playback (10 slots) ───────┐                  │
+│  Priority 0:  ANNIN (TCP port 9601)   ────────┤                  │
 │  Priority 1:  Radio RX (AIOC)         ────────┼──→ MIXER         │
 │  Priority 2:  SDR (ALSA Loopback)     ────────┤                  │
 │  Priority 3:  EchoLink (Named Pipes)  ────────┘                  │
@@ -603,8 +621,9 @@ Mumble RX (direct path — bypasses mixer):
   ├─ Written directly to AIOC output → Radio TX
   └─ Suppressed only when TX muted or manual PTT mode active
 
-Priority 0 (File Playback):
-  ├─ Triggers PTT → announcement sent to Radio TX
+Priority 0 (File Playback and ANNIN):
+  ├─ Triggers PTT → audio sent to Radio TX
+  ├─ ANNIN (TCP 9601): audio-gated — silence frames discarded, PTT fires only on real audio
   ├─ Concurrent Radio RX still forwarded to Mumble
   └─ Highest priority within mixer
 
@@ -757,6 +776,73 @@ REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0  # Seconds between reconnect attempts (ser
 The client machine must accept inbound TCP on `REMOTE_AUDIO_PORT` (default 9600):
 ```bash
 sudo ufw allow 9600/tcp
+```
+
+## Announcement Input (Port 9601)
+
+The Announcement Input lets any TCP client push audio directly to the radio transmitter without going through the mixer or Mumble. The gateway listens on port 9601; when a client connects and sends audio above the silence threshold, PTT is activated and the audio is routed to the radio.
+
+### Connection Model
+
+```
+  Sender (any machine)                  Gateway
+  ────────────────────                  ───────
+                                        ANNOUNCE_INPUT_PORT = 9601
+                                        ANNOUNCE_INPUT_HOST = (blank = all)
+
+  Sender connects OUT ── TCP 9601 ──►  Gateway accepts inbound
+
+  Audio flows one way: sender → gateway → radio TX.
+  PTT fires only when audio exceeds ANNOUNCE_INPUT_THRESHOLD.
+  Connection can stay up between announcements — silence is discarded.
+```
+
+### Wire Format
+
+Same as Remote Audio Link: 4-byte big-endian length header followed by raw 16-bit signed mono PCM at the configured sample rate (`AUDIO_RATE`, default 48000 Hz).
+
+```python
+import struct, socket
+
+sock = socket.create_connection(("gateway-ip", 9601))
+while playing:
+    pcm = get_next_chunk()   # bytes, 16-bit mono 48kHz
+    sock.sendall(struct.pack(">I", len(pcm)) + pcm)
+```
+
+### PTT Behaviour
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Client connected, sending silence                        │
+│  → chunks consumed and discarded, radio stays unkeyed    │
+├──────────────────────────────────────────────────────────┤
+│  Audio level rises above ANNOUNCE_INPUT_THRESHOLD        │
+│  → PTT activated (PTT_ANNOUNCEMENT_DELAY applies)        │
+│  → audio routed to radio TX at full volume               │
+├──────────────────────────────────────────────────────────┤
+│  Audio drops below threshold / client disconnects        │
+│  → PTT held for PTT_RELEASE_DELAY seconds then released  │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Configuration
+
+```ini
+ENABLE_ANNOUNCE_INPUT = false          # Enable the listener (default off)
+ANNOUNCE_INPUT_PORT = 9601             # TCP port
+ANNOUNCE_INPUT_HOST =                  # Bind address (blank = all interfaces)
+ANNOUNCE_INPUT_THRESHOLD = -45.0       # dBFS below which frames are treated as silence
+```
+
+### Status Bar
+
+`AN:[red bar]` appears after the Remote Audio Link bar when `ENABLE_ANNOUNCE_INPUT = true`. The bar shows the live audio level when a client is connected and sending audio; it shows `0%` when no client is connected.
+
+### Firewall
+
+```bash
+sudo ufw allow 9601/tcp
 ```
 
 ## Configuration Reference
@@ -975,6 +1061,39 @@ REMOTE_AUDIO_PRIORITY = 3            # Client: sdr_priority for ducking (0 = hig
 REMOTE_AUDIO_DISPLAY_GAIN = 1.0      # Client: status bar sensitivity
 REMOTE_AUDIO_AUDIO_BOOST = 1.0       # Client: volume boost for received audio
 REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0 # Server: seconds between reconnect attempts
+```
+
+### Announcement Input Settings
+
+```ini
+# Enable inbound TCP listener on port 9601 for radio announcements.
+# Audio arriving on this port is PTT-gated to the radio.
+ENABLE_ANNOUNCE_INPUT = false
+
+# TCP port to listen on (sender connects here)
+ANNOUNCE_INPUT_PORT = 9601
+
+# Bind address (blank = all interfaces)
+ANNOUNCE_INPUT_HOST =
+
+# dBFS threshold — frames below this level are treated as silence and
+# do not trigger PTT.  Allows the connection to stay up between
+# announcements without keying the radio.
+# Range: -60 (very sensitive) to -20 (loud signals only)
+ANNOUNCE_INPUT_THRESHOLD = -45.0
+```
+
+**How it works:**
+1. Client connects to the gateway on port 9601 and streams length-prefixed 16-bit mono PCM (same format as Remote Audio Link)
+2. Each incoming chunk is level-checked against `ANNOUNCE_INPUT_THRESHOLD`
+3. Below threshold → chunk is consumed (queue drained) but not transmitted; PTT stays unkeyed
+4. Above threshold → PTT activated; audio routed to radio TX
+5. When audio stops, PTT is held for `PTT_RELEASE_DELAY` seconds then released
+6. Connection can remain open between announcements with no effect on the radio
+
+**Firewall:**
+```bash
+sudo ufw allow 9601/tcp
 ```
 
 ### EchoLink Settings

@@ -438,6 +438,33 @@ REMOTE_AUDIO_AUDIO_BOOST = 1.0
 REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0
 
 # ============================================================================
+# ANNOUNCEMENT INPUT (port 9601)
+# ============================================================================
+# Listens for inbound TCP connections carrying length-prefixed 16-bit mono PCM
+# at the configured sample rate (same wire format as REMOTE_AUDIO_ROLE=client).
+# When audio arrives the gateway activates PTT (if AIOC is present) and sends
+# the audio to the radio for transmission.  PTT is released automatically once
+# the stream drains after the sender disconnects (PTT_RELEASE_DELAY applies).
+#
+# Enable inbound firewall port if needed:  sudo ufw allow 9601/tcp
+# ============================================================================
+
+# Set to true to enable the announcement input listener
+ENABLE_ANNOUNCE_INPUT = false
+
+# TCP port to listen on (sender connects here)
+ANNOUNCE_INPUT_PORT = 9601
+
+# Bind address (blank = all interfaces / 0.0.0.0)
+ANNOUNCE_INPUT_HOST =
+
+# Audio threshold in dBFS.  Chunks below this level are treated as silence
+# and do not trigger PTT.  The stream can stay connected between announcements
+# without keying the radio.  PTT_RELEASE_DELAY provides the tail hold after
+# audio stops.  Range: -60 (very sensitive) to -20 (only loud audio).
+ANNOUNCE_INPUT_THRESHOLD = -45.0
+
+# ============================================================================
 # SIGNAL DETECTION & SOURCE SWITCHING
 # ============================================================================
 # Controls when and how the mixer switches between audio sources (e.g. when

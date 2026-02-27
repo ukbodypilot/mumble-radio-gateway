@@ -11,6 +11,15 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 **Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
 **Start script:** `start.sh` (launches DarkIce + FFmpeg + gateway)
 
+## Announcement Input (port 9601)
+- `NetworkAnnouncementSource` — listens on 9601 (configurable), inbound TCP, same length-prefixed PCM format as RemoteAudioSource
+- `ptt_control=True`, `priority=0` — mixer routes audio to radio TX and activates PTT
+- Audio-gated PTT: `get_audio()` discards silence frames (below `ANNOUNCE_INPUT_THRESHOLD`), only returns audio+PTT when above threshold — stream can stay connected between announcements without keying the radio
+- PTT tail hold via normal `PTT_RELEASE_DELAY` after last above-threshold chunk
+- Config: `ENABLE_ANNOUNCE_INPUT=false`, `ANNOUNCE_INPUT_PORT=9601`, `ANNOUNCE_INPUT_HOST=`, `ANNOUNCE_INPUT_THRESHOLD=-45.0`
+- Status bar: `AN:` label with RED bar (only shown when `ENABLE_ANNOUNCE_INPUT=true`)
+- Gateway init note: if no AIOC present, a warning is printed but init still succeeds
+
 ## Key Architecture
 - `AIOCRadioSource` — reads from AIOC ALSA device (radio RX audio)
 - `SDRSource` — reads from ALSA loopback via background reader thread (non-blocking)

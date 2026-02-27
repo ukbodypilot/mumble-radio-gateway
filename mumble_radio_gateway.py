@@ -210,6 +210,11 @@ class Config:
             'REMOTE_AUDIO_DISPLAY_GAIN': 1.0,
             'REMOTE_AUDIO_AUDIO_BOOST': 1.0,
             'REMOTE_AUDIO_RECONNECT_INTERVAL': 5.0,
+            # Announcement Input (port 9601 — inbound PCM stream, PTT to radio)
+            'ENABLE_ANNOUNCE_INPUT': False,
+            'ANNOUNCE_INPUT_PORT': 9601,
+            'ANNOUNCE_INPUT_HOST': '',
+            'ANNOUNCE_INPUT_THRESHOLD': -45.0,  # dBFS — below this is treated as silence
         }
         
         # Set defaults
@@ -2034,6 +2039,191 @@ class RemoteAudioSource(AudioSource):
         self._sub_buffer = b''
 
 
+class NetworkAnnouncementSource(AudioSource):
+    """Listens for an inbound TCP connection on port 9601 and receives PCM
+    audio to transmit over the radio.
+
+    Same wire format as RemoteAudioSource (length-prefixed 16-bit mono PCM at
+    the configured sample rate).  Unlike RemoteAudioSource, ptt_control=True so
+    the mixer routes the audio to radio TX and activates PTT.  PTT is released
+    automatically by the gateway's PTT_RELEASE_DELAY timeout once the queue
+    drains after the sender disconnects.
+    """
+    def __init__(self, config, gateway):
+        super().__init__("ANNIN", config)
+        self.gateway = gateway
+        self.priority = 0           # Same highest priority as FilePlayback
+        self.ptt_control = True     # Routes to radio TX and activates PTT
+        self.volume = 1.0
+        self.enabled = True
+        self.muted = False
+
+        self.audio_level = 0
+        self.client_connected = False
+
+        self._chunk_queue = _queue_mod.Queue(maxsize=16)
+        self._sub_buffer = b''
+        self._chunk_bytes = config.AUDIO_CHUNK_SIZE * 2   # 16-bit mono
+        self._reader_running = False
+        self._reader_thread = None
+        self._listen_socket = None
+
+    def setup_audio(self):
+        """Bind listen socket and start accept/reader thread."""
+        import socket
+        bind_host = self.config.ANNOUNCE_INPUT_HOST or '0.0.0.0'
+        port = int(self.config.ANNOUNCE_INPUT_PORT)
+        self._listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listen_socket.settimeout(1.0)
+        self._listen_socket.bind((bind_host, port))
+        self._listen_socket.listen(1)
+        self._reader_running = True
+        self._reader_thread = threading.Thread(
+            target=self._reader_thread_func,
+            name="ANNIN-reader",
+            daemon=True
+        )
+        self._reader_thread.start()
+        print(f"✓ Announcement input listening on {bind_host}:{port}")
+        return True
+
+    def _reader_thread_func(self):
+        """Accept one client at a time and read length-prefixed PCM."""
+        import socket, struct
+
+        while self._reader_running:
+            conn = None
+            try:
+                conn, addr = self._listen_socket.accept()
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                conn.settimeout(2.0)
+                self.client_connected = True
+                print(f"\n[ANNIN] Client connected from {addr[0]}:{addr[1]}")
+
+                while self._reader_running:
+                    header = self._recv_exact(conn, 4)
+                    if header is None:
+                        break
+                    msg_len = struct.unpack('>I', header)[0]
+                    if msg_len == 0 or msg_len > 96000:
+                        break
+                    payload = self._recv_exact(conn, msg_len)
+                    if payload is None:
+                        break
+                    try:
+                        self._chunk_queue.put_nowait(payload)
+                    except _queue_mod.Full:
+                        try:
+                            self._chunk_queue.get_nowait()
+                        except _queue_mod.Empty:
+                            pass
+                        try:
+                            self._chunk_queue.put_nowait(payload)
+                        except _queue_mod.Full:
+                            pass
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if self._reader_running and self.config.VERBOSE_LOGGING:
+                    print(f"\n[ANNIN] Connection error: {e}")
+            finally:
+                self.client_connected = False
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                if self.config.VERBOSE_LOGGING:
+                    print(f"\n[ANNIN] Client disconnected")
+
+    @staticmethod
+    def _recv_exact(sock, n):
+        """Receive exactly n bytes, or return None on disconnect."""
+        data = b''
+        while len(data) < n:
+            try:
+                chunk = sock.recv(n - len(data))
+            except Exception:
+                return None
+            if not chunk:
+                return None
+            data += chunk
+        return data
+
+    def get_audio(self, chunk_size):
+        """Return (pcm, True) when above-threshold audio is available.
+
+        Silence frames are consumed from the queue but discarded (return
+        (None, False)) so PTT is not triggered by idle stream packets.
+        The caller's PTT_RELEASE_DELAY provides the tail hold after audio
+        stops, matching the behaviour of file-playback announcements.
+        """
+        if not self.enabled:
+            return None, False
+
+        cb = self._chunk_bytes
+
+        # Fill sub-buffer from queue — always drain so idle silence doesn't
+        # back up the queue while the connection is held open.
+        while len(self._sub_buffer) < cb:
+            try:
+                blob = self._chunk_queue.get_nowait()
+                self._sub_buffer += blob
+            except _queue_mod.Empty:
+                return None, False
+
+        raw = self._sub_buffer[:cb]
+        self._sub_buffer = self._sub_buffer[cb:]
+
+        # Level metering + threshold gate
+        arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
+        if rms > 0:
+            db = 20 * _math_mod.log10(rms / 32767.0)
+            raw_level = max(0, min(100, (db + 60) * (100 / 60)))
+        else:
+            db = -100.0
+            raw_level = 0
+
+        if raw_level > self.audio_level:
+            self.audio_level = raw_level
+        else:
+            self.audio_level = int(self.audio_level * 0.7 + raw_level * 0.3)
+
+        # Only trigger PTT when audio is above threshold.
+        # Silence chunks are consumed (queue keeps draining) but not sent to
+        # the radio, so PTT is held only while real audio is present.
+        threshold_db = float(getattr(self.config, 'ANNOUNCE_INPUT_THRESHOLD', -45.0))
+        if db < threshold_db:
+            return None, False  # Below threshold: discard, let PTT tail expire
+
+        return raw, True   # Above threshold: route to radio TX and activate PTT
+
+    def is_active(self):
+        return self.enabled and not self.muted and self.client_connected
+
+    def get_status(self):
+        if not self.enabled:
+            return "ANNIN: Disabled"
+        elif self.client_connected:
+            return f"ANNIN: Connected ({self.audio_level}%)"
+        else:
+            return "ANNIN: Waiting"
+
+    def cleanup(self):
+        """Stop reader thread and close listen socket."""
+        self._reader_running = False
+        if self._listen_socket:
+            try:
+                self._listen_socket.close()
+            except Exception:
+                pass
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2.0)
+        self._sub_buffer = b''
+
+
 class StreamOutputSource:
     """Stream audio output to named pipe for Darkice"""
     def __init__(self, config, gateway):
@@ -2768,6 +2958,7 @@ class MumbleRadioGateway:
         self.remote_audio_source = None   # RemoteAudioSource (role=client)
         self.remote_audio_muted = False   # Client: mute toggle
         self.remote_audio_ducked = False  # Client: ducked state for status bar
+        self.announce_input_source = None  # NetworkAnnouncementSource (port 9601)
         self.aioc_available = False  # Track if AIOC is connected
 
         # DarkIce process monitoring (auto-restart if it dies)
@@ -3762,6 +3953,25 @@ class MumbleRadioGateway:
                 except Exception as e:
                     print(f"⚠ Warning: Could not initialize remote audio client: {e}")
                     self.remote_audio_source = None
+
+            # Initialize announcement input (port 9601) if enabled
+            if getattr(self.config, 'ENABLE_ANNOUNCE_INPUT', False):
+                try:
+                    bind_host = self.config.ANNOUNCE_INPUT_HOST or '0.0.0.0'
+                    port = self.config.ANNOUNCE_INPUT_PORT
+                    print(f"Initializing announcement input (listening on {bind_host}:{port})...")
+                    self.announce_input_source = NetworkAnnouncementSource(self.config, self)
+                    if self.announce_input_source.setup_audio():
+                        self.mixer.add_source(self.announce_input_source)
+                        print(f"✓ Announcement input (ANNIN) added to mixer")
+                        if not self.aioc_available:
+                            print("  ⚠ No AIOC — PTT will not activate (audio discarded)")
+                    else:
+                        print("⚠ Warning: Could not initialize announcement input")
+                        self.announce_input_source = None
+                except Exception as e:
+                    print(f"⚠ Warning: Could not initialize announcement input: {e}")
+                    self.announce_input_source = None
 
             # Initialize EchoLink source if enabled (Phase 3B)
             if self.config.ENABLE_ECHOLINK:
@@ -5463,6 +5673,15 @@ class MumbleRadioGateway:
                     cl_ducked = self.remote_audio_ducked if not cl_muted and current_cl_level > 0 else False
                     remote_bar = f" {WHITE}CL:{RESET}" + self.format_level_bar(current_cl_level, muted=cl_muted, ducked=cl_ducked, color='green')
 
+                # Announcement input bar (AN: — red like TX, shown when enabled)
+                annin_bar = ""
+                if self.announce_input_source:
+                    an_level = getattr(self.announce_input_source, 'audio_level', 0)
+                    an_connected = getattr(self.announce_input_source, 'client_connected', False)
+                    annin_bar = f" {WHITE}AN:{RESET}" + self.format_level_bar(
+                        an_level if an_connected else 0, color='red'
+                    )
+
                 # Add diagnostics if there have been restarts (fixed width: always 6 chars like " R:123" or "      ")
                 # This prevents the status line from jumping when restarts occur
                 if self.stream_restart_count > 0:
@@ -5511,7 +5730,7 @@ class MumbleRadioGateway:
 
                 # Extra padding to clear any orphaned text when line shortens
                 # Order: ...Vol → FileStatus → ProcessingFlags → Diagnostics
-                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{vol_info}{file_status_info}{proc_info}{diag}     ", end="", flush=True)
+                print(f"\r{WHITE}{status_label}:{RESET} {status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{annin_bar}{vol_info}{file_status_info}{proc_info}{diag}     ", end="", flush=True)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -6087,6 +6306,14 @@ class MumbleRadioGateway:
                 self.remote_audio_server.cleanup()
                 if self.config.VERBOSE_LOGGING:
                     print("  Remote audio server closed")
+            except Exception:
+                pass
+
+        if self.announce_input_source:
+            try:
+                self.announce_input_source.cleanup()
+                if self.config.VERBOSE_LOGGING:
+                    print("  Announcement input closed")
             except Exception:
                 pass
 
