@@ -143,7 +143,7 @@ class Config:
             'PLAYBACK_DIRECTORY': './audio/',
             'PLAYBACK_ANNOUNCEMENT_FILE': '',
             'PLAYBACK_ANNOUNCEMENT_INTERVAL': 0,  # seconds, 0 = disabled
-            'PLAYBACK_VOLUME': 2.0,               # float (multiplier; >1.0 boosts, audio is clipped to int16 range)
+            'PLAYBACK_VOLUME': 4.0,               # float (multiplier; >1.0 boosts, audio is clipped to int16 range)
             # Text-to-Speech and Text Commands (Phase 4)
             'ENABLE_TTS': True,
             'ENABLE_TEXT_COMMANDS': True,
@@ -215,6 +215,7 @@ class Config:
             'ANNOUNCE_INPUT_PORT': 9601,
             'ANNOUNCE_INPUT_HOST': '',
             'ANNOUNCE_INPUT_THRESHOLD': -45.0,  # dBFS — below this is treated as silence
+            'ANNOUNCE_INPUT_VOLUME': 4.0,       # volume multiplier for announcement audio
         }
         
         # Set defaults
@@ -504,7 +505,7 @@ class FilePlaybackSource(AudioSource):
         self.gateway = gateway
         self.priority = 0  # HIGHEST priority - announcements interrupt radio
         self.ptt_control = True  # File playback triggers PTT
-        self.volume = getattr(config, 'PLAYBACK_VOLUME', 1.0)
+        self.volume = getattr(config, 'PLAYBACK_VOLUME', 4.0)
         
         # Playback state
         self.current_file = None
@@ -954,7 +955,7 @@ class FilePlaybackSource(AudioSource):
                 print(f"\n[Playback] Finished: {os.path.basename(self.current_file) if self.current_file else 'unknown'}")
             
             # Reset volume to configured level (in case TTS boosted it)
-            self.volume = getattr(self.gateway.config, 'PLAYBACK_VOLUME', 1.0)
+            self.volume = getattr(self.gateway.config, 'PLAYBACK_VOLUME', 4.0)
             if self.gateway.config.VERBOSE_LOGGING:
                 print(f"[Playback] Volume reset to {self.volume}x")
             
@@ -2054,7 +2055,7 @@ class NetworkAnnouncementSource(AudioSource):
         self.gateway = gateway
         self.priority = 0           # Same highest priority as FilePlayback
         self.ptt_control = True     # Routes to radio TX and activates PTT
-        self.volume = 1.0
+        self.volume = float(getattr(config, 'ANNOUNCE_INPUT_VOLUME', 4.0))
         self.enabled = True
         self.muted = False
 
@@ -2064,6 +2065,8 @@ class NetworkAnnouncementSource(AudioSource):
         self._chunk_queue = _queue_mod.Queue(maxsize=16)
         self._sub_buffer = b''
         self._chunk_bytes = config.AUDIO_CHUNK_SIZE * 2   # 16-bit mono
+        self._ptt_hold_time = 2.0   # seconds of silence before releasing PTT
+        self._last_above_threshold = 0.0  # monotonic time of last above-threshold chunk
         self._reader_running = False
         self._reader_thread = None
         self._listen_socket = None
@@ -2156,13 +2159,14 @@ class NetworkAnnouncementSource(AudioSource):
 
         Silence frames are consumed from the queue but discarded (return
         (None, False)) so PTT is not triggered by idle stream packets.
-        The caller's PTT_RELEASE_DELAY provides the tail hold after audio
-        stops, matching the behaviour of file-playback announcements.
+        A 2-second hold keeps PTT active through brief pauses in speech
+        so the radio doesn't drop and re-key between sentences.
         """
-        if not self.enabled:
+        if not self.enabled or self.muted:
             return None, False
 
         cb = self._chunk_bytes
+        now = time.monotonic()
 
         # Fill sub-buffer from queue — always drain so idle silence doesn't
         # back up the queue while the connection is held open.
@@ -2171,6 +2175,9 @@ class NetworkAnnouncementSource(AudioSource):
                 blob = self._chunk_queue.get_nowait()
                 self._sub_buffer += blob
             except _queue_mod.Empty:
+                # No data in queue — check if PTT hold is still active
+                if now - self._last_above_threshold < self._ptt_hold_time and self._last_above_threshold > 0:
+                    return b'\x00' * cb, True  # silence but keep PTT keyed
                 return None, False
 
         raw = self._sub_buffer[:cb]
@@ -2191,12 +2198,20 @@ class NetworkAnnouncementSource(AudioSource):
         else:
             self.audio_level = int(self.audio_level * 0.7 + raw_level * 0.3)
 
-        # Only trigger PTT when audio is above threshold.
-        # Silence chunks are consumed (queue keeps draining) but not sent to
-        # the radio, so PTT is held only while real audio is present.
         threshold_db = float(getattr(self.config, 'ANNOUNCE_INPUT_THRESHOLD', -45.0))
         if db < threshold_db:
-            return None, False  # Below threshold: discard, let PTT tail expire
+            # Below threshold — hold PTT with silence for up to 2s
+            if now - self._last_above_threshold < self._ptt_hold_time and self._last_above_threshold > 0:
+                return b'\x00' * cb, True  # silence but keep PTT keyed
+            return None, False  # Hold expired: let PTT release
+
+        # Above threshold — update hold timer
+        self._last_above_threshold = now
+
+        # Apply volume multiplier
+        if self.volume != 1.0:
+            arr = arr * self.volume
+            raw = np.clip(arr, -32768, 32767).astype(np.int16).tobytes()
 
         return raw, True   # Above threshold: route to radio TX and activate PTT
 
@@ -2959,6 +2974,7 @@ class MumbleRadioGateway:
         self.remote_audio_muted = False   # Client: mute toggle
         self.remote_audio_ducked = False  # Client: ducked state for status bar
         self.announce_input_source = None  # NetworkAnnouncementSource (port 9601)
+        self.announce_input_muted = False # Announcement input: mute toggle
         self.aioc_available = False  # Track if AIOC is connected
 
         # DarkIce process monitoring (auto-restart if it dies)
@@ -4818,7 +4834,13 @@ class MumbleRadioGateway:
 
                     # Route audio based on PTT requirement
                     if ptt_required:
-                        # PTT required (file playback) - send to radio TX output
+                        # PTT required (file playback / announcement input)
+
+                        # Trace: measure RMS inside PTT branch (the common
+                        # trace point after `continue` never runs for PTT)
+                        if self._trace_recording and data:
+                            _tr_arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                            _tr_data_rms = float(np.sqrt(np.mean(_tr_arr * _tr_arr))) if len(_tr_arr) > 0 else 0.0
 
                         # Update last sound time so PTT release timer works
                         self.last_sound_time = time.time()
@@ -4846,6 +4868,7 @@ class MumbleRadioGateway:
                             self.announcement_delay_active = False
 
                         # Send audio to radio output
+                        _ptt_wrote = False
                         if self.output_stream and not self.tx_muted:
                             try:
                                 pcm = data
@@ -4856,6 +4879,7 @@ class MumbleRadioGateway:
                                     self.output_stream.write(pcm, exception_on_overflow=False)
                                 except TypeError:
                                     self.output_stream.write(pcm)
+                                _ptt_wrote = True
                             except IOError as io_err:
                                 if self.config.VERBOSE_LOGGING:
                                     print(f"\n[Warning] Output stream buffer issue: {io_err}")
@@ -4907,7 +4931,17 @@ class MumbleRadioGateway:
                                 pass
 
                         # Skip the normal RX→Mumble path below - this is TX audio
-                        _tr_outcome = 'ptt'
+                        # Trace: encode PTT write status into outcome
+                        # ptt_ok = wrote to AIOC, ptt_nostream = output_stream is None,
+                        # ptt_txm = tx_muted, ptt_delay = in announcement delay
+                        if _ptt_wrote:
+                            _tr_outcome = 'ptt_ok'
+                        elif not self.output_stream:
+                            _tr_outcome = 'ptt_nostr'
+                        elif self.tx_muted:
+                            _tr_outcome = 'ptt_txm'
+                        else:
+                            _tr_outcome = 'ptt_err'
                         continue
 
                     # No PTT required (radio RX / SDR) — falls through to Mumble send
@@ -5416,6 +5450,15 @@ class MumbleRadioGateway:
                         self.config.ENABLE_HIGHPASS_FILTER = not self.config.ENABLE_HIGHPASS_FILTER
                     
                     elif char == 'a':
+                        # Toggle announcement input mute
+                        if self.announce_input_source:
+                            self.announce_input_muted = not self.announce_input_muted
+                            self.announce_input_source.muted = self.announce_input_muted
+                            if self.config.VERBOSE_LOGGING:
+                                state = "MUTED" if self.announce_input_muted else "UNMUTED"
+                                print(f"\n[ANNIN] {state}")
+
+                    elif char == 'g':
                         # Toggle AGC
                         self.config.ENABLE_AGC = not self.config.ENABLE_AGC
                     
@@ -5572,13 +5615,13 @@ class MumbleRadioGateway:
                 
                 # Format status with color-coded symbols (fixed width for alignment)
                 if self.audio_capture_active and time_since_last_capture < 2.0:
-                    status_label = "ACTIVE"  # 6 chars
+                    status_label = "  "  # padding to keep fixed width
                     status_symbol = f"{GREEN}✓{RESET}"
                 elif time_since_last_capture < 10.0:
-                    status_label = "IDLE  "  # 6 chars (padded)
+                    status_label = "  "
                     status_symbol = f"{ORANGE}⚠{RESET}"
                 else:
-                    status_label = "STOP  "  # 6 chars (STOPPED shortened + padded)
+                    status_label = "  "
                     status_symbol = f"{RED}✗{RESET}"
                     # Attempt recovery
                     if self.config.VERBOSE_LOGGING:
@@ -5678,8 +5721,9 @@ class MumbleRadioGateway:
                 if self.announce_input_source:
                     an_level = getattr(self.announce_input_source, 'audio_level', 0)
                     an_connected = getattr(self.announce_input_source, 'client_connected', False)
+                    an_muted = self.announce_input_muted or global_muted
                     annin_bar = f" {WHITE}AN:{RESET}" + self.format_level_bar(
-                        an_level if an_connected else 0, color='red'
+                        an_level if an_connected else 0, muted=an_muted, color='red'
                     )
 
                 # Add diagnostics if there have been restarts (fixed width: always 6 chars like " R:123" or "      ")
@@ -5703,7 +5747,7 @@ class MumbleRadioGateway:
                 proc_flags = []
                 if self.config.ENABLE_NOISE_GATE: proc_flags.append("N")
                 if self.config.ENABLE_HIGHPASS_FILTER: proc_flags.append("F")
-                if self.config.ENABLE_AGC: proc_flags.append("A")
+                if self.config.ENABLE_AGC: proc_flags.append("G")
                 if self.config.ENABLE_NOISE_SUPPRESSION:
                     if self.config.NOISE_SUPPRESSION_METHOD == 'spectral': proc_flags.append("S")
                     elif self.config.NOISE_SUPPRESSION_METHOD == 'wiener': proc_flags.append("W")
@@ -5852,12 +5896,14 @@ class MumbleRadioGateway:
         print("Press Ctrl+C to exit")
         print("Keyboard Controls:")
         print("  Mute:  't'=TX | 'r'=RX | 'm'=Global | 's'=SDR1 | 'x'=SDR2  |  Audio: 'v'=VAD | ','=Vol- | '.'=Vol+")
-        print("  Proc:  'n'=Gate | 'f'=HPF | 'a'=AGC | 'w'=Wiener | 'e'=Echo")
+        print("  Proc:  'n'=Gate | 'f'=HPF | 'g'=AGC | 'w'=Wiener | 'e'=Echo")
         print("  SDR:   'd'=SDR1 Duck toggle")
         print("  PTT:   'p'=Manual PTT Toggle (override auto-PTT)")
         print("  Trace: 'i'=Start/stop audio trace recording (writes tools/audio_trace.txt on exit)")
         if getattr(self.config, 'REMOTE_AUDIO_ROLE', 'disabled').lower() == 'client' and self.remote_audio_source:
             print("  Remote: 'c'=Remote audio (SDRSV) mute toggle")
+        if self.announce_input_source:
+            print("  Annce: 'a'=Announcement input (ANNIN) mute toggle")
         if self.config.ENABLE_SPEAKER_OUTPUT:
             print("  Spkr:  'o'=Speaker mute toggle")
         if self.config.ENABLE_PLAYBACK:
@@ -5868,7 +5914,7 @@ class MumbleRadioGateway:
         # Print status line legend (only in verbose mode)
         if self.config.VERBOSE_LOGGING:
             print("Status Line Legend:")
-            print("  [✓/⚠/✗]  = Audio capture status (ACTIVE/IDLE/STOPPED)")
+            print("  [✓/⚠/✗]  = Audio capture status (active/idle/stopped)")
             print("  M:✓/✗    = Mumble connected/disconnected")
             print("  PTT:ON/M-ON/-- = Push-to-talk (auto/manual-on/off)")
             print("  VAD:✗/🔊/-- = VAD disabled/active/silent (dB = current level)")
@@ -5878,7 +5924,7 @@ class MumbleRadioGateway:
             print("  SDR2:[bar] = SDR2 receiver audio level (magenta)")
             print("  Vol:X.Xx = RX volume multiplier (Radio → Mumble gain)")
             print("  1234567890 = File status (green=loaded, red=playing, white=empty)")
-            print("  [N,F,A,W,E,D] = Processing: N=NoiseGate F=HPF A=AGC W=Wiener E=Echo D=SDR1Duck")
+            print("  [N,F,G,W,E,D] = Processing: N=NoiseGate F=HPF G=AGC W=Wiener E=Echo D=SDR1Duck")
             print("  R:n      = Stream restart count (only if >0)")
             print()
         

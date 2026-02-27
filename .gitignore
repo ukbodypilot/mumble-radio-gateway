@@ -46,6 +46,7 @@ Thumbs.db
 # User configurations — never commit (contains secrets: stream keys, passwords)
 gateway_config.txt
 gateway_config_local.txt
+windows_audio_client.json
 
 # Audio test files
 

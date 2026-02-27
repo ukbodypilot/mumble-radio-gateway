@@ -17,10 +17,10 @@
 #   3. Most other settings have sensible defaults
 #
 # Keyboard Controls (runtime):
-#   MUTE:    't' = TX | 'r' = RX | 'm' = Global | 's' = SDR1 | 'x' = SDR2 | 'o' = Speaker
+#   MUTE:    't' = TX | 'r' = RX | 'm' = Global | 's' = SDR1 | 'x' = SDR2 | 'c' = Remote | 'a' = Announce
 #   AUDIO:   'v' = VAD | ',' = Vol- | '.' = Vol+
 #   SDR:     'd' = SDR1 Duck toggle
-#   PROCESS: 'n' = Gate | 'f' = HPF | 'a' = AGC | 'w' = Wiener | 'e' = Echo
+#   PROCESS: 'n' = Gate | 'f' = HPF | 'g' = AGC | 'w' = Wiener | 'e' = Echo
 #   PTT:     'p' = Manual PTT toggle
 #   PLAY:    '1-9' = Announcements | '0' = Station ID | '-' = Stop
 # ============================================================================
@@ -195,7 +195,7 @@ PLAYBACK_DIRECTORY = audio
 # Playback volume multiplier for announcement audio files
 # 1.0 = normal, 2.0 = double — audio is clipped to int16 range so
 # boosting beyond clipping only increases distortion, not perceived loudness
-PLAYBACK_VOLUME = 2.0
+PLAYBACK_VOLUME = 4.0
 
 # File Naming & Auto-Assignment:
 # 
@@ -463,6 +463,11 @@ ANNOUNCE_INPUT_HOST =
 # without keying the radio.  PTT_RELEASE_DELAY provides the tail hold after
 # audio stops.  Range: -60 (very sensitive) to -20 (only loud audio).
 ANNOUNCE_INPUT_THRESHOLD = -45.0
+
+# Volume multiplier for announcement audio (1.0 = unity, 2.0 = double).
+# Boost if announcements sound quiet on the radio.  Audio is clipped to
+# int16 range so extreme values only add distortion, not loudness.
+ANNOUNCE_INPUT_VOLUME = 4.0
 
 # ============================================================================
 # SIGNAL DETECTION & SOURCE SWITCHING

@@ -456,6 +456,7 @@ Press keys during operation to control the gateway:
 - `s` = SDR1 Mute
 - `x` = SDR2 Mute
 - `c` = Remote Audio Mute (SDRSV — client mode only)
+- `a` = Announcement Input Mute (ANNIN)
 - `m` = Global Mute (mutes all audio)
 - `o` = Toggle Speaker Output Mute
 
@@ -473,7 +474,7 @@ Press keys during operation to control the gateway:
 ### Processing Controls
 - `n` = Toggle Noise Gate
 - `f` = Toggle High-Pass Filter
-- `a` = Toggle AGC
+- `g` = Toggle AGC
 - `w` = Toggle Wiener Filter (spectral noise suppression)
 - `e` = Toggle Echo Cancellation
 

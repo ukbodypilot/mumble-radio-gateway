@@ -88,6 +88,10 @@ MUTE CONTROLS
       Silences the remote audio source received from the server machine.
       Has no effect if REMOTE_AUDIO_ROLE is not 'client'.
 
+  a = Toggle Announcement Input Mute (ANNIN)
+      Silences the network announcement input (port 9601).
+      Has no effect if ENABLE_ANNOUNCE_INPUT is false.
+
   o = Toggle Speaker Output Mute
       Mutes the local speaker/headphone monitoring output.
       Does not affect Mumble or streaming — monitoring only.
@@ -127,7 +131,7 @@ AUDIO PROCESSING TOGGLES
   f = Toggle High-Pass Filter (HPF)
       Removes low-frequency rumble and hum.
 
-  a = Toggle AGC (Automatic Gain Control)
+  g = Toggle AGC (Automatic Gain Control)
       Normalises audio volume automatically.
 
   w = Toggle Wiener Noise Suppression
