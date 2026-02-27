@@ -9,7 +9,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 **Main file:** `mumble_radio_gateway.py` (~5000+ lines)
 **Installer:** `scripts/install.sh` (8 steps, targets Debian/Ubuntu/RPi)
 **Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
-**Start script:** `start.sh` (7 steps: kill procs, loopback, AIOC USB reset, pipe, DarkIce, FFmpeg, gateway)
+**Start script:** `start.sh` (7 steps: kill procs, loopback, AIOC USB reset, pipe, DarkIce, FFmpeg, gateway; `sudo -v` cached at top)
 **Windows client:** `windows_audio_client.py` (SDR input on 9600 or Announcement on 9601)
 
 ## Announcement Input (port 9601)
@@ -26,6 +26,8 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Mode selection on first run: SDR input (port 9600) or Announcement (port 9601)
 - Config saved to `windows_audio_client.json` (in .gitignore)
 - Same wire format as RemoteAudioSource (4-byte BE length + PCM payload)
+- Keyboard: `l` = toggle LIVE/IDLE (LIVE sends real audio in red, IDLE sends silence in green)
+- Cross-platform keyboard listener: msvcrt (Windows) / tty+termios (Unix)
 
 ## Key Architecture
 - `AIOCRadioSource` — reads from AIOC ALSA device (radio RX audio)
@@ -114,11 +116,10 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 ## Status Bar
 - format_level_bar() returns fixed-width (11 visible chars: 6-char bar + space + 4-char suffix)
-- Status icon only (no ACTIVE/IDLE/STOP text label)
+- Status icon only (no ACTIVE/IDLE/STOP text label, no colon prefix)
 - Bar display order: TX → RX → SP → SDR1 → SDR2 → SV/CL → AN
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis
-- **gateway_config.txt is NOT committed** (in .gitignore)
-- **NEVER commit Broadcastify stream key/password**
-- bak/ is not committed, fixed-width status bar is important
+- **gateway_config.txt IS committed** (repo is private); bak/ is not
+- Fixed-width status bar is important
