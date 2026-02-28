@@ -119,6 +119,12 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Status icon only (no ACTIVE/IDLE/STOP text label, no colon prefix)
 - Bar display order: TX → RX → SP → SDR1 → SDR2 → SV/CL → AN
 
+## audio/ Folder — Local Only
+- `audio/` is in `.gitignore` — never committed (sensitive/copyrighted audio clips)
+- Files live at `~/Downloads/mumble-radio-gateway/audio/` on each machine; backup at `~/audio_stash/` on the Pi
+- **New machine setup:** `scp -r user@pi-ip:~/audio_stash/ ~/Downloads/mumble-radio-gateway/audio`
+- Old git history still contains audio files — scrubbing requires force-push + re-clone on all machines (deferred)
+
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis
 - **gateway_config.txt IS committed** (repo is private); bak/ is not

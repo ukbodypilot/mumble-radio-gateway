@@ -48,7 +48,8 @@ gateway_config.txt
 gateway_config_local.txt
 windows_audio_client.json
 
-# Audio test files
+# Audio test files — kept locally but never committed (sensitive content)
+audio/
 
 # Downloads/temp
 node-*.tar.xz
