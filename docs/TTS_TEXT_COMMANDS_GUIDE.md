@@ -21,6 +21,7 @@ ENABLE_TEXT_COMMANDS = true
 2. **Gateway receives command**
 3. **Gateway processes command**:
    - `!speak` → Generates TTS audio → Keys PTT → Broadcasts on radio
+   - `!cw` → Generates Morse code tone → Keys PTT → Broadcasts on radio
    - `!play` → Plays file → Keys PTT → Broadcasts on radio
    - `!status` → Sends text reply back to Mumble
 4. **Radio listeners hear the TTS or announcement**
@@ -42,6 +43,25 @@ Generate text-to-speech and broadcast on radio
 2. Queues audio for playback
 3. Keys PTT and transmits on radio
 4. Sends confirmation to Mumble: "Speaking: Emergency traffic..."
+
+### !cw \<text\>
+Generate Morse code (CW) and broadcast on radio
+
+**Examples:**
+```
+!cw de w1aw
+!cw qst qst qst de w1aw
+!cw 73
+```
+
+**What happens:**
+1. Gateway generates CW tone audio at the configured frequency and WPM
+2. Queues audio for playback
+3. Keys PTT and transmits on radio
+4. Sends confirmation to Mumble: "CW: de w1aw"
+
+**Config:** `CW_WPM` (default 15), `CW_FREQUENCY` (default 700 Hz), `CW_VOLUME` (default 1.0)
+Unknown characters are silently skipped. Pre-delay uses `PTT_ANNOUNCEMENT_DELAY`.
 
 ### !play \<0-9\>
 Play announcement file on radio by slot number
@@ -192,6 +212,7 @@ Show available commands
 ```
 === Gateway Commands ===
 !speak <text> - TTS broadcast on radio
+!cw <text>    - Send Morse code on radio
 !play <0-9>   - Play announcement by slot
 !files        - List loaded announcement files
 !stop         - Stop playback and clear queue

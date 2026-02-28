@@ -144,6 +144,10 @@ class Config:
             'PLAYBACK_ANNOUNCEMENT_FILE': '',
             'PLAYBACK_ANNOUNCEMENT_INTERVAL': 0,  # seconds, 0 = disabled
             'PLAYBACK_VOLUME': 4.0,               # float (multiplier; >1.0 boosts, audio is clipped to int16 range)
+            # Morse Code (CW)
+            'CW_WPM': 15,          # Morse code words per minute
+            'CW_FREQUENCY': 700,   # Tone frequency in Hz
+            'CW_VOLUME': 1.0,      # Volume multiplier (applied before WAV write; PLAYBACK_VOLUME also applies)
             # Text-to-Speech and Text Commands (Phase 4)
             'ENABLE_TTS': True,
             'ENABLE_TEXT_COMMANDS': True,
@@ -4533,6 +4537,27 @@ class MumbleRadioGateway:
                 else:
                     self.send_text_message("Usage: !play <0-9>")
             
+            elif command == '!cw':
+                if not args:
+                    self.send_text_message("Usage: !cw &lt;text&gt;")
+                else:
+                    pcm = generate_cw_pcm(args, self.config.CW_WPM,
+                                          self.config.CW_FREQUENCY, 48000)
+                    if self.config.CW_VOLUME != 1.0:
+                        pcm = np.clip(pcm.astype(np.float32) * self.config.CW_VOLUME,
+                                      -32768, 32767).astype(np.int16)
+                    import wave, tempfile
+                    tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False, prefix='cw_')
+                    tmp.close()
+                    with wave.open(tmp.name, 'wb') as wf:
+                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(48000)
+                        wf.writeframes(pcm.tobytes())
+                    if self.playback_source and self.playback_source.queue_file(tmp.name):
+                        self.send_text_message(f"CW: {args}")
+                    else:
+                        self.send_text_message("CW: playback unavailable")
+                        os.unlink(tmp.name)
+
             elif command == '!status':
                 import psutil
                 import os
@@ -4665,6 +4690,7 @@ class MumbleRadioGateway:
                 help_text = [
                     "=== Gateway Commands ===",
                     "!speak <text> - TTS broadcast on radio",
+                    "!cw <text>    - Send Morse code on radio",
                     "!play <0-9>   - Play announcement by slot",
                     "!files        - List loaded announcement files",
                     "!stop         - Stop playback and clear queue",
@@ -4871,7 +4897,11 @@ class MumbleRadioGateway:
                         _ptt_wrote = False
                         if self.output_stream and not self.tx_muted:
                             try:
-                                pcm = data
+                                # Suppress audio while the PTT relay is settling.
+                                # announcement_delay_active is set in the same iteration
+                                # that PTT first activates, so data already holds a real
+                                # audio chunk — replace it with silence here too.
+                                pcm = b'\x00' * len(data) if self.announcement_delay_active else data
                                 if self.config.OUTPUT_VOLUME != 1.0:
                                     arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
                                     pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
@@ -6405,6 +6435,43 @@ class MumbleRadioGateway:
                 pass
         
         print("Shutdown complete")
+
+_MORSE_TABLE = {
+    'A': '.-',   'B': '-...', 'C': '-.-.', 'D': '-..',  'E': '.',
+    'F': '..-.', 'G': '--.',  'H': '....', 'I': '..',   'J': '.---',
+    'K': '-.-',  'L': '.-..', 'M': '--',   'N': '-.',   'O': '---',
+    'P': '.--.', 'Q': '--.-', 'R': '.-.',  'S': '...',  'T': '-',
+    'U': '..-',  'V': '...-', 'W': '.--',  'X': '-..-', 'Y': '-.--',
+    'Z': '--..',
+    '0': '-----', '1': '.----', '2': '..---', '3': '...--', '4': '....-',
+    '5': '.....', '6': '-....', '7': '--...', '8': '---..', '9': '----.',
+    '.': '.-.-.-', ',': '--..--', '?': '..--..', '/': '-..-.', '-': '-....-',
+}
+
+def generate_cw_pcm(text, wpm=15, freq=700, sample_rate=48000):
+    """Return int16 numpy array of CW audio for text. Standard PARIS timing."""
+    dit_n = int(sample_rate * 1.2 / wpm)
+    t = np.arange(dit_n) / sample_rate
+    dit_tone = (np.sin(2 * np.pi * freq * t) * 32767).astype(np.int16)
+    dah_tone = np.tile(dit_tone, 3)
+    dit_sil  = np.zeros(dit_n,     dtype=np.int16)
+    char_sil = np.zeros(3 * dit_n, dtype=np.int16)
+    word_sil = np.zeros(7 * dit_n, dtype=np.int16)
+
+    chunks = []
+    for wi, word in enumerate(text.upper().split()):
+        if wi:
+            chunks.append(word_sil)
+        for ci, ch in enumerate(word):
+            if ci:
+                chunks.append(char_sil)
+            for ei, el in enumerate(_MORSE_TABLE.get(ch, '')):
+                if ei:
+                    chunks.append(dit_sil)
+                chunks.append(dit_tone if el == '.' else dah_tone)
+
+    return np.concatenate(chunks) if chunks else np.zeros(dit_n, dtype=np.int16)
+
 
 def main():
     # Find config file

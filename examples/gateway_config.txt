@@ -197,6 +197,15 @@ PLAYBACK_DIRECTORY = audio
 # boosting beyond clipping only increases distortion, not perceived loudness
 PLAYBACK_VOLUME = 4.0
 
+# --- Morse Code (CW) ---
+# Speed in words per minute (standard PARIS timing; 15 WPM = ~22 ms dit)
+CW_WPM = 15
+# Tone frequency in Hz (typical CW sidetone range: 400–900 Hz)
+CW_FREQUENCY = 700
+# Volume multiplier applied to generated CW PCM before writing the WAV.
+# PLAYBACK_VOLUME is also applied on top — keep CW_VOLUME=1.0 and tune via PLAYBACK_VOLUME.
+CW_VOLUME = 1.0
+
 # File Naming & Auto-Assignment:
 # 
 # Station ID (key 0):

@@ -1010,6 +1010,10 @@ PLAYBACK_VOLUME = 2.0                # Volume multiplier (1.0 = normal, >1.0 boo
                                      # Audio is clipped to int16 range — safe to set above 1.0
                                      # Values above ~3.0 will distort before getting louder
 
+CW_WPM = 15                          # Morse code words per minute (standard PARIS timing)
+CW_FREQUENCY = 700                   # CW tone frequency in Hz (typical range: 400–900 Hz)
+CW_VOLUME = 1.0                      # CW PCM volume before WAV write; PLAYBACK_VOLUME also applies
+
 PTT_ANNOUNCEMENT_DELAY = 0.5         # Seconds after PTT key-up before audio starts
                                      # Radio TX must be keyed before audio begins
                                      # File position held during this window (no audio lost)
@@ -1379,6 +1383,7 @@ Send commands via Mumble text chat:
 | Command | Description |
 |---------|-------------|
 | `!speak <text>` | Generate TTS and broadcast on radio |
+| `!cw <text>` | Send Morse code (CW) on radio |
 | `!play <0-9>` | Play announcement file by slot number |
 | `!files` | List all loaded announcement files with slot numbers |
 | `!stop` | Stop playback and clear queue |
