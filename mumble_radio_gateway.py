@@ -2854,23 +2854,15 @@ class AudioMixer:
 
     def _mix_audio_streams(self, audio1, audio2, ratio=0.5):
         """Mix two audio streams together"""
-        import array
-        
-        # Convert to samples
-        samples1 = array.array('h', audio1)
-        samples2 = array.array('h', audio2)
-        
+        arr1 = np.frombuffer(audio1, dtype=np.int16).astype(np.float32)
+        arr2 = np.frombuffer(audio2, dtype=np.int16).astype(np.float32)
+
         # Ensure same length
-        min_len = min(len(samples1), len(samples2))
-        samples1 = samples1[:min_len]
-        samples2 = samples2[:min_len]
-        
-        # Mix with ratio
-        mixed = array.array('h', [
-            int((s1 * ratio + s2 * (1 - ratio)))
-            for s1, s2 in zip(samples1, samples2)
-        ])
-        
+        min_len = min(len(arr1), len(arr2))
+        arr1 = arr1[:min_len]
+        arr2 = arr2[:min_len]
+
+        mixed = np.clip(arr1 * ratio + arr2 * (1.0 - ratio), -32768, 32767).astype(np.int16)
         return mixed.tobytes()
     
     def _apply_volume(self, audio, volume):
@@ -3057,40 +3049,30 @@ class MumbleRadioGateway:
     def apply_highpass_filter(self, pcm_data):
         """Apply high-pass filter to remove low-frequency rumble"""
         try:
-            import array
             import math
-            
-            samples = array.array('h', pcm_data)
+            from scipy.signal import lfilter, lfilter_zi
+
+            samples = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
             if len(samples) == 0:
                 return pcm_data
-            
-            # Simple first-order IIR high-pass filter
+
+            # First-order IIR high-pass: H(z) = alpha*(1 - z^-1) / (1 - alpha*z^-1)
             cutoff = self.config.HIGHPASS_CUTOFF_FREQ
             sample_rate = self.config.AUDIO_RATE
-            
-            # Calculate filter coefficient
             rc = 1.0 / (2.0 * math.pi * cutoff)
             dt = 1.0 / sample_rate
             alpha = rc / (rc + dt)
-            
-            # Initialize state if needed
+
+            b = np.array([alpha, -alpha], dtype=np.float64)
+            a = np.array([1.0, -alpha], dtype=np.float64)
+
+            # Initialize state on first call (zi shape: (1,))
             if self.highpass_state is None:
-                self.highpass_state = 0.0
-            
-            # Apply filter
-            filtered = []
-            prev_input = self.highpass_state
-            prev_output = 0.0
-            
-            for sample in samples:
-                output = alpha * (prev_output + sample - prev_input)
-                filtered.append(int(output))
-                prev_input = sample
-                prev_output = output
-            
-            self.highpass_state = prev_input
-            return array.array('h', filtered).tobytes()
-            
+                self.highpass_state = lfilter_zi(b, a) * 0.0
+
+            filtered, self.highpass_state = lfilter(b, a, samples, zi=self.highpass_state)
+            return np.clip(filtered, -32768, 32767).astype(np.int16).tobytes()
+
         except Exception:
             return pcm_data
     
@@ -3146,49 +3128,28 @@ class MumbleRadioGateway:
     def apply_spectral_noise_suppression(self, pcm_data):
         """Apply spectral subtraction to reduce constant background noise"""
         try:
-            import array
-            import math
-            
-            samples = array.array('h', pcm_data)
+            from scipy.ndimage import uniform_filter1d
+
+            samples = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
             if len(samples) == 0:
                 return pcm_data
-            
-            # Convert to float
-            float_samples = [s / 32767.0 for s in samples]
-            
-            # Simple spectral subtraction using moving average
-            # (Proper implementation would use FFT, but this is lighter)
+
             window_size = 32
             strength = self.config.NOISE_SUPPRESSION_STRENGTH
-            
-            processed = []
-            for i, sample in enumerate(float_samples):
-                # Calculate local noise estimate (moving average of absolute values)
-                start = max(0, i - window_size // 2)
-                end = min(len(float_samples), i + window_size // 2)
-                window = float_samples[start:end]
-                
-                # Noise estimate
-                noise_estimate = sum(abs(s) for s in window) / len(window)
-                
-                # Subtract noise with strength control
-                if abs(sample) > noise_estimate * (1.0 + strength):
-                    # Signal above noise: keep it
-                    processed_sample = sample
-                else:
-                    # Signal in noise range: reduce it
-                    reduction = strength * noise_estimate
-                    if sample > 0:
-                        processed_sample = max(0, sample - reduction)
-                    else:
-                        processed_sample = min(0, sample + reduction)
-                
-                processed.append(processed_sample)
-            
-            # Convert back to int16
-            result = array.array('h', [int(s * 32767.0) for s in processed])
-            return result.tobytes()
-            
+
+            # Moving average of absolute values as noise estimate (O(n) vs O(n*w))
+            noise_estimate = uniform_filter1d(np.abs(samples), size=window_size, mode='nearest')
+
+            # Where signal exceeds noise threshold: keep as-is; otherwise reduce
+            above_threshold = np.abs(samples) > noise_estimate * (1.0 + strength)
+            reduction = strength * noise_estimate
+            reduced = np.where(samples > 0,
+                               np.maximum(0.0, samples - reduction),
+                               np.minimum(0.0, samples + reduction))
+
+            processed = np.where(above_threshold, samples, reduced)
+            return np.clip(processed, -32768, 32767).astype(np.int16).tobytes()
+
         except Exception:
             return pcm_data
     
