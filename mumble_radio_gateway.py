@@ -1399,35 +1399,26 @@ class SDRSource(AudioSource):
         cb = self._chunk_bytes
 
         # Fill sub-buffer from blob queue when needed.
-        # Strategy (mirrors AIOCRadioSource):
-        #   1. Eagerly drain ALL available blobs in one pass — builds a small
-        #      sub-buffer cushion when the reader thread is slightly ahead, which
-        #      is the normal steady-state on a healthy loopback.
-        #   2. If sub-buffer is still short after the drain, wait up to 10 ms for
-        #      the reader to deliver the next blob.  This absorbs scheduling jitter
-        #      at the 800 ms blob boundary without meaningfully stalling the loop
-        #      (200 ms period → 10 ms is a 5 % overhead in the worst case).
-        #   3. If still short after the wait, return None so the caller skips this
-        #      cycle — the reader is genuinely behind (watchdog handles recovery).
+        # Eagerly drain ALL currently available blobs in one non-blocking pass.
+        # This builds a small cushion when the reader thread is slightly ahead
+        # (normal steady state) and avoids multiple get_nowait() calls across
+        # consecutive ticks.  If the sub-buffer is still short after the drain
+        # the reader is genuinely behind; return None immediately so the caller
+        # skips this cycle — a blocking wait here would stall EVERY SDR source
+        # in sequence (both are called from the same mixer loop regardless of
+        # ducking state) and adds latency without fixing the underlying underrun.
         _need_blob = len(self._sub_buffer) < cb
         if _need_blob:
             _t0 = time.monotonic()
-            # Step 1: non-blocking drain of everything currently in queue
             while True:
                 try:
                     blob = self._chunk_queue.get_nowait()
                     self._sub_buffer += blob
                 except _queue_mod.Empty:
                     break
-            # Step 2: if still short, give the reader thread a short window
-            if len(self._sub_buffer) < cb:
-                try:
-                    blob = self._chunk_queue.get(timeout=0.010)
-                    self._sub_buffer += blob
-                except _queue_mod.Empty:
-                    self._last_blocked_ms = (time.monotonic() - _t0) * 1000
-                    return None, False  # reader genuinely behind
             self._last_blocked_ms = (time.monotonic() - _t0) * 1000
+            if len(self._sub_buffer) < cb:
+                return None, False  # reader behind — skip this cycle
         else:
             self._last_blocked_ms = 0.0
 
