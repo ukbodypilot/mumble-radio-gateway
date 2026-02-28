@@ -2685,15 +2685,17 @@ class AudioMixer:
                     # Rule 2: Higher priority SDR (lower number) ducks lower priority SDRs
                     # Only duck if the higher-priority SDR has actual signal —
                     # not when it's included merely because it's the sole source type.
-                    # Check ALL previously-processed SDRs (not just those with data
-                    # in sdrs_to_include) so hold timers from data-starved sources
-                    # still duck lower-priority SDRs.
+                    # Uses 'sig' which is hysteresis-based (requires SIGNAL_ATTACK_TIME
+                    # seconds of continuous signal) so brief noise spikes from a higher-
+                    # priority SDR don't immediately mute a lower-priority one.
+                    # 'hold' is intentionally excluded here: it is for audio inclusion
+                    # (fade-out) only, not for ducking decisions.
                     for other_name, (_, other_source_obj) in sorted_sdrs:
                         if other_name == sdr_name:
                             break  # only check sources processed before this one
                         other_priority = getattr(other_source_obj, 'sdr_priority', 99)
                         other_trace = _sdr_trace.get(other_name, {})
-                        other_has_signal = other_trace.get('sig') or other_trace.get('hold')
+                        other_has_signal = other_trace.get('sig')  # hysteresis-based only
                         if other_priority < sdr_priority and other_has_signal:
                             should_duck = True
                             if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
@@ -2726,12 +2728,19 @@ class AudioMixer:
                 if has_instant:
                     self.sdr_hold_until[sdr_name] = current_time + self.SIGNAL_RELEASE_TIME
                 hold_active = current_time < self.sdr_hold_until.get(sdr_name, 0.0)
+                # has_sig_hyst: attack-hysteresis version used for SDR-to-SDR ducking
+                # decisions (Rule 2).  Requires SIGNAL_ATTACK_TIME seconds of continuous
+                # signal before firing so brief noise spikes don't immediately duck
+                # lower-priority SDRs.  Release mirrors SIGNAL_RELEASE_TIME via the
+                # has_actual_audio() state machine, so ducking lasts 3s after signal stops
+                # (same as hold_active, but with the attack guard on the front end).
+                has_sig_hyst = has_actual_audio(sdr_audio, sdr_name)
                 # When SDR is the only source type (no radio RX or PTT audio),
                 # always include — signal gating only matters when mixing with
                 # higher-priority sources to avoid adding SDR noise to them.
                 sdr_is_sole_source = non_ptt_audio is None and ptt_audio is None
                 include_sdr = has_instant or hold_active or sdr_is_sole_source
-                _sdr_trace[sdr_name] = {'ducked': False, 'inc': include_sdr, 'sig': has_instant, 'hold': hold_active, 'sole': sdr_is_sole_source}
+                _sdr_trace[sdr_name] = {'ducked': False, 'inc': include_sdr, 'sig': has_sig_hyst, 'inst': has_instant, 'hold': hold_active, 'sole': sdr_is_sole_source}
 
                 if sdr_audio is None:
                     # No data from SDR right now — nothing to include or fade

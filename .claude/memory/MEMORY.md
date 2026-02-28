@@ -96,6 +96,16 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Previous traces showing RMS=0 for all PTT ticks were misleading — the measurement
   point was after `continue` so it never ran for PTT
 
+## Audio Processing — Vectorised (commit a41a0bc)
+All three pure-Python per-sample loops replaced with numpy/scipy:
+- `_mix_audio_streams()` — list comprehension → `np.frombuffer` + `np.clip` (~10× faster; always runs)
+- `apply_highpass_filter()` — IIR for-loop → `scipy.signal.lfilter` with `zi` state carry;
+  also fixed latent bug (old code reset `prev_output=0` each chunk, now both states carried)
+  `self.highpass_state` reused: `None` on first call → `lfilter_zi(b,a)*0`; then zi array (shape (1,))
+- `apply_spectral_noise_suppression()` — O(n·w) sliding window → `scipy.ndimage.uniform_filter1d` O(n)
+- Noise gate left as-is (serial carry, acceptable ~2.4ms, not worth complexity)
+- scipy already present on RPi OS — no new deps
+
 ## Known Bugs Fixed (details in bugs.md)
 - SDR burst audio, Mumble encoder starvation, duck-out regression
 - Config parser crash on decimal, global_muted UnboundLocalError
@@ -104,6 +114,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Announcement/PTT keys spam errors without AIOC
 - Status bar width shift on mute/duck (fixed-width padding)
 - AIOC audio output stale state (USB reset fix)
+- HPF prev_output reset bug (fixed by lfilter zi carry)
 
 ## Deployment Notes
 - WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`
