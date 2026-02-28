@@ -1188,7 +1188,10 @@ class SDRSource(AudioSource):
         self._chunk_queue = _queue_mod.Queue(maxsize=8)   # blobs (~1.6s at 200ms each)
         self._sub_buffer = b''
         self._chunk_bytes = config.AUDIO_CHUNK_SIZE * getattr(self, 'sdr_channels', 1) * 2
+        self._blob_bytes = 0       # set in setup_audio() once channels/multiplier are known
+        self._prebuffering = True  # gate: don't serve until 3-blob cushion built (same as AIOC)
         self._last_blocked_ms = 0.0  # instrumentation: how long get_audio blocked on blob fetch
+        self._blob_times = collections.deque(maxlen=64)  # instrumentation: reader blob timestamps
         self._reader_running = False
         self._reader_thread = None
 
@@ -1291,6 +1294,7 @@ class SDRSource(AudioSource):
                 )
                 self.sdr_channels = sdr_channels  # Store for later use
                 self._chunk_bytes = self.config.AUDIO_CHUNK_SIZE * sdr_channels * 2
+                self._blob_bytes = self._chunk_bytes * buffer_multiplier
             except Exception as e:
                 # If 2 channels failed, try 1 channel
                 if sdr_channels == 2:
@@ -1308,6 +1312,7 @@ class SDRSource(AudioSource):
                     )
                     self.sdr_channels = sdr_channels
                     self._chunk_bytes = self.config.AUDIO_CHUNK_SIZE * sdr_channels * 2
+                    self._blob_bytes = self._chunk_bytes * buffer_multiplier
                 else:
                     raise
 
@@ -1332,9 +1337,11 @@ class SDRSource(AudioSource):
             )
             self._reader_thread.start()
 
-            # Pre-fill: wait for 2 blobs so the sub-buffer has a cushion.
-            prefill_deadline = time.monotonic() + 1.0
-            while self._chunk_queue.qsize() < 2 and time.monotonic() < prefill_deadline:
+            # Pre-fill: wait for 3 blobs so the sub-buffer has a cushion.
+            # 3 blobs = 3× blob period of margin; reader and consumer are rate-matched
+            # so 2 blobs gave zero headroom. 3 blobs matches AIOC's pre-buffer strategy.
+            prefill_deadline = time.monotonic() + 2.0
+            while self._chunk_queue.qsize() < 3 and time.monotonic() < prefill_deadline:
                 time.sleep(0.01)
 
             if self.config.VERBOSE_LOGGING:
@@ -1371,7 +1378,9 @@ class SDRSource(AudioSource):
             try:
                 raw = self.input_stream.read(read_frames, exception_on_overflow=False)
                 if raw:
-                    self._last_successful_read = time.monotonic()
+                    _now = time.monotonic()
+                    self._last_successful_read = _now
+                    self._blob_times.append(_now)  # trace: record delivery timestamp
                     try:
                         self._chunk_queue.put_nowait(raw)
                     except _queue_mod.Full:
@@ -1398,29 +1407,32 @@ class SDRSource(AudioSource):
 
         cb = self._chunk_bytes
 
-        # Fill sub-buffer from blob queue when needed.
-        # Eagerly drain ALL currently available blobs in one non-blocking pass.
-        # This builds a small cushion when the reader thread is slightly ahead
-        # (normal steady state) and avoids multiple get_nowait() calls across
-        # consecutive ticks.  If the sub-buffer is still short after the drain
-        # the reader is genuinely behind; return None immediately so the caller
-        # skips this cycle — a blocking wait here would stall EVERY SDR source
-        # in sequence (both are called from the same mixer loop regardless of
-        # ducking state) and adds latency without fixing the underlying underrun.
-        _need_blob = len(self._sub_buffer) < cb
-        if _need_blob:
-            _t0 = time.monotonic()
-            while True:
-                try:
-                    blob = self._chunk_queue.get_nowait()
-                    self._sub_buffer += blob
-                except _queue_mod.Empty:
-                    break
-            self._last_blocked_ms = (time.monotonic() - _t0) * 1000
-            if len(self._sub_buffer) < cb:
-                return None, False  # reader behind — skip this cycle
-        else:
-            self._last_blocked_ms = 0.0
+        # Eagerly drain ALL available blobs from queue into sub-buffer on every
+        # tick — not just when we're short.  This mirrors AIOCRadioSource and
+        # maximises the cushion ahead of the pre-buffer gate below.
+        _t0 = time.monotonic()
+        _fetched = False
+        while True:
+            try:
+                blob = self._chunk_queue.get_nowait()
+                self._sub_buffer += blob
+                _fetched = True
+            except _queue_mod.Empty:
+                break
+        self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _fetched else 0.0
+
+        # Pre-buffer gate: after depletion re-accumulate 3 full blobs before
+        # serving.  This is the SAME mechanism used by AIOCRadioSource — it
+        # absorbs ALSA loopback delivery jitter so starvation events don't
+        # immediately produce silence.  Only active once _blob_bytes is set.
+        if self._prebuffering and self._blob_bytes > 0:
+            if len(self._sub_buffer) < self._blob_bytes * 3:
+                return None, False  # still accumulating cushion
+            self._prebuffering = False
+
+        if len(self._sub_buffer) < cb:
+            self._prebuffering = True  # depleted — rebuild 3-blob cushion
+            return None, False
 
         raw = self._sub_buffer[:cb]
         self._sub_buffer = self._sub_buffer[cb:]
@@ -1506,6 +1518,7 @@ class SDRSource(AudioSource):
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2.0)
         self._sub_buffer = b''
+        self._prebuffering = True  # rebuild cushion on next start
         while not self._chunk_queue.empty():
             try:
                 self._chunk_queue.get_nowait()
@@ -1539,9 +1552,9 @@ class SDRSource(AudioSource):
         )
         self._reader_thread.start()
 
-        # Pre-fill: wait for 2 blobs
-        prefill_deadline = time.monotonic() + 1.0
-        while self._chunk_queue.qsize() < 2 and time.monotonic() < prefill_deadline:
+        # Pre-fill: wait for 3 blobs (same reasoning as setup_audio pre-fill)
+        prefill_deadline = time.monotonic() + 2.0
+        while self._chunk_queue.qsize() < 3 and time.monotonic() < prefill_deadline:
             time.sleep(0.01)
 
     def _find_device(self):
@@ -4747,8 +4760,12 @@ class MumbleRadioGateway:
             _tr_mixer_state = {}
             _tr_sdr_q = -1
             _tr_sdr_sb = -1
+            _tr_sdr2_q = -1
+            _tr_sdr2_sb = -1
             _tr_aioc_q = -1
             _tr_aioc_sb = -1
+            _tr_sdr_prebuf = False
+            _tr_sdr2_prebuf = False
             active_sources = []
 
             try:
@@ -4807,6 +4824,10 @@ class MumbleRadioGateway:
                     # Snapshot source state BEFORE mixer call
                     _tr_sdr_q = self.sdr_source._chunk_queue.qsize() if self.sdr_source and self.sdr_source.input_stream else -1
                     _tr_sdr_sb = len(self.sdr_source._sub_buffer) if self.sdr_source and self.sdr_source.input_stream else -1
+                    _tr_sdr_prebuf = self.sdr_source._prebuffering if self.sdr_source else False
+                    _tr_sdr2_q = self.sdr2_source._chunk_queue.qsize() if self.sdr2_source and getattr(self.sdr2_source, 'enabled', False) and self.sdr2_source.input_stream else -1
+                    _tr_sdr2_sb = len(self.sdr2_source._sub_buffer) if self.sdr2_source and getattr(self.sdr2_source, 'enabled', False) and self.sdr2_source.input_stream else -1
+                    _tr_sdr2_prebuf = self.sdr2_source._prebuffering if self.sdr2_source and getattr(self.sdr2_source, 'enabled', False) else False
                     _tr_aioc_q = self.radio_source._chunk_queue.qsize() if self.radio_source else -1
                     _tr_aioc_sb = len(self.radio_source._sub_buffer) if self.radio_source else -1
 
@@ -5110,8 +5131,8 @@ class MumbleRadioGateway:
                     _trace.append((
                         _tick_start - self._audio_trace_t0,  # 0: time (s)
                         _tick_dt,                             # 1: tick interval (ms)
-                        _tr_sdr_q,                            # 2: SDR queue depth before
-                        _tr_sdr_sb,                           # 3: SDR sub-buffer bytes before
+                        _tr_sdr_q,                            # 2: SDR1 queue depth before
+                        _tr_sdr_sb,                           # 3: SDR1 sub-buffer bytes before
                         _tr_aioc_q,                           # 4: AIOC queue depth before
                         _tr_aioc_sb,                          # 5: AIOC sub-buffer bytes before
                         _tr_mixer_got,                        # 6: mixer returned audio?
@@ -5126,6 +5147,10 @@ class MumbleRadioGateway:
                         _tr_data_rms,                         # 15: RMS of data sent
                         len(data) if data else 0,              # 16: data length (bytes)
                         _tr_mixer_state,                       # 17: mixer internal state dict
+                        _tr_sdr2_q,                           # 18: SDR2 queue depth before
+                        _tr_sdr2_sb,                          # 19: SDR2 sub-buffer bytes before
+                        _tr_sdr_prebuf,                       # 20: SDR1 _prebuffering flag
+                        _tr_sdr2_prebuf,                      # 21: SDR2 _prebuffering flag
                     ))
     
     def _find_darkice_pid(self):
@@ -5977,7 +6002,8 @@ class MumbleRadioGateway:
 
         # Column indices
         T, DT, SQ, SSB, AQ, ASB, MGOT, MSRC, MMS, SBLK, ABLK, \
-            OUTCOME, MUMMS, SPKOK, SPKQD, DRMS, DLEN, MXST = range(18)
+            OUTCOME, MUMMS, SPKOK, SPKQD, DRMS, DLEN, MXST, \
+            SQ2, SSB2, SPREBUF, S2PREBUF = range(22)
 
         with open(out_path, 'w') as f:
             dur = trace[-1][T] - trace[0][T] if len(trace) > 1 else 0
@@ -6075,15 +6101,25 @@ class MumbleRadioGateway:
             else:
                 f.write("AIOC BLOB FETCH: never blocked\n\n")
 
-            # SDR queue depth
+            # SDR1 queue depth
             sq_vals = [r[SQ] for r in trace if r[SQ] >= 0]
             if sq_vals:
-                f.write(f"SDR QUEUE DEPTH\n")
+                f.write(f"SDR1 QUEUE DEPTH\n")
                 f.write(f"  min={min(sq_vals)}  mean={statistics.mean(sq_vals):.1f}  max={max(sq_vals)}\n")
                 n = len(sq_vals)
                 q1 = statistics.mean(sq_vals[:n//4]) if n >= 4 else 0
                 q4 = statistics.mean(sq_vals[-n//4:]) if n >= 4 else 0
-                f.write(f"  first quarter={q1:.1f}  last quarter={q4:.1f}\n\n")
+                f.write(f"  first quarter={q1:.1f}  last quarter={q4:.1f}\n")
+                pb_ticks = sum(1 for r in trace if len(r) > SPREBUF and r[SPREBUF])
+                f.write(f"  prebuffering: {pb_ticks}/{len(trace)} ticks\n\n")
+
+            # SDR2 queue depth
+            sq2_vals = [r[SQ2] for r in trace if len(r) > SQ2 and r[SQ2] >= 0]
+            if sq2_vals:
+                f.write(f"SDR2 QUEUE DEPTH\n")
+                f.write(f"  min={min(sq2_vals)}  mean={statistics.mean(sq2_vals):.1f}  max={max(sq2_vals)}\n")
+                pb2_ticks = sum(1 for r in trace if len(r) > S2PREBUF and r[S2PREBUF])
+                f.write(f"  prebuffering: {pb2_ticks}/{len(trace)} ticks\n\n")
 
             # AIOC queue depth
             aq_vals = [r[AQ] for r in trace if r[AQ] >= 0]
@@ -6192,32 +6228,54 @@ class MumbleRadioGateway:
                         flags += '.'
                 return flags
 
-            f.write(f"{'='*120}\n")
-            f.write("PER-TICK DETAIL (first 200 ticks + anomalies)\n")
-            f.write(f"{'='*120}\n")
+            # ── Reader blob delivery intervals ──
+            for src_name, src_obj in [('SDR1', self.sdr_source), ('SDR2', self.sdr2_source)]:
+                if src_obj and getattr(src_obj, '_blob_times', None):
+                    btimes = list(src_obj._blob_times)
+                    if len(btimes) > 1:
+                        intervals = [(btimes[k+1] - btimes[k]) * 1000 for k in range(len(btimes)-1)]
+                        f.write(f"\n{src_name} READER BLOB DELIVERY INTERVALS ({len(intervals)} gaps)\n")
+                        f.write(f"  mean={statistics.mean(intervals):.0f}ms  "
+                                f"stdev={statistics.stdev(intervals):.0f}ms  "
+                                f"min={min(intervals):.0f}ms  max={max(intervals):.0f}ms\n")
+                        late = [iv for iv in intervals if iv > 500]
+                        if late:
+                            f.write(f"  >500ms stalls: {len(late)} — max={max(late):.0f}ms\n")
+                    else:
+                        f.write(f"\n{src_name} READER BLOB DELIVERY: too few samples\n")
+
+            f.write(f"\n{'='*140}\n")
+            f.write("PER-TICK DETAIL (all ticks; * = anomaly)\n")
+            f.write(f"{'='*140}\n")
             f.write("  State: D=ducked H=hold P=padding T=trans_out A=aioc_ducks R=radio_sig O=other_active\n")
-            f.write("  SDR:   D=ducked S=signal H=hold_inc X=sole_src I=inc(other) .=excluded\n\n")
-            hdr = (f"{'tick':>6} {'t(s)':>7} {'dt':>6} {'sdr_q':>5} {'sdr_sb':>6} "
+            f.write("  SDR:   D=ducked S=signal H=hold_inc X=sole_src I=inc(other) .=excluded\n")
+            f.write("  PB: B=prebuffering (waiting to rebuild cushion) .=normal\n\n")
+            hdr = (f"{'tick':>6} {'t(s)':>7} {'dt':>6} "
+                   f"{'s1_q':>4} {'s1_sb':>6} {'s2_q':>4} {'s2_sb':>6} {'pb':>2} "
                    f"{'aioc_q':>6} {'aioc_sb':>7} {'mixer':>5} {'mix_ms':>6} "
                    f"{'outcome':>10} {'m_ms':>5} {'spk_q':>5} {'rms':>7} {'dlen':>5} "
-                   f"{'sources':>12} {'state':>14}\n")
+                   f"{'sources':>14} {'state':>14}\n")
             f.write(hdr)
             f.write('-' * len(hdr) + '\n')
             for i, r in enumerate(trace):
-                is_early = i < 200
                 expected_len = self.config.AUDIO_CHUNK_SIZE * 2
                 is_anomaly = (r[DT] > 80 or not r[MGOT] or r[MMS] > 20
                               or r[OUTCOME] not in ('sent', 'mix')
                               or r[MUMMS] > 5 or r[SPKQD] >= 7 or r[DRMS] == 0
-                              or (r[DLEN] > 0 and r[DLEN] != expected_len))
-                if is_early or is_anomaly:
-                    flag = '*' if is_anomaly and not is_early else ' '
-                    st = _fmt_mxst(r[MXST]) if len(r) > MXST else ''
-                    f.write(f"{i:>5}{flag} {r[T]:7.3f} {r[DT]:6.1f} {r[SQ]:5} {r[SSB]:6} "
-                            f"{r[AQ]:6} {r[ASB]:7} {'audio' if r[MGOT] else 'NONE':>5} "
-                            f"{r[MMS]:6.1f} "
-                            f"{r[OUTCOME]:>10} {r[MUMMS]:5.1f} {r[SPKQD]:5} {r[DRMS]:7.0f} "
-                            f"{r[DLEN]:5} {r[MSRC]:>12} {st}\n")
+                              or (r[DLEN] > 0 and r[DLEN] != expected_len)
+                              or (len(r) > SPREBUF and (r[SPREBUF] or r[S2PREBUF])))
+                flag = '*' if is_anomaly else ' '
+                st = _fmt_mxst(r[MXST]) if len(r) > MXST else ''
+                sq2 = r[SQ2] if len(r) > SQ2 else -1
+                ssb2 = r[SSB2] if len(r) > SSB2 else -1
+                pb1 = 'B' if (len(r) > SPREBUF and r[SPREBUF]) else '.'
+                pb2 = 'B' if (len(r) > S2PREBUF and r[S2PREBUF]) else '.'
+                f.write(f"{i:>5}{flag} {r[T]:7.3f} {r[DT]:6.1f} "
+                        f"{r[SQ]:4} {r[SSB]:6} {sq2:4} {ssb2:6} {pb1}{pb2} "
+                        f"{r[AQ]:6} {r[ASB]:7} {'audio' if r[MGOT] else 'NONE':>5} "
+                        f"{r[MMS]:6.1f} "
+                        f"{r[OUTCOME]:>10} {r[MUMMS]:5.1f} {r[SPKQD]:5} {r[DRMS]:7.0f} "
+                        f"{r[DLEN]:5} {r[MSRC]:>14} {st}\n")
 
             # ── Events (key presses / mode changes) ──
             events = list(self._trace_events)
