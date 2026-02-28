@@ -1398,18 +1398,38 @@ class SDRSource(AudioSource):
 
         cb = self._chunk_bytes
 
-        # Fill sub-buffer from blob queue when needed
+        # Fill sub-buffer from blob queue when needed.
+        # Strategy (mirrors AIOCRadioSource):
+        #   1. Eagerly drain ALL available blobs in one pass — builds a small
+        #      sub-buffer cushion when the reader thread is slightly ahead, which
+        #      is the normal steady-state on a healthy loopback.
+        #   2. If sub-buffer is still short after the drain, wait up to 10 ms for
+        #      the reader to deliver the next blob.  This absorbs scheduling jitter
+        #      at the 800 ms blob boundary without meaningfully stalling the loop
+        #      (200 ms period → 10 ms is a 5 % overhead in the worst case).
+        #   3. If still short after the wait, return None so the caller skips this
+        #      cycle — the reader is genuinely behind (watchdog handles recovery).
         _need_blob = len(self._sub_buffer) < cb
         if _need_blob:
             _t0 = time.monotonic()
-        while len(self._sub_buffer) < cb:
-            try:
-                blob = self._chunk_queue.get_nowait()
-                self._sub_buffer += blob
-            except _queue_mod.Empty:
-                self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _need_blob else 0.0
-                return None, False  # no data available
-        self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _need_blob else 0.0
+            # Step 1: non-blocking drain of everything currently in queue
+            while True:
+                try:
+                    blob = self._chunk_queue.get_nowait()
+                    self._sub_buffer += blob
+                except _queue_mod.Empty:
+                    break
+            # Step 2: if still short, give the reader thread a short window
+            if len(self._sub_buffer) < cb:
+                try:
+                    blob = self._chunk_queue.get(timeout=0.010)
+                    self._sub_buffer += blob
+                except _queue_mod.Empty:
+                    self._last_blocked_ms = (time.monotonic() - _t0) * 1000
+                    return None, False  # reader genuinely behind
+            self._last_blocked_ms = (time.monotonic() - _t0) * 1000
+        else:
+            self._last_blocked_ms = 0.0
 
         raw = self._sub_buffer[:cb]
         self._sub_buffer = self._sub_buffer[cb:]
@@ -2743,8 +2763,11 @@ class AudioMixer:
                 _sdr_trace[sdr_name] = {'ducked': False, 'inc': include_sdr, 'sig': has_sig_hyst, 'inst': has_instant, 'hold': hold_active, 'sole': sdr_is_sole_source}
 
                 if sdr_audio is None:
-                    # No data from SDR right now — nothing to include or fade
-                    self.sdr_prev_included[sdr_name] = False
+                    # No data this cycle (reader thread momentarily behind).
+                    # Preserve sdr_prev_included so that when audio returns we
+                    # resume cleanly: if it was True, the next chunk continues
+                    # without a spurious fade-in click; if it was False, it stays
+                    # False and the normal onset fade-in fires as expected.
                     continue
 
                 prev_included = self.sdr_prev_included.get(sdr_name, False)
