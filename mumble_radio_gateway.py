@@ -5721,6 +5721,8 @@ class MumbleRadioGateway:
                     
                     # Format: SDR1: (no mode indicator here - it goes in proc_flags)
                     sdr_bar = f" {WHITE}SDR1:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, ducked=sdr_ducked, color='cyan')
+                    if self.sdr_source._prebuffering:
+                        sdr_bar += f"{YELLOW}P{RESET}"
                     if self.sdr_source._watchdog_restarts > 0:
                         sdr_bar += f"{YELLOW}W{self.sdr_source._watchdog_restarts}{RESET}"
 
@@ -5739,6 +5741,8 @@ class MumbleRadioGateway:
                     
                     # Format: SDR2: with magenta color
                     sdr2_bar = f" {WHITE}SDR2:{RESET}" + self.format_level_bar(current_sdr2_level, muted=sdr2_muted, ducked=sdr2_ducked, color='magenta')
+                    if self.sdr2_source._prebuffering:
+                        sdr2_bar += f"{YELLOW}P{RESET}"
                     if self.sdr2_source._watchdog_restarts > 0:
                         sdr2_bar += f"{YELLOW}W{self.sdr2_source._watchdog_restarts}{RESET}"
 
