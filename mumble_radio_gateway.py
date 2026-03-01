@@ -4587,7 +4587,11 @@ class MumbleRadioGateway:
             # Get sender info
             sender = self.mumble.users[text_message.actor]
             sender_name = sender['name']
-            message = text_message.message.strip()
+            # Mumble sends messages as HTML — strip tags and decode entities
+            import re
+            from html import unescape
+            raw_msg = text_message.message
+            message = unescape(re.sub(r'<[^>]+>', '', raw_msg)).strip()
             
             if self.config.VERBOSE_LOGGING:
                 print(f"[Mumble Text] {sender_name}: {message}")
