@@ -418,6 +418,10 @@ class AIOCRadioSource(AudioSource):
                     break
             self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _fetched else 0.0
 
+            # Cap sub-buffer to prevent stale audio buildup under CPU load.
+            if self._blob_bytes > 0 and len(self._sub_buffer) > self._blob_bytes * 5:
+                self._sub_buffer = self._sub_buffer[-(self._blob_bytes * 5):]
+
             # Pre-buffer gate: after the sub-buffer empties, accumulate 3 blobs
             # (600ms cushion) before serving.  This absorbs USB delivery jitter
             # and periodic missed blob deliveries from the AIOC.
@@ -1420,6 +1424,15 @@ class SDRSource(AudioSource):
             except _queue_mod.Empty:
                 break
         self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _fetched else 0.0
+
+        # Cap sub-buffer to prevent latency buildup when the main loop is
+        # preempted (e.g. CPU-heavy competing process).  5 blobs ≈ 4s — well
+        # above the 3-blob pre-buffer cushion, so normal operation is
+        # unaffected.  If the buffer exceeds the cap, keep only the most
+        # recent portion so the gateway plays current audio, not stale audio
+        # from several seconds ago.
+        if self._blob_bytes > 0 and len(self._sub_buffer) > self._blob_bytes * 5:
+            self._sub_buffer = self._sub_buffer[-(self._blob_bytes * 5):]
 
         # Pre-buffer gate: after depletion re-accumulate 3 full blobs before
         # serving.  This is the SAME mechanism used by AIOCRadioSource — it
@@ -2653,12 +2666,14 @@ class AudioMixer:
                 print(f"  [Mixer] SDR duck-IN: immediate (no padding)")
 
         in_padding = current_time < ds['padding_end_time']
-        # Effective duck: still silencing SDRs either because a source is active
-        # OR because we're inside a padding window after a transition.
-        # The hold above keeps is_ducked stable through AIOC inter-blob gaps,
-        # so brief blob delivery gaps don't fire spurious transitions.
-        # SDR stays ducked during those gaps (brief silence is acceptable).
-        aioc_ducks_sdrs = ds['is_ducked'] or in_padding
+        # Effective duck: only suppress SDRs when AIOC is actually delivering
+        # audio this tick.  The hold above keeps is_ducked stable through AIOC
+        # inter-blob gaps so no spurious duck-in/duck-out transitions fire —
+        # but if AIOC returned None (VAD released / reader stall), SDRs can
+        # play through immediately rather than sitting silent for the full 1s
+        # hold window.  If an inter-blob gap occurs during transmission and SDR
+        # briefly plays, the 10ms onset fade-in keeps it inaudible.
+        aioc_ducks_sdrs = (ds['is_ducked'] or in_padding) and non_ptt_audio is not None
         # During duck-out padding: silence ALL output so the switch is a clean break
         in_transition_out = in_padding and ds['transition_type'] == 'out'
 
@@ -2772,6 +2787,9 @@ class AudioMixer:
                     # resume cleanly: if it was True, the next chunk continues
                     # without a spurious fade-in click; if it was False, it stays
                     # False and the normal onset fade-in fires as expected.
+                    # Clear sig so this SDR's stale hysteresis hold does not
+                    # duck lower-priority SDRs while it has no audio to offer.
+                    _sdr_trace[sdr_name]['sig'] = False
                     continue
 
                 prev_included = self.sdr_prev_included.get(sdr_name, False)

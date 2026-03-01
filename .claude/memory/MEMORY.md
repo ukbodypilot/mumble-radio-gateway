@@ -117,11 +117,17 @@ All three pure-Python per-sample loops replaced with numpy/scipy:
 - HPF prev_output reset bug (fixed by lfilter zi carry)
 - SDR-to-SDR ducking inconsistency (commit 3808066)
 - SDR periodic audio gaps (commit 053b351): SDRSource lacked the _prebuffering gate that AIOC has. Fixed: always-drain every tick + gate refuses to serve until 3 blobs buffered after any depletion. Other SDR covers during rebuild. Zero silence gaps in verified trace.
+- SDR volume 6dB step when second SDR joins/exits mix: crossfade `_mix_audio_streams(ratio=0.5)` attenuated SDR1 by 6dB when SDR2 present. Fixed: sum-and-clip in second pass (each SDR at full gain). Commit 69577ac.
+- AIOC duck hold causing 1s dead air: `_hold_fired` kept `aioc_ducks_sdrs=True` for 1s after AIOC VAD released, outputting silence. Fixed: gate on `non_ptt_audio is not None`.
+- SDR prebuffering + stale hysteresis ducking SDR2: when SDR1 returns None, `has_actual_audio` still True during release hold → `sig=True` → SDR2 ducked. Fixed: clear `sig=False` before continue.
+- Sub-buffer latency buildup under CPU load: SDRSource and AIOC had no max sub_buffer cap. With CPU-heavy competing process (e.g. SDRconnect at 85%+), blobs accumulate faster than consumed → 2s+ stale audio. Fixed: cap at 5×blob_bytes after eager drain.
 
 ## Deployment Notes
 - WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`
 - Local Mumble server can interfere — disable if present
 - pymumble sends voice via TCP tunnel (UDPTUNNEL), not actual UDP
+- start.sh sets CPU governor to `performance` (step 2) and launches gateway with `nice -n -10` (step 8)
+- DarkIce runs FIFO RT 4; gateway runs nice -10 (SCHED_OTHER); competing apps at NI=0 stay below it
 
 ## SDR Loopback Watchdog
 - Config: `SDR_WATCHDOG_TIMEOUT` (10s), `SDR_WATCHDOG_MAX_RESTARTS` (5), `SDR_WATCHDOG_MODPROBE` (false)

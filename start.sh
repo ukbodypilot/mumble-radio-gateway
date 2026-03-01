@@ -36,7 +36,7 @@ fi
 sudo -v
 
 # 1. Kill any existing processes
-echo "[1/7] Checking for existing processes..."
+echo "[1/8] Checking for existing processes..."
 pkill -9 darkice 2>/dev/null && echo "  Killed existing Darkice"
 pkill -9 ffmpeg 2>/dev/null && echo "  Killed existing FFmpeg"
 sleep 1
@@ -45,8 +45,15 @@ sleep 1
 pkill -9 -f "mumble_radio_gateway" 2>/dev/null && echo "  Killed existing gateway"
 sleep 1
 
-# 2. Unload and reload ALSA loopback (fresh start)
-echo "[2/7] Resetting ALSA loopback..."
+# 2. Set CPU governor to performance for consistent scheduling latency
+echo "[2/8] Setting CPU governor to performance..."
+for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    echo performance | sudo tee "$cpu" > /dev/null 2>&1 || true
+done
+echo "  ✓ CPU governor set (or unsupported on this platform)"
+
+# 3. Unload and reload ALSA loopback (fresh start)
+echo "[3/8] Resetting ALSA loopback..."
 sudo modprobe -r snd-aloop 2>/dev/null
 sleep 1
 sudo modprobe snd-aloop
@@ -62,8 +69,8 @@ if ! aplay -l 2>/dev/null | grep -q "Loopback"; then
     echo "  ⚠ Warning: Loopback device not visible in aplay -l"
 fi
 
-# 3. Reset AIOC USB device (clears stale audio output state)
-echo "[3/7] Resetting AIOC USB device..."
+# 4. Reset AIOC USB device (clears stale audio output state)
+echo "[4/8] Resetting AIOC USB device..."
 AIOC_USB=""
 for d in /sys/bus/usb/devices/*/product; do
     if grep -qi "all-in-one" "$d" 2>/dev/null; then
@@ -87,8 +94,8 @@ else
     echo "  ⚠ AIOC USB device not found (skipping reset)"
 fi
 
-# 4. Create named pipe
-echo "[4/7] Creating named pipe..."
+# 5. Create named pipe
+echo "[5/8] Creating named pipe..."
 # Force remove old pipe (even if busy)
 rm -f /tmp/darkice_audio 2>/dev/null
 # Kill any processes using it
@@ -99,8 +106,8 @@ mkfifo /tmp/darkice_audio
 chmod 666 /tmp/darkice_audio
 echo "  ✓ Pipe created: /tmp/darkice_audio"
 
-# 5. Start Darkice with visible output
-echo "[5/7] Starting Darkice..."
+# 6. Start Darkice with visible output
+echo "[6/8] Starting Darkice..."
 echo "  (Darkice output will be shown below)"
 echo "  ----------------------------------------"
 
@@ -139,8 +146,8 @@ else
     echo "  Full log: /tmp/darkice.log"
 fi
 
-# 6. Start FFmpeg bridge with auto-restart
-echo "[6/7] Starting FFmpeg bridge..."
+# 7. Start FFmpeg bridge with auto-restart
+echo "[7/8] Starting FFmpeg bridge..."
 (
     while true; do
         ffmpeg -loglevel error -f s16le -ar 48000 -ac 1 -i /tmp/darkice_audio \
@@ -159,8 +166,8 @@ fi
 
 echo "  ✓ FFmpeg bridge running (PID: $FFMPEG_PID)"
 
-# 7. Start Gateway
-echo "[7/7] Starting gateway..."
+# 8. Start Gateway
+echo "[8/8] Starting gateway..."
 echo ""
 
 # Find the gateway file - ONLY in same directory as this script
@@ -182,14 +189,16 @@ echo "All components started successfully!"
 echo "=========================================="
 echo "  Darkice:  ${DARKICE_PID:+"PID $DARKICE_PID (log: /tmp/darkice.log)"}${DARKICE_PID:-"disabled (mountpoint occupied)"}"
 echo "  FFmpeg:   PID $FFMPEG_PID (log: /tmp/ffmpeg.log)"
-echo "  Gateway:  Starting now..."
+echo "  Gateway:  Starting now (nice -n -10)..."
 echo ""
 echo "Press Ctrl+C to stop everything"
 echo ""
 sleep 2
 
-# Start gateway (this will block)
-python3 "$GATEWAY_FILE"
+# Start gateway with elevated scheduling priority so it competes well against
+# CPU-heavy apps (e.g. SDRconnect).  nice -n -10 raises priority without RT
+# scheduling — safe, no risk of starving the kernel.
+nice -n -10 python3 "$GATEWAY_FILE"
 
 # If gateway exits, cleanup
 cleanup
