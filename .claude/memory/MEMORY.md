@@ -115,6 +115,8 @@ All three pure-Python per-sample loops replaced with numpy/scipy:
 - Status bar width shift on mute/duck (fixed-width padding)
 - AIOC audio output stale state (USB reset fix)
 - HPF prev_output reset bug (fixed by lfilter zi carry)
+- SDR-to-SDR ducking inconsistency (commit 3808066)
+- SDR periodic audio gaps (commit 053b351): SDRSource lacked the _prebuffering gate that AIOC has. Fixed: always-drain every tick + gate refuses to serve until 3 blobs buffered after any depletion. Other SDR covers during rebuild. Zero silence gaps in verified trace.
 
 ## Deployment Notes
 - WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`
