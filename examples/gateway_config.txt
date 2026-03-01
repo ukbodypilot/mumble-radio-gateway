@@ -326,7 +326,7 @@ SDR_DISPLAY_GAIN = 1.0
 # 1.0 = no change (default - original level)
 # 2.0 = 2x louder
 # 3.0 = 3x louder
-SDR_AUDIO_BOOST = 1.0
+SDR_AUDIO_BOOST = 2.0
 
 # SDR1 buffer size multiplier — controls how many chunks the reader fetches per ALSA
 # read call (frames_per_buffer = AUDIO_CHUNK_SIZE × SDR_BUFFER_MULTIPLIER).
@@ -377,7 +377,7 @@ SDR2_MIX_RATIO = 1.0
 SDR2_DISPLAY_GAIN = 1.0
 
 # SDR2 audio volume boost
-SDR2_AUDIO_BOOST = 1.0
+SDR2_AUDIO_BOOST = 2.0
 
 # SDR2 buffer size multiplier (same as SDR_BUFFER_MULTIPLIER above)
 SDR2_BUFFER_MULTIPLIER = 4
@@ -524,6 +524,12 @@ SWITCH_PADDING_TIME = 1
 # the other direction, so this makes switching symmetric.
 # 0 = no cooldown (instant re-duck allowed)
 SDR_DUCK_COOLDOWN = 3.0
+
+# SDR signal detection threshold (dBFS).  Audio chunks with RMS below this
+# level are treated as silence — they won't refresh the hold timer and won't
+# trigger SDR-to-SDR ducking.  Lower = more sensitive (keeps quieter audio).
+# -50 = original default; -60 = 10dB more sensitive (good for weak signals)
+SDR_SIGNAL_THRESHOLD = -60.0
 
 # ============================================================================
 # FEATURE: TEXT-TO-SPEECH & TEXT COMMANDS (Phase 4)

@@ -44,9 +44,11 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `AUDIO_CHUNK_SIZE = 9600` (200ms at 48kHz)
 - SDR loopback: `hw:4,1` / `hw:5,1` / `hw:6,1` (capture side)
 - `SDR_BUFFER_MULTIPLIER = 4`
-- AIOC pre-buffer: 3 blobs / 600ms
+- AIOC pre-buffer: 3 blobs / 600ms; SDR pre-buffer: 2 blobs / 400ms
 - `PLAYBACK_VOLUME = 4.0`, `ANNOUNCE_INPUT_VOLUME = 4.0`
+- `SDR_AUDIO_BOOST = 2.0`, `SDR2_AUDIO_BOOST = 2.0` — default 2x volume boost
 - `SDR_DUCK_COOLDOWN = 3.0` — symmetric cooldown after SDR-to-SDR unduck
+- `SDR_SIGNAL_THRESHOLD = -60.0` — dBFS threshold for SDR signal detection (was hardcoded -50)
 
 ## Keyboard Controls
 - MUTE: `t`=TX `r`=RX `m`=Global `s`=SDR1 `x`=SDR2 `c`=Remote `a`=Announce

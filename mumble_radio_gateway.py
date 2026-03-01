@@ -160,7 +160,7 @@ class Config:
             'SDR_DUCK': True,             # Duck SDR: silence SDR when higher priority source is active
             'SDR_MIX_RATIO': 1.0,        # Volume/mix ratio when ducking is disabled (1.0 = full volume)
             'SDR_DISPLAY_GAIN': 1.0,     # Display sensitivity multiplier (1.0 = normal, higher = more sensitive bar)
-            'SDR_AUDIO_BOOST': 1.0,      # Actual audio volume boost (1.0 = no change, 2.0 = 2x louder)
+            'SDR_AUDIO_BOOST': 2.0,      # Actual audio volume boost (1.0 = no change, 2.0 = 2x louder)
             'SDR_BUFFER_MULTIPLIER': 4,  # Buffer size multiplier (4 = 4x normal buffer, ~200ms per ALSA read)
             'SDR_PRIORITY': 1,           # SDR priority for ducking (1 = higher priority, 2 = lower priority)
             'SDR_WATCHDOG_TIMEOUT': 10,        # seconds with no successful read before recovery
@@ -172,7 +172,7 @@ class Config:
             'SDR2_DUCK': True,
             'SDR2_MIX_RATIO': 1.0,
             'SDR2_DISPLAY_GAIN': 1.0,
-            'SDR2_AUDIO_BOOST': 1.0,
+            'SDR2_AUDIO_BOOST': 2.0,
             'SDR2_BUFFER_MULTIPLIER': 4,
             'SDR2_PRIORITY': 2,          # SDR2 priority for ducking (1 = higher, 2 = lower)
             'SDR2_WATCHDOG_TIMEOUT': 10,
@@ -183,6 +183,7 @@ class Config:
             'SIGNAL_RELEASE_TIME': 3.0,  # Seconds of continuous silence required before switching back
             'SWITCH_PADDING_TIME': 1.0,  # Seconds of silence inserted at each transition (duck-out and duck-in)
             'SDR_DUCK_COOLDOWN': 3.0,   # After lower-priority SDR unducks, seconds before higher-priority SDR can re-duck it
+            'SDR_SIGNAL_THRESHOLD': -60.0,  # dBFS threshold for SDR signal detection (inclusion + ducking); lower = more sensitive
             # EchoLink Integration (Phase 3B)
             'ENABLE_ECHOLINK': False,
             'ECHOLINK_RX_PIPE': '/tmp/echolink_rx',
@@ -1440,12 +1441,12 @@ class SDRSource(AudioSource):
         # absorbs ALSA loopback delivery jitter so starvation events don't
         # immediately produce silence.  Only active once _blob_bytes is set.
         if self._prebuffering and self._blob_bytes > 0:
-            if len(self._sub_buffer) < self._blob_bytes * 3:
+            if len(self._sub_buffer) < self._blob_bytes * 2:
                 return None, False  # still accumulating cushion
             self._prebuffering = False
 
         if len(self._sub_buffer) < cb:
-            self._prebuffering = True  # depleted — rebuild 3-blob cushion
+            self._prebuffering = True  # depleted — rebuild 2-blob cushion
             return None, False
 
         raw = self._sub_buffer[:cb]
@@ -2523,7 +2524,10 @@ class AudioMixer:
         
         import time
         current_time = time.time()
-        
+
+        # Capture configurable threshold for the nested function
+        _sdr_signal_threshold = getattr(self.config, 'SDR_SIGNAL_THRESHOLD', -60.0)
+
         # Helper function to check if audio has actual signal (instantaneous)
         def check_signal_instant(audio_data):
             """Check if audio contains actual signal above noise floor (instant check, no hysteresis)"""
@@ -2536,7 +2540,7 @@ class AudioMixer:
                 rms = float(np.sqrt(np.mean(arr * arr)))
                 if rms > 0:
                     db = 20 * _math_mod.log10(rms / 32767.0)
-                    return db > -50.0
+                    return db > _sdr_signal_threshold
                 return False
             except:
                 return False
@@ -2721,6 +2725,15 @@ class AudioMixer:
             key=lambda x: getattr(x[1][1], 'sdr_priority', 99)
         )
 
+        # Pre-scan: check which SDRs have instant signal this tick.
+        # Used to refine sole_source: an SDR with no signal should not be
+        # force-included when another SDR already has real audio, because
+        # the no-signal SDR would just add loopback noise to the mix.
+        _sdrs_with_signal = set()
+        for _pre_name, (_pre_audio, _pre_src) in sorted_sdrs:
+            if _pre_audio is not None and check_signal_instant(_pre_audio):
+                _sdrs_with_signal.add(_pre_name)
+
         for sdr_name, (sdr_audio, sdr_source) in sorted_sdrs:
             sdr_duck = sdr_source.duck if hasattr(sdr_source, 'duck') else True
             sdr_priority = getattr(sdr_source, 'sdr_priority', 99)
@@ -2811,9 +2824,12 @@ class AudioMixer:
                 # (same as hold_active, but with the attack guard on the front end).
                 has_sig_hyst = has_actual_audio(sdr_audio, sdr_name)
                 # When SDR is the only source type (no radio RX or PTT audio),
-                # always include — signal gating only matters when mixing with
-                # higher-priority sources to avoid adding SDR noise to them.
-                sdr_is_sole_source = non_ptt_audio is None and ptt_audio is None
+                # force-include so we don't gate out the only audio available.
+                # BUT: if this SDR has no signal and another SDR does, don't
+                # force-include — it would just add loopback noise to the mix.
+                no_aioc = non_ptt_audio is None and ptt_audio is None
+                other_sdrs_have_signal = bool(_sdrs_with_signal - {sdr_name})
+                sdr_is_sole_source = no_aioc and (has_instant or hold_active or not other_sdrs_have_signal)
                 include_sdr = has_instant or hold_active or sdr_is_sole_source
                 _sdr_trace[sdr_name] = {'ducked': False, 'inc': include_sdr, 'sig': has_sig_hyst, 'inst': has_instant, 'hold': hold_active, 'sole': sdr_is_sole_source}
 
