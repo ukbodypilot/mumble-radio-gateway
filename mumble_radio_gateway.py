@@ -2803,12 +2803,20 @@ class AudioMixer:
                 else:
                     self.sdr_prev_included[sdr_name] = False
         
-        # Second pass: actually mix the non-ducked SDRs
+        # Second pass: actually mix the non-ducked SDRs.
+        # Use sum-and-clip instead of crossfade: each SDR contributes at full
+        # gain regardless of how many are active.  Crossfade (ratio=0.5) caused
+        # a 6 dB step on SDR1 every time SDR2 entered or exited the mix.
         for sdr_name, (sdr_audio, sdr_source) in sdrs_to_include.items():
             if non_ptt_audio is None:
                 non_ptt_audio = sdr_audio
             else:
-                non_ptt_audio = self._mix_audio_streams(non_ptt_audio, sdr_audio, 0.5)
+                arr1 = np.frombuffer(non_ptt_audio, dtype=np.int16).astype(np.int32)
+                arr2 = np.frombuffer(sdr_audio, dtype=np.int16).astype(np.int32)
+                min_len = min(len(arr1), len(arr2))
+                non_ptt_audio = np.clip(
+                    arr1[:min_len] + arr2[:min_len], -32768, 32767
+                ).astype(np.int16).tobytes()
         
         # Priority: PTT audio always wins (full volume, no mixing with radio)
         if ptt_audio is not None:
