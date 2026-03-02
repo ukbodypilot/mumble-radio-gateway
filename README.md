@@ -463,6 +463,7 @@ Press keys during operation to control the gateway:
 
 ### SDR Controls
 - `d` = **Toggle SDR1 Ducking** (duck vs. mix mode)
+- `b` = **Toggle SDR Rebroadcast** (route mixed SDR audio to AIOC radio TX with PTT)
 - `s` = Toggle SDR1 Mute
 - `x` = Toggle SDR2 Mute
 
@@ -496,6 +497,7 @@ Press keys during operation to control the gateway:
 | **M:✓/✗** | Mumble connected/disconnected |
 | **PTT:ON/--** | Push-to-talk active/inactive |
 | **PTT:M-ON** | Manual PTT mode active |
+| **PTT:B-ON** | SDR Rebroadcast PTT active (cyan) |
 | **VAD:✗** | VAD disabled (red X) |
 | **VAD:🔊** | VAD active (green speaker) |
 | **VAD:--** | VAD silent (gray) |
@@ -510,8 +512,8 @@ Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL → A
 | **TX:[bar]** | Red | Mumble → Radio (radio TX) |
 | **RX:[bar]** | Green | Radio → Mumble (radio RX) |
 | **SP:[bar]** | Cyan | Speaker output audio level — tracks actual mixed output, not just radio RX (if enabled) |
-| **SDR1:[bar]** | Cyan | SDR1 receiver audio level |
-| **SDR2:[bar]** | Magenta | SDR2 receiver audio level (if enabled) |
+| **SDR1:[bar]** | Cyan | SDR1 receiver audio level (white=normal, green=rebroadcast idle, red=rebroadcast sending) |
+| **SDR2:[bar]** | Magenta | SDR2 receiver audio level (label color changes with rebroadcast like SDR1) |
 | **SV:[bar]** | Yellow | Remote Audio Link — server mode: audio level being sent to remote client |
 | **CL:[bar]** | Green | Remote Audio Link — client mode: audio level received from remote server (SDRSV) |
 | **AN:[bar]** | Red | Announcement Input — audio level from TCP port 9601 (only shown when `ENABLE_ANNOUNCE_INPUT = true`; shows 0 when no client connected) |
@@ -529,7 +531,7 @@ Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL → A
 
 ### Processing Flags
 
-Flags appear in yellow brackets at the end: `[N,F,A,D]`
+Flags appear in yellow brackets at the end: `[N,F,G,W,E,D]`
 
 | Flag | Meaning |
 |------|---------|

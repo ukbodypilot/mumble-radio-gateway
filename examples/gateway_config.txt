@@ -214,6 +214,10 @@ SDR_DUCK_COOLDOWN = 3.0
 # -50=default | -60=10dB more sensitive (good for weak signals)
 SDR_SIGNAL_THRESHOLD = -60.0
 
+# SDR Rebroadcast: seconds to hold PTT after SDR audio signal stops.
+# Only used when rebroadcast is active (toggled with 'b' key at runtime).
+SDR_REBROADCAST_PTT_HOLD = 3.0
+
 
 # ============================================================================
 # REMOTE AUDIO LINK (TCP)

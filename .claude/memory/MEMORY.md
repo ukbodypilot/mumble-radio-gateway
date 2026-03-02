@@ -34,7 +34,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `SDRSource` — reads from ALSA loopback via background reader thread (non-blocking)
 - `RemoteAudioServer` — TCP server, sends mixed audio to one connected client (length-prefixed PCM)
 - `RemoteAudioSource` — TCP client, receives audio from RemoteAudioServer; name="SDRSV"
-- `AudioMixer` — mixes SDR + AIOC with duck-out logic and fade in/out; returns 7-tuple
+- `AudioMixer` — mixes SDR + AIOC with duck-out logic and fade in/out; returns 8-tuple (8th = sdr_only_audio)
 - `audio_transmit_loop()` — feeds Mumble encoder; sends silence to keep Opus encoder fed
 - pymumble/pymumble_py3 — Mumble protocol; SSL shim applied before import for Python 3.12+
 
@@ -44,7 +44,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `AUDIO_CHUNK_SIZE = 9600` (200ms at 48kHz)
 - SDR loopback: `hw:4,1` / `hw:5,1` / `hw:6,1` (capture side)
 - `SDR_BUFFER_MULTIPLIER = 4`
-- AIOC pre-buffer: 3 blobs / 600ms; SDR pre-buffer: 2 blobs / 400ms
+- AIOC pre-buffer: 3 blobs / 600ms; SDR pre-buffer: 2 blobs / 400ms (1 blob during rebroadcast)
 - `PLAYBACK_VOLUME = 4.0`, `ANNOUNCE_INPUT_VOLUME = 4.0`
 - `SDR_AUDIO_BOOST = 2.0`, `SDR2_AUDIO_BOOST = 2.0` — default 2x volume boost
 - `SDR_DUCK_COOLDOWN = 3.0` — symmetric cooldown after SDR-to-SDR unduck
@@ -52,6 +52,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 ## Keyboard Controls
 - MUTE: `t`=TX `r`=RX `m`=Global `s`=SDR1 `x`=SDR2 `c`=Remote `a`=Announce
+- SDR REBROADCAST: `b`=Toggle (routes mixed SDR to AIOC TX with 3s PTT hold)
 - AUDIO: `v`=VAD `,`=Vol- `.`=Vol+
 - PROCESS: `n`=Gate `f`=HPF `g`=AGC `w`=Wiener `e`=Echo
 - SDR: `d`=SDR1 Duck toggle
@@ -116,6 +117,17 @@ All three pure-Python per-sample loops replaced with numpy/scipy:
 - Mumble text messages arrive as HTML — stripped with `re.sub(r'<[^>]+>', '', msg)` + `html.unescape()`
 - Voice map is class-level `TTS_VOICES` dict on the gateway class
 
+## SDR Rebroadcast
+- Toggle: `b` key. Routes mixed SDR-only audio (no AIOC/PTT) to AIOC radio TX
+- `SDR_REBROADCAST_PTT_HOLD = 3.0` — seconds PTT holds after SDR signal stops
+- State vars: `sdr_rebroadcast`, `_rebroadcast_ptt_active`, `_rebroadcast_sending`, `_rebroadcast_ptt_hold_until`
+- AIOC TX feedback fix: `radio_source.enabled = False` while rebroadcast PTT active (prevents ducking loop)
+- PTT release timer guard: `status_monitor_loop()` skips PTT timeout when `_rebroadcast_ptt_active`
+- Status bar: SDR labels white (off), green (rebroadcast idle), red (rebroadcast sending)
+- PTT indicator: `B-ON` (cyan) when rebroadcast PTT active
+- SDR prebuffer reduced to 1 blob during rebroadcast (halves gap duration)
+- Trace: element 22 `_tr_rebro` (sig/hold/idle), `rebro_ptt` events, `rb` column in detail
+
 ## SDR Mixer — sole_source Logic
 - `sole_source` = no AIOC/PTT audio present (SDRs are the only source type)
 - Refined: an SDR with no signal is NOT force-included if another SDR has instant signal
@@ -141,6 +153,7 @@ All three pure-Python per-sample loops replaced with numpy/scipy:
 - No-signal SDR polluting mix: sole_source refined to exclude no-signal SDRs when another has audio
 - SDR prebuffer gap too long (400ms): reduced from 3 blobs to 2 blobs; AIOC keeps 3
 - Mumble HTML in TTS: text messages arrive as HTML, gTTS read tags/entities aloud. Fixed: strip+unescape
+- SDR Rebroadcast bugs: AIOC TX feedback ducking, PTT release timer, TX bar level, prebuffer gaps (see bugs.md)
 
 ## Deployment Notes
 - WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`

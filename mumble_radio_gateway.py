@@ -185,6 +185,7 @@ class Config:
             'SWITCH_PADDING_TIME': 1.0,  # Seconds of silence inserted at each transition (duck-out and duck-in)
             'SDR_DUCK_COOLDOWN': 3.0,   # After lower-priority SDR unducks, seconds before higher-priority SDR can re-duck it
             'SDR_SIGNAL_THRESHOLD': -60.0,  # dBFS threshold for SDR signal detection (inclusion + ducking); lower = more sensitive
+            'SDR_REBROADCAST_PTT_HOLD': 3.0,  # Seconds to hold PTT after SDR audio stops during rebroadcast
             # EchoLink Integration (Phase 3B)
             'ENABLE_ECHOLINK': False,
             'ECHOLINK_RX_PIPE': '/tmp/echolink_rx',
@@ -1437,12 +1438,15 @@ class SDRSource(AudioSource):
         if self._blob_bytes > 0 and len(self._sub_buffer) > self._blob_bytes * 5:
             self._sub_buffer = self._sub_buffer[-(self._blob_bytes * 5):]
 
-        # Pre-buffer gate: after depletion re-accumulate 3 full blobs before
+        # Pre-buffer gate: after depletion re-accumulate blobs before
         # serving.  This is the SAME mechanism used by AIOCRadioSource — it
         # absorbs ALSA loopback delivery jitter so starvation events don't
         # immediately produce silence.  Only active once _blob_bytes is set.
+        # During rebroadcast, use 1-blob gate to halve gap duration (radio TX
+        # is more sensitive to dead air than Mumble/Opus).
         if self._prebuffering and self._blob_bytes > 0:
-            if len(self._sub_buffer) < self._blob_bytes * 2:
+            prebuf_blobs = 1 if self.gateway.sdr_rebroadcast else 2
+            if len(self._sub_buffer) < self._blob_bytes * prebuf_blobs:
                 return None, False  # still accumulating cushion
             self._prebuffering = False
 
@@ -2419,7 +2423,7 @@ class AudioMixer:
     def get_mixed_audio(self, chunk_size):
         """
         Get mixed audio from all enabled sources.
-        Returns: (mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked)
+        Returns: (mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked, sdr_only_audio)
         """
         self.call_count += 1
 
@@ -2430,7 +2434,7 @@ class AudioMixer:
                 print(f"  Source: {src.name}, enabled={src.enabled}, priority={src.priority}")
 
         if not self.sources:
-            return None, False, [], False, False, None, False
+            return None, False, [], False, False, None, False, None
 
         # Priority mode: only use highest priority active source
         if self.mixing_mode == 'priority':
@@ -2451,12 +2455,12 @@ class AudioMixer:
                         print(f"  [Mixer] {source.name} returned None (no audio)")
 
                 if audio is not None:
-                    return audio, ptt and source.ptt_control, [source.name], False, False, None, False
+                    return audio, ptt and source.ptt_control, [source.name], False, False, None, False, None
 
             # No sources had audio
             if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
                 print(f"  [Mixer] No sources returned audio")
-            return None, False, [], False, False, None, False
+            return None, False, [], False, False, None, False, None
 
         # Simultaneous mode: mix all active sources
         elif self.mixing_mode == 'simultaneous':
@@ -2466,7 +2470,7 @@ class AudioMixer:
         elif self.mixing_mode == 'duck':
             return self._mix_with_ducking(chunk_size)
 
-        return None, False, [], False, False, None, False
+        return None, False, [], False, False, None, False, None
     
     def _mix_simultaneous(self, chunk_size):
         """Mix all active sources together with SDR priority-based ducking"""
@@ -2878,7 +2882,19 @@ class AudioMixer:
         # Use sum-and-clip instead of crossfade: each SDR contributes at full
         # gain regardless of how many are active.  Crossfade (ratio=0.5) caused
         # a 6 dB step on SDR1 every time SDR2 entered or exited the mix.
+        sdr_only_audio = None
         for sdr_name, (sdr_audio, sdr_source) in sdrs_to_include.items():
+            # Build SDR-only mix for rebroadcast (before merging into non_ptt_audio)
+            if sdr_only_audio is None:
+                sdr_only_audio = sdr_audio
+            else:
+                s1 = np.frombuffer(sdr_only_audio, dtype=np.int16).astype(np.int32)
+                s2 = np.frombuffer(sdr_audio, dtype=np.int16).astype(np.int32)
+                smin = min(len(s1), len(s2))
+                sdr_only_audio = np.clip(
+                    s1[:smin] + s2[:smin], -32768, 32767
+                ).astype(np.int16).tobytes()
+
             if non_ptt_audio is None:
                 non_ptt_audio = sdr_audio
             else:
@@ -2925,7 +2941,7 @@ class AudioMixer:
         if self.call_count % 100 == 1 and self.config.VERBOSE_LOGGING:
             print(f"  [Mixer-Simultaneous] Result: {len(active_sources)} active sources, PTT={ptt_required}")
 
-        return mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked
+        return mixed_audio, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked, sdr_only_audio
     
     def _mix_with_ducking(self, chunk_size):
         """Mix with ducking: reduce lower priority sources"""
@@ -2965,7 +2981,7 @@ class AudioMixer:
             else:
                 mixed_audio = self._mix_audio_streams(mixed_audio, audio, 0.5)
         
-        return mixed_audio, ptt_required, active_sources, False, False, None, False
+        return mixed_audio, ptt_required, active_sources, False, False, None, False, None
 
     def _mix_audio_streams(self, audio1, audio2, ratio=0.5):
         """Mix two audio streams together"""
@@ -3087,6 +3103,12 @@ class MumbleRadioGateway:
         self.announce_input_source = None  # NetworkAnnouncementSource (port 9601)
         self.announce_input_muted = False # Announcement input: mute toggle
         self.aioc_available = False  # Track if AIOC is connected
+
+        # SDR rebroadcast — route mixed SDR audio to AIOC radio TX
+        self.sdr_rebroadcast = False              # Toggle state (press 'b')
+        self._rebroadcast_ptt_hold_until = 0      # monotonic deadline for PTT hold
+        self._rebroadcast_ptt_active = False       # whether rebroadcast currently has PTT keyed
+        self._rebroadcast_sending = False           # SDR audio actively being sent (for status bar)
 
         # DarkIce process monitoring (auto-restart if it dies)
         self._darkice_pid = None          # PID when initially detected
@@ -4876,6 +4898,7 @@ class MumbleRadioGateway:
             _tr_aioc_sb = -1
             _tr_sdr_prebuf = False
             _tr_sdr2_prebuf = False
+            _tr_rebro = ''  # rebroadcast state: ''=off, 'sig'=sending, 'hold'=PTT hold, 'idle'=on but no signal
             active_sources = []
 
             try:
@@ -4942,7 +4965,7 @@ class MumbleRadioGateway:
                     _tr_aioc_sb = len(self.radio_source._sub_buffer) if self.radio_source else -1
 
                     _tr_mixer_t0 = time.monotonic()
-                    data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
+                    data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked, sdr_only_audio = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
                     _tr_mixer_ms = (time.monotonic() - _tr_mixer_t0) * 1000
 
                     # Store SDR ducked states for status bar display
@@ -4972,6 +4995,78 @@ class MumbleRadioGateway:
                         self.audio_capture_active = True
 
                     _tr_outcome = 'mix'  # will be updated to sent/no_mumble/etc below
+
+                    # SDR rebroadcast: route SDR-only mix to AIOC radio TX
+                    if self.sdr_rebroadcast and not ptt_required and sdr_only_audio is not None:
+                        sdr_arr = np.frombuffer(sdr_only_audio, dtype=np.int16).astype(np.float32)
+                        sdr_rms = float(np.sqrt(np.mean(sdr_arr * sdr_arr))) if len(sdr_arr) > 0 else 0.0
+                        sdr_has_signal = sdr_rms > 100  # ~-50 dBFS threshold
+
+                        if sdr_has_signal:
+                            self._rebroadcast_ptt_hold_until = time.monotonic() + self.config.SDR_REBROADCAST_PTT_HOLD
+                            self._rebroadcast_sending = True
+                            self.last_sound_time = time.time()  # prevent PTT release timer
+                        else:
+                            self._rebroadcast_sending = False
+
+                        rebroadcast_ptt_needed = time.monotonic() < self._rebroadcast_ptt_hold_until
+
+                        if rebroadcast_ptt_needed:
+                            self.last_sound_time = time.time()  # keep PTT release timer at bay during hold
+
+                            if not self._rebroadcast_ptt_active and not self.tx_muted and not self.manual_ptt_mode:
+                                self.set_ptt_state(True)
+                                self._ptt_change_time = time.monotonic()
+                                self._rebroadcast_ptt_active = True
+                                # Disable AIOC source so TX feedback doesn't trigger ducking
+                                if self.radio_source:
+                                    self.radio_source.enabled = False
+                                self._trace_events.append((time.monotonic(), 'rebro_ptt', 'on'))
+
+                            pcm = sdr_only_audio if sdr_has_signal else b'\x00' * len(sdr_only_audio)
+                            if self.output_stream and not self.tx_muted:
+                                if self.config.OUTPUT_VOLUME != 1.0:
+                                    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+                                    pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
+                                try:
+                                    self.output_stream.write(pcm, exception_on_overflow=False)
+                                except TypeError:
+                                    self.output_stream.write(pcm)
+
+                            # Update TX bar — measure after OUTPUT_VOLUME to reflect actual transmitted level
+                            tx_level_pcm = pcm if sdr_has_signal else sdr_only_audio
+                            current_level = self.calculate_audio_level(tx_level_pcm)
+                            if current_level > self.rx_audio_level:
+                                self.rx_audio_level = current_level
+                            else:
+                                self.rx_audio_level = int(self.rx_audio_level * 0.7 + current_level * 0.3)
+                            self.last_rx_audio_time = time.time()  # prevent level decay
+
+                            _tr_rebro = 'sig' if sdr_has_signal else 'hold'
+                        else:
+                            if self._rebroadcast_ptt_active and self.ptt_active:
+                                self.set_ptt_state(False)
+                                self._ptt_change_time = time.monotonic()
+                                self._rebroadcast_ptt_active = False
+                                if self.radio_source:
+                                    self.radio_source.enabled = True
+                                self._trace_events.append((time.monotonic(), 'rebro_ptt', 'off'))
+                            self._rebroadcast_sending = False
+                            _tr_rebro = 'idle'
+                    elif self.sdr_rebroadcast and not ptt_required and sdr_only_audio is None:
+                        # No SDR audio this tick — check if hold expired
+                        self._rebroadcast_sending = False
+                        if time.monotonic() >= self._rebroadcast_ptt_hold_until:
+                            if self._rebroadcast_ptt_active and self.ptt_active:
+                                self.set_ptt_state(False)
+                                self._ptt_change_time = time.monotonic()
+                                self._rebroadcast_ptt_active = False
+                                if self.radio_source:
+                                    self.radio_source.enabled = True
+                                self._trace_events.append((time.monotonic(), 'rebro_ptt', 'off'))
+                            _tr_rebro = 'idle'
+                        else:
+                            _tr_rebro = 'hold'
 
                     # Route audio based on PTT requirement
                     if ptt_required:
@@ -5261,6 +5356,7 @@ class MumbleRadioGateway:
                         _tr_sdr2_sb,                          # 19: SDR2 sub-buffer bytes before
                         _tr_sdr_prebuf,                       # 20: SDR1 _prebuffering flag
                         _tr_sdr2_prebuf,                      # 21: SDR2 _prebuffering flag
+                        _tr_rebro,                            # 22: rebroadcast state (''=off, sig/hold/idle)
                     ))
     
     def _find_darkice_pid(self):
@@ -5650,6 +5746,21 @@ class MumbleRadioGateway:
                             self._pending_ptt_state = self.manual_ptt_mode
                             self._trace_events.append((time.monotonic(), 'ptt', 'on' if self.manual_ptt_mode else 'off'))
 
+                    elif char == 'b':
+                        # Toggle SDR rebroadcast (route SDR mix to radio TX)
+                        self.sdr_rebroadcast = not self.sdr_rebroadcast
+                        if not self.sdr_rebroadcast:
+                            if self._rebroadcast_ptt_active and self.ptt_active:
+                                self.set_ptt_state(False)
+                                self._ptt_change_time = time.monotonic()
+                                self._rebroadcast_ptt_active = False
+                            # Re-enable AIOC source if it was disabled during rebroadcast TX
+                            if self.radio_source:
+                                self.radio_source.enabled = True
+                            self._rebroadcast_sending = False
+                            self._rebroadcast_ptt_hold_until = 0
+                        self._trace_events.append((time.monotonic(), 'sdr_rebroadcast', 'on' if self.sdr_rebroadcast else 'off'))
+
                     elif char == 'i':
                         # Toggle audio trace recording
                         self._trace_recording = not self._trace_recording
@@ -5726,10 +5837,10 @@ class MumbleRadioGateway:
             current_time = time.time()
 
             # Check PTT timeout or if TX is muted
-            if self.ptt_active and not self.manual_ptt_mode:
+            if self.ptt_active and not self.manual_ptt_mode and not self._rebroadcast_ptt_active:
                 # Release PTT if timeout OR if TX is muted
                 # (Don't keep PTT keyed when muted!)
-                # But don't release if in manual PTT mode
+                # But don't release if in manual PTT mode or rebroadcast mode
                 if current_time - self.last_sound_time > self.config.PTT_RELEASE_DELAY or self.tx_muted:
                     # Queue the HID write to the audio thread.  Clear ptt_active
                     # immediately so this block is not re-entered on the next tick.
@@ -5785,6 +5896,8 @@ class MumbleRadioGateway:
                 # PTT status: Always 4 chars wide for alignment
                 if self.manual_ptt_mode:
                     ptt_status = f"{YELLOW}M-{GREEN}ON{RESET}" if self.ptt_active else f"{YELLOW}M-{GRAY}--{RESET}"
+                elif self._rebroadcast_ptt_active:
+                    ptt_status = f"{CYAN}B-{GREEN}ON{RESET}" if self.ptt_active else f"{CYAN}B-{GRAY}--{RESET}"
                 else:
                     # Pad normal mode to 4 chars to match manual mode width
                     ptt_status = f"  {GREEN}ON{RESET}" if self.ptt_active else f"  {GRAY}--{RESET}"
@@ -5813,6 +5926,13 @@ class MumbleRadioGateway:
                 # SDR bar: Show SDR audio level (CYAN color)
                 # Calculate once so it is always defined regardless of which SDR sources are present
                 global_muted = self.tx_muted and self.rx_muted
+
+                # Determine SDR label color based on rebroadcast state
+                if self.sdr_rebroadcast:
+                    sdr_label_color = RED if self._rebroadcast_sending else GREEN
+                else:
+                    sdr_label_color = WHITE
+
                 sdr_bar = ""
                 if self.sdr_source:
                     # Always read current level directly from source
@@ -5830,7 +5950,7 @@ class MumbleRadioGateway:
                     sdr_ducked = self.sdr_ducked if not sdr_muted and current_sdr_level > 0 else False
                     
                     # Format: SDR1: (no mode indicator here - it goes in proc_flags)
-                    sdr_bar = f" {WHITE}SDR1:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, ducked=sdr_ducked, color='cyan')
+                    sdr_bar = f" {sdr_label_color}SDR1:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, ducked=sdr_ducked, color='cyan')
                     sdr_bar += f"{RED}P{RESET}" if self.sdr_source._prebuffering else " "
                     if self.sdr_source._watchdog_restarts > 0:
                         sdr_bar += f"{YELLOW}W{self.sdr_source._watchdog_restarts}{RESET}"
@@ -5849,7 +5969,7 @@ class MumbleRadioGateway:
                     sdr2_ducked = self.sdr2_ducked if not sdr2_muted and current_sdr2_level > 0 else False
                     
                     # Format: SDR2: with magenta color
-                    sdr2_bar = f" {WHITE}SDR2:{RESET}" + self.format_level_bar(current_sdr2_level, muted=sdr2_muted, ducked=sdr2_ducked, color='magenta')
+                    sdr2_bar = f" {sdr_label_color}SDR2:{RESET}" + self.format_level_bar(current_sdr2_level, muted=sdr2_muted, ducked=sdr2_ducked, color='magenta')
                     sdr2_bar += f"{RED}P{RESET}" if self.sdr2_source._prebuffering else " "
                     if self.sdr2_source._watchdog_restarts > 0:
                         sdr2_bar += f"{YELLOW}W{self.sdr2_source._watchdog_restarts}{RESET}"
@@ -6048,7 +6168,7 @@ class MumbleRadioGateway:
         print("Keyboard Controls:")
         print("  Mute:  't'=TX | 'r'=RX | 'm'=Global | 's'=SDR1 | 'x'=SDR2  |  Audio: 'v'=VAD | ','=Vol- | '.'=Vol+")
         print("  Proc:  'n'=Gate | 'f'=HPF | 'g'=AGC | 'w'=Wiener | 'e'=Echo")
-        print("  SDR:   'd'=SDR1 Duck toggle")
+        print("  SDR:   'd'=SDR1 Duck toggle | 'b'=SDR Rebroadcast toggle (route SDR→AIOC TX)")
         print("  PTT:   'p'=Manual PTT Toggle (override auto-PTT)")
         print("  Trace: 'i'=Start/stop audio trace recording (writes tools/audio_trace.txt on exit)")
         if getattr(self.config, 'REMOTE_AUDIO_ROLE', 'disabled').lower() == 'client' and self.remote_audio_source:
@@ -6067,7 +6187,7 @@ class MumbleRadioGateway:
             print("Status Line Legend:")
             print("  [✓/⚠/✗]  = Audio capture status (active/idle/stopped)")
             print("  M:✓/✗    = Mumble connected/disconnected")
-            print("  PTT:ON/M-ON/-- = Push-to-talk (auto/manual-on/off)")
+            print("  PTT:ON/M-ON/B-ON/-- = Push-to-talk (auto/manual-on/rebroadcast/off)")
             print("  VAD:✗/🔊/-- = VAD disabled/active/silent (dB = current level)")
             print("  TX:[bar] = Mumble → Radio audio level")
             print("  RX:[bar] = Radio → Mumble audio level")
@@ -6115,7 +6235,7 @@ class MumbleRadioGateway:
         # Column indices
         T, DT, SQ, SSB, AQ, ASB, MGOT, MSRC, MMS, SBLK, ABLK, \
             OUTCOME, MUMMS, SPKOK, SPKQD, DRMS, DLEN, MXST, \
-            SQ2, SSB2, SPREBUF, S2PREBUF = range(22)
+            SQ2, SSB2, SPREBUF, S2PREBUF, REBRO = range(23)
 
         with open(out_path, 'w') as f:
             dur = trace[-1][T] - trace[0][T] if len(trace) > 1 else 0
@@ -6304,6 +6424,19 @@ class MumbleRadioGateway:
                     f.write(f"  mutes: {', '.join(mutes)}\n")
                 f.write("\n")
 
+            # ── Rebroadcast summary ──
+            rebro_vals = [r[REBRO] for r in trace if len(r) > REBRO and r[REBRO]]
+            if rebro_vals:
+                n = len(trace)
+                r_sig = sum(1 for v in rebro_vals if v == 'sig')
+                r_hold = sum(1 for v in rebro_vals if v == 'hold')
+                r_idle = sum(1 for v in rebro_vals if v == 'idle')
+                f.write("SDR REBROADCAST\n")
+                f.write(f"  active: {len(rebro_vals)}/{n} ticks  "
+                        f"sig={r_sig} ({100*r_sig/n:.1f}%)  "
+                        f"hold={r_hold} ({100*r_hold/n:.1f}%)  "
+                        f"idle={r_idle} ({100*r_idle/n:.1f}%)\n\n")
+
             # ── Per-tick detail (first 200 + any anomalies) ──
             #
             # Mixer state column legend:
@@ -6361,12 +6494,13 @@ class MumbleRadioGateway:
             f.write(f"{'='*140}\n")
             f.write("  State: D=ducked H=hold P=padding T=trans_out A=aioc_ducks R=radio_sig O=other_active\n")
             f.write("  SDR:   D=ducked S=signal H=hold_inc X=sole_src I=inc(other) .=excluded\n")
-            f.write("  PB: B=prebuffering (waiting to rebuild cushion) .=normal\n\n")
+            f.write("  PB: B=prebuffering (waiting to rebuild cushion) .=normal\n")
+            f.write("  RB: sig=rebroadcast sending  hold=PTT hold  idle=on but no signal\n\n")
             hdr = (f"{'tick':>6} {'t(s)':>7} {'dt':>6} "
                    f"{'s1_q':>4} {'s1_sb':>6} {'s2_q':>4} {'s2_sb':>6} {'pb':>2} "
                    f"{'aioc_q':>6} {'aioc_sb':>7} {'mixer':>5} {'mix_ms':>6} "
                    f"{'outcome':>10} {'m_ms':>5} {'spk_q':>5} {'rms':>7} {'dlen':>5} "
-                   f"{'sources':>14} {'state':>14}\n")
+                   f"{'sources':>14} {'state':>14} {'rb':>4}\n")
             f.write(hdr)
             f.write('-' * len(hdr) + '\n')
             for i, r in enumerate(trace):
@@ -6382,12 +6516,13 @@ class MumbleRadioGateway:
                 ssb2 = r[SSB2] if len(r) > SSB2 else -1
                 pb1 = 'B' if (len(r) > SPREBUF and r[SPREBUF]) else '.'
                 pb2 = 'B' if (len(r) > S2PREBUF and r[S2PREBUF]) else '.'
+                rb = r[REBRO] if len(r) > REBRO else ''
                 f.write(f"{i:>5}{flag} {r[T]:7.3f} {r[DT]:6.1f} "
                         f"{r[SQ]:4} {r[SSB]:6} {sq2:4} {ssb2:6} {pb1}{pb2} "
                         f"{r[AQ]:6} {r[ASB]:7} {'audio' if r[MGOT] else 'NONE':>5} "
                         f"{r[MMS]:6.1f} "
                         f"{r[OUTCOME]:>10} {r[MUMMS]:5.1f} {r[SPKQD]:5} {r[DRMS]:7.0f} "
-                        f"{r[DLEN]:5} {r[MSRC]:>14} {st}\n")
+                        f"{r[DLEN]:5} {r[MSRC]:>14} {st} {rb:>4}\n")
 
             # ── Events (key presses / mode changes) ──
             events = list(self._trace_events)
