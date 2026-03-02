@@ -109,6 +109,7 @@ Priority 4 (Lowest)  → EchoLink        [→ Mumble TX]
    - 10 announcement slots (keys 1-9 + Station ID on 0)
    - WAV, MP3, FLAC support with automatic resampling
    - Volume normalization and per-file controls
+   - **CW / Morse code**: `!cw <text>` generates Morse audio (`CW_WPM`, `CW_FREQUENCY`, `CW_VOLUME`)
    - **Triggers PTT** when playing; Radio RX still forwarded to Mumble
 
 #### 2. **Radio RX** (Priority 1)
@@ -1442,8 +1443,9 @@ Send commands via Mumble text chat:
 
 | Command | Description |
 |---------|-------------|
-| `!speak <text>` | Generate TTS and broadcast on radio |
-| `!cw <text>` | Send Morse code (CW) on radio |
+| `!speak <text>` | Generate TTS and broadcast on radio (default voice) |
+| `!speak <1-9> <text>` | TTS with voice selection (1=US 2=UK 3=AU 4=IN 5=SA 6=CA 7=IE 8=FR 9=DE) |
+| `!cw <text>` | Send Morse code (CW) on radio (`CW_WPM`, `CW_FREQUENCY`, `CW_VOLUME`) |
 | `!play <0-9>` | Play announcement file by slot number |
 | `!files` | List all loaded announcement files with slot numbers |
 | `!stop` | Stop playback and clear queue |
@@ -1522,6 +1524,49 @@ class MySource(AudioSource):
 - PyAudio: Python audio interface
 
 ## Changelog
+
+### SDR Rebroadcast, TTS Voices & Audio Improvements
+
+**SDR Rebroadcast** (`b` key toggle)
+- Routes SDR-only audio mix back to Radio TX via AIOC with automatic PTT
+- `SDR_REBROADCAST_PTT_HOLD` (default 3.0s) keeps PTT keyed through gaps in SDR signal
+- AIOC radio RX input disabled during rebroadcast PTT to prevent ducking feedback loop
+- File playback takes priority — rebroadcast pauses during announcements
+- Status bar: SDR labels change color (white=off, green=idle, red=sending); `PTT:B-ON` (cyan) indicator
+- SDR prebuffer reduced to 1 blob during rebroadcast for shorter gap duration
+
+**TTS voice selection**
+- `!speak <voice#> <text>` — select from 9 voices (1=US, 2=UK, 3=AU, 4=IN, 5=SA, 6=CA, 7=IE, 8=FR, 9=DE)
+- `TTS_DEFAULT_VOICE` config setting (default 1)
+- HTML tags stripped from Mumble text messages before TTS processing (gTTS was reading tags aloud)
+
+**CW / Morse code**
+- `!cw <text>` Mumble command generates Morse code audio and transmits on radio
+- Configurable: `CW_WPM` (words per minute), `CW_FREQUENCY` (tone Hz), `CW_VOLUME`
+
+**SDR ducking improvements**
+- `SDR_DUCK_COOLDOWN` (default 3.0s) — symmetric cooldown prevents rapid SDR-to-SDR switching
+- `SDR_SIGNAL_THRESHOLD` (default −60 dBFS) — configurable signal detection threshold (was hardcoded −50)
+- sole_source logic refined: no-signal SDRs excluded from mix when another SDR has actual audio
+
+**Audio processing — vectorised** (numpy/scipy)
+- `_mix_audio_streams()` — list comprehension → `np.frombuffer` + `np.clip` (~10x faster)
+- `apply_highpass_filter()` — per-sample IIR loop → `scipy.signal.lfilter` with zi state carry; also fixed latent bug where `prev_output` was reset to 0 each chunk
+- `apply_spectral_noise_suppression()` — O(n*w) sliding window → `scipy.ndimage.uniform_filter1d` O(n)
+
+**Audio trace instrumentation** (`i` key toggle)
+- Records per-tick audio state to `tools/audio_trace.txt` for debugging
+- PTT branch now has its own RMS measurement (was always 0 before)
+- Rebroadcast column (`rb`) added to trace detail
+
+**SDR reliability fixes**
+- SDR prebuffering gate: refuses to serve audio until buffer rebuilt after depletion (eliminates periodic silence gaps)
+- Sum-and-clip SDR mixing: fixes 6 dB volume step when second SDR joins/exits mix
+- AIOC duck hold fix: gate on `non_ptt_audio is not None` prevents 1s dead air after AIOC VAD release
+- Sub-buffer latency cap: limits to 5x blob_bytes to prevent stale audio buildup under CPU load
+
+**Default changes**
+- `SDR_AUDIO_BOOST` / `SDR2_AUDIO_BOOST`: 1.0 → 2.0
 
 ### SDR Loopback Watchdog
 
