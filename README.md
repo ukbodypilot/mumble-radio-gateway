@@ -55,6 +55,17 @@ A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-
   │  TCP port 9601  │  Silence frames consumed but not transmitted.
   │  ■ red bar      │  PTT held for PTT_RELEASE_DELAY after audio stops.
   └─────────────────┘
+
+  SDR REBROADCAST (toggle: b key)
+  ────────────────
+  When enabled, the SDR-only mix (no AIOC/PTT audio) is routed back
+  to Radio TX via AIOC with automatic PTT. PTT holds for 3s after
+  SDR signal stops. File playback takes priority over rebroadcast.
+
+  ┌─────────────────┐           ┌──────────────────┐
+  │  SDR1 + SDR2    │──────────►│  Radio TX        │
+  │  (SDR-only mix) │  PTT auto │  AIOC USB        │
+  └─────────────────┘           └──────────────────┘
 ```
 
 ## Table of Contents
@@ -218,6 +229,27 @@ SDR1:[███---] 45%  SDR2:[██----] 30%  ← both playing (mixed)
 ```
 *(The bar is always 6 characters wide; `-DUCK-` and `-MUTE-` replace the filled bar in their respective states.)*
 
+### SDR Rebroadcast
+
+Routes the SDR-only audio mix (no AIOC/PTT audio) back to Radio TX via the AIOC device with automatic PTT control. Useful for rebroadcasting scanner or SDR audio on a local repeater.
+
+- **Toggle**: `b` key enables/disables rebroadcast
+- **PTT hold**: PTT stays keyed for `SDR_REBROADCAST_PTT_HOLD` seconds (default 3.0) after SDR signal stops, bridging brief gaps in the SDR stream
+- **Priority**: File playback (priority 0) takes priority — rebroadcast pauses while announcements play
+- **Feedback prevention**: Radio RX input is automatically disabled while rebroadcast PTT is active to prevent a ducking feedback loop
+
+**Status bar colors** (SDR1/SDR2 labels):
+- **White** — rebroadcast off (normal operation)
+- **Green** — rebroadcast on, idle (no SDR signal)
+- **Red** — rebroadcast on, actively sending to radio TX
+
+**PTT indicator**: `PTT:B-ON` (cyan) when rebroadcast PTT is active.
+
+**Configuration:**
+```ini
+SDR_REBROADCAST_PTT_HOLD = 3.0  # Seconds PTT holds after SDR signal stops
+```
+
 ### Source Switching — Attack, Release & Transition Padding
 
 SDR ducking transitions use a three-stage gate to avoid jarring cuts.
@@ -254,12 +286,29 @@ SWITCH_PADDING_TIME = 1.0   # silence gap inserted at each transition
 ```
 
 ### Text-to-Speech
-- Google TTS (gTTS) integration
-- Mumble text command: `!speak <text>`
-- Automatic MP3 generation
-- Format validation (detects API errors)
-- Rate limiting detection
-- Volume boost control (default: 1.0x)
+
+Google TTS (gTTS) integration — Mumble users send a text message to trigger speech on the radio.
+
+**Commands:**
+- `!speak <text>` — speak using default voice
+- `!speak <voice#> <text>` — speak using a specific voice (1-9)
+
+**Voice table:**
+
+| # | Accent | # | Accent |
+|---|--------|---|--------|
+| 1 | US English (default) | 6 | Canadian English |
+| 2 | British English | 7 | Irish English |
+| 3 | Australian English | 8 | French |
+| 4 | Indian English | 9 | German |
+| 5 | South African English | | |
+
+**Details:**
+- Automatic MP3 generation with format validation
+- Rate limiting detection (gTTS throttles after many requests)
+- HTML tags stripped from Mumble messages before TTS processing
+- Configurable volume boost and PTT delay before speech starts
+- Default voice set via `TTS_DEFAULT_VOICE` (1-9)
 
 ### Audio Processing
 - **VAD**: Voice Activity Detection with configurable threshold (enabled by default)
@@ -423,7 +472,7 @@ SDR_PRIORITY = 1           # Higher priority (ducks SDR2)
 SDR_DUCK = true            # Ducked by radio RX
 SDR_MIX_RATIO = 1.0
 SDR_DISPLAY_GAIN = 1.0
-SDR_AUDIO_BOOST = 1.0
+SDR_AUDIO_BOOST = 2.0
 SDR_BUFFER_MULTIPLIER = 8
 
 # SDR2 (magenta bar) — disabled by default
@@ -433,7 +482,7 @@ SDR2_PRIORITY = 2          # Lower priority (ducked by SDR1)
 SDR2_DUCK = true           # Ducked by radio RX and SDR1
 SDR2_MIX_RATIO = 1.0
 SDR2_DISPLAY_GAIN = 1.0
-SDR2_AUDIO_BOOST = 1.0
+SDR2_AUDIO_BOOST = 2.0
 SDR2_BUFFER_MULTIPLIER = 8
 ```
 
@@ -484,6 +533,9 @@ Press keys during operation to control the gateway:
 - `1-9` = Play announcement files
 - `0` = Play Station ID
 - `-` = Stop playback
+
+### Diagnostics
+- `i` = Start/stop audio trace recording (writes to `tools/audio_trace.txt`)
 
 ## Status Bar
 
@@ -537,7 +589,7 @@ Flags appear in yellow brackets at the end: `[N,F,G,W,E,D]`
 |------|---------|
 | **N** | Noise Gate enabled |
 | **F** | High-Pass Filter enabled |
-| **A** | AGC enabled |
+| **G** | AGC enabled |
 | **W** | Wiener Filter enabled |
 | **S** | Spectral Suppression enabled |
 | **E** | Echo Cancellation enabled |
@@ -955,7 +1007,7 @@ SDR_PRIORITY = 1                 # Duck priority (lower = higher priority)
 SDR_DUCK = true                  # Duck when radio RX or higher-priority SDR active
 SDR_MIX_RATIO = 1.0              # Volume when ducking disabled (0.0-1.0)
 SDR_DISPLAY_GAIN = 1.0           # Status bar sensitivity (1.0-10.0)
-SDR_AUDIO_BOOST = 1.0            # Actual volume boost (1.0-10.0)
+SDR_AUDIO_BOOST = 2.0            # Actual volume boost (1.0-10.0; default 2.0)
 SDR_BUFFER_MULTIPLIER = 4        # Buffer size multiplier (4=recommended, 8=extra stability)
 
 # ── SDR2 (magenta bar) ───────────────────────────────
@@ -965,8 +1017,13 @@ SDR2_PRIORITY = 2                # Higher number = lower priority (ducked by SDR
 SDR2_DUCK = true                 # Duck when radio RX or SDR1 active
 SDR2_MIX_RATIO = 1.0
 SDR2_DISPLAY_GAIN = 1.0
-SDR2_AUDIO_BOOST = 1.0
+SDR2_AUDIO_BOOST = 2.0           # Actual volume boost (1.0-10.0; default 2.0)
 SDR2_BUFFER_MULTIPLIER = 4
+
+# ── SDR Signal & Ducking ─────────────────────────────
+SDR_SIGNAL_THRESHOLD = -60.0     # dBFS threshold for SDR signal detection (default -60)
+SDR_DUCK_COOLDOWN = 3.0          # Seconds of symmetric cooldown after SDR-to-SDR unduck (default 3.0)
+SDR_REBROADCAST_PTT_HOLD = 3.0   # Seconds PTT holds after SDR signal stops during rebroadcast (default 3.0)
 
 # ── Watchdog (both SDRs) ──────────────────────────────
 # Detects stalled ALSA reads after extended runtime; attempts staged recovery.
@@ -1032,6 +1089,7 @@ PTT_ANNOUNCEMENT_DELAY = 0.5         # Seconds after PTT key-up before audio sta
 ENABLE_TTS = true            # Enable TTS (requires gtts)
 ENABLE_TEXT_COMMANDS = true  # Allow Mumble text commands
 TTS_VOLUME = 1.0             # TTS volume boost (1.0-3.0)
+TTS_DEFAULT_VOICE = 1        # Default voice (1=US 2=UK 3=AU 4=IN 5=SA 6=CA 7=IE 8=FR 9=DE)
 PTT_TTS_DELAY = 1.0          # Silence padding before TTS (seconds)
 ```
 
