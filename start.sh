@@ -188,7 +188,7 @@ if ! ps -p $DARKICE_PID > /dev/null 2>&1; then
         DARKICE_PID=""
         export GATEWAY_FEED_OCCUPIED=1
     else
-        echo "  ✗ Darkice FAILED to start!"
+        echo "  ✗ Darkice FAILED to start — continuing without streaming"
         echo ""
         echo "Error output:"
         cat /tmp/darkice.log
@@ -198,7 +198,7 @@ if ! ps -p $DARKICE_PID > /dev/null 2>&1; then
         echo "  2. Check bitrate matches Broadcastify (usually 16)"
         echo "  3. Check Broadcastify password is correct"
         echo "  4. Run: sudo modprobe -r snd-aloop && sudo modprobe snd-aloop"
-        cleanup
+        DARKICE_PID=""
     fi
 else
     # Show first few lines of Darkice output
@@ -249,7 +249,7 @@ echo ""
 echo "=========================================="
 echo "All components started successfully!"
 echo "=========================================="
-echo "  Darkice:  ${DARKICE_PID:+"PID $DARKICE_PID (log: /tmp/darkice.log)"}${DARKICE_PID:-"disabled (mountpoint occupied)"}"
+echo "  Darkice:  ${DARKICE_PID:+"PID $DARKICE_PID (log: /tmp/darkice.log)"}${DARKICE_PID:-"disabled (see error above)"}"
 echo "  FFmpeg:   PID $FFMPEG_PID (log: /tmp/ffmpeg.log)"
 echo "  Gateway:  Starting now (nice -n -10)..."
 echo ""
