@@ -6794,16 +6794,21 @@ class MumbleRadioGateway:
             return False
         
         # Initialize Mumble
-        if not self.setup_mumble():
-            self.cleanup()
-            return False
-        
+        mumble_ok = self.setup_mumble()
+        if not mumble_ok:
+            print("\n  ⚠ Mumble connection failed — continuing without Mumble.")
+            print("  Radio audio, SDR, and other features will still work.")
+
         print()
         print("=" * 60)
         if self.secondary_mode:
             print("Gateway Active! (SECONDARY / STANDBY MODE)")
             print("  Mumble: DISABLED — username already connected on primary")
             print("  DarkIce: DISABLED — Broadcastify feed already live on primary")
+            print("  Radio RX/TX and SDR sources still active locally.")
+        elif not mumble_ok:
+            print("Gateway Active! (MUMBLE OFFLINE)")
+            print("  Mumble: DISABLED — server unreachable")
             print("  Radio RX/TX and SDR sources still active locally.")
         else:
             print("Gateway Active!")

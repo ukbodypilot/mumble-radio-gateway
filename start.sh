@@ -1,6 +1,10 @@
 #!/bin/bash
 # Start Broadcastify streaming - ROBUST VERSION
 
+# Resolve script directory immediately (handles symlinks and relative invocation)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
 echo "=========================================="
 echo "Starting Broadcastify Stream"
 echo "=========================================="
@@ -233,7 +237,6 @@ echo "[10/10] Starting gateway..."
 echo ""
 
 # Find the gateway file - ONLY in same directory as this script
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 GATEWAY_FILE="$SCRIPT_DIR/mumble_radio_gateway.py"
 
 if [ ! -f "$GATEWAY_FILE" ]; then

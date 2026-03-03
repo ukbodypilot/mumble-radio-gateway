@@ -204,5 +204,13 @@ All three pure-Python per-sample loops replaced with numpy/scipy:
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis
-- **gateway_config.txt IS committed** (repo is private); bak/ is not
+- **gateway_config.txt is NOT committed** — repo is PUBLIC; config is in .gitignore (contains secrets)
 - Fixed-width status bar is important
+
+## Machine Setup (new machine — 2026-03-03)
+- Cloned to `/home/user/Downloads/mumble-radio-gateway` (correct path per CLAUDE.md)
+- Git user: ukbodypilot / robin.pengelly@gmail.com; credential.helper=store
+- Install error: `setuptools` broken on this system — `python3-setuptools` not installed
+  - Fix: `pip3 install --upgrade setuptools --break-system-packages` then `pip3 install pymumble --break-system-packages`
+  - pymumble installs as `pymumble_py3` module (gateway handles both names automatically)
+- All deps verified: pymumble_py3, resampy, hid, pyaudio, soundfile, psutil, gtts, numpy OK
