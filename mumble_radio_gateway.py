@@ -728,9 +728,11 @@ class FilePlaybackSource(AudioSource):
         return status_str
         
     def queue_file(self, filepath):
-        """Add a file to the playback queue. Returns True if file exists, False otherwise."""
+        """Pre-decode an audio file and add it to the playback queue.
+        Decoding happens here (caller's thread) so the audio transmit loop
+        never blocks on file I/O."""
         import os
-        
+
         # Check if file exists
         full_path = filepath
         if not os.path.exists(filepath):
@@ -745,20 +747,34 @@ class FilePlaybackSource(AudioSource):
                     print(f"  Looked in: {os.path.abspath(filepath)}")
                     print(f"  Looked in: {os.path.abspath(alt_path)}")
                 return False
-        
-        # File exists, queue it
-        self.playlist.append(full_path)
+
+        # Pre-decode the file now (runs in keyboard/callback thread, not audio thread)
+        pcm_bytes = self._decode_file(full_path)
+        if pcm_bytes is None:
+            return False
+
+        self.playlist.append((full_path, pcm_bytes))
         if self.gateway.config.VERBOSE_LOGGING:
             print(f"\n[Playback] ✓ Queued: {os.path.basename(full_path)} ({len(self.playlist)} in queue)")
         return True
-    
+
     def load_next_file(self):
-        """Load the next file from the queue"""
+        """Activate the next pre-decoded file from the queue (no I/O)."""
         if not self.playlist:
             return False
-        
-        filepath = self.playlist.pop(0)
-        return self.load_file(filepath)
+
+        filepath, pcm_bytes = self.playlist.pop(0)
+        self.file_data = pcm_bytes
+        self.file_position = 0
+        self.current_file = filepath
+
+        # Mark file as playing in status display
+        for key, info in self.file_status.items():
+            if info['path'] == filepath:
+                self.file_status[key]['playing'] = True
+                break
+
+        return True
     
     def stop_playback(self):
         """Stop current playback and clear queue"""
@@ -781,51 +797,31 @@ class FilePlaybackSource(AudioSource):
         if self.gateway.config.VERBOSE_LOGGING:
             print("\n[Playback] ✓ Stopped playback and cleared queue")
     
-    def load_file(self, filepath):
-        """Load an audio file for playback (supports WAV, MP3, OGG, FLAC, M4A via soundfile)"""
+    def _decode_file(self, filepath):
+        """Decode an audio file to PCM bytes.  Returns bytes on success, None on failure.
+        Called from queue_file() in the caller's thread so the audio loop never blocks."""
         try:
             import os
-            
-            # Check if file exists
-            if not os.path.exists(filepath):
-                # Try with announcement directory prefix
-                alt_path = os.path.join(self.announcement_directory, filepath)
-                if os.path.exists(alt_path):
-                    filepath = alt_path
-                else:
-                    if self.gateway.config.VERBOSE_LOGGING:
-                        print(f"\n[Playback] File not found: {filepath}")
-                    return False
-            
+
             # Get file extension
             file_ext = os.path.splitext(filepath)[1].lower()
-            
-            # Determine which file number this is for status tracking
-            filename = os.path.basename(filepath)
-            file_key = None
-            
-            # Check against all stored paths to find the key
-            for key, info in self.file_status.items():
-                if info['path'] == filepath:
-                    file_key = key
-                    break
-            
+
             # Try soundfile first (best option for Python 3.13)
             try:
                 import soundfile as sf
                 import numpy as np
-                
+
                 if self.gateway.config.VERBOSE_LOGGING:
-                    print(f"\n[Playback] Loading {os.path.basename(filepath)} (using soundfile)...")
-                
+                    print(f"\n[Playback] Decoding {os.path.basename(filepath)} (using soundfile)...")
+
                 # Read audio file - soundfile handles MP3 via libsndfile + ffmpeg
                 audio_data, sample_rate = sf.read(filepath, dtype='int16')
-                
+
                 # Get file info
                 channels = 1 if len(audio_data.shape) == 1 else audio_data.shape[1]
                 if self.gateway.config.VERBOSE_LOGGING:
                     print(f"  Format: {sample_rate}Hz, {channels}ch, 16-bit")
-                
+
                 # Convert stereo to mono if needed
                 if channels == 2:
                     if self.gateway.config.VERBOSE_LOGGING:
@@ -835,7 +831,7 @@ class FilePlaybackSource(AudioSource):
                     if self.gateway.config.VERBOSE_LOGGING:
                         print(f"  Converting {channels} channels to mono...")
                     audio_data = audio_data.mean(axis=1).astype('int16')
-                
+
                 # Resample if needed
                 if sample_rate != self.config.AUDIO_RATE:
                     if self.gateway.config.VERBOSE_LOGGING:
@@ -854,22 +850,13 @@ class FilePlaybackSource(AudioSource):
                         new_length = int(len(audio_data) * ratio)
                         indices = (np.arange(new_length) / ratio).astype(int)
                         audio_data = audio_data[indices]
-                
-                # Convert to bytes
-                self.file_data = audio_data.tobytes()
-                self.file_position = 0
-                self.current_file = filepath
-                
-                # Mark file as playing
-                if file_key:
-                    self.file_status[file_key]['playing'] = True
-                
+
                 duration_sec = len(audio_data) / self.config.AUDIO_RATE
                 if self.gateway.config.VERBOSE_LOGGING:
-                    print(f"  ✓ Loaded {duration_sec:.1f}s of audio")
-                
-                return True
-                
+                    print(f"  ✓ Decoded {duration_sec:.1f}s of audio")
+
+                return audio_data.tobytes()
+
             except ImportError:
                 # soundfile not available, try wave module (WAV only)
                 if file_ext != '.wav':
@@ -881,67 +868,59 @@ class FilePlaybackSource(AudioSource):
                         print(f"    sudo apt-get install libsndfile1")
                         print(f"\n  Or convert to WAV:")
                         print(f"    ffmpeg -i {os.path.basename(filepath)} -ar 48000 -ac 1 output.wav")
-                    return False
-                
+                    return None
+
                 # Fall back to wave module for WAV files
                 import wave
-                
+
                 if self.gateway.config.VERBOSE_LOGGING:
-                    print(f"\n[Playback] Loading {os.path.basename(filepath)} (WAV only)...")
-                
+                    print(f"\n[Playback] Decoding {os.path.basename(filepath)} (WAV only)...")
+
                 with wave.open(filepath, 'rb') as wf:
                     # Get file info
                     channels = wf.getnchannels()
                     rate = wf.getframerate()
                     width = wf.getsampwidth()
                     frames = wf.getnframes()
-                    
+
                     if self.gateway.config.VERBOSE_LOGGING:
                         print(f"  Format: {rate}Hz, {channels}ch, {width*8}-bit")
-                    
+
                     # Check format compatibility
                     needs_conversion = False
-                    
+
                     if channels != self.config.AUDIO_CHANNELS:
                         if self.gateway.config.VERBOSE_LOGGING:
                             print(f"  ⚠ Warning: {channels} channel(s), expected {self.config.AUDIO_CHANNELS}")
                             print(f"    File may not play correctly")
                         needs_conversion = True
-                    
+
                     if rate != self.config.AUDIO_RATE:
                         if self.gateway.config.VERBOSE_LOGGING:
                             print(f"  ⚠ Warning: {rate}Hz, expected {self.config.AUDIO_RATE}Hz")
                             print(f"    Audio will play at wrong speed!")
                         needs_conversion = True
-                    
+
                     if width != 2:  # 16-bit = 2 bytes
                         if self.gateway.config.VERBOSE_LOGGING:
                             print(f"  ⚠ Warning: {width*8}-bit, expected 16-bit")
                         needs_conversion = True
-                    
+
                     if needs_conversion and self.gateway.config.VERBOSE_LOGGING:
                         print(f"  Convert with: ffmpeg -i {os.path.basename(filepath)} -ar 48000 -ac 1 -sample_fmt s16 output.wav")
                         print(f"  Or install soundfile for automatic conversion")
-                    
-                    # Read entire file into memory
-                    self.file_data = wf.readframes(frames)
-                    self.file_position = 0
-                    self.current_file = filepath
-                    
-                    # Mark file as playing
-                    if file_key:
-                        self.file_status[file_key]['playing'] = True
-                    
+
+                    pcm_bytes = wf.readframes(frames)
                     duration_sec = frames / rate
                     if self.gateway.config.VERBOSE_LOGGING:
-                        print(f"  ✓ Loaded {duration_sec:.1f}s of audio")
-                    
-                    return True
-                
+                        print(f"  ✓ Decoded {duration_sec:.1f}s of audio")
+
+                    return pcm_bytes
+
         except Exception as e:
             if self.gateway.config.VERBOSE_LOGGING:
-                print(f"\n[Playback] Error loading {filepath}: {e}")
-            return False
+                print(f"\n[Playback] Error decoding {filepath}: {e}")
+            return None
     
     def check_periodic_announcement(self):
         """Check if it's time for a periodic announcement"""
@@ -1903,7 +1882,7 @@ class RemoteAudioServer:
                 sock.settimeout(2.0)
                 sock.connect((self.host, self.port))
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                sock.settimeout(None)  # blocking sends are fine
+                sock.setblocking(False)  # non-blocking so send_audio never stalls audio loop
                 self._socket = sock
                 self.client_address = f"{self.host}:{self.port}"
                 self.connected = True
@@ -1926,14 +1905,27 @@ class RemoteAudioServer:
                 time.sleep(self._reconnect_interval)
 
     def send_audio(self, pcm_data):
-        """Send length-prefixed PCM to connected client. Non-blocking on failure."""
+        """Send length-prefixed PCM to connected client.
+        Uses non-blocking send to avoid stalling the audio transmit loop
+        if the TCP buffer is full (e.g. slow client or network hiccup)."""
         sock = self._socket
         if not sock:
             return
         import struct
         try:
-            header = struct.pack('>I', len(pcm_data))
-            sock.sendall(header + pcm_data)
+            frame = struct.pack('>I', len(pcm_data)) + pcm_data
+            total = len(frame)
+            sent = 0
+            while sent < total:
+                try:
+                    n = sock.send(frame[sent:])
+                    if n == 0:
+                        raise ConnectionError("send returned 0")
+                    sent += n
+                except BlockingIOError:
+                    # Socket buffer full — drop the rest of this frame
+                    # rather than blocking the audio loop
+                    break
         except Exception:
             # Link broken — trigger reconnect
             self.connected = False
@@ -5583,6 +5575,8 @@ class MumbleRadioGateway:
             _tr_sdr_prebuf = False
             _tr_sdr2_prebuf = False
             _tr_rebro = ''  # rebroadcast state: ''=off, 'sig'=sending, 'hold'=PTT hold, 'idle'=on but no signal
+            _tr_sv_ms = 0.0   # RemoteAudioServer send_audio cumulative time (ms)
+            _tr_sv_sent = 0   # number of send_audio calls this tick
             active_sources = []
 
             try:
@@ -5839,19 +5833,18 @@ class MumbleRadioGateway:
                                     self.stream_output.send_audio(rx_for_mumble)
                                 except Exception:
                                     pass
-                            if self.remote_audio_server and self.remote_audio_server.connected:
-                                try:
-                                    self.remote_audio_server.send_audio(rx_for_mumble)
-                                    self._update_sv_level(rx_for_mumble)
-                                except Exception:
-                                    pass
                             if self.speaker_stream and not self.speaker_muted:
                                 self._speaker_enqueue(rx_for_mumble)
 
-                        # Send mixed audio (file playback) to remote client even during PTT
+                        # Send ONE frame to remote client during PTT — the mixed
+                        # playback data.  Previously both rx_for_mumble AND data were
+                        # sent, doubling the frame rate and causing client-side stutter.
                         if self.remote_audio_server and self.remote_audio_server.connected:
                             try:
+                                _sv_t0 = time.monotonic()
                                 self.remote_audio_server.send_audio(data)
+                                _tr_sv_ms += (time.monotonic() - _sv_t0) * 1000
+                                _tr_sv_sent += 1
                                 self._update_sv_level(data)
                             except Exception:
                                 pass
@@ -5941,7 +5934,10 @@ class MumbleRadioGateway:
                 # works even when Mumble is not connected (e.g. secondary mode).
                 if self.remote_audio_server and self.remote_audio_server.connected:
                     try:
+                        _sv_t0 = time.monotonic()
                         self.remote_audio_server.send_audio(data)
+                        _tr_sv_ms += (time.monotonic() - _sv_t0) * 1000
+                        _tr_sv_sent += 1
                         self._update_sv_level(data)
                     except Exception:
                         pass
@@ -6044,6 +6040,8 @@ class MumbleRadioGateway:
                         _tr_sdr_prebuf,                       # 20: SDR1 _prebuffering flag
                         _tr_sdr2_prebuf,                      # 21: SDR2 _prebuffering flag
                         _tr_rebro,                            # 22: rebroadcast state (''=off, sig/hold/idle)
+                        _tr_sv_ms,                            # 23: RemoteAudioServer send_audio time (ms)
+                        _tr_sv_sent,                          # 24: number of SV send_audio calls this tick
                     ))
     
     def _find_darkice_pid(self):
@@ -7118,7 +7116,7 @@ class MumbleRadioGateway:
         # Column indices
         T, DT, SQ, SSB, AQ, ASB, MGOT, MSRC, MMS, SBLK, ABLK, \
             OUTCOME, MUMMS, SPKOK, SPKQD, DRMS, DLEN, MXST, \
-            SQ2, SSB2, SPREBUF, S2PREBUF, REBRO = range(23)
+            SQ2, SSB2, SPREBUF, S2PREBUF, REBRO, SVMS, SVSENT = range(25)
 
         with open(out_path, 'w') as f:
             dur = trace[-1][T] - trace[0][T] if len(trace) > 1 else 0
@@ -7171,6 +7169,15 @@ class MumbleRadioGateway:
             if mumble_ms:
                 f.write(f"MUMBLE add_sound()\n")
                 f.write(f"  count={len(mumble_ms)}  mean={statistics.mean(mumble_ms):.2f}ms  max={max(mumble_ms):.2f}ms\n\n")
+
+            sv_ms_vals = [r[SVMS] for r in trace if len(r) > SVMS and r[SVSENT] > 0]
+            if sv_ms_vals:
+                f.write(f"REMOTE AUDIO SERVER send_audio()\n")
+                f.write(f"  ticks with sends={len(sv_ms_vals)}/{len(trace)}  "
+                        f"mean={statistics.mean(sv_ms_vals):.2f}ms  max={max(sv_ms_vals):.2f}ms\n")
+                sv_slow = sum(1 for v in sv_ms_vals if v > 5.0)
+                sv_vslow = sum(1 for v in sv_ms_vals if v > 50.0)
+                f.write(f"  >5ms: {sv_slow}  >50ms: {sv_vslow}\n\n")
 
             # Speaker queue
             spk_qds = [r[SPKQD] for r in trace if r[SPKQD] >= 0]
@@ -7387,6 +7394,7 @@ class MumbleRadioGateway:
                    f"{'s1_q':>4} {'s1_sb':>6} {'s2_q':>4} {'s2_sb':>6} {'pb':>2} "
                    f"{'aioc_q':>6} {'aioc_sb':>7} {'mixer':>5} {'mix_ms':>6} "
                    f"{'outcome':>10} {'m_ms':>5} {'spk_q':>5} {'rms':>7} {'dlen':>5} "
+                   f"{'sv_ms':>6} {'sv#':>3} "
                    f"{'sources':>14} {'state':>14} {'rb':>4}\n")
             f.write(hdr)
             f.write('-' * len(hdr) + '\n')
@@ -7396,7 +7404,8 @@ class MumbleRadioGateway:
                               or r[OUTCOME] not in ('sent', 'mix')
                               or r[MUMMS] > 5 or r[SPKQD] >= 7 or r[DRMS] == 0
                               or (r[DLEN] > 0 and r[DLEN] != expected_len)
-                              or (len(r) > SPREBUF and (r[SPREBUF] or r[S2PREBUF])))
+                              or (len(r) > SPREBUF and (r[SPREBUF] or r[S2PREBUF]))
+                              or (len(r) > SVMS and r[SVMS] > 5.0))
                 flag = '*' if is_anomaly else ' '
                 st = _fmt_mxst(r[MXST]) if len(r) > MXST else ''
                 sq2 = r[SQ2] if len(r) > SQ2 else -1
@@ -7404,12 +7413,15 @@ class MumbleRadioGateway:
                 pb1 = 'B' if (len(r) > SPREBUF and r[SPREBUF]) else '.'
                 pb2 = 'B' if (len(r) > S2PREBUF and r[S2PREBUF]) else '.'
                 rb = r[REBRO] if len(r) > REBRO else ''
+                sv_ms = r[SVMS] if len(r) > SVMS else 0.0
+                sv_n = r[SVSENT] if len(r) > SVSENT else 0
                 f.write(f"{i:>5}{flag} {r[T]:7.3f} {r[DT]:6.1f} "
                         f"{r[SQ]:4} {r[SSB]:6} {sq2:4} {ssb2:6} {pb1}{pb2} "
                         f"{r[AQ]:6} {r[ASB]:7} {'audio' if r[MGOT] else 'NONE':>5} "
                         f"{r[MMS]:6.1f} "
                         f"{r[OUTCOME]:>10} {r[MUMMS]:5.1f} {r[SPKQD]:5} {r[DRMS]:7.0f} "
-                        f"{r[DLEN]:5} {r[MSRC]:>14} {st} {rb:>4}\n")
+                        f"{r[DLEN]:5} {sv_ms:6.1f} {sv_n:3} "
+                        f"{r[MSRC]:>14} {st} {rb:>4}\n")
 
             # ── Events (key presses / mode changes) ──
             events = list(self._trace_events)
