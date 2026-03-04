@@ -544,6 +544,7 @@ def run_client(cfg, state):
                 break
 
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            conn.settimeout(0.2)  # Allow keypress checks during silence
             print(f"\nGateway connected from {addr[0]}:{addr[1]}")
 
             # Open output stream for this connection
@@ -558,16 +559,29 @@ def run_client(cfg, state):
 
             try:
                 while not state["switch_role"]:
-                    # Read length prefix
-                    hdr = _recv_exact(conn, 4)
+                    # Read length prefix (timeout lets us check keypress state)
+                    try:
+                        hdr = _recv_exact(conn, 4)
+                    except socket.timeout:
+                        # No data — update status line and re-check state
+                        if state["live"]:
+                            status = f"{RED}LIVE{RESET}"
+                        else:
+                            status = f"{YELLOW}MUTE{RESET}"
+                        role_tag = f"{CYAN}CL{RESET}"
+                        sys.stdout.write(f"\r  {role_tag} {status}  [{level_bar(-100)}] {-100:+6.1f} dBFS ")
+                        sys.stdout.flush()
+                        continue
                     if hdr is None:
                         break
                     length = struct.unpack(">I", hdr)[0]
                     if length == 0 or length > 960000:
                         break
 
-                    # Read PCM payload
+                    # Read PCM payload (blocking — header already confirmed data is coming)
+                    conn.settimeout(None)
                     pcm = _recv_exact(conn, length)
+                    conn.settimeout(0.2)
                     if pcm is None:
                         break
 

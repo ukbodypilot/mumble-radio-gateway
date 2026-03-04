@@ -6692,6 +6692,9 @@ class MumbleRadioGateway:
                 if self.remote_audio_server:
                     # This machine is the server — show audio level being sent to client
                     sv_level = self.sv_audio_level if self.remote_audio_server.connected else 0
+                    # Decay toward zero so the bar doesn't stick when no audio is sent
+                    if self.sv_audio_level > 0:
+                        self.sv_audio_level = int(self.sv_audio_level * 0.7)
                     remote_bar = f" {WHITE}SV:{RESET}" + self.format_level_bar(sv_level, color='yellow')
                 elif self.remote_audio_source:
                     # This machine is the client — show audio level received from server

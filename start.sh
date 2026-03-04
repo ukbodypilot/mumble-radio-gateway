@@ -44,7 +44,7 @@ fi
 sudo -v
 
 # 1. Kill any existing processes
-echo "[1/10] Checking for existing processes..."
+echo "[1/11] Checking for existing processes..."
 pkill -9 darkice 2>/dev/null && echo "  Killed existing Darkice"
 pkill -9 ffmpeg 2>/dev/null && echo "  Killed existing FFmpeg"
 sleep 1
@@ -53,8 +53,27 @@ sleep 1
 pkill -9 -f "mumble_radio_gateway" 2>/dev/null && echo "  Killed existing gateway"
 sleep 1
 
-# 2. Start TH-9800 CAT control if not already running
-echo "[2/10] Checking TH-9800 CAT control..."
+# 2. Start Mumble GUI client if not already running
+echo "[2/11] Checking Mumble client..."
+if pgrep -x "mumble" > /dev/null 2>&1; then
+    echo "  ✓ Mumble already running (PID: $(pgrep -x mumble | head -1))"
+else
+    if command -v mumble > /dev/null 2>&1; then
+        mumble &
+        disown
+        sleep 2
+        if pgrep -x "mumble" > /dev/null 2>&1; then
+            echo "  ✓ Mumble started (PID: $(pgrep -x mumble | head -1))"
+        else
+            echo "  ⚠ Mumble failed to start (continuing anyway)"
+        fi
+    else
+        echo "  ⚠ Mumble not installed (skipping)"
+    fi
+fi
+
+# 3. Start TH-9800 CAT control if not already running
+echo "[3/11] Checking TH-9800 CAT control..."
 if pgrep -f "TH9800_CAT.py" > /dev/null 2>&1; then
     TH9800_PID=$(pgrep -f TH9800_CAT.py | head -1)
     echo "  ✓ TH-9800 CAT already running (PID: $TH9800_PID)"
@@ -75,8 +94,8 @@ else
     fi
 fi
 
-# 3. Start Claude Code in the gateway folder if not already running
-echo "[3/10] Checking Claude Code..."
+# 4. Start Claude Code in the gateway folder if not already running
+echo "[4/11] Checking Claude Code..."
 GATEWAY_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 CLAUDE_RUNNING=false
 for pid in $(pgrep -f "claude" 2>/dev/null); do
@@ -111,15 +130,15 @@ if [ "$CLAUDE_RUNNING" = false ]; then
     fi
 fi
 
-# 4. Set CPU governor to performance for consistent scheduling latency
-echo "[4/10] Setting CPU governor to performance..."
+# 5. Set CPU governor to performance for consistent scheduling latency
+echo "[5/11] Setting CPU governor to performance..."
 for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
     echo performance | sudo tee "$cpu" > /dev/null 2>&1 || true
 done
 echo "  ✓ CPU governor set (or unsupported on this platform)"
 
-# 5. Unload and reload ALSA loopback (fresh start)
-echo "[5/10] Resetting ALSA loopback..."
+# 6. Unload and reload ALSA loopback (fresh start)
+echo "[6/11] Resetting ALSA loopback..."
 sudo modprobe -r snd-aloop 2>/dev/null
 sleep 1
 sudo modprobe snd-aloop
@@ -135,8 +154,8 @@ if ! aplay -l 2>/dev/null | grep -q "Loopback"; then
     echo "  ⚠ Warning: Loopback device not visible in aplay -l"
 fi
 
-# 6. Reset AIOC USB device (clears stale audio output state)
-echo "[6/10] Resetting AIOC USB device..."
+# 7. Reset AIOC USB device (clears stale audio output state)
+echo "[7/11] Resetting AIOC USB device..."
 AIOC_USB=""
 for d in /sys/bus/usb/devices/*/product; do
     if grep -qi "all-in-one" "$d" 2>/dev/null; then
@@ -160,8 +179,8 @@ else
     echo "  ⚠ AIOC USB device not found (skipping reset)"
 fi
 
-# 7. Create named pipe
-echo "[7/10] Creating named pipe..."
+# 8. Create named pipe
+echo "[8/11] Creating named pipe..."
 # Force remove old pipe (even if busy)
 rm -f /tmp/darkice_audio 2>/dev/null
 # Kill any processes using it
@@ -172,8 +191,8 @@ mkfifo /tmp/darkice_audio
 chmod 666 /tmp/darkice_audio
 echo "  ✓ Pipe created: /tmp/darkice_audio"
 
-# 8. Start Darkice with visible output
-echo "[8/10] Starting Darkice..."
+# 9. Start Darkice with visible output
+echo "[9/11] Starting Darkice..."
 echo "  (Darkice output will be shown below)"
 echo "  ----------------------------------------"
 
@@ -212,8 +231,8 @@ else
     echo "  Full log: /tmp/darkice.log"
 fi
 
-# 9. Start FFmpeg bridge with auto-restart
-echo "[9/10] Starting FFmpeg bridge..."
+# 10. Start FFmpeg bridge with auto-restart
+echo "[10/11] Starting FFmpeg bridge..."
 (
     while true; do
         ffmpeg -loglevel error -f s16le -ar 48000 -ac 1 -i /tmp/darkice_audio \
@@ -232,8 +251,8 @@ fi
 
 echo "  ✓ FFmpeg bridge running (PID: $FFMPEG_PID)"
 
-# 10. Start Gateway
-echo "[10/10] Starting gateway..."
+# 11. Start Gateway
+echo "[11/11] Starting gateway..."
 echo ""
 
 # Find the gateway file - ONLY in same directory as this script
