@@ -2888,7 +2888,7 @@ class AudioMixer:
                 # force-include — it would just add loopback noise to the mix.
                 no_aioc = non_ptt_audio is None and ptt_audio is None
                 other_sdrs_have_signal = bool(_sdrs_with_signal - {sdr_name})
-                sdr_is_sole_source = no_aioc and (has_instant or hold_active or not other_sdrs_have_signal)
+                sdr_is_sole_source = no_aioc and (has_instant or hold_active)
                 include_sdr = has_instant or hold_active or sdr_is_sole_source
                 _sdr_trace[sdr_name] = {'ducked': False, 'inc': include_sdr, 'sig': has_sig_hyst, 'inst': has_instant, 'hold': hold_active, 'sole': sdr_is_sole_source}
 
@@ -5661,10 +5661,13 @@ class MumbleRadioGateway:
 
                     _tr_mixer_got = data is not None
                     if data is None:
-                        # No audio from any source — substitute silence so the Opus
-                        # encoder receives a continuous stream at the correct rate.
-                        data = b'\x00' * (self.config.AUDIO_CHUNK_SIZE * 2)
+                        # No audio from any source — nothing to send.
+                        # Feed silence to speaker so its PortAudio buffer stays primed,
+                        # but skip the Mumble/remote-audio send path entirely.
                         self.audio_capture_active = False
+                        self._speaker_enqueue(b'\x00' * (self.config.AUDIO_CHUNK_SIZE * 2))
+                        _tr_outcome = 'vad_gate'
+                        continue
                     else:
                         # Mixer produced audio (from any source: AIOC, SDR, file).
                         # Update health flags so the status monitor doesn't think
