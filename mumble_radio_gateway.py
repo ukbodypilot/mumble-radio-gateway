@@ -3587,6 +3587,7 @@ class MumbleRadioGateway:
         self.last_status_print = 0
         self.rx_audio_level = 0  # Received audio level (Mumble → Radio)
         self.tx_audio_level = 0  # Transmitted audio level (Radio → Mumble)
+        self.sv_audio_level = 0  # Audio level sent to remote client (SV bar)
         self.last_rx_audio_time = 0  # When we last received audio
         self.stream_restart_count = 0
         self.last_stream_error = "None"
@@ -3722,7 +3723,15 @@ class MumbleRadioGateway:
             return 0
         except Exception:
             return 0
-    
+
+    def _update_sv_level(self, pcm_data):
+        """Update sv_audio_level from PCM data sent to remote client."""
+        current = self.calculate_audio_level(pcm_data)
+        if current > self.sv_audio_level:
+            self.sv_audio_level = current
+        else:
+            self.sv_audio_level = int(self.sv_audio_level * 0.7 + current * 0.3)
+
     def format_level_bar(self, level, muted=False, ducked=False, color='green'):
         """Format audio level as a visual bar (0-100 scale) with optional color
         
@@ -5819,6 +5828,7 @@ class MumbleRadioGateway:
                             if self.remote_audio_server and self.remote_audio_server.connected:
                                 try:
                                     self.remote_audio_server.send_audio(rx_for_mumble)
+                                    self._update_sv_level(rx_for_mumble)
                                 except Exception:
                                     pass
                             if self.speaker_stream and not self.speaker_muted:
@@ -5828,6 +5838,7 @@ class MumbleRadioGateway:
                         if self.remote_audio_server and self.remote_audio_server.connected:
                             try:
                                 self.remote_audio_server.send_audio(data)
+                                self._update_sv_level(data)
                             except Exception:
                                 pass
 
@@ -5917,6 +5928,7 @@ class MumbleRadioGateway:
                 if self.remote_audio_server and self.remote_audio_server.connected:
                     try:
                         self.remote_audio_server.send_audio(data)
+                        self._update_sv_level(data)
                     except Exception:
                         pass
 
@@ -6652,7 +6664,7 @@ class MumbleRadioGateway:
                 remote_bar = ""
                 if self.remote_audio_server:
                     # This machine is the server — show audio level being sent to client
-                    sv_level = self.tx_audio_level if self.remote_audio_server.connected else 0
+                    sv_level = self.sv_audio_level if self.remote_audio_server.connected else 0
                     remote_bar = f" {WHITE}SV:{RESET}" + self.format_level_bar(sv_level, color='yellow')
                 elif self.remote_audio_source:
                     # This machine is the client — show audio level received from server
