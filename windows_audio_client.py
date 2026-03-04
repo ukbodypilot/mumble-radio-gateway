@@ -301,6 +301,44 @@ def level_bar(db, width=20):
     return "#" * filled + "-" * (width - filled)
 
 # ---------------------------------------------------------------------------
+# Screen helpers
+# ---------------------------------------------------------------------------
+def clear_screen():
+    """Clear terminal and move cursor to top-left."""
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
+
+
+def print_server_header(mode, dev_name, dev_index, host, port):
+    """Print server role header info."""
+    clear_screen()
+    print(f"Role   : {CYAN}Server (send audio){RESET}")
+    print(f"Mode   : {MODE_LABELS[mode]}")
+    print(f"Device : {dev_name} (index {dev_index})")
+    print(f"Gateway: {host}:{port}")
+    print(f"Format : {SAMPLE_RATE} Hz, mono, 16-bit, {FRAMES_PER_BUFFER} frames/chunk")
+    print(f"\nPress 'l' to toggle LIVE/IDLE — audio is NOT sent until you go LIVE")
+    print(f"Press 'm' to switch to client role")
+    print("Press Ctrl+C to stop.\n")
+
+
+def print_client_header(dev_name, dev_index, port, connected_from=None):
+    """Print client role header info."""
+    clear_screen()
+    print(f"Role   : {CYAN}Client (receive audio){RESET}")
+    print(f"Device : {dev_name} (index {dev_index})")
+    print(f"Listen : port {port}")
+    print(f"Format : {SAMPLE_RATE} Hz, mono, 16-bit, {FRAMES_PER_BUFFER} frames/chunk")
+    print(f"\nPress 'l' to toggle PLAY/MUTE — when MUTE, received audio is discarded")
+    print(f"Press 'm' to switch to server role")
+    print("Press Ctrl+C to stop.\n")
+    if connected_from:
+        print(f"Gateway connected from {connected_from}")
+    else:
+        print(f"Listening on port {port} — waiting for gateway connection ...")
+
+
+# ---------------------------------------------------------------------------
 # Server role — send audio to gateway
 # ---------------------------------------------------------------------------
 def run_server(cfg, state):
@@ -356,14 +394,7 @@ def run_server(cfg, state):
     cfg["server_port"] = port
     save_config(cfg)
 
-    print(f"\nRole   : {CYAN}Server (send audio){RESET}")
-    print(f"Mode   : {MODE_LABELS[mode]}")
-    print(f"Device : {dev_name} (index {dev_index})")
-    print(f"Gateway: {host}:{port}")
-    print(f"Format : {SAMPLE_RATE} Hz, mono, 16-bit, {FRAMES_PER_BUFFER} frames/chunk")
-    print(f"\nPress 'l' to toggle LIVE/IDLE — audio is NOT sent until you go LIVE")
-    print(f"Press 'm' to switch to client role")
-    print("Press Ctrl+C to stop.\n")
+    print_server_header(mode, dev_name, dev_index, host, port)
 
     # --- Reset state --------------------------------------------------------
     state["live"] = False
@@ -403,6 +434,7 @@ def run_server(cfg, state):
         while not state["switch_role"]:
             # Connect / reconnect
             if sock is None:
+                print_server_header(mode, dev_name, dev_index, host, port)
                 print(f"Connecting to {host}:{port} ...")
                 sock = connect()
                 if sock is None:
@@ -414,6 +446,7 @@ def run_server(cfg, state):
                         except Exception:
                             pass
                     continue
+                print_server_header(mode, dev_name, dev_index, host, port)
                 print(f"Connected to {host}:{port}")
 
             # Read audio
@@ -433,7 +466,6 @@ def run_server(cfg, state):
                 header = struct.pack(">I", len(send_pcm))
                 sock.sendall(header + send_pcm)
             except Exception:
-                print(f"\nDisconnected from {host}:{port}")
                 try:
                     sock.close()
                 except Exception:
@@ -511,13 +543,7 @@ def run_client(cfg, state):
     cfg["client_port"] = port
     save_config(cfg)
 
-    print(f"\nRole   : {CYAN}Client (receive audio){RESET}")
-    print(f"Device : {dev_name} (index {dev_index})")
-    print(f"Listen : port {port}")
-    print(f"Format : {SAMPLE_RATE} Hz, mono, 16-bit, {FRAMES_PER_BUFFER} frames/chunk")
-    print(f"\nPress 'l' to toggle PLAY/MUTE — when MUTE, received audio is discarded")
-    print(f"Press 'm' to switch to server role")
-    print("Press Ctrl+C to stop.\n")
+    print_client_header(dev_name, dev_index, port)
 
     # --- Reset state --------------------------------------------------------
     state["live"] = False
@@ -529,8 +555,6 @@ def run_client(cfg, state):
     listen_sock.bind(("0.0.0.0", port))
     listen_sock.listen(1)
     listen_sock.settimeout(1.0)
-
-    print(f"Listening on port {port} — waiting for gateway connection ...")
 
     switched = False
     try:
@@ -545,7 +569,7 @@ def run_client(cfg, state):
 
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             conn.settimeout(0.2)  # Allow keypress checks during silence
-            print(f"\nGateway connected from {addr[0]}:{addr[1]}")
+            print_client_header(dev_name, dev_index, port, f"{addr[0]}:{addr[1]}")
 
             # Open output stream for this connection
             out_stream = sd.RawOutputStream(
@@ -612,7 +636,7 @@ def run_client(cfg, state):
                 except Exception:
                     pass
                 if not state["switch_role"]:
-                    print(f"\nGateway disconnected — waiting for reconnect ...")
+                    print_client_header(dev_name, dev_index, port)
 
         switched = state["switch_role"]
     except KeyboardInterrupt:
@@ -654,9 +678,6 @@ def main():
         role = ROLE_CLIENT if role == ROLE_SERVER else ROLE_SERVER
         cfg["role"] = role
         save_config(cfg)
-        print(f"\n\n{'='*60}")
-        print(f"  Switching to {CYAN}{ROLE_LABELS[role]}{RESET}")
-        print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":
