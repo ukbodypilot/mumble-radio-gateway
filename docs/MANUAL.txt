@@ -176,6 +176,12 @@ DIAGNOSTICS
       Samples every 5s, flushes every 60s. Tracks thread health, audio levels,
       queue depths, PTT/VAD state, and memory usage.
 
+MISC
+----
+  z = Clear Console and Reprint Banner
+      Clears the terminal and reprints the full Gateway Active banner,
+      status info, and keyboard controls summary.
+
 STREAM HEALTH
 -------------
   (no key)  = Stream health can be toggled via config (ENABLE_STREAM_HEALTH)

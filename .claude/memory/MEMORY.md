@@ -63,6 +63,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - NET: `k`=Reset remote audio TCP connection
 - RELAY: `j`=Radio power button (momentary pulse)
 - TRACE: `i`=Start/stop audio trace `u`=Start/stop watchdog trace
+- MISC: `z`=Clear and reprint console
 - NOTE: AGC moved from 'a' to 'g'; proc flag changed from A to G
 
 ## ALSA Loopback Setup
@@ -138,6 +139,16 @@ All three pure-Python per-sample loops replaced with numpy/scipy:
 - Udev template: `scripts/99-relay-udev.rules` — maps physical USB port to persistent symlinks
 - Cleanup: closes serial ports but leaves relays in current state (no power-cycle on restart)
 - Dependency: `pyserial` (imported inside `open()` — only fails if relay enabled but pkg missing)
+
+## Local Mumble Server (mumble-server/murmurd)
+- `MumbleServerManager` class: manages up to 2 local mumble-server instances
+- Config: `ENABLE_MUMBLE_SERVER_1/2`, port, password, max_users, bandwidth, welcome, opus_threshold, autostart
+- Each instance: own config `/etc/mumble-server-gw{N}.ini`, DB, log, PID, systemd service
+- Service: `mumble-server-gw{N}.service` — runs as `mumble-server` user, `-fg` foreground mode
+- Status bar: `MS1`/`MS2` — white=configured, green=running, red=error
+- Health check: every ~10s in status_monitor_loop via `check_health()`
+- Cleanup: services left running on gateway exit (systemd manages them independently)
+- Install: `apt install mumble-server` (Debian) / `pacman -S murmur` (Arch); default service disabled
 
 ## SDR Rebroadcast
 - Toggle: `b` key. Routes mixed SDR-only audio (no AIOC/PTT) to AIOC radio TX

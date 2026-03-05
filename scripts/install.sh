@@ -43,7 +43,7 @@ echo "Package manager: $DISTRO"
 echo
 
 # ── 1. System packages ───────────────────────────────────────
-echo "[ 1/10 ] Installing system packages..."
+echo "[ 1/11 ] Installing system packages..."
 if [ "$DISTRO" = "arch" ]; then
     sudo pacman -Sy --noconfirm --needed \
         python \
@@ -72,7 +72,7 @@ echo "  ✓ System packages installed"
 echo
 
 # ── 2. ALSA loopback module ──────────────────────────────────
-echo "[ 2/10 ] Setting up ALSA loopback (for SDR input)..."
+echo "[ 2/11 ] Setting up ALSA loopback (for SDR input)..."
 
 # Write modprobe options first:
 #   enable=1,1,1 → enable 3 independent loopback cards
@@ -142,7 +142,7 @@ echo "$LOOPBACK_LINES" | grep "Loopback" | sed 's/^/    /' || true
 echo
 
 # ── 3. Python packages ───────────────────────────────────────
-echo "[ 3/10 ] Installing Python packages..."
+echo "[ 3/11 ] Installing Python packages..."
 
 # Helper: try --break-system-packages (Debian 12+), then plain pip
 _pip() {
@@ -186,7 +186,7 @@ fi
 echo
 
 # ── 4. UDEV rules for AIOC ──────────────────────────────────
-echo "[ 4/10 ] Setting up UDEV rules for AIOC USB device..."
+echo "[ 4/11 ] Setting up UDEV rules for AIOC USB device..."
 UDEV_RULE='SUBSYSTEM=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="audio"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="plugdev"'
 
@@ -201,7 +201,7 @@ fi
 echo
 
 # ── 5. Audio group, realtime limits, and sudoers ─────────────────
-echo "[ 5/10 ] Setting up audio permissions..."
+echo "[ 5/11 ] Setting up audio permissions..."
 set +e   # None of this should abort the install
 
 # Determine the real (non-root) user running this script
@@ -245,7 +245,7 @@ set -e
 echo
 
 # ── 6. Darkice (optional — for Broadcastify/Icecast streaming) ───
-echo "[ 6/10 ] Darkice streaming (optional)..."
+echo "[ 6/11 ] Darkice streaming (optional)..."
 set +e
 if [ "$DISTRO" = "arch" ]; then
     if sudo pacman -S --noconfirm --needed lame 2>/dev/null; then
@@ -346,7 +346,7 @@ set -e
 echo
 
 # ── 7. Mumble GUI client ─────────────────────────────────────
-echo "[ 7/10 ] Installing Mumble client..."
+echo "[ 7/11 ] Installing Mumble client..."
 set +e
 if [ "$DISTRO" = "arch" ]; then
     sudo pacman -S --noconfirm --needed mumble 2>/dev/null
@@ -361,8 +361,43 @@ fi
 set -e
 echo
 
-# ── 8. OpenSSL TLS compatibility (for older Mumble servers) ──
-echo "[ 8/10 ] Configuring OpenSSL for TLS 1.0 compatibility..."
+# ── 8. Mumble server (murmurd) ───────────────────────────────
+echo "[ 8/11 ] Installing Mumble server (optional — for local server instances)..."
+set +e
+if [ "$DISTRO" = "arch" ]; then
+    if sudo pacman -S --noconfirm --needed murmur 2>/dev/null; then
+        echo "  ✓ murmur (mumble-server) installed"
+    else
+        echo "  ⚠ Could not install murmur — install manually if needed"
+        echo "    This is optional: only needed if ENABLE_MUMBLE_SERVER_1/2 = true"
+    fi
+else
+    if sudo apt-get install -y mumble-server 2>/dev/null; then
+        echo "  ✓ mumble-server installed"
+        # Disable the default mumble-server service — gateway manages its own instances
+        sudo systemctl stop mumble-server.service 2>/dev/null || true
+        sudo systemctl disable mumble-server.service 2>/dev/null || true
+        echo "  ✓ Default mumble-server service disabled (gateway manages its own instances)"
+    else
+        echo "  ⚠ Could not install mumble-server — install manually if needed"
+        echo "    This is optional: only needed if ENABLE_MUMBLE_SERVER_1/2 = true"
+    fi
+fi
+
+# Ensure required directories exist with correct ownership
+for MSDIR in /var/lib/mumble-server /var/log/mumble-server /var/run/mumble-server; do
+    sudo mkdir -p "$MSDIR" 2>/dev/null || true
+done
+# Set ownership if mumble-server user exists
+if id mumble-server &>/dev/null; then
+    sudo chown mumble-server:mumble-server /var/lib/mumble-server /var/log/mumble-server /var/run/mumble-server 2>/dev/null || true
+    echo "  ✓ Mumble server directories created (owned by mumble-server user)"
+fi
+set -e
+echo
+
+# ── 9. OpenSSL TLS compatibility (for older Mumble servers) ──
+echo "[ 9/11 ] Configuring OpenSSL for TLS 1.0 compatibility..."
 OPENSSL_CNF="/etc/ssl/openssl.cnf"
 if [ -f "$OPENSSL_CNF" ]; then
     # Check if already patched
@@ -390,8 +425,8 @@ else
 fi
 echo
 
-# ── 9. Gateway configuration ─────────────────────────────────
-echo "[ 9/10 ] Setting up configuration..."
+# ── 10. Gateway configuration ────────────────────────────────
+echo "[ 10/11 ] Setting up configuration..."
 
 CONFIG_DEST="$GATEWAY_DIR/gateway_config.txt"
 CONFIG_SRC="$GATEWAY_DIR/examples/gateway_config.txt"
@@ -412,8 +447,8 @@ mkdir -p "$GATEWAY_DIR/audio"
 echo "  ✓ audio/ directory ready (place announcement files here)"
 echo
 
-# ── 10. Make scripts executable ──────────────────────────────
-echo "[ 10/10 ] Setting permissions..."
+# ── 11. Make scripts executable ──────────────────────────────
+echo "[ 11/11 ] Setting permissions..."
 chmod +x "$GATEWAY_DIR/mumble_radio_gateway.py" 2>/dev/null || true
 chmod +x "$GATEWAY_DIR/scripts/"*.sh 2>/dev/null || true
 chmod +x "$GATEWAY_DIR/start.sh" 2>/dev/null || true
@@ -456,6 +491,12 @@ echo "STREAMING (optional):"
 echo "  Configure /etc/darkice.cfg with your Broadcastify credentials"
 echo "  Set ENABLE_STREAM_OUTPUT = true in gateway_config.txt"
 echo "  Use start.sh to launch gateway + Darkice together"
+echo
+echo "LOCAL MUMBLE SERVER (optional):"
+echo "  Set ENABLE_MUMBLE_SERVER_1 = true in gateway_config.txt"
+echo "  Configure port, password, and max users as needed"
+echo "  The gateway will create and manage the server instance via systemd"
+echo "  Firewall: sudo ufw allow 64738/tcp && sudo ufw allow 64738/udp"
 echo
 echo "DOCS:"
 echo "  README.md                       — full documentation"

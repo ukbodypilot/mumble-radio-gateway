@@ -91,6 +91,7 @@ A bidirectional audio bridge connecting Mumble VoIP to amateur radio with multi-
 - **Voice Activity Detection (VAD)**: Smart audio gate prevents noise transmission (enabled by default)
 - **Real-Time Audio Processing**: Noise gate, AGC, filters, echo cancellation
 - **Live Status Display**: Real-time bars showing TX/RX/SDR levels with color coding
+- **Local Mumble Server**: Run up to 2 managed mumble-server instances on the same machine
 
 ### Audio Sources (Priority-Based Mixing)
 
@@ -410,6 +411,48 @@ CAT_RIGHT_POWER = L
 
 **Requires:** TH9800_CAT.py running with TCP server enabled and serial connected to the radio.
 
+### Local Mumble Server
+
+Run one or two local mumble-server (murmurd) instances managed by the gateway. Each instance gets its own config file, SQLite database, and systemd service — fully independent of any default `mumble-server.service`.
+
+**How it works:**
+1. On gateway startup, if `ENABLE_MUMBLE_SERVER_1` (or `_2`) is `true`, the gateway:
+   - Writes `/etc/mumble-server-gw1.ini` (or `gw2`) with your configured parameters
+   - Creates a systemd service `mumble-server-gw1.service` (runs as `mumble-server` user)
+   - Starts the service (if `AUTOSTART = true`)
+   - Monitors health every ~10 seconds
+2. On gateway exit, the mumble-server instances **keep running** (managed by systemd). Users stay connected between gateway restarts.
+
+**Status bar:**
+- `MS1` / `MS2` — white when configured but not yet checked, green when running, red on error
+
+**Configuration:**
+```ini
+# -------- Mumble Server 1 --------
+ENABLE_MUMBLE_SERVER_1 = true
+MUMBLE_SERVER_1_PORT = 64738
+MUMBLE_SERVER_1_PASSWORD =           # Empty = no password required
+MUMBLE_SERVER_1_MAX_USERS = 10
+MUMBLE_SERVER_1_MAX_BANDWIDTH = 72000  # bits/sec per user (72000 = good Opus quality)
+MUMBLE_SERVER_1_WELCOME = Welcome to Radio Gateway Server 1
+MUMBLE_SERVER_1_REGISTER_NAME =      # Empty = private server (not listed publicly)
+MUMBLE_SERVER_1_ALLOW_HTML = true
+MUMBLE_SERVER_1_OPUS_THRESHOLD = 0   # 0 = always use Opus codec
+MUMBLE_SERVER_1_AUTOSTART = true     # false = write config but don't start
+
+# -------- Mumble Server 2 --------
+ENABLE_MUMBLE_SERVER_2 = false
+MUMBLE_SERVER_2_PORT = 64739         # Must be different from Server 1
+# ... same parameters as Server 1 ...
+```
+
+**Use cases:**
+- **Self-contained gateway**: Run the Mumble server on the same Pi as the gateway — no external server needed
+- **Two servers**: One public (with password) for general users, one private for admin/control
+- **Portable deployment**: Take a Pi + radio to the field with everything built in
+
+**Requires:** `sudo apt-get install mumble-server` (handled by `scripts/install.sh`)
+
 ## Quick Start
 
 ### Requirements
@@ -436,9 +479,10 @@ The installer handles:
 - UDEV rules for AIOC USB audio + HID (PTT control)
 - Audio group membership and realtime scheduling limits
 - Darkice + WirePlumber configuration (if applicable)
+- Mumble server (`mumble-server` / `murmur`) for local server instances
 - Example `gateway_config.txt`
 
-> **Supported platforms:** Raspberry Pi (any model), Debian 12, Ubuntu 22.04+, any Debian-based Linux.
+> **Supported platforms:** Raspberry Pi (any model), Debian 12, Ubuntu 22.04+, any Debian-based Linux, Arch Linux.
 
 > **Python 3.12+ note:** The installer patches the `pymumble` SSL layer automatically. No manual fix required.
 
@@ -622,6 +666,9 @@ Press keys during operation to control the gateway:
 - `i` = Start/stop audio trace recording (writes to `tools/audio_trace.txt`)
 - `u` = Start/stop watchdog trace (writes to `tools/watchdog_trace.txt`)
 
+### Misc
+- `z` = Clear console and reprint banner
+
 ## Status Bar
 
 ![Status Bar Example](docs/img/status_bar_example.svg)
@@ -644,7 +691,7 @@ The status bar stays fixed on the last terminal line. Log messages (connection e
 
 ### Audio Level Bars
 
-Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL → AN → PWRB → CHG → CAT
+Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL → AN → PWRB → CHG → CAT → MS1 → MS2
 
 | Bar | Color | Meaning |
 |-----|-------|---------|
@@ -659,6 +706,8 @@ Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL → A
 | **PWRB** | White/Yellow | Radio power button relay — white when idle, yellow during 0.5s pulse (only shown when `ENABLE_RELAY_RADIO = true`) |
 | **CHG:CHRGE/DRAIN** | Green/Red | Charger relay — green when charging, red when draining (only shown when `ENABLE_RELAY_CHARGER = true`) |
 | **CAT** | White/Green/Red | TH-9800 CAT control — white when enabled but not connected, green when connected idle, red when active (only shown when `ENABLE_CAT_CONTROL = true`) |
+| **MS1** | White/Green/Red | Mumble Server 1 — white when configured, green when running, red on error (only shown when `ENABLE_MUMBLE_SERVER_1 = true`) |
+| **MS2** | White/Green/Red | Mumble Server 2 — white when configured, green when running, red on error (only shown when `ENABLE_MUMBLE_SERVER_2 = true`) |
 
 **Bar States:**
 
@@ -1362,6 +1411,42 @@ CAT_LEFT_VOLUME = -1                   # Left VFO volume 0-100 (-1 = don't chang
 CAT_RIGHT_VOLUME = -1                  # Right VFO volume 0-100 (-1 = don't change)
 CAT_LEFT_POWER =                       # Left VFO power: L/M/H (blank = don't change)
 CAT_RIGHT_POWER =                      # Right VFO power: L/M/H (blank = don't change)
+```
+
+### Local Mumble Server Settings
+
+```ini
+# -------- Mumble Server 1 --------
+ENABLE_MUMBLE_SERVER_1 = false                # Enable local mumble-server instance 1
+MUMBLE_SERVER_1_PORT = 64738                  # TCP/UDP port (default Mumble port)
+MUMBLE_SERVER_1_PASSWORD =                    # Server password (blank = no password)
+MUMBLE_SERVER_1_MAX_USERS = 10                # Maximum concurrent users
+MUMBLE_SERVER_1_MAX_BANDWIDTH = 72000         # Max bits/sec per user (72000 = good Opus)
+MUMBLE_SERVER_1_WELCOME = Welcome to Server 1 # Welcome message shown on connect
+MUMBLE_SERVER_1_REGISTER_NAME =               # Public server name (blank = private)
+MUMBLE_SERVER_1_ALLOW_HTML = true             # Allow HTML in messages/comments
+MUMBLE_SERVER_1_OPUS_THRESHOLD = 0            # 0 = always use Opus codec
+MUMBLE_SERVER_1_AUTOSTART = true              # Start service on gateway launch
+
+# -------- Mumble Server 2 --------
+ENABLE_MUMBLE_SERVER_2 = false                # Enable local mumble-server instance 2
+MUMBLE_SERVER_2_PORT = 64739                  # Must be different from Server 1
+# ... same parameters as Server 1 with MUMBLE_SERVER_2_ prefix ...
+```
+
+**Files created per instance:**
+- Config: `/etc/mumble-server-gw{N}.ini` — regenerated on each gateway start
+- Database: `/var/lib/mumble-server/mumble-server-gw{N}.sqlite`
+- Log: `/var/log/mumble-server/mumble-server-gw{N}.log`
+- Service: `mumble-server-gw{N}.service` (systemd)
+
+**Firewall:**
+```bash
+sudo ufw allow 64738/tcp
+sudo ufw allow 64738/udp
+# If using Server 2 on a different port:
+sudo ufw allow 64739/tcp
+sudo ufw allow 64739/udp
 ```
 
 ### Advanced Settings

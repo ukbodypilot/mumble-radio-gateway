@@ -19,6 +19,7 @@
 #   NET:   'k'=Reset remote audio connection
 #   RELAY: 'j'=Radio power button
 #   TRACE: 'i'=Start/stop audio trace  'u'=Start/stop watchdog trace
+#   MISC:  'z'=Clear and reprint console
 # ============================================================================
 
 
@@ -407,6 +408,40 @@ CAT_RIGHT_VOLUME = -1
 # Power level (L=Low, M=Medium, H=High, blank = don't change)
 CAT_LEFT_POWER =
 CAT_RIGHT_POWER =
+
+
+# ============================================================================
+# LOCAL MUMBLE SERVER
+# ============================================================================
+# Run one or two mumble-server (murmurd) instances managed by the gateway.
+# Each instance gets its own config, database, and systemd service.
+# Requires: sudo apt-get install mumble-server (handled by install.sh)
+#
+# Status bar: MS1/MS2 — white=configured, green=running, red=error
+
+# -------- Mumble Server 1 --------
+ENABLE_MUMBLE_SERVER_1 = false
+MUMBLE_SERVER_1_PORT = 64738
+MUMBLE_SERVER_1_PASSWORD =
+MUMBLE_SERVER_1_MAX_USERS = 10
+MUMBLE_SERVER_1_MAX_BANDWIDTH = 72000
+MUMBLE_SERVER_1_WELCOME = Welcome to Radio Gateway Server 1
+MUMBLE_SERVER_1_REGISTER_NAME =
+MUMBLE_SERVER_1_ALLOW_HTML = true
+MUMBLE_SERVER_1_OPUS_THRESHOLD = 0
+MUMBLE_SERVER_1_AUTOSTART = true
+
+# -------- Mumble Server 2 --------
+ENABLE_MUMBLE_SERVER_2 = false
+MUMBLE_SERVER_2_PORT = 64739
+MUMBLE_SERVER_2_PASSWORD =
+MUMBLE_SERVER_2_MAX_USERS = 10
+MUMBLE_SERVER_2_MAX_BANDWIDTH = 72000
+MUMBLE_SERVER_2_WELCOME = Welcome to Radio Gateway Server 2
+MUMBLE_SERVER_2_REGISTER_NAME =
+MUMBLE_SERVER_2_ALLOW_HTML = true
+MUMBLE_SERVER_2_OPUS_THRESHOLD = 0
+MUMBLE_SERVER_2_AUTOSTART = true
 
 
 # ============================================================================
