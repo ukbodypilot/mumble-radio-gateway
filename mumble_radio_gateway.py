@@ -5833,83 +5833,88 @@ class MumbleRadioGateway:
 
             elif command == '!status':
                 import psutil
-                import os
-                
-                status_lines = []
-                status_lines.append("╔════════════════════════════════════╗")
-                status_lines.append("║     GATEWAY STATUS REPORT          ║")
-                status_lines.append("╚════════════════════════════════════╝")
-                
-                # System Resources
-                cpu_percent = psutil.cpu_percent(interval=0.1)
-                memory = psutil.virtual_memory()
-                status_lines.append("")
-                status_lines.append("📊 SYSTEM:")
-                status_lines.append(f"  CPU Load: {cpu_percent:.1f}%")
-                status_lines.append(f"  Memory: {memory.percent:.1f}% ({memory.used // (1024**2)} MB / {memory.total // (1024**2)} MB)")
-                status_lines.append(f"  Uptime: {int((time.time() - self.start_time) // 60)} minutes")
-                
-                # PTT & Audio Status
-                status_lines.append("")
-                status_lines.append("📻 RADIO:")
-                status_lines.append(f"  PTT: {'🔴 ACTIVE (TX)' if self.ptt_active else '🟢 Idle'}")
-                status_lines.append(f"  Manual PTT: {'ON' if self.manual_ptt_mode else 'OFF'}")
-                status_lines.append(f"  TX Muted: {'YES' if self.tx_muted else 'NO'}")
-                status_lines.append(f"  RX Muted: {'YES' if self.rx_muted else 'NO'}")
-                status_lines.append(f"  Audio Level: TX {self.tx_audio_level}% / RX {self.rx_audio_level}%")
-                
-                # Mumble Status
-                status_lines.append("")
-                status_lines.append("💬 MUMBLE:")
-                status_lines.append(f"  Connected: {'YES' if self.mumble else 'NO'}")
-                status_lines.append(f"  Users: {len(self.mumble.users) if self.mumble else 0}")
-                status_lines.append(f"  Channel: {self.config.MUMBLE_CHANNEL if self.config.MUMBLE_CHANNEL else 'Root'}")
-                
-                # Audio Processing
-                status_lines.append("")
-                status_lines.append("🎛️ PROCESSING:")
-                processing = []
-                if self.config.ENABLE_VAD: processing.append(f"VAD ({self.config.VAD_THRESHOLD}dB)")
-                if self.config.ENABLE_VOX: processing.append(f"VOX ({self.config.VOX_THRESHOLD}dB)")
-                if self.config.ENABLE_NOISE_GATE: processing.append("Noise Gate")
-                if self.config.ENABLE_HIGHPASS_FILTER: processing.append(f"HPF ({self.config.HIGHPASS_CUTOFF_FREQ}Hz)")
-                if self.config.ENABLE_AGC: processing.append("AGC")
-                if self.config.ENABLE_NOISE_SUPPRESSION: processing.append(f"Noise Sup ({self.config.NOISE_SUPPRESSION_METHOD})")
-                if self.config.ENABLE_ECHO_CANCELLATION: processing.append("Echo Cancel")
-                status_lines.append(f"  Active: {', '.join(processing) if processing else 'None'}")
-                status_lines.append(f"  Input Vol: {self.config.INPUT_VOLUME}x")
-                status_lines.append(f"  Output Vol: {self.config.OUTPUT_VOLUME}x")
-                
-                # File Playback
-                if self.playback_source:
-                    status_lines.append("")
-                    status_lines.append("🎵 PLAYBACK:")
-                    file_count = sum(1 for k in '0123456789' if self.playback_source.file_status[k]['exists'])
-                    status_lines.append(f"  Files Loaded: {file_count}/10")
-                    playing = [k for k in '0123456789' if self.playback_source.file_status[k]['playing']]
-                    if playing:
-                        status_lines.append(f"  Now Playing: Key {playing[0]}")
-                    if self.playback_source.playlist:
-                        status_lines.append(f"  Queue: {len(self.playback_source.playlist)} file(s)")
-                
-                # TTS Status
-                status_lines.append("")
-                status_lines.append("🗣️ TEXT-TO-SPEECH:")
-                status_lines.append(f"  Available: {'YES' if self.tts_engine else 'NO'}")
-                if self.tts_engine:
-                    status_lines.append(f"  Volume Boost: {self.config.TTS_VOLUME}x")
-                
-                # Streaming
-                if self.config.ENABLE_STREAM_OUTPUT:
-                    status_lines.append("")
-                    status_lines.append("📡 STREAMING:")
-                    status_lines.append(f"  Enabled: YES")
-                    status_lines.append(f"  Server: {self.config.STREAM_SERVER}")
-                
-                status_lines.append("")
-                status_lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                
-                self.send_text_message("\n".join(status_lines))
+
+                s = []
+                s.append("━━━ GATEWAY STATUS ━━━")
+
+                # Uptime
+                uptime_s = int(time.time() - self.start_time)
+                days, rem = divmod(uptime_s, 86400)
+                hours, rem = divmod(rem, 3600)
+                mins, _ = divmod(rem, 60)
+                uptime_str = f"{days}d {hours}h {mins}m" if days else f"{hours}h {mins}m"
+                s.append(f"Uptime: {uptime_str}")
+
+                # Host — CPU, RAM, Disk
+                cpu = psutil.cpu_percent(interval=0.1)
+                mem = psutil.virtual_memory()
+                disk = psutil.disk_usage('/')
+                load1, load5, load15 = os.getloadavg()
+                s.append(f"\n📊 HOST:")
+                s.append(f"  CPU: {cpu:.0f}%  Load: {load1:.1f} / {load5:.1f} / {load15:.1f}")
+                try:
+                    temps = psutil.sensors_temperatures()
+                    cpu_temp = temps.get('cpu_thermal', temps.get('coretemp', [{}]))[0]
+                    s.append(f"  Temp: {cpu_temp.current:.0f}°C")
+                except Exception:
+                    pass
+                s.append(f"  RAM: {mem.used // (1024**2)}M / {mem.total // (1024**2)}M ({mem.percent:.0f}%)")
+                s.append(f"  Disk: {disk.used // (1024**3)}G / {disk.total // (1024**3)}G ({disk.percent:.0f}%)")
+
+                # Radio
+                mutes = []
+                if self.tx_muted: mutes.append("TX")
+                if self.rx_muted: mutes.append("RX")
+                if self.tx_muted and self.rx_muted: mutes.append("ALL")
+                ptt = "TX" if self.ptt_active else "Idle"
+                if self.manual_ptt_mode: ptt += " (manual)"
+                s.append(f"\n📻 RADIO:")
+                s.append(f"  PTT: {ptt}  Muted: {', '.join(mutes) if mutes else 'None'}")
+                if self.sdr_rebroadcast:
+                    s.append(f"  Rebroadcast: ON")
+
+                # Sources
+                sources = []
+                if self.radio_source:
+                    sources.append(f"AIOC ({'muted' if self.tx_muted else 'active'})")
+                if self.sdr_source:
+                    sources.append(f"SDR1 ({'muted' if self.sdr_muted else 'active'})")
+                if self.sdr2_source:
+                    sources.append(f"SDR2 ({'muted' if self.sdr2_muted else 'active'})")
+                if self.remote_audio_source:
+                    sources.append(f"Remote ({'muted' if self.remote_audio_muted else 'active'})")
+                if hasattr(self, 'announce_source') and self.announce_source:
+                    ann_muted = getattr(self, 'announce_muted', False)
+                    sources.append(f"Announce ({'muted' if ann_muted else 'active'})")
+                if sources:
+                    s.append(f"  Sources: {', '.join(sources)}")
+
+                # Mumble
+                ch = self.config.MUMBLE_CHANNEL if self.config.MUMBLE_CHANNEL else "Root"
+                users = len(self.mumble.users) if self.mumble else 0
+                s.append(f"\n💬 MUMBLE:")
+                s.append(f"  Channel: {ch}  Users: {users}")
+
+                # Processing — compact
+                proc = []
+                if self.config.ENABLE_VAD: proc.append("VAD")
+                if self.config.ENABLE_NOISE_GATE: proc.append("Gate")
+                if self.config.ENABLE_HIGHPASS_FILTER: proc.append("HPF")
+                if self.config.ENABLE_AGC: proc.append("AGC")
+                if self.config.ENABLE_NOISE_SUPPRESSION: proc.append("NR")
+                if self.config.ENABLE_ECHO_CANCELLATION: proc.append("Echo")
+                if proc:
+                    s.append(f"\n🎛️ Processing: {' | '.join(proc)}")
+
+                # Network
+                s.append(f"\n🌐 NETWORK:")
+                for iface_name, addrs in psutil.net_if_addrs().items():
+                    for addr in addrs:
+                        if addr.family.name == 'AF_INET' and addr.address != '127.0.0.1':
+                            s.append(f"  {iface_name}: {addr.address}")
+
+                s.append("━━━━━━━━━━━━━━━━━━━━━━")
+                self.send_text_message("\n".join(s))
             
             elif command == '!files':
                 if self.playback_source:
