@@ -1938,6 +1938,18 @@ class RemoteAudioServer:
             except Exception:
                 pass
 
+    def reset(self):
+        """Force-close the current connection so _connect_loop reconnects."""
+        sock = self._socket
+        self._socket = None
+        self.connected = False
+        self.client_address = None
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
     def cleanup(self):
         """Close socket."""
         self._running = False
@@ -1981,6 +1993,7 @@ class RemoteAudioSource(AudioSource):
         self._reader_running = False
         self._reader_thread = None
         self._listen_socket = None
+        self._conn = None  # current accepted connection (for reset)
 
     def setup_audio(self):
         """Bind listen socket and start the reader/accept thread."""
@@ -2013,6 +2026,7 @@ class RemoteAudioSource(AudioSource):
                 conn, addr = self._listen_socket.accept()
                 conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 conn.settimeout(2.0)
+                self._conn = conn
                 self.server_connected = True
                 print(f"\n[SDRSV] Server connected from {addr[0]}:{addr[1]}")
 
@@ -2047,11 +2061,30 @@ class RemoteAudioSource(AudioSource):
                     print(f"\n[SDRSV] Connection error: {e}")
             finally:
                 self.server_connected = False
+                self._conn = None
                 if conn:
                     try:
                         conn.close()
                     except Exception:
                         pass
+
+    def reset(self):
+        """Force-close the current connection so the reader thread re-accepts."""
+        conn = self._conn
+        self._conn = None
+        self.server_connected = False
+        self._sub_buffer = b''
+        # Drain the queue
+        while not self._chunk_queue.empty():
+            try:
+                self._chunk_queue.get_nowait()
+            except _queue_mod.Empty:
+                break
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     @staticmethod
     def _recv_exact(sock, n):
@@ -6365,6 +6398,17 @@ class MumbleRadioGateway:
                                 state = "MUTED" if self.remote_audio_muted else "UNMUTED"
                                 print(f"\n[SDRSV] {state}")
 
+                    elif char == 'k':
+                        # Reset remote audio TCP connection
+                        if self.remote_audio_server:
+                            self.remote_audio_server.reset()
+                            print(f"\n[RemoteAudio] Server connection reset — reconnecting to {self.remote_audio_server.host}:{self.remote_audio_server.port}")
+                            self._trace_events.append((time.monotonic(), 'remote_reset', 'server'))
+                        elif self.remote_audio_source:
+                            self.remote_audio_source.reset()
+                            print(f"\n[SDRSV] Client connection reset — waiting for reconnect")
+                            self._trace_events.append((time.monotonic(), 'remote_reset', 'client'))
+
                     elif char == 'v':
                         # Toggle VAD on/off
                         self.config.ENABLE_VAD = not self.config.ENABLE_VAD
@@ -6398,7 +6442,7 @@ class MumbleRadioGateway:
                         # Toggle AGC
                         self.config.ENABLE_AGC = not self.config.ENABLE_AGC
                     
-                    elif char == 's':
+                    elif char == 'y':
                         # Toggle spectral noise suppression
                         if self.config.ENABLE_NOISE_SUPPRESSION and self.config.NOISE_SUPPRESSION_METHOD == 'spectral':
                             # Currently on with spectral → turn off
@@ -6948,10 +6992,11 @@ class MumbleRadioGateway:
         print("Keyboard Controls:")
         print("  Mute:  't'=TX  'r'=RX  'm'=Global  's'=SDR1  'x'=SDR2  'c'=Remote  'a'=Announce  'o'=Speaker")
         print("  Audio: 'v'=VAD toggle  ','=Vol-  '.'=Vol+")
-        print("  Proc:  'n'=Gate  'f'=HPF  'g'=AGC  'w'=Wiener  'e'=Echo")
+        print("  Proc:  'n'=Gate  'f'=HPF  'g'=AGC  'y'=Spectral  'w'=Wiener  'e'=Echo")
         print("  SDR:   'd'=SDR1 Duck toggle  'b'=SDR Rebroadcast toggle")
         print("  PTT:   'p'=Manual PTT toggle")
         print("  Play:  '1-9'=Announcements  '0'=StationID  '-'=Stop")
+        print("  Net:   'k'=Reset remote audio connection")
         print("  Relay: 'j'=Radio power button")
         print("  Trace: 'i'=Start/stop audio trace  'u'=Start/stop watchdog trace")
         print("=" * 60)

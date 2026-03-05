@@ -4,10 +4,10 @@
 Update MEMORY.md and detail files at the end of every session and whenever a significant bug or pattern is discovered. Keep this file under 200 lines.
 
 ## Project Overview
-Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Optional SDR input via ALSA loopback. Optional Broadcastify streaming via DarkIce. Python 3, runs on Raspberry Pi, Debian amd64, and Arch Linux.
+Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Optional SDR input via ALSA loopback. Optional Broadcastify streaming via DarkIce. Python 3, runs on Raspberry Pi and Debian amd64.
 
 **Main file:** `mumble_radio_gateway.py` (~5000+ lines)
-**Installer:** `scripts/install.sh` (10 steps, targets Debian/Ubuntu/RPi/Arch Linux)
+**Installer:** `scripts/install.sh` (8 steps, targets Debian/Ubuntu/RPi)
 **Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
 **Start script:** `start.sh` (8 steps: kill procs, CPU governor→performance, loopback, AIOC USB reset, pipe, DarkIce, FFmpeg, gateway w/nice -10; `sudo -v` cached at top)
 **Windows client:** `windows_audio_client.py` (server: send audio, client: receive audio, `m` to switch)
@@ -56,10 +56,11 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ## Keyboard Controls
 - MUTE: `t`=TX `r`=RX `m`=Global `s`=SDR1 `x`=SDR2 `c`=Remote `a`=Announce `o`=Speaker
 - AUDIO: `v`=VAD toggle `,`=Vol- `.`=Vol+
-- PROC: `n`=Gate `f`=HPF `g`=AGC `w`=Wiener `e`=Echo
+- PROC: `n`=Gate `f`=HPF `g`=AGC `y`=Spectral `w`=Wiener `e`=Echo
 - SDR: `d`=SDR1 Duck toggle `b`=SDR Rebroadcast toggle
 - PTT: `p`=Manual PTT toggle
 - PLAY: `1-9`=Announcements `0`=StationID `-`=Stop
+- NET: `k`=Reset remote audio TCP connection
 - RELAY: `j`=Radio power button (momentary pulse)
 - TRACE: `i`=Start/stop audio trace `u`=Start/stop watchdog trace
 - NOTE: AGC moved from 'a' to 'g'; proc flag changed from A to G
@@ -176,6 +177,7 @@ All three pure-Python per-sample loops replaced with numpy/scipy:
 - Mumble HTML in TTS: text messages arrive as HTML, gTTS read tags/entities aloud. Fixed: strip+unescape
 - SDR Rebroadcast bugs: AIOC TX feedback ducking, PTT release timer, TX bar level, prebuffer gaps (see bugs.md)
 - SV status bar stuck: was using `tx_audio_level` (AIOC input) instead of actual outbound level. Fixed: added `sv_audio_level` updated at all `send_audio()` call sites (commit 68f90de)
+- Remote audio stutter during TTS: PTT path sent both rx_for_mumble AND data to remote client (2 frames/tick = double data rate). Fixed: send only data. Also pre-decode files in queue_file(), non-blocking SV socket. Commit 8b4e0ee.
 
 ## Deployment Notes
 - WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`
@@ -219,16 +221,10 @@ All three pure-Python per-sample loops replaced with numpy/scipy:
 - **gateway_config.txt is NOT committed** — repo is PUBLIC; config is in .gitignore (contains secrets)
 - Fixed-width status bar is important
 
-## Machine Setup — Pi / Debian (original)
+## Machine Setup (new machine — 2026-03-03)
+- Cloned to `/home/user/Downloads/mumble-radio-gateway` (correct path per CLAUDE.md)
 - Git user: ukbodypilot / robin.pengelly@gmail.com; credential.helper=store
-- pymumble installs as `pymumble_py3` module (gateway handles both names automatically)
-
-## Machine Setup — user-optiplex3020 (Arch Linux, 2026-03-04)
-- Cloned to `/home/user/Downloads/mumble-radio-gateway`
-- Git user: ukbodypilot / robin.pengelly@gmail.com (set via git config --global)
-- Git auth: token in remote URL
-- Arch Linux (EndeavourOS), XFCE4, RDP via xrdp+x11vnc
-- install.sh updated: pacman support, AUR darkice via yay, /etc/modules-load.d/
-- x11vnc override was missing `-repeat` flag (key repeat broken over RDP) — fixed
-- All deps installed OK: pacman packages + pip user installs + darkice from AUR
-- Python 3.14 on this machine
+- Install error: `setuptools` broken on this system — `python3-setuptools` not installed
+  - Fix: `pip3 install --upgrade setuptools --break-system-packages` then `pip3 install pymumble --break-system-packages`
+  - pymumble installs as `pymumble_py3` module (gateway handles both names automatically)
+- All deps verified: pymumble_py3, resampy, hid, pyaudio, soundfile, psutil, gtts, numpy OK

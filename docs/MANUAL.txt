@@ -134,17 +134,47 @@ AUDIO PROCESSING TOGGLES
   g = Toggle AGC (Automatic Gain Control)
       Normalises audio volume automatically.
 
+  y = Toggle Spectral Noise Suppression
+      Frequency-domain noise reduction.
+
   w = Toggle Wiener Noise Suppression
       Advanced background noise removal.
 
   e = Toggle Echo Cancellation
       Experimental echo removal.
 
+SDR REBROADCAST
+---------------
+  b = Toggle SDR Rebroadcast
+      Routes the SDR-only audio mix back to Radio TX via AIOC with auto-PTT.
+      PTT holds for SDR_REBROADCAST_PTT_HOLD seconds after SDR signal stops.
+
 FILE PLAYBACK
 -------------
   0         = Play Station ID (station_id.mp3 / .wav)
   1 - 9     = Play announcement files (mapped alphabetically or by filename prefix)
   -         = Stop playback and clear queue
+
+NETWORK
+-------
+  k = Reset Remote Audio Connection
+      Force-closes the TCP link to the Windows audio client and reconnects.
+      Works in both server and client roles.
+
+RELAY CONTROL
+-------------
+  j = Radio Power Button (momentary pulse)
+      Relay ON for 0.5s then OFF — simulates pressing the radio power button.
+
+DIAGNOSTICS
+-----------
+  i = Start/stop Audio Trace
+      Records per-tick audio state to tools/audio_trace.txt.
+
+  u = Start/stop Watchdog Trace
+      Low-fidelity long-running trace to tools/watchdog_trace.txt.
+      Samples every 5s, flushes every 60s. Tracks thread health, audio levels,
+      queue depths, PTT/VAD state, and memory usage.
 
 STREAM HEALTH
 -------------

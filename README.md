@@ -596,7 +596,8 @@ Press keys during operation to control the gateway:
 - `n` = Toggle Noise Gate
 - `f` = Toggle High-Pass Filter
 - `g` = Toggle AGC
-- `w` = Toggle Wiener Filter (spectral noise suppression)
+- `y` = Toggle Spectral Noise Suppression
+- `w` = Toggle Wiener Noise Suppression
 - `e` = Toggle Echo Cancellation
 
 ### SDR Controls
@@ -611,11 +612,15 @@ Press keys during operation to control the gateway:
 - `0` = Play Station ID
 - `-` = Stop playback
 
+### Network
+- `k` = Reset remote audio TCP connection (force reconnect to Windows client)
+
 ### Relay Control
 - `j` = Radio power button (momentary pulse — relay ON 0.5s then OFF)
 
 ### Diagnostics
 - `i` = Start/stop audio trace recording (writes to `tools/audio_trace.txt`)
+- `u` = Start/stop watchdog trace (writes to `tools/watchdog_trace.txt`)
 
 ## Status Bar
 
