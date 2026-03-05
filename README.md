@@ -626,6 +626,8 @@ Press keys during operation to control the gateway:
 
 ![Status Bar Example](docs/img/status_bar_example.svg)
 
+The status bar stays fixed on the last terminal line. Log messages (connection events, key presses, errors) scroll above it so the bar is always visible.
+
 ### Status Indicators
 
 | Indicator | Meaning |
@@ -874,7 +876,8 @@ The Remote Audio Link connects two gateway instances over TCP so one machine's a
 
   Server dials OUT to client.  Client listens for inbound connection.
   Audio flows one way only: server → client.
-  Server auto-reconnects every REMOTE_AUDIO_RECONNECT_INTERVAL seconds if link drops.
+  Server probes the connection every 0.5s and auto-reconnects if the link drops.
+  Press 'k' to force-reset the connection from either side.
 ```
 
 > **Note:** The naming is from the audio perspective. The "server" is the audio *source* (it initiates the TCP connection and pushes audio). The "client" is the audio *sink* (it accepts the connection and receives audio into its mixer). This is the reverse of a typical client-server model.

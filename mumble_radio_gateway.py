@@ -1890,9 +1890,22 @@ class RemoteAudioServer:
                 self.client_address = f"{self.host}:{self.port}"
                 self.connected = True
                 print(f"\n[RemoteAudio] Connected to client {self.client_address}")
-                # Stay in this loop until send_audio detects a broken pipe
+                # Stay in this loop until disconnect is detected.
+                # Probe the socket every 0.5s with select() — if the remote
+                # end closes, the socket becomes readable (recv returns b'').
+                # This catches disconnects even when send_audio() isn't called
+                # (e.g. VAD gating all audio as silence).
                 while self._running and self.connected:
-                    time.sleep(0.5)
+                    try:
+                        import select as _sel
+                        readable, _, _ = _sel.select([sock], [], [], 0.5)
+                        if readable:
+                            # Socket readable on a send-only link = remote closed
+                            probe = sock.recv(1)
+                            if not probe:
+                                break  # clean close
+                    except Exception:
+                        break  # error = dead
             except Exception:
                 pass
             finally:
@@ -3597,6 +3610,64 @@ class RadioCATClient:
                 self._logmsg(f"  CAT: Right power error: {e}")
 
 
+class StatusBarWriter:
+    """Wraps sys.stdout so that any print() clears the status bar first.
+
+    The status monitor loop calls draw_status() to paint the bar on the
+    last terminal line.  When any other thread calls print() (which goes
+    through write()), this wrapper:
+      1. Clears the current status bar line (\r + spaces + \r)
+      2. Writes the log text (which scrolls the terminal up)
+      3. Lets the next draw_status() tick repaint the bar below
+    """
+
+    def __init__(self, original):
+        self._orig = original
+        self._lock = threading.Lock()
+        self._last_status = ""   # last status bar text (for redraw)
+        self._bar_drawn = False  # True when status bar is on screen
+        # Forward all attributes that print() and other code might check
+        for attr in ('encoding', 'errors', 'mode', 'name', 'newlines',
+                     'fileno', 'isatty', 'readable', 'seekable', 'writable'):
+            if hasattr(original, attr):
+                try:
+                    setattr(self, attr, getattr(original, attr))
+                except (AttributeError, TypeError):
+                    pass
+
+    def write(self, text):
+        with self._lock:
+            if self._bar_drawn and text and text != '\n':
+                # Clear the status bar line before printing log text
+                try:
+                    import shutil as _sh
+                    cols = _sh.get_terminal_size().columns
+                except Exception:
+                    cols = 120
+                self._orig.write(f"\r{' ' * cols}\r")
+                self._bar_drawn = False
+                # Strip leading \n — it was only there to push past the old
+                # status bar; the wrapper now clears the bar instead.
+                if text.startswith('\n'):
+                    text = text[1:]
+            self._orig.write(text)
+        return len(text)
+
+    def draw_status(self, status_line):
+        """Called by the status monitor to paint the bar (no newline)."""
+        with self._lock:
+            self._orig.write(f"\r{status_line}")
+            self._orig.flush()
+            self._last_status = status_line
+            self._bar_drawn = True
+
+    def flush(self):
+        self._orig.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._orig, name)
+
+
 class MumbleRadioGateway:
     def __init__(self, config):
         self.config = config
@@ -3730,6 +3801,9 @@ class MumbleRadioGateway:
         self._tx_thread = None
         self._status_thread = None
         self._keyboard_thread = None
+
+        # Status bar writer — wraps stdout so print() clears the bar first
+        self._status_writer = None
     
     def _charger_should_be_on(self):
         """Check if charger should be on based on current time and schedule.
@@ -6858,7 +6932,8 @@ class MumbleRadioGateway:
                         status_line = ''.join(_out) + RESET
                 except Exception:
                     pass
-                print(f"\r{status_line}", end="", flush=True)
+
+                self._status_writer.draw_status(status_line)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -7019,6 +7094,10 @@ class MumbleRadioGateway:
             print("  R:n      = Stream restart count (only if >0)")
             print()
         
+        # Install stdout wrapper so print() clears the status bar first
+        self._status_writer = StatusBarWriter(sys.stdout)
+        sys.stdout = self._status_writer
+
         # Start audio transmit thread
         self._tx_thread = threading.Thread(target=self.audio_transmit_loop, daemon=True)
         self._tx_thread.start()
@@ -7581,6 +7660,11 @@ class MumbleRadioGateway:
 
     def cleanup(self):
         """Clean up resources"""
+        # Restore original stdout before cleanup prints
+        if self._status_writer:
+            sys.stdout = self._status_writer._orig
+            self._status_writer = None
+
         # Stop watchdog trace and flush remaining samples
         if self._watchdog_active:
             self._watchdog_active = False

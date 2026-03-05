@@ -178,6 +178,8 @@ All three pure-Python per-sample loops replaced with numpy/scipy:
 - SDR Rebroadcast bugs: AIOC TX feedback ducking, PTT release timer, TX bar level, prebuffer gaps (see bugs.md)
 - SV status bar stuck: was using `tx_audio_level` (AIOC input) instead of actual outbound level. Fixed: added `sv_audio_level` updated at all `send_audio()` call sites (commit 68f90de)
 - Remote audio stutter during TTS: PTT path sent both rx_for_mumble AND data to remote client (2 frames/tick = double data rate). Fixed: send only data. Also pre-decode files in queue_file(), non-blocking SV socket. Commit 8b4e0ee.
+- RemoteAudioServer disconnect not detected during silence: `send_audio()` only called when VAD passes audio. During silence, dead connection never discovered. Fixed: `_connect_loop` probes socket with `select()+recv()` every 0.5s.
+- Log messages disrupting status bar: `StatusBarWriter` wraps stdout, clears bar before any print(), redraws on next tick. Logs scroll above bar.
 
 ## Deployment Notes
 - WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`

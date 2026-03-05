@@ -185,6 +185,10 @@ STREAM HEALTH
 STATUS LINE
 ================================================================================
 
+The status bar stays fixed on the last terminal line.  Log messages
+(connection events, key presses, errors) scroll above it so the bar
+is always visible during operation.
+
 Example:
   [92m✓[0m [97mM:[0m[92m✓[0m [97mPTT:[0m  [92mON[0m [97mVAD:[0m[92m🔊[0m [93m -28[0m[97mdB[0m [97mTX:[0m[91m████--[0m [93m 67%[0m [97mRX:[0m[92m███---[0m [93m 50%[0m [97mSP:[0m[96m██----[0m [93m 34%[0m [97mSDR1:[0m[96m██----[0m [93m 34%[0m [97mVol:[0m[93m1.0[0m[97mx[0m [92m1[0m[92m2[0m[97m3[0m[97m4[0m[97m5[0m[97m6[0m[97m7[0m[97m8[0m[97m9[0m[92m0[0m [97m[[0m[93mD[0m[97m][0m
 
@@ -513,7 +517,8 @@ CONNECTION MODEL
   Server connects OUT ─── TCP 9600 ──► Client accepts inbound
 
   Audio flows one way: server → client.
-  Server auto-reconnects if the link drops (REMOTE_AUDIO_RECONNECT_INTERVAL).
+  Server probes the socket every 0.5s and auto-reconnects if the link drops.
+  Press 'k' to force-reset the connection from either side.
   Client firewall must allow inbound TCP on the configured port.
 
 PRIORITY AND DUCKING (client side)
