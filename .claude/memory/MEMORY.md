@@ -4,10 +4,10 @@
 Update MEMORY.md and detail files at the end of every session and whenever a significant bug or pattern is discovered. Keep this file under 200 lines.
 
 ## Project Overview
-Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Optional SDR input via ALSA loopback. Optional Broadcastify streaming via DarkIce. Python 3, runs on Raspberry Pi and Debian amd64.
+Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Optional SDR input via ALSA loopback. Optional Broadcastify streaming via DarkIce. Python 3, runs on Raspberry Pi, Debian amd64, and Arch Linux.
 
 **Main file:** `mumble_radio_gateway.py` (~5000+ lines)
-**Installer:** `scripts/install.sh` (8 steps, targets Debian/Ubuntu/RPi)
+**Installer:** `scripts/install.sh` (10 steps, targets Debian/Ubuntu/RPi/Arch Linux)
 **Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
 **Start script:** `start.sh` (8 steps: kill procs, CPU governor→performance, loopback, AIOC USB reset, pipe, DarkIce, FFmpeg, gateway w/nice -10; `sudo -v` cached at top)
 **Windows client:** `windows_audio_client.py` (server: send audio, client: receive audio, `m` to switch)
@@ -219,10 +219,16 @@ All three pure-Python per-sample loops replaced with numpy/scipy:
 - **gateway_config.txt is NOT committed** — repo is PUBLIC; config is in .gitignore (contains secrets)
 - Fixed-width status bar is important
 
-## Machine Setup (new machine — 2026-03-03)
-- Cloned to `/home/user/Downloads/mumble-radio-gateway` (correct path per CLAUDE.md)
+## Machine Setup — Pi / Debian (original)
 - Git user: ukbodypilot / robin.pengelly@gmail.com; credential.helper=store
-- Install error: `setuptools` broken on this system — `python3-setuptools` not installed
-  - Fix: `pip3 install --upgrade setuptools --break-system-packages` then `pip3 install pymumble --break-system-packages`
-  - pymumble installs as `pymumble_py3` module (gateway handles both names automatically)
-- All deps verified: pymumble_py3, resampy, hid, pyaudio, soundfile, psutil, gtts, numpy OK
+- pymumble installs as `pymumble_py3` module (gateway handles both names automatically)
+
+## Machine Setup — user-optiplex3020 (Arch Linux, 2026-03-04)
+- Cloned to `/home/user/Downloads/mumble-radio-gateway`
+- Git user: ukbodypilot / robin.pengelly@gmail.com (set via git config --global)
+- Git auth: token in remote URL
+- Arch Linux (EndeavourOS), XFCE4, RDP via xrdp+x11vnc
+- install.sh updated: pacman support, AUR darkice via yay, /etc/modules-load.d/
+- x11vnc override was missing `-repeat` flag (key repeat broken over RDP) — fixed
+- All deps installed OK: pacman packages + pip user installs + darkice from AUR
+- Python 3.14 on this machine

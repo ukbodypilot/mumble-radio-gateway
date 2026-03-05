@@ -6599,12 +6599,13 @@ class MumbleRadioGateway:
                 else:
                     status_label = "  "
                     status_symbol = f"{RED}✗{RESET}"
-                    # Attempt recovery
-                    if self.config.VERBOSE_LOGGING:
-                        print(f"\n{WHITE}{status_label}:{RESET} {status_symbol}")
-                        print("  Attempting to restart audio input...")
-                    self.restart_audio_input()
-                    continue
+                    # Attempt recovery only if AIOC is expected
+                    if self.aioc_available:
+                        if self.config.VERBOSE_LOGGING:
+                            print(f"\n{WHITE}{status_label}:{RESET} {status_symbol}")
+                            print("  Attempting to restart audio input...")
+                        self.restart_audio_input()
+                        continue
                 
                 # Print status
                 # Status symbols with colors
@@ -6787,7 +6788,33 @@ class MumbleRadioGateway:
 
                 # Extra padding to clear any orphaned text when line shortens
                 # Order: ...Vol → FileStatus → ProcessingFlags → Diagnostics
-                print(f"\r{status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{annin_bar}{relay_bar}{cat_bar}{vol_info}{file_status_info}{proc_info}{diag}     ", end="", flush=True)
+                status_line = f"{status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{annin_bar}{relay_bar}{cat_bar}{vol_info}{file_status_info}{proc_info}{diag}     "
+                # Truncate to terminal width to prevent line wrapping (which
+                # breaks \r-based single-line updates).  Count only visible
+                # chars (not ANSI escapes) and cut at terminal_width - 1.
+                try:
+                    import shutil as _shutil
+                    _term_cols = _shutil.get_terminal_size().columns
+                    import re as _re
+                    _visible_len = len(_re.sub(r'\033\[[0-9;]*m', '', status_line))
+                    if _visible_len > _term_cols - 1:
+                        _out = []
+                        _vcount = 0
+                        _i = 0
+                        while _i < len(status_line) and _vcount < _term_cols - 1:
+                            if status_line[_i] == '\033':
+                                _j = status_line.find('m', _i)
+                                if _j != -1:
+                                    _out.append(status_line[_i:_j+1])
+                                    _i = _j + 1
+                                    continue
+                            _out.append(status_line[_i])
+                            _vcount += 1
+                            _i += 1
+                        status_line = ''.join(_out) + RESET
+                except Exception:
+                    pass
+                print(f"\r{status_line}", end="", flush=True)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -6828,8 +6855,6 @@ class MumbleRadioGateway:
             time.sleep(0.1)
           except BaseException as _status_err:
             # Log crash so it's visible in the trace, then keep running.
-            # Catch BaseException (not just Exception) so KeyboardInterrupt
-            # and other rare errors don't silently kill this thread.
             try:
                 self._trace_events.append((time.monotonic(), 'STATUS_CRASH', str(_status_err)))
             except Exception:
