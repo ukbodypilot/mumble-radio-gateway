@@ -6649,7 +6649,16 @@ class MumbleRadioGateway:
                         else:
                             if self.config.VERBOSE_LOGGING:
                                 print("\n[Keyboard] File playback not enabled")
-                
+
+                    elif char == 'z':
+                        # Clear console and reprint banner
+                        writer = getattr(sys.stdout, '_orig', sys.stdout)
+                        writer.write("\033[2J\033[H")
+                        writer.flush()
+                        if hasattr(sys.stdout, '_bar_drawn'):
+                            sys.stdout._bar_drawn = False
+                        self._print_banner()
+
                 time.sleep(0.05)
         
         finally:
@@ -6980,30 +6989,9 @@ class MumbleRadioGateway:
                 pass  # trace deque itself failed — don't let that kill us
             time.sleep(1)
 
-    def run(self):
-        """Main application"""
-        print("=" * 60)
-        print("Mumble-to-Radio Gateway via AIOC")
-        print("=" * 60)
-        print()
-        
-        # Initialize AIOC (optional - gateway can work without it)
-        self.aioc_available = self.setup_aioc()
-        if not self.aioc_available:
-            print("⚠ AIOC not found - continuing without radio interface")
-            print("  Gateway will operate in Mumble + SDR mode")
-        
-        # Initialize Audio
-        if not self.setup_audio():
-            self.cleanup()
-            return False
-        
-        # Initialize Mumble
-        mumble_ok = self.setup_mumble()
-        if not mumble_ok:
-            print("\n  ⚠ Mumble connection failed — continuing without Mumble.")
-            print("  Radio audio, SDR, and other features will still work.")
-
+    def _print_banner(self):
+        """Print the Gateway Active banner, status info, and keyboard controls."""
+        mumble_ok = getattr(self, '_mumble_ok', True)
         print()
         print("=" * 60)
         if self.secondary_mode:
@@ -7019,7 +7007,7 @@ class MumbleRadioGateway:
             print("Gateway Active!")
             print("  Mumble → AIOC output → Radio TX (auto PTT)")
             print("  Radio RX → AIOC input → Mumble (VOX)")
-        
+
         # Show audio processing status
         processing_enabled = []
         if self.config.ENABLE_HIGHPASS_FILTER:
@@ -7028,17 +7016,17 @@ class MumbleRadioGateway:
             processing_enabled.append(f"NS({self.config.NOISE_SUPPRESSION_METHOD})")
         if self.config.ENABLE_NOISE_GATE:
             processing_enabled.append(f"Gate@{self.config.NOISE_GATE_THRESHOLD}dB")
-        
+
         if processing_enabled:
             print(f"  Audio Processing: {', '.join(processing_enabled)}")
-        
+
         # Show VAD status
         if self.config.ENABLE_VAD:
             print(f"  Voice Activity Detection: ON (threshold: {self.config.VAD_THRESHOLD}dB)")
             print(f"    → Only sends audio to Mumble when radio signal detected")
         else:
             print(f"  Voice Activity Detection: OFF (continuous transmission)")
-        
+
         # Show stream health management
         if self.config.ENABLE_STREAM_HEALTH and self.config.STREAM_RESTART_INTERVAL > 0:
             print(f"  Stream Health: Auto-restart every {self.config.STREAM_RESTART_INTERVAL}s (when idle {self.config.STREAM_RESTART_IDLE_TIME}s+)")
@@ -7062,7 +7050,7 @@ class MumbleRadioGateway:
             print()  # Blank line
             self.playback_source.print_file_mapping()
             print()  # Blank line before keyboard controls
-        
+
         print("Press Ctrl+C to exit")
         print("Keyboard Controls:")
         print("  Mute:  't'=TX  'r'=RX  'm'=Global  's'=SDR1  'x'=SDR2  'c'=Remote  'a'=Announce  'o'=Speaker")
@@ -7074,9 +7062,10 @@ class MumbleRadioGateway:
         print("  Net:   'k'=Reset remote audio connection")
         print("  Relay: 'j'=Radio power button")
         print("  Trace: 'i'=Start/stop audio trace  'u'=Start/stop watchdog trace")
+        print("  Misc:  'z'=Clear and reprint console")
         print("=" * 60)
         print()
-        
+
         # Print status line legend (only in verbose mode)
         if self.config.VERBOSE_LOGGING:
             print("Status Line Legend:")
@@ -7093,6 +7082,33 @@ class MumbleRadioGateway:
             print("  [N,F,G,W,E,D] = Processing: N=NoiseGate F=HPF G=AGC W=Wiener E=Echo D=SDR1Duck")
             print("  R:n      = Stream restart count (only if >0)")
             print()
+
+    def run(self):
+        """Main application"""
+        print("=" * 60)
+        print("Mumble-to-Radio Gateway via AIOC")
+        print("=" * 60)
+        print()
+        
+        # Initialize AIOC (optional - gateway can work without it)
+        self.aioc_available = self.setup_aioc()
+        if not self.aioc_available:
+            print("⚠ AIOC not found - continuing without radio interface")
+            print("  Gateway will operate in Mumble + SDR mode")
+        
+        # Initialize Audio
+        if not self.setup_audio():
+            self.cleanup()
+            return False
+        
+        # Initialize Mumble
+        self._mumble_ok = self.setup_mumble()
+        mumble_ok = self._mumble_ok
+        if not mumble_ok:
+            print("\n  ⚠ Mumble connection failed — continuing without Mumble.")
+            print("  Radio audio, SDR, and other features will still work.")
+
+        self._print_banner()
         
         # Install stdout wrapper so print() clears the status bar first
         self._status_writer = StatusBarWriter(sys.stdout)
