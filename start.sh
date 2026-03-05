@@ -121,13 +121,11 @@ fi
 echo "[4/11] Checking Claude Code..."
 GATEWAY_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 CLAUDE_RUNNING=false
-for pid in $(pgrep -f "claude" 2>/dev/null); do
-    if [ -d "/proc/$pid" ] && [ "$(readlink -f /proc/$pid/cwd 2>/dev/null)" = "$GATEWAY_DIR" ]; then
-        CLAUDE_RUNNING=true
-        echo "  ✓ Claude Code already running in gateway folder (PID: $pid)"
-        break
-    fi
-done
+CLAUDE_PID="$(pgrep -x claude 2>/dev/null | head -1)"
+if [ -n "$CLAUDE_PID" ]; then
+    CLAUDE_RUNNING=true
+    echo "  ✓ Claude Code already running (PID: $CLAUDE_PID)"
+fi
 if [ "$CLAUDE_RUNNING" = false ]; then
     CLAUDE_BIN="$(command -v claude 2>/dev/null)"
     if [ -n "$CLAUDE_BIN" ]; then
