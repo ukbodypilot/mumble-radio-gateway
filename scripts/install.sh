@@ -365,10 +365,10 @@ echo
 echo "[ 8/11 ] Installing Mumble server (optional — for local server instances)..."
 set +e
 if [ "$DISTRO" = "arch" ]; then
-    if sudo pacman -S --noconfirm --needed murmur 2>/dev/null; then
-        echo "  ✓ murmur (mumble-server) installed"
+    if sudo pacman -S --noconfirm --needed mumble-server 2>/dev/null; then
+        echo "  ✓ mumble-server installed"
     else
-        echo "  ⚠ Could not install murmur — install manually if needed"
+        echo "  ⚠ Could not install mumble-server — install manually if needed"
         echo "    This is optional: only needed if ENABLE_MUMBLE_SERVER_1/2 = true"
     fi
 else
