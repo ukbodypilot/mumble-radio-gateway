@@ -78,19 +78,42 @@ if pgrep -f "TH9800_CAT.py" > /dev/null 2>&1; then
     TH9800_PID=$(pgrep -f TH9800_CAT.py | head -1)
     echo "  ✓ TH-9800 CAT already running (PID: $TH9800_PID)"
 else
-    TH9800_SCRIPT="$HOME/Downloads/th9800/TH9800_CAT.py"
-    if [ -f "$TH9800_SCRIPT" ]; then
-        python3 "$TH9800_SCRIPT" &
-        TH9800_PID=$!
-        sleep 2
-        if ps -p $TH9800_PID > /dev/null 2>&1; then
-            echo "  ✓ TH-9800 CAT started (PID: $TH9800_PID)"
+    # Search for any folder with "th9800" in its name (case-insensitive)
+    TH9800_DIR=""
+    for d in "$HOME/Downloads"/*/; do
+        base="$(basename "$d")"
+        if echo "$base" | grep -qi "th9800"; then
+            TH9800_DIR="$d"
+            break
+        fi
+    done
+
+    if [ -n "$TH9800_DIR" ]; then
+        # Prefer run.sh (uses venv), fall back to running TH9800_CAT.py directly
+        if [ -f "$TH9800_DIR/run.sh" ]; then
+            TH9800_CMD="$TH9800_DIR/run.sh"
+        elif [ -f "$TH9800_DIR/TH9800_CAT.py" ]; then
+            TH9800_CMD="python3 $TH9800_DIR/TH9800_CAT.py"
         else
-            echo "  ⚠ TH-9800 CAT failed to start (continuing anyway)"
-            TH9800_PID=""
+            TH9800_CMD=""
+        fi
+
+        if [ -n "$TH9800_CMD" ]; then
+            echo "  Found TH-9800 at: $TH9800_DIR"
+            $TH9800_CMD &
+            TH9800_PID=$!
+            sleep 2
+            if ps -p $TH9800_PID > /dev/null 2>&1; then
+                echo "  ✓ TH-9800 CAT started (PID: $TH9800_PID)"
+            else
+                echo "  ⚠ TH-9800 CAT failed to start (continuing anyway)"
+                TH9800_PID=""
+            fi
+        else
+            echo "  ⚠ TH-9800 folder found ($TH9800_DIR) but no run.sh or TH9800_CAT.py inside"
         fi
     else
-        echo "  ⚠ TH-9800 CAT script not found at $TH9800_SCRIPT (skipping)"
+        echo "  ⚠ No TH-9800 folder found in ~/Downloads (skipping)"
     fi
 fi
 
