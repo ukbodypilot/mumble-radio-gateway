@@ -24,6 +24,17 @@
 
 
 # ============================================================================
+# STARTUP SCRIPT OPTIONS (used by start.sh, not the gateway itself)
+# ============================================================================
+
+# Launch TH-9800 CAT control GUI on startup
+START_TH9800_CAT = false
+
+# Open Claude Code in a new terminal on startup
+START_CLAUDE_CODE = false
+
+
+# ============================================================================
 # MUMBLE SERVER
 # ============================================================================
 

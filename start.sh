@@ -1,12 +1,26 @@
 #!/bin/bash
-# Start Broadcastify streaming - ROBUST VERSION
+# Mumble Radio Gateway — startup script
 
 # Resolve script directory immediately (handles symlinks and relative invocation)
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
+# Read a value from gateway_config.txt (strips comments, whitespace, quotes)
+read_config() {
+    local key="$1" default="$2"
+    local val
+    val="$(grep -m1 "^[[:space:]]*${key}[[:space:]]*=" "$SCRIPT_DIR/gateway_config.txt" 2>/dev/null \
+         | sed 's/^[^=]*=[[:space:]]*//' | sed 's/[[:space:]]*#.*//' | sed 's/^"//;s/"$//' | tr -d "'")"
+    if [ -z "$val" ]; then echo "$default"; else echo "$val"; fi
+}
+
+# Read startup options from config
+ENABLE_STREAM_OUTPUT="$(read_config ENABLE_STREAM_OUTPUT false)"
+START_TH9800_CAT="$(read_config START_TH9800_CAT false)"
+START_CLAUDE_CODE="$(read_config START_CLAUDE_CODE false)"
+
 echo "=========================================="
-echo "Starting Broadcastify Stream"
+echo "Starting Mumble Radio Gateway"
 echo "=========================================="
 echo ""
 
@@ -82,7 +96,9 @@ fi
 
 # 3. Start TH-9800 CAT control if not already running
 echo "[3/11] Checking TH-9800 CAT control..."
-if pgrep -f "TH9800_CAT.py" > /dev/null 2>&1; then
+if [ "$START_TH9800_CAT" != "true" ]; then
+    echo "  ⚠ Disabled in config (START_TH9800_CAT = false)"
+elif pgrep -f "TH9800_CAT.py" > /dev/null 2>&1; then
     TH9800_PID=$(pgrep -f TH9800_CAT.py | head -1)
     echo "  ✓ TH-9800 CAT already running (PID: $TH9800_PID)"
 else
@@ -129,8 +145,12 @@ fi
 echo "[4/11] Checking Claude Code..."
 GATEWAY_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 CLAUDE_RUNNING=false
+if [ "$START_CLAUDE_CODE" != "true" ]; then
+    echo "  ⚠ Disabled in config (START_CLAUDE_CODE = false)"
+    CLAUDE_RUNNING=true
+fi
 CLAUDE_PID="$(pgrep -x claude 2>/dev/null | head -1)"
-if [ -n "$CLAUDE_PID" ]; then
+if [ -n "$CLAUDE_PID" ] && [ "$CLAUDE_RUNNING" = false ]; then
     CLAUDE_RUNNING=true
     echo "  ✓ Claude Code already running (PID: $CLAUDE_PID)"
 fi
@@ -212,77 +232,76 @@ else
     echo "  ⚠ AIOC USB device not found (skipping reset)"
 fi
 
-# 8. Create named pipe
-echo "[8/11] Creating named pipe..."
-# Force remove old pipe (even if busy)
-rm -f /tmp/darkice_audio 2>/dev/null
-# Kill any processes using it
-fuser -k /tmp/darkice_audio 2>/dev/null
-sleep 1
-# Create fresh pipe
-mkfifo /tmp/darkice_audio
-chmod 666 /tmp/darkice_audio
-echo "  ✓ Pipe created: /tmp/darkice_audio"
+# 8-10. Streaming pipeline (pipe + DarkIce + FFmpeg) — only if ENABLE_STREAM_OUTPUT = true
+if [ "$ENABLE_STREAM_OUTPUT" = "true" ]; then
+    # 8. Create named pipe
+    echo "[8/11] Creating named pipe..."
+    rm -f /tmp/darkice_audio 2>/dev/null
+    fuser -k /tmp/darkice_audio 2>/dev/null
+    sleep 1
+    mkfifo /tmp/darkice_audio
+    chmod 666 /tmp/darkice_audio
+    echo "  ✓ Pipe created: /tmp/darkice_audio"
 
-# 9. Start Darkice with visible output
-echo "[9/11] Starting Darkice..."
-echo "  (Darkice output will be shown below)"
-echo "  ----------------------------------------"
-
-# Start Darkice in background but capture output
-darkice -c /etc/darkice.cfg > /tmp/darkice.log 2>&1 &
-DARKICE_PID=$!
-
-# Wait and check if it started successfully
-sleep 4
-
-if ! ps -p $DARKICE_PID > /dev/null 2>&1; then
+    # 9. Start Darkice with visible output
+    echo "[9/11] Starting Darkice..."
+    echo "  (Darkice output will be shown below)"
     echo "  ----------------------------------------"
-    if grep -qi "forbidden\|mountpoint occupied\|maximum sources" /tmp/darkice.log 2>/dev/null; then
-        echo "  ⚠ Darkice: feed already live on another server — continuing without streaming"
-        echo "  (Broadcastify mountpoint is occupied; local audio bridge will still run)"
-        DARKICE_PID=""
-        export GATEWAY_FEED_OCCUPIED=1
+
+    darkice -c /etc/darkice.cfg > /tmp/darkice.log 2>&1 &
+    DARKICE_PID=$!
+
+    sleep 4
+
+    if ! ps -p $DARKICE_PID > /dev/null 2>&1; then
+        echo "  ----------------------------------------"
+        if grep -qi "forbidden\|mountpoint occupied\|maximum sources" /tmp/darkice.log 2>/dev/null; then
+            echo "  ⚠ Darkice: feed already live on another server — continuing without streaming"
+            echo "  (Broadcastify mountpoint is occupied; local audio bridge will still run)"
+            DARKICE_PID=""
+            export GATEWAY_FEED_OCCUPIED=1
+        else
+            echo "  ✗ Darkice FAILED to start — continuing without streaming"
+            echo ""
+            echo "Error output:"
+            cat /tmp/darkice.log
+            echo ""
+            echo "Common fixes:"
+            echo "  1. Check /etc/darkice.cfg has: device = hw:Loopback,1,0"
+            echo "  2. Check bitrate matches Broadcastify (usually 16)"
+            echo "  3. Check Broadcastify password is correct"
+            echo "  4. Run: sudo modprobe -r snd-aloop && sudo modprobe snd-aloop"
+            DARKICE_PID=""
+        fi
     else
-        echo "  ✗ Darkice FAILED to start — continuing without streaming"
-        echo ""
-        echo "Error output:"
-        cat /tmp/darkice.log
-        echo ""
-        echo "Common fixes:"
-        echo "  1. Check /etc/darkice.cfg has: device = hw:Loopback,1,0"
-        echo "  2. Check bitrate matches Broadcastify (usually 16)"
-        echo "  3. Check Broadcastify password is correct"
-        echo "  4. Run: sudo modprobe -r snd-aloop && sudo modprobe snd-aloop"
-        DARKICE_PID=""
+        head -n 10 /tmp/darkice.log
+        echo "  ----------------------------------------"
+        echo "  ✓ Darkice running (PID: $DARKICE_PID)"
+        echo "  Full log: /tmp/darkice.log"
     fi
+
+    # 10. Start FFmpeg bridge with auto-restart
+    echo "[10/11] Starting FFmpeg bridge..."
+    (
+        while true; do
+            ffmpeg -loglevel error -f s16le -ar 48000 -ac 1 -i /tmp/darkice_audio \
+                   -f alsa hw:Loopback,0,0 2>&1
+            sleep 1
+        done
+    ) > /tmp/ffmpeg.log 2>&1 &
+    FFMPEG_PID=$!
+    sleep 2
+
+    if ! ps -p $FFMPEG_PID > /dev/null; then
+        echo "  ✗ FFmpeg failed to start!"
+        cat /tmp/ffmpeg.log
+        cleanup
+    fi
+
+    echo "  ✓ FFmpeg bridge running (PID: $FFMPEG_PID)"
 else
-    # Show first few lines of Darkice output
-    head -n 10 /tmp/darkice.log
-    echo "  ----------------------------------------"
-    echo "  ✓ Darkice running (PID: $DARKICE_PID)"
-    echo "  Full log: /tmp/darkice.log"
+    echo "[8-10/11] Streaming disabled (ENABLE_STREAM_OUTPUT = false) — skipping DarkIce/FFmpeg"
 fi
-
-# 10. Start FFmpeg bridge with auto-restart
-echo "[10/11] Starting FFmpeg bridge..."
-(
-    while true; do
-        ffmpeg -loglevel error -f s16le -ar 48000 -ac 1 -i /tmp/darkice_audio \
-               -f alsa hw:Loopback,0,0 2>&1
-        sleep 1
-    done
-) > /tmp/ffmpeg.log 2>&1 &
-FFMPEG_PID=$!
-sleep 2
-
-if ! ps -p $FFMPEG_PID > /dev/null; then
-    echo "  ✗ FFmpeg failed to start!"
-    cat /tmp/ffmpeg.log
-    cleanup
-fi
-
-echo "  ✓ FFmpeg bridge running (PID: $FFMPEG_PID)"
 
 # 11. Start Gateway
 echo "[11/11] Starting gateway..."
@@ -304,8 +323,12 @@ echo ""
 echo "=========================================="
 echo "All components started successfully!"
 echo "=========================================="
-echo "  Darkice:  ${DARKICE_PID:+"PID $DARKICE_PID (log: /tmp/darkice.log)"}${DARKICE_PID:-"disabled (see error above)"}"
-echo "  FFmpeg:   PID $FFMPEG_PID (log: /tmp/ffmpeg.log)"
+if [ "$ENABLE_STREAM_OUTPUT" = "true" ]; then
+    echo "  Darkice:  ${DARKICE_PID:+"PID $DARKICE_PID (log: /tmp/darkice.log)"}${DARKICE_PID:-"disabled (see error above)"}"
+    echo "  FFmpeg:   PID $FFMPEG_PID (log: /tmp/ffmpeg.log)"
+else
+    echo "  Streaming: disabled"
+fi
 echo "  Gateway:  Starting now (nice -n -10)..."
 echo ""
 echo "Press Ctrl+C to stop everything"
