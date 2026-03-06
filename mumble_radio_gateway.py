@@ -5,6 +5,8 @@ Reads configuration from gateway_config.txt
 Optimized for low latency and high quality audio
 """
 
+__version__ = "1.0.0"
+
 import sys
 import os
 import time
@@ -7823,6 +7825,16 @@ class MumbleRadioGateway:
         """Main application"""
         print("=" * 60)
         print("Mumble-to-Radio Gateway via AIOC")
+        import subprocess as _sp
+        _git_hash = ""
+        try:
+            _git_hash = _sp.check_output(
+                ['git', 'rev-parse', '--short', 'HEAD'],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                stderr=_sp.DEVNULL, text=True).strip()
+        except Exception:
+            pass
+        print(f"Version {__version__}" + (f" ({_git_hash})" if _git_hash else ""))
         print("=" * 60)
         print()
         
@@ -7924,9 +7936,21 @@ class MumbleRadioGateway:
                "\tlvl_tx\tlvl_rx\tlvl_sdr1\tlvl_sdr2\tlvl_sv"
                "\tq_aioc\tq_sdr1\tq_sdr2"
                "\tptt\tvad\trebro_ptt\trss_mb\n")
+        import platform, subprocess as _sp
+        _git_hash = "unknown"
+        try:
+            _git_hash = _sp.check_output(
+                ['git', 'rev-parse', '--short', 'HEAD'],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                stderr=_sp.DEVNULL, text=True).strip()
+        except Exception:
+            pass
         try:
             with open(out_path, 'a') as f:
-                f.write(f"\n# Watchdog started {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"\n# Watchdog started {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        f"  v{__version__} ({_git_hash})"
+                        f"  {platform.node()} {platform.system()} {platform.release()} {platform.machine()}"
+                        f"  py{platform.python_version()}\n")
                 f.write(hdr)
         except Exception:
             pass
@@ -8066,6 +8090,25 @@ class MumbleRadioGateway:
             dur = trace[-1][T] - trace[0][T] if len(trace) > 1 else 0
             f.write(f"Audio Trace: {len(trace)} ticks, {dur:.1f}s\n")
             f.write(f"{'='*90}\n\n")
+
+            # ── System info ──
+            import platform, subprocess as _sp
+            git_hash = "unknown"
+            try:
+                git_hash = _sp.check_output(
+                    ['git', 'rev-parse', '--short', 'HEAD'],
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                    stderr=_sp.DEVNULL, text=True).strip()
+            except Exception:
+                pass
+            sdr_mode = "PipeWire" if any(
+                isinstance(s, PipeWireSDRSource)
+                for s in [self.sdr_source, self.sdr2_source] if s) else "ALSA"
+            f.write("SYSTEM\n")
+            f.write(f"  version={__version__} commit={git_hash}\n")
+            f.write(f"  os={platform.system()} {platform.release()} arch={platform.machine()}\n")
+            f.write(f"  python={platform.python_version()} sdr_mode={sdr_mode}\n")
+            f.write(f"  host={platform.node()}\n\n")
 
             # ── Summary statistics ──
             dts = [r[DT] for r in trace]
