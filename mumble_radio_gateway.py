@@ -2979,11 +2979,10 @@ class AudioMixer:
                 if include_sdr:
                     audio_to_include = sdr_audio
                     if not prev_included:
-                        # Onset: fade-in from 0→1 over first 20ms (960 samples)
+                        # Onset: fade-in from 0→1 over first 10ms (480 samples)
                         arr = np.frombuffer(sdr_audio, dtype=np.int16).astype(np.float32)
-                        fade_len = min(960, len(arr))
-                        ramp = np.linspace(0.0, 1.0, fade_len)
-                        arr[:fade_len] *= ramp * ramp  # quadratic for smoother onset
+                        fade_len = min(480, len(arr))
+                        arr[:fade_len] *= np.linspace(0.0, 1.0, fade_len)
                         audio_to_include = arr.astype(np.int16).tobytes()
                     self.sdr_prev_included[sdr_name] = True
                     sdrs_to_include[sdr_name] = (audio_to_include, sdr_source)
@@ -2995,8 +2994,7 @@ class AudioMixer:
                     # how much time elapsed since the last iteration (avoids the
                     # timing-window bug where a slow AIOC read skips the fade).
                     arr = np.frombuffer(sdr_audio, dtype=np.int16).astype(np.float32)
-                    ramp = np.linspace(1.0, 0.0, len(arr))
-                    arr *= ramp * ramp  # quadratic for smoother tail
+                    arr *= np.linspace(1.0, 0.0, len(arr))
                     audio_to_include = arr.astype(np.int16).tobytes()
                     self.sdr_prev_included[sdr_name] = False
                     sdrs_to_include[sdr_name] = (audio_to_include, sdr_source)
