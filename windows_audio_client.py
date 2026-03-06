@@ -590,6 +590,8 @@ def run_client(cfg, state):
                 dtype="int16",
             )
             out_stream.start()
+            prev_tail = None  # last XFADE_LEN samples of previous chunk
+            XFADE_LEN = 48    # 1ms crossfade at 48kHz
 
             try:
                 while not state["switch_role"]:
@@ -623,6 +625,19 @@ def run_client(cfg, state):
 
                     # Play or discard
                     if is_live:
+                        # Crossfade chunk boundary to eliminate clicks
+                        if prev_tail is not None and len(pcm) >= XFADE_LEN * 2:
+                            arr = np.frombuffer(pcm, dtype=np.int16).copy()
+                            ramp = np.linspace(0.0, 1.0, XFADE_LEN).astype(np.float32)
+                            arr[:XFADE_LEN] = np.clip(
+                                arr[:XFADE_LEN].astype(np.float32) * ramp
+                                + prev_tail * (1.0 - ramp),
+                                -32768, 32767,
+                            ).astype(np.int16)
+                            pcm = arr.tobytes()
+                        # Save tail for next crossfade
+                        if len(pcm) >= XFADE_LEN * 2:
+                            prev_tail = np.frombuffer(pcm, dtype=np.int16)[-XFADE_LEN:].astype(np.float32)
                         out_stream.write(pcm)
 
                     # Status line
