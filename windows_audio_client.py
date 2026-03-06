@@ -551,8 +551,18 @@ def run_client(cfg, state):
 
     # --- Listen socket ------------------------------------------------------
     listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listen_sock.bind(("0.0.0.0", port))
+    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+        # Windows: prevent a second instance from binding to the same port
+        listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        listen_sock.bind(("0.0.0.0", port))
+    except OSError as e:
+        print(f"\n  ✗ Port {port} is already in use — is another instance running?")
+        print(f"    ({e})")
+        listen_sock.close()
+        return
     listen_sock.listen(1)
     listen_sock.settimeout(1.0)
 

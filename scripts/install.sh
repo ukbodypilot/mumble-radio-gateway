@@ -188,7 +188,8 @@ echo
 # ── 4. UDEV rules for AIOC ──────────────────────────────────
 echo "[ 4/11 ] Setting up UDEV rules for AIOC USB device..."
 UDEV_RULE='SUBSYSTEM=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="audio"
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="plugdev"'
+SUBSYSTEM=="hidraw", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="audio"
+SUBSYSTEM=="tty", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="uucp"'
 
 if [ ! -f /etc/udev/rules.d/99-aioc.rules ]; then
     echo "$UDEV_RULE" | sudo tee /etc/udev/rules.d/99-aioc.rules > /dev/null
@@ -215,6 +216,25 @@ else
         echo "  ✓ Added $ACTUAL_USER to audio group (takes effect on next login)"
     else
         echo "  ⚠ Could not add $ACTUAL_USER to audio group — run manually: sudo usermod -aG audio $ACTUAL_USER"
+    fi
+fi
+
+# Add user to serial group (uucp on Arch, dialout on Debian — for AIOC ttyACM access)
+SERIAL_GROUP=""
+if getent group uucp > /dev/null 2>&1; then
+    SERIAL_GROUP="uucp"
+elif getent group dialout > /dev/null 2>&1; then
+    SERIAL_GROUP="dialout"
+fi
+if [ -n "$SERIAL_GROUP" ]; then
+    if id -nG "$ACTUAL_USER" 2>/dev/null | grep -qw "$SERIAL_GROUP"; then
+        echo "  ✓ $ACTUAL_USER already in $SERIAL_GROUP group"
+    else
+        if sudo usermod -aG "$SERIAL_GROUP" "$ACTUAL_USER" 2>/dev/null; then
+            echo "  ✓ Added $ACTUAL_USER to $SERIAL_GROUP group (takes effect on next login)"
+        else
+            echo "  ⚠ Could not add $ACTUAL_USER to $SERIAL_GROUP group — run manually: sudo usermod -aG $SERIAL_GROUP $ACTUAL_USER"
+        fi
     fi
 fi
 
