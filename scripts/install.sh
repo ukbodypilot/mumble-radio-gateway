@@ -201,6 +201,68 @@ else
 fi
 echo
 
+# ── 4b. UDEV rules for CH340 USB relay ───────────────────────
+echo "       Setting up UDEV rules for USB relay (optional)..."
+if [ -f /etc/udev/rules.d/99-relay-udev.rules ]; then
+    echo "  ✓ Relay UDEV rules already exist"
+else
+    # Find CH340-style USB serial devices (product="USB Serial", no manufacturer)
+    RELAY_PORTS=()
+    RELAY_DEVS=()
+    for tty in /dev/ttyUSB*; do
+        [ -e "$tty" ] || continue
+        prod="$(udevadm info -a -n "$tty" 2>/dev/null | grep -m1 'ATTRS{product}==' | sed 's/.*"\(.*\)"/\1/')"
+        mfr="$(udevadm info -a -n "$tty" 2>/dev/null | grep -m1 'ATTRS{manufacturer}==' | sed 's/.*"\(.*\)"/\1/')"
+        # CH340 typically shows product="USB Serial" with no manufacturer (or "1a86")
+        if [ "$prod" = "USB Serial" ] || echo "$mfr" | grep -qi "1a86"; then
+            kpath="$(udevadm info -a -n "$tty" 2>/dev/null | grep 'KERNELS==' | sed -n '2p' | sed 's/.*"\(.*\)"/\1/')"
+            if [ -n "$kpath" ]; then
+                RELAY_PORTS+=("$kpath")
+                RELAY_DEVS+=("$tty")
+            fi
+        fi
+    done
+
+    if [ ${#RELAY_PORTS[@]} -eq 0 ]; then
+        echo "  ⚠ No CH340 USB relay detected (skipping — plug in relay and re-run installer)"
+    elif [ ${#RELAY_PORTS[@]} -eq 1 ]; then
+        echo "SUBSYSTEM==\"tty\", KERNELS==\"${RELAY_PORTS[0]}\", SYMLINK+=\"relay_radio\"" | sudo tee /etc/udev/rules.d/99-relay-udev.rules > /dev/null
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger
+        echo "  ✓ Relay UDEV rule installed: ${RELAY_DEVS[0]} (port ${RELAY_PORTS[0]}) → /dev/relay_radio"
+    else
+        echo "  Found multiple CH340 USB serial devices:"
+        for i in "${!RELAY_PORTS[@]}"; do
+            echo "    $((i+1)). ${RELAY_DEVS[$i]} (port ${RELAY_PORTS[$i]})"
+        done
+        echo -n "  Which is the radio power relay? [1-${#RELAY_PORTS[@]}, or s to skip]: "
+        read -r choice
+        if [ "$choice" = "s" ] || [ -z "$choice" ]; then
+            echo "  ⚠ Skipped relay setup"
+        elif [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le ${#RELAY_PORTS[@]} ]; then
+            idx=$((choice - 1))
+            RULES="SUBSYSTEM==\"tty\", KERNELS==\"${RELAY_PORTS[$idx]}\", SYMLINK+=\"relay_radio\""
+            # If there's a second device, offer it as charger relay
+            if [ ${#RELAY_PORTS[@]} -eq 2 ]; then
+                other_idx=$(( 1 - idx ))
+                echo -n "  Use ${RELAY_DEVS[$other_idx]} (port ${RELAY_PORTS[$other_idx]}) as charger relay? [y/N]: "
+                read -r charger_choice
+                if [ "$charger_choice" = "y" ] || [ "$charger_choice" = "Y" ]; then
+                    RULES="$RULES
+SUBSYSTEM==\"tty\", KERNELS==\"${RELAY_PORTS[$other_idx]}\", SYMLINK+=\"relay_charger\""
+                fi
+            fi
+            echo "$RULES" | sudo tee /etc/udev/rules.d/99-relay-udev.rules > /dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger
+            echo "  ✓ Relay UDEV rules installed"
+        else
+            echo "  ⚠ Invalid choice — skipped relay setup"
+        fi
+    fi
+fi
+echo
+
 # ── 5. Audio group, realtime limits, and sudoers ─────────────────
 echo "[ 5/12 ] Setting up audio permissions..."
 set +e   # None of this should abort the install
