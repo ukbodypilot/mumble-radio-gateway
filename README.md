@@ -475,12 +475,13 @@ bash scripts/install.sh
 The installer handles:
 - System packages (Python, PortAudio, FFmpeg, HIDAPI, etc.)
 - ALSA loopback module (`snd-aloop`) pinned to `hw:4`, `hw:5`, `hw:6`
-- Python packages (`hid`, `numpy`, `pyaudio`, `soundfile`, `resampy`, `psutil`, `gtts`, `pymumble-py3`)
+- Python packages (`hid`, `numpy`, `pyaudio`, `soundfile`, `resampy`, `psutil`, `gtts`, `pyserial`, `pymumble-py3`)
 - UDEV rules for AIOC USB audio + HID (PTT control)
 - Audio group membership and realtime scheduling limits
 - Darkice + WirePlumber configuration (if applicable)
 - Mumble server (`mumble-server` / `murmur`) for local server instances
 - Example `gateway_config.txt`
+- Desktop shortcut (auto-detects terminal emulator)
 
 > **Supported platforms:** Raspberry Pi (any model), Debian 12, Ubuntu 22.04+, any Debian-based Linux, Arch Linux.
 
@@ -532,7 +533,63 @@ SPEAKER_VOLUME = 1.0
 
 ### Setup ALSA Loopback
 
-SDR audio uses ALSA loopback devices for piping audio from SDR software (like SDRconnect) into the gateway.
+The gateway supports two SDR audio input methods:
+
+| Method | Config prefix | Latency | Notes |
+|--------|--------------|---------|-------|
+| **PipeWire virtual sink** | `pw:sink_name` | Low, continuous | Recommended on desktops with PipeWire |
+| **ALSA loopback** | `hw:N,1` | 200ms blobs | Works everywhere, no PipeWire needed |
+
+### PipeWire Virtual Sink (recommended)
+
+On PipeWire systems, SDR audio is routed through a virtual null sink. The gateway reads from the sink's monitor via FFmpeg, giving a continuous low-jitter stream with no blob boundaries.
+
+```ini
+SDR_DEVICE_NAME = pw:sdr_capture       # PipeWire sink for SDR1
+SDR2_DEVICE_NAME = pw:sdr_capture2     # PipeWire sink for SDR2
+```
+
+**Auto-creation:** The gateway automatically creates the PipeWire sink if it doesn't exist at startup. For persistence across reboots, install a WirePlumber config:
+
+```bash
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d
+cat > ~/.config/wireplumber/wireplumber.conf.d/90-sdr-capture-sink.conf << 'EOF'
+monitor.alsa.rules = []
+context.objects = [
+  {
+    factory = adapter
+    args = {
+      factory.name = support.null-audio-sink
+      node.name = sdr_capture
+      node.description = "SDR Capture Sink"
+      media.class = Audio/Sink
+      object.linger = true
+      audio.position = [ FL FR ]
+    }
+  }
+  {
+    factory = adapter
+    args = {
+      factory.name = support.null-audio-sink
+      node.name = sdr_capture2
+      node.description = "SDR2 Capture Sink"
+      media.class = Audio/Sink
+      object.linger = true
+      audio.position = [ FL FR ]
+    }
+  }
+]
+EOF
+systemctl --user restart wireplumber
+```
+
+> The installer creates this config automatically.
+
+Then route your SDR app's audio output to "SDR Capture Sink" (or "SDR2 Capture Sink") in pavucontrol or your SDR app's audio settings.
+
+### ALSA Loopback (alternative)
+
+ALSA loopback devices pipe audio from SDR software into the gateway without PipeWire.
 
 ```bash
 # Load loopback module (pinned to hw:4, hw:5, hw:6)
@@ -588,7 +645,7 @@ sudo modprobe -r snd-aloop 2>/dev/null; sudo modprobe snd-aloop enable=1,1,1 ind
 ```ini
 # SDR1 (cyan bar)
 ENABLE_SDR = true
-SDR_DEVICE_NAME = hw:4,1   # Loopback capture side (installer pins card 1 to hw:4)
+SDR_DEVICE_NAME = pw:sdr_capture  # PipeWire: pw:<sink_name>  |  ALSA: hw:4,1
 SDR_PRIORITY = 1           # Higher priority (ducks SDR2)
 SDR_DUCK = true            # Ducked by radio RX
 SDR_MIX_RATIO = 1.0
@@ -598,7 +655,7 @@ SDR_BUFFER_MULTIPLIER = 8
 
 # SDR2 (magenta bar) — disabled by default
 ENABLE_SDR2 = false
-SDR2_DEVICE_NAME = hw:5,1  # Loopback capture side (installer pins card 2 to hw:5)
+SDR2_DEVICE_NAME = pw:sdr_capture2  # PipeWire: pw:<sink_name>  |  ALSA: hw:5,1
 SDR2_PRIORITY = 2          # Lower priority (ducked by SDR1)
 SDR2_DUCK = true           # Ducked by radio RX and SDR1
 SDR2_MIX_RATIO = 1.0
@@ -667,6 +724,7 @@ Press keys during operation to control the gateway:
 - `u` = Start/stop watchdog trace (writes to `tools/watchdog_trace.txt`)
 
 ### Misc
+- `q` = Restart gateway (clean shutdown + re-exec; reloads `gateway_config.txt`)
 - `z` = Clear console and reprint banner
 
 ## Status Bar
@@ -1187,7 +1245,7 @@ Both SDR inputs share the same set of parameters; SDR2 uses the `SDR2_` prefix.
 ```ini
 # ── SDR1 (cyan bar) ──────────────────────────────────
 ENABLE_SDR = true                # Enable SDR1
-SDR_DEVICE_NAME = hw:4,1         # ALSA capture device (installer pins loopback 1 to hw:4)
+SDR_DEVICE_NAME = pw:sdr_capture  # PipeWire: pw:<sink_name>  |  ALSA: hw:4,1
 SDR_PRIORITY = 1                 # Duck priority (lower = higher priority)
 SDR_DUCK = true                  # Duck when radio RX or higher-priority SDR active
 SDR_MIX_RATIO = 1.0              # Volume when ducking disabled (0.0-1.0)
@@ -1197,7 +1255,7 @@ SDR_BUFFER_MULTIPLIER = 4        # Buffer size multiplier (4=recommended, 8=extr
 
 # ── SDR2 (magenta bar) ───────────────────────────────
 ENABLE_SDR2 = false              # Enable SDR2 (disabled by default)
-SDR2_DEVICE_NAME = hw:5,1        # Must be a different device from SDR1 (installer pins loopback 2 to hw:5)
+SDR2_DEVICE_NAME = pw:sdr_capture2  # PipeWire: pw:<sink_name>  |  ALSA: hw:5,1
 SDR2_PRIORITY = 2                # Higher number = lower priority (ducked by SDR1)
 SDR2_DUCK = true                 # Duck when radio RX or SDR1 active
 SDR2_MIX_RATIO = 1.0
@@ -1708,9 +1766,10 @@ mumble-radio-gateway/
 ├── examples/
 │   └── gateway_config.txt       # Template configuration
 ├── scripts/
-│   ├── install.sh               # Full installer (Raspberry Pi + Debian)
+│   ├── install.sh               # Full installer (Raspberry Pi + Debian + Arch)
 │   ├── darkice.cfg.example      # Darkice/Broadcastify config template
 │   ├── 99-disable-loopback.conf # WirePlumber exclusion rules (ALSA loopback + AIOC)
+│   ├── mumble-radio-gateway.desktop.template  # Desktop shortcut template
 │   └── loopback-status          # Diagnostic: show all loopback card assignments
 ├── docs/
 │   ├── MANUAL.txt               # Detailed user manual

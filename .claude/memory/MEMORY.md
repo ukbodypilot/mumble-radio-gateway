@@ -4,72 +4,65 @@
 Update MEMORY.md and detail files at the end of every session and whenever a significant bug or pattern is discovered. Keep this file under 200 lines.
 
 ## Project Overview
-Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Optional SDR input via ALSA loopback. Optional Broadcastify streaming via DarkIce. Python 3, runs on Raspberry Pi and Debian amd64.
+Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Optional SDR input via PipeWire virtual sink or ALSA loopback. Optional Broadcastify streaming via DarkIce. Python 3, runs on Raspberry Pi, Debian amd64, and Arch Linux.
 
 **Main file:** `mumble_radio_gateway.py` (~5000+ lines)
-**Installer:** `scripts/install.sh` (8 steps, targets Debian/Ubuntu/RPi)
+**Installer:** `scripts/install.sh` (12 steps, targets Debian/Ubuntu/RPi/Arch Linux)
 **Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
-**Start script:** `start.sh` (8 steps: kill procs, CPU governor→performance, loopback, AIOC USB reset, pipe, DarkIce, FFmpeg, gateway w/nice -10; `sudo -v` cached at top)
+**Start script:** `start.sh` (11 steps: kill procs, Mumble GUI, TH-9800 CAT, Claude Code, CPU governor, loopback, AIOC USB reset, pipe, DarkIce, FFmpeg, gateway w/nice -10)
 **Windows client:** `windows_audio_client.py` (server: send audio, client: receive audio, `m` to switch)
+
+## SDR Input — PipeWire (preferred) or ALSA Loopback
+- **PipeWire:** `SDR_DEVICE_NAME = pw:sdr_capture` — reads from virtual sink monitor via FFmpeg
+- `PipeWireSDRSource` class: auto-creates sink via `pw-cli` if missing at startup
+- WirePlumber persistence: `~/.config/wireplumber/wireplumber.conf.d/90-sdr-capture-sink.conf`
+- Creates `sdr_capture` and `sdr_capture2` sinks; installer deploys this config (step 12)
+- Route SDR app output to sink in pavucontrol or app settings
+- **ALSA loopback:** `SDR_DEVICE_NAME = hw:4,1` — traditional method, 200ms blob delivery
+- 3 cards pinned to hw:4, hw:5, hw:6 via `enable=1,1,1 index=4,5,6`
 
 ## Announcement Input (port 9601)
 - `NetworkAnnouncementSource` — listens on 9601, inbound TCP, length-prefixed PCM
 - `ptt_control=True`, `priority=0` — mixer routes audio to radio TX and activates PTT
 - Audio-gated PTT: discards silence below `ANNOUNCE_INPUT_THRESHOLD` (-45 dBFS)
-- 2s PTT hold (`_ptt_hold_time`) — returns silence+PTT=True through speech pauses
-- `ANNOUNCE_INPUT_VOLUME = 4.0` — volume multiplier (clipped to int16)
-- Mute key: `a` (mute toggle), status bar shows muted state on AN bar
-- Config: `ENABLE_ANNOUNCE_INPUT`, `ANNOUNCE_INPUT_PORT`, `ANNOUNCE_INPUT_HOST`, `ANNOUNCE_INPUT_THRESHOLD`, `ANNOUNCE_INPUT_VOLUME`
+- 2s PTT hold, `ANNOUNCE_INPUT_VOLUME = 4.0`, Mute key: `a`
 
 ## Windows Audio Client
-- `windows_audio_client.py` — send or receive audio (role-based, consistent with gateway REMOTE_AUDIO_ROLE)
-- **server role**: captures from input device, connects out to gateway, sends length-prefixed PCM
-- **client role**: listens on TCP port, gateway connects in, plays received audio on output device
-- Keyboard: `l` = LIVE/IDLE (server) or LIVE/MUTE (client), `m` = switch role at runtime
-- Config saved to `windows_audio_client.json` (in .gitignore) — separate keys per role:
-  `role`, `server_mode`, `server_device_name`, `server_host`, `server_port`,
-  `client_device_name`, `client_port`
-- Status line shows `SV` or `CL` prefix for active role
-- Cross-platform keyboard listener: msvcrt (Windows) / tty+termios (Unix)
+- `windows_audio_client.py` — send or receive audio (role-based)
+- **server role**: captures from input device, sends length-prefixed PCM
+- **client role**: listens on TCP port, plays received audio
+- Keyboard: `l` = LIVE/IDLE or LIVE/MUTE, `m` = switch role
+- Config: `windows_audio_client.json` (in .gitignore)
 
 ## Key Architecture
 - `AIOCRadioSource` — reads from AIOC ALSA device (radio RX audio)
-- `SDRSource` — reads from ALSA loopback via background reader thread (non-blocking)
-- `RemoteAudioServer` — TCP server, sends mixed audio to one connected client (length-prefixed PCM)
-- `RemoteAudioSource` — TCP client, receives audio from RemoteAudioServer; name="SDRSV"
-- `AudioMixer` — mixes SDR + AIOC with duck-out logic and fade in/out; returns 8-tuple (8th = sdr_only_audio)
-- `audio_transmit_loop()` — feeds Mumble encoder; sends silence to keep Opus encoder fed
-- pymumble/pymumble_py3 — Mumble protocol; SSL shim applied before import for Python 3.12+
+- `SDRSource` — reads from ALSA loopback via background reader thread
+- `PipeWireSDRSource` — reads from PipeWire virtual sink monitor via FFmpeg subprocess
+- `RemoteAudioServer` / `RemoteAudioSource` — TCP audio link
+- `AudioMixer` — mixes SDR + AIOC with duck-out logic; returns 8-tuple
+- `audio_transmit_loop()` — feeds Mumble encoder
+- pymumble/pymumble_py3 — Mumble protocol; SSL shim for Python 3.12+
 
 ## Critical Settings (current defaults)
 - `MUMBLE_BITRATE = 72000`, `MUMBLE_VBR = false` (CBR)
 - `VAD_THRESHOLD = -45`, `VAD_ATTACK = 0.05`, `VAD_RELEASE = 1.0`, `VAD_MIN_DURATION = 0.25`
 - `AUDIO_CHUNK_SIZE = 9600` (200ms at 48kHz)
-- SDR loopback: `hw:4,1` / `hw:5,1` / `hw:6,1` (capture side)
 - `SDR_BUFFER_MULTIPLIER = 4`
-- AIOC pre-buffer: 3 blobs / 600ms; SDR pre-buffer: 2 blobs / 400ms (1 blob during rebroadcast)
+- AIOC pre-buffer: 3 blobs / 600ms; SDR pre-buffer: 2 blobs / 400ms
 - `PLAYBACK_VOLUME = 4.0`, `ANNOUNCE_INPUT_VOLUME = 4.0`
-- `SDR_AUDIO_BOOST = 2.0`, `SDR2_AUDIO_BOOST = 2.0` — default 2x volume boost
-- `SDR_DUCK_COOLDOWN = 3.0` — symmetric cooldown after SDR-to-SDR unduck
-- `SDR_SIGNAL_THRESHOLD = -60.0` — dBFS threshold for SDR signal detection (was hardcoded -50)
+- `SDR_AUDIO_BOOST = 2.0`, `SDR2_AUDIO_BOOST = 2.0`
+- `SDR_DUCK_COOLDOWN = 3.0`, `SDR_SIGNAL_THRESHOLD = -60.0`
 
 ## Keyboard Controls
 - MUTE: `t`=TX `r`=RX `m`=Global `s`=SDR1 `x`=SDR2 `c`=Remote `a`=Announce `o`=Speaker
 - AUDIO: `v`=VAD toggle `,`=Vol- `.`=Vol+
-- PROC: `n`=Gate `f`=HPF `g`=AGC `y`=Spectral `w`=Wiener `e`=Echo
+- PROC: `n`=Gate `f`=HPF `g`=AGC `w`=Wiener `e`=Echo
 - SDR: `d`=SDR1 Duck toggle `b`=SDR Rebroadcast toggle
 - PTT: `p`=Manual PTT toggle
 - PLAY: `1-9`=Announcements `0`=StationID `-`=Stop
-- NET: `k`=Reset remote audio TCP connection
 - RELAY: `j`=Radio power button (momentary pulse)
 - TRACE: `i`=Start/stop audio trace `u`=Start/stop watchdog trace
-- MISC: `z`=Clear and reprint console
-- NOTE: AGC moved from 'a' to 'g'; proc flag changed from A to G
-
-## ALSA Loopback Setup
-- 3 cards pinned to hw:4, hw:5, hw:6 via `enable=1,1,1 index=4,5,6`
-- Config: `/etc/modprobe.d/snd-aloop.conf` → `options snd-aloop enable=1,1,1 index=4,5,6`
-- Each card: hw:N,0 (SDR app writes) / hw:N,1 (gateway reads)
+- MISC: `q`=Restart gateway (re-exec, reloads config) `z`=Clear console
 
 ## Python / pymumble
 - Install `hid` (not `hidapi`) — gateway uses `hid.Device`
@@ -80,164 +73,62 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - WirePlumber grabs ALSA loopback (locks to S32_LE, blocks DarkIce S16_LE)
 - WirePlumber grabs AIOC (hides it from PyAudio)
 - Fix: `~/.config/wireplumber/wireplumber.conf.d/99-disable-loopback.conf`
-- **PyAudio uses PipeWire backend** — disabled devices don't appear in PyAudio enumeration
-  even though `aplay -l` sees them via raw ALSA. Gateway must open AIOC before
-  WirePlumber disables it, or use manual device index.
 
-## AIOC USB Issues
-- AIOC audio output can get stuck in stale state — PTT keys radio but no audio transmitted
-- Symptom: `aplay -l` shows AIOC, `/proc/asound/cardN/stream0` Playback shows `Stop`,
-  `speaker-test -D hw:N,0` produces no audio on radio
-- Fix: USB reset (unplug/replug or sysfs authorized cycle)
-- `start.sh` now does AIOC USB reset at step 4 before gateway launch
-- Reset method: `echo 0 > /sys/bus/usb/devices/X-Y/authorized; sleep 1; echo 1 > ...`
+## Terminal Settings Bug (fixed)
+- Keyboard listener runs as daemon thread using tty raw mode (setcbreak)
+- Daemon threads killed before their `finally` blocks run on process exit
+- Fix: save terminal settings on instance (`self._terminal_settings`), restore in `cleanup()`
 
 ## DarkIce Notes
 - DarkIce 1.5 parser bug: crashes if "password" appears before first `[section]` header
-- Config template: `scripts/darkice.cfg.example` (NOT examples/)
-- Needs audio group + realtime limits
+- Config template: `scripts/darkice.cfg.example`
 - udev: needs BOTH `SUBSYSTEM=="usb"` AND `SUBSYSTEM=="hidraw"` rules for AIOC
 
-## Watchdog Trace (press 'u')
-- Low-fidelity long-running trace for diagnosing overnight freezes
-- Samples every 5s into memory, flushes to `tools/watchdog_trace.txt` every 60s
-- Tracks: thread alive (tx/status/kb/aioc/sdr1/sdr2/remote/announce), mumble connected,
-  source enabled flags, mute flags, audio levels, queue depths, PTT/VAD/rebroadcast, RSS memory
-- `_tx_loop_tick` counter: incremented every transmit loop tick; watchdog computes tick_rate/s
-- If tick_rate drops to 0, transmit loop is stuck. If a thread alive goes 0→dead, thread crashed.
-
-## Audio Trace Instrumentation
-- PTT branch now has its own RMS measurement (was blind before — RMS always showed 0)
-- PTT outcomes: `ptt_ok` (wrote to AIOC), `ptt_nostr` (output_stream None),
-  `ptt_txm` (TX muted), `ptt_err` (write failed)
-- Previous traces showing RMS=0 for all PTT ticks were misleading — the measurement
-  point was after `continue` so it never ran for PTT
-
 ## Audio Processing — Vectorised (commit a41a0bc)
-All three pure-Python per-sample loops replaced with numpy/scipy:
-- `_mix_audio_streams()` — list comprehension → `np.frombuffer` + `np.clip` (~10× faster; always runs)
-- `apply_highpass_filter()` — IIR for-loop → `scipy.signal.lfilter` with `zi` state carry;
-  also fixed latent bug (old code reset `prev_output=0` each chunk, now both states carried)
-  `self.highpass_state` reused: `None` on first call → `lfilter_zi(b,a)*0`; then zi array (shape (1,))
-- `apply_spectral_noise_suppression()` — O(n·w) sliding window → `scipy.ndimage.uniform_filter1d` O(n)
-- Noise gate left as-is (serial carry, acceptable ~2.4ms, not worth complexity)
-- scipy already present on RPi OS — no new deps
+- `_mix_audio_streams()` → `np.frombuffer` + `np.clip` (~10× faster)
+- `apply_highpass_filter()` → `scipy.signal.lfilter` with `zi` state carry
+- `apply_spectral_noise_suppression()` → `scipy.ndimage.uniform_filter1d`
 
 ## Text-to-Speech (gTTS)
 - `!speak <text>` or `!speak <voice#> <text>` — voice 1-9 via gTTS lang/tld combos
-- Voices: 1=US 2=British 3=Australian 4=Indian 5=South African 6=Canadian 7=Irish 8=French 9=German
-- `TTS_DEFAULT_VOICE = 1` in config; `TTS_VOLUME`, `PTT_TTS_DELAY`
-- Mumble text messages arrive as HTML — stripped with `re.sub(r'<[^>]+>', '', msg)` + `html.unescape()`
-- Voice map is class-level `TTS_VOICES` dict on the gateway class
+- Mumble text messages arrive as HTML — stripped with `re.sub` + `html.unescape()`
 
 ## Relay Control (CH340 USB Relays)
-- `RelayController` class: 4-byte serial commands, `CMD_ON`/`CMD_OFF`, lazy `import serial`
-- Radio power relay: `j` key momentary pulse (ON 0.5s then OFF — simulates button press), `ENABLE_RELAY_RADIO`
-- Charger relay: automatic schedule, `ENABLE_RELAY_CHARGER`, `RELAY_CHARGER_ON_TIME`/`OFF_TIME`
-- Schedule handles overnight wrap (e.g. 23:00→06:00); only sends command on state change
-- Status bar: `PWRB` (white idle, yellow during pulse) + `CHG:CHRGE/DRAIN` (green/red, 5 chars)
-- Udev template: `scripts/99-relay-udev.rules` — maps physical USB port to persistent symlinks
-- Cleanup: closes serial ports but leaves relays in current state (no power-cycle on restart)
-- Dependency: `pyserial` (imported inside `open()` — only fails if relay enabled but pkg missing)
-
-## Local Mumble Server (mumble-server/murmurd)
-- `MumbleServerManager` class: manages up to 2 local mumble-server instances
-- Config: `ENABLE_MUMBLE_SERVER_1/2`, port, password, max_users, bandwidth, welcome, opus_threshold, autostart
-- Each instance: own config `/etc/mumble-server-gw{N}.ini`, DB, log, PID, systemd service
-- Service: `mumble-server-gw{N}.service` — runs as `mumble-server` user, `-fg` foreground mode
-- Status bar: `MS1`/`MS2` — white=configured, green=running, red=error
-- Health check: every ~10s in status_monitor_loop via `check_health()`
-- Cleanup: services left running on gateway exit (systemd manages them independently)
-- Install: `apt install mumble-server` (Debian) / `pacman -S murmur` (Arch); default service disabled
+- `RelayController` class: 4-byte serial commands, lazy `import serial`
+- Radio power relay: `j` key, Charger relay: automatic schedule
+- Dependency: `pyserial` (added to installer core packages)
 
 ## SDR Rebroadcast
-- Toggle: `b` key. Routes mixed SDR-only audio (no AIOC/PTT) to AIOC radio TX
-- `SDR_REBROADCAST_PTT_HOLD = 3.0` — seconds PTT holds after SDR signal stops
-- State vars: `sdr_rebroadcast`, `_rebroadcast_ptt_active`, `_rebroadcast_sending`, `_rebroadcast_ptt_hold_until`
-- AIOC TX feedback fix: `radio_source.enabled = False` while rebroadcast PTT active (prevents ducking loop)
-- PTT release timer guard: `status_monitor_loop()` skips PTT timeout when `_rebroadcast_ptt_active`
-- Status bar: SDR labels white (off), green (rebroadcast idle), red (rebroadcast sending)
-- PTT indicator: `B-ON` (cyan) when rebroadcast PTT active
-- SDR prebuffer always 1 blob (no rebroadcast conditional)
-- Trace: element 22 `_tr_rebro` (sig/hold/idle), `rebro_ptt` events, `rb` column in detail
-
-## SDR Mixer — sole_source Logic
-- `sole_source` = no AIOC/PTT audio present (SDRs are the only source type)
-- Refined: an SDR with no signal is NOT force-included if another SDR has instant signal
-- Pre-scan pass checks `check_signal_instant()` for all SDRs before main inclusion loop
-- Prevents loopback noise from unused SDR polluting the mix
-
-## Known Bugs Fixed (details in bugs.md)
-- SDR burst audio, Mumble encoder starvation, duck-out regression
-- Config parser crash on decimal, global_muted UnboundLocalError
-- DarkIce hidraw udev, WirePlumber AIOC/loopback grab
-- SDR2 duck-through on SDR1 buffer gaps
-- Announcement/PTT keys spam errors without AIOC
-- Status bar width shift on mute/duck (fixed-width padding)
-- AIOC audio output stale state (USB reset fix)
-- HPF prev_output reset bug (fixed by lfilter zi carry)
-- SDR-to-SDR ducking inconsistency (commit 3808066)
-- SDR periodic audio gaps (commit 053b351): SDRSource lacked the _prebuffering gate that AIOC has. Fixed: always-drain every tick + gate refuses to serve until 3 blobs buffered after any depletion. Other SDR covers during rebuild. Zero silence gaps in verified trace.
-- SDR volume 6dB step when second SDR joins/exits mix: crossfade `_mix_audio_streams(ratio=0.5)` attenuated SDR1 by 6dB when SDR2 present. Fixed: sum-and-clip in second pass (each SDR at full gain). Commit 69577ac.
-- AIOC duck hold causing 1s dead air: `_hold_fired` kept `aioc_ducks_sdrs=True` for 1s after AIOC VAD released, outputting silence. Fixed: gate on `non_ptt_audio is not None`.
-- SDR prebuffering + stale hysteresis ducking SDR2: when SDR1 returns None, `has_actual_audio` still True during release hold → `sig=True` → SDR2 ducked. Fixed: clear `sig=False` before continue.
-- Sub-buffer latency buildup under CPU load: cap at 5×blob_bytes after eager drain
-- SDR-to-SDR rapid switching: added SDR_DUCK_COOLDOWN (3.0s) symmetric cooldown
-- No-signal SDR polluting mix: sole_source refined to exclude no-signal SDRs when another has audio
-- SDR prebuffer gap too long (400ms): reduced from 3 blobs to 2 blobs; AIOC keeps 3
-- Mumble HTML in TTS: text messages arrive as HTML, gTTS read tags/entities aloud. Fixed: strip+unescape
-- SDR Rebroadcast bugs: AIOC TX feedback ducking, PTT release timer, TX bar level, prebuffer gaps (see bugs.md)
-- SV status bar stuck: was using `tx_audio_level` (AIOC input) instead of actual outbound level. Fixed: added `sv_audio_level` updated at all `send_audio()` call sites (commit 68f90de)
-- Remote audio stutter during TTS: PTT path sent both rx_for_mumble AND data to remote client (2 frames/tick = double data rate). Fixed: send only data. Also pre-decode files in queue_file(), non-blocking SV socket. Commit 8b4e0ee.
-- RemoteAudioServer disconnect not detected during silence: `send_audio()` only called when VAD passes audio. During silence, dead connection never discovered. Fixed: `_connect_loop` probes socket with `select()+recv()` every 0.5s.
-- Log messages disrupting status bar: `StatusBarWriter` wraps stdout, clears bar before any print(), redraws on next tick. Logs scroll above bar.
-
-## Deployment Notes
-- WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`
-- Local Mumble server can interfere — disable if present
-- pymumble sends voice via TCP tunnel (UDPTUNNEL), not actual UDP
-- start.sh sets CPU governor to `performance` (step 2) and launches gateway with `nice -n -10` (step 8)
-- DarkIce runs FIFO RT 4; gateway runs nice -10 (SCHED_OTHER); competing apps at NI=0 stay below it
-
-## SDR Loopback Watchdog
-- Config: `SDR_WATCHDOG_TIMEOUT` (10s), `SDR_WATCHDOG_MAX_RESTARTS` (5), `SDR_WATCHDOG_MODPROBE` (false)
-- Staged recovery: stage 1=reopen, stage 2=reinit PyAudio, stage 3=reload snd-aloop
+- Toggle: `b` key. Routes mixed SDR-only audio to AIOC radio TX
+- `SDR_REBROADCAST_PTT_HOLD = 3.0`
+- AIOC TX feedback fix: `radio_source.enabled = False` while rebroadcast PTT active
 
 ## TH-9800 CAT Control
 - `RadioCATClient` class: TCP client for TH9800_CAT.py server
 - Config: `ENABLE_CAT_CONTROL`, `CAT_HOST`, `CAT_PORT`, `CAT_PASSWORD`
-- Setup: channel (L/R), volume (L/R 0-100), power (L/R L/M/H)
-- Channel set: steps per-VFO dial (L_DIAL_RIGHT/R_DIAL_RIGHT), no VFO switch needed
-- Volume set: uses `!vol LEFT|RIGHT N` TCP command (added to TH9800_CAT.py), steps by 2 from default 25
-- Power set: cycles L_LOW/R_LOW button, reads DISPLAY_ICONS for current power
-- **Packet format**: byte 0 = packet type, byte 1 = VFO indicator (NOT reversed)
-- Channel text at data[3:6], display text at data[3:9], power byte at data[7]
-- TH9800 config.txt: `auto_start_server=true` auto-starts TCP server on GUI launch
-- Gateway sends `!rts True` after connect to ensure USB TX control mode
-- Debug log: `cat_debug.log` (all packet parsing, steps, commands — console shows summary only)
-- Status bar: CAT indicator — white=enabled/unconnected, green=connected, red=active (1s min visibility)
-- SIGINT handler during setup for clean ctrl+c abort
 
-## Status Bar
-- format_level_bar() returns fixed-width (11 visible chars: 6-char bar + space + 4-char suffix)
-- Status icon only (no ACTIVE/IDLE/STOP text label, no colon prefix)
-- Bar display order: TX → RX → SP → SDR1 → SDR2 → SV/CL → AN → relay → CAT
+## Desktop Shortcut
+- Template: `scripts/mumble-radio-gateway.desktop.template`
+- Installer step 12: detects terminal emulator, substitutes `__TERMINAL__` and `__GATEWAY_DIR__`
+- Opens terminal, cd to gateway dir, runs `start.sh`, keeps shell open on exit
 
-## audio/ Folder — Local Only
-- `audio/` is in `.gitignore` — never committed (sensitive/copyrighted audio clips)
-- Files live at `~/Downloads/mumble-radio-gateway/audio/` on each machine; backup at `~/audio_stash/` on the Pi
-- **New machine setup:** `scp -r user@pi-ip:~/audio_stash/ ~/Downloads/mumble-radio-gateway/audio`
-- Old git history still contains audio files — scrubbing requires force-push + re-clone on all machines (deferred)
+## Known Bugs Fixed (details in bugs.md)
+See bugs.md for full history. Key fixes: SDR burst audio, Mumble encoder starvation,
+duck-out regression, config parser crash, DarkIce/WirePlumber issues, terminal raw mode
+not restored on exit, SDR periodic gaps, rebroadcast bugs, SV status bar.
+
+## Deployment Notes
+- WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`
+- start.sh sets CPU governor to `performance` and launches gateway with `nice -n -10`
+- DarkIce runs FIFO RT 4; gateway runs nice -10 (SCHED_OTHER)
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis
-- **gateway_config.txt is NOT committed** — repo is PUBLIC; config is in .gitignore (contains secrets)
+- **gateway_config.txt is NOT committed** — repo is PUBLIC; config is in .gitignore
 - Fixed-width status bar is important
 
-## Machine Setup (new machine — 2026-03-03)
-- Cloned to `/home/user/Downloads/mumble-radio-gateway` (correct path per CLAUDE.md)
-- Git user: ukbodypilot / robin.pengelly@gmail.com; credential.helper=store
-- Install error: `setuptools` broken on this system — `python3-setuptools` not installed
-  - Fix: `pip3 install --upgrade setuptools --break-system-packages` then `pip3 install pymumble --break-system-packages`
-  - pymumble installs as `pymumble_py3` module (gateway handles both names automatically)
-- All deps verified: pymumble_py3, resampy, hid, pyaudio, soundfile, psutil, gtts, numpy OK
+## Machine Setup — user-optiplex3020 (Arch Linux, 2026-03-04)
+- Cloned to `/home/user/Downloads/mumble-radio-gateway`
+- Git user: ukbodypilot / robin.pengelly@gmail.com; token in remote URL
+- Arch Linux (EndeavourOS), XFCE4, RDP via xrdp+x11vnc
+- Python 3.14 on this machine

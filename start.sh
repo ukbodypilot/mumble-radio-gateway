@@ -51,6 +51,14 @@ sleep 1
 
 # Also kill any Python gateway processes (just in case)
 pkill -9 -f "mumble_radio_gateway" 2>/dev/null && echo "  Killed existing gateway"
+
+# Stop leftover mumble-server instances from prior gateway runs so they don't
+# linger on stale ports (the gateway will start fresh ones with current config)
+for svc in mumble-server-gw1 mumble-server-gw2; do
+    if systemctl is-active --quiet "$svc.service" 2>/dev/null; then
+        sudo systemctl stop "$svc.service" 2>/dev/null && echo "  Stopped $svc"
+    fi
+done
 sleep 1
 
 # 2. Start Mumble GUI client if not already running
