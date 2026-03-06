@@ -127,8 +127,8 @@ class Config:
             'AUDIO_CHUNK_SIZE': 2400,
             'AUDIO_CHANNELS': 1,
             'AUDIO_BITS': 16,
-            'MUMBLE_BITRATE': 96000,
-            'MUMBLE_VBR': False,
+            'MUMBLE_BITRATE': 72000,
+            'MUMBLE_VBR': True,
             'MUMBLE_JITTER_BUFFER': 10,
             'AIOC_PTT_CHANNEL': 3,
             'PTT_RELEASE_DELAY': 0.5,
@@ -162,9 +162,9 @@ class Config:
             'BUFFER_MANAGEMENT_VERBOSE': False,
             'ENABLE_VAD': True,
             'VAD_THRESHOLD': -45,
-            'VAD_ATTACK': 0.05,  # float (seconds)
-            'VAD_RELEASE': 2.0,  # float (seconds)
-            'VAD_MIN_DURATION': 0.25,  # float (seconds)
+            'VAD_ATTACK': 0.02,  # float (seconds)
+            'VAD_RELEASE': 1.0,  # float (seconds)
+            'VAD_MIN_DURATION': 0.1,  # float (seconds)
             'ENABLE_STREAM_HEALTH': False,
             'STREAM_RESTART_INTERVAL': 60,
             'STREAM_RESTART_IDLE_TIME': 3,
@@ -173,29 +173,29 @@ class Config:
             'VOX_ATTACK_TIME': 0.05,  # float (seconds)
             'VOX_RELEASE_TIME': 0.5,  # float (seconds)
             # File Playback
-            'ENABLE_PLAYBACK': False,
+            'ENABLE_PLAYBACK': True,
             'PLAYBACK_DIRECTORY': './audio/',
             'PLAYBACK_ANNOUNCEMENT_FILE': '',
             'PLAYBACK_ANNOUNCEMENT_INTERVAL': 0,  # seconds, 0 = disabled
-            'PLAYBACK_VOLUME': 4.0,               # float (multiplier; >1.0 boosts, audio is clipped to int16 range)
+            'PLAYBACK_VOLUME': 2.0,               # float (multiplier; >1.0 boosts, audio is clipped to int16 range)
             # Morse Code (CW)
-            'CW_WPM': 15,          # Morse code words per minute
-            'CW_FREQUENCY': 700,   # Tone frequency in Hz
-            'CW_VOLUME': 1.0,      # Volume multiplier (applied before WAV write; PLAYBACK_VOLUME also applies)
+            'CW_WPM': 20,          # Morse code words per minute
+            'CW_FREQUENCY': 600,   # Tone frequency in Hz
+            'CW_VOLUME': 1.5,      # Volume multiplier (applied before WAV write; PLAYBACK_VOLUME also applies)
             # Text-to-Speech and Text Commands (Phase 4)
             'ENABLE_TTS': True,
             'ENABLE_TEXT_COMMANDS': True,
             'TTS_VOLUME': 1.0,  # Volume multiplier for TTS audio (1.0 = normal, 2.0 = double, 3.0 = triple)
             'TTS_DEFAULT_VOICE': 1, # Default voice (1=US, 2=British, 3=Australian, 4=Indian, 5=SA, 6=Canadian, 7=Irish, 8=French, 9=German)
-            'PTT_TTS_DELAY': 1.0,   # Silence padding before TTS (seconds) to prevent cutoff
+            'PTT_TTS_DELAY': 0.5,   # Silence padding before TTS (seconds) to prevent cutoff
             'PTT_ANNOUNCEMENT_DELAY': 0.5,  # Seconds after PTT key-up before announcement audio starts
             # SDR Integration
             'ENABLE_SDR': True,
-            'SDR_DEVICE_NAME': 'hw:6,1',  # ALSA device name (e.g., 'Loopback', 'hw:5,1')
+            'SDR_DEVICE_NAME': 'pw:sdr_capture',  # PipeWire sink (recommended) or ALSA device (e.g., 'hw:6,1')
             'SDR_DUCK': True,             # Duck SDR: silence SDR when higher priority source is active
             'SDR_MIX_RATIO': 1.0,        # Volume/mix ratio when ducking is disabled (1.0 = full volume)
             'SDR_DISPLAY_GAIN': 1.0,     # Display sensitivity multiplier (1.0 = normal, higher = more sensitive bar)
-            'SDR_AUDIO_BOOST': 2.0,      # Actual audio volume boost (1.0 = no change, 2.0 = 2x louder)
+            'SDR_AUDIO_BOOST': 1.0,      # Actual audio volume boost (1.0 = no change, 2.0 = 2x louder)
             'SDR_BUFFER_MULTIPLIER': 4,  # Buffer size multiplier (4 = 4x normal buffer, ~200ms per ALSA read)
             'SDR_PRIORITY': 1,           # SDR priority for ducking (1 = higher priority, 2 = lower priority)
             'SDR_WATCHDOG_TIMEOUT': 10,        # seconds with no successful read before recovery
@@ -203,31 +203,31 @@ class Config:
             'SDR_WATCHDOG_MODPROBE': False,    # enable kernel module reload (requires sudoers entry)
             # SDR2 Integration (second SDR receiver)
             'ENABLE_SDR2': False,
-            'SDR2_DEVICE_NAME': 'hw:4,1',
+            'SDR2_DEVICE_NAME': 'pw:sdr_capture2',
             'SDR2_DUCK': True,
             'SDR2_MIX_RATIO': 1.0,
             'SDR2_DISPLAY_GAIN': 1.0,
-            'SDR2_AUDIO_BOOST': 2.0,
+            'SDR2_AUDIO_BOOST': 1.5,
             'SDR2_BUFFER_MULTIPLIER': 4,
             'SDR2_PRIORITY': 2,          # SDR2 priority for ducking (1 = higher, 2 = lower)
             'SDR2_WATCHDOG_TIMEOUT': 10,
             'SDR2_WATCHDOG_MAX_RESTARTS': 5,
             'SDR2_WATCHDOG_MODPROBE': False,
             # Signal Detection Hysteresis (prevents stuttering from rapid on/off)
-            'SIGNAL_ATTACK_TIME': 0.15,  # Seconds of CONTINUOUS signal required before a source switch is allowed
+            'SIGNAL_ATTACK_TIME': 0.25,  # Seconds of CONTINUOUS signal required before a source switch is allowed
             'SIGNAL_RELEASE_TIME': 3.0,  # Seconds of continuous silence required before switching back
             'SWITCH_PADDING_TIME': 1.0,  # Seconds of silence inserted at each transition (duck-out and duck-in)
             'SDR_DUCK_COOLDOWN': 3.0,   # After lower-priority SDR unducks, seconds before higher-priority SDR can re-duck it
-            'SDR_SIGNAL_THRESHOLD': -60.0,  # dBFS threshold for SDR signal detection (inclusion + ducking); lower = more sensitive
+            'SDR_SIGNAL_THRESHOLD': -70.0,  # dBFS threshold for SDR signal detection (inclusion + ducking); lower = more sensitive
             'SDR_REBROADCAST_PTT_HOLD': 3.0,  # Seconds to hold PTT after SDR audio stops during rebroadcast
             # EchoLink Integration (Phase 3B)
             'ENABLE_ECHOLINK': False,
             'ECHOLINK_RX_PIPE': '/tmp/echolink_rx',
             'ECHOLINK_TX_PIPE': '/tmp/echolink_tx',
             'ECHOLINK_TO_MUMBLE': True,
-            'ECHOLINK_TO_RADIO': False,
+            'ECHOLINK_TO_RADIO': True,
             'RADIO_TO_ECHOLINK': True,
-            'MUMBLE_TO_ECHOLINK': False,
+            'MUMBLE_TO_ECHOLINK': True,
             # Streaming Output (Phase 3A)
             'ENABLE_STREAM_OUTPUT': False,
             'STREAM_SERVER': 'localhost',
@@ -248,12 +248,12 @@ class Config:
             'REMOTE_AUDIO_HOST': '',               # Server: bind addr; Client: server IP
             'REMOTE_AUDIO_PORT': 9600,
             'REMOTE_AUDIO_DUCK': True,
-            'REMOTE_AUDIO_PRIORITY': 3,            # sdr_priority for ducking (configurable)
+            'REMOTE_AUDIO_PRIORITY': 0,            # sdr_priority for ducking (0 = ducks all local SDRs)
             'REMOTE_AUDIO_DISPLAY_GAIN': 1.0,
             'REMOTE_AUDIO_AUDIO_BOOST': 1.0,
             'REMOTE_AUDIO_RECONNECT_INTERVAL': 5.0,
             # Announcement Input (port 9601 — inbound PCM stream, PTT to radio)
-            'ENABLE_ANNOUNCE_INPUT': False,
+            'ENABLE_ANNOUNCE_INPUT': True,
             'ANNOUNCE_INPUT_PORT': 9601,
             'ANNOUNCE_INPUT_HOST': '',
             'ANNOUNCE_INPUT_THRESHOLD': -45.0,  # dBFS — below this is treated as silence

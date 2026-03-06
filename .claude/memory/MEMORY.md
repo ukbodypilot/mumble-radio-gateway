@@ -44,14 +44,16 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - pymumble/pymumble_py3 — Mumble protocol; SSL shim for Python 3.12+
 
 ## Critical Settings (current defaults)
-- `MUMBLE_BITRATE = 72000`, `MUMBLE_VBR = false` (CBR)
-- `VAD_THRESHOLD = -45`, `VAD_ATTACK = 0.05`, `VAD_RELEASE = 1.0`, `VAD_MIN_DURATION = 0.25`
-- `AUDIO_CHUNK_SIZE = 9600` (200ms at 48kHz)
-- `SDR_BUFFER_MULTIPLIER = 4`
+- `MUMBLE_BITRATE = 72000`, `MUMBLE_VBR = true` (VBR)
+- `VAD_THRESHOLD = -45`, `VAD_ATTACK = 0.02`, `VAD_RELEASE = 1.0`, `VAD_MIN_DURATION = 0.1`
+- `AUDIO_CHUNK_SIZE = 2400` (50ms), `SDR_BUFFER_MULTIPLIER = 4`
+- SDR: `pw:sdr_capture` / `pw:sdr_capture2` (PipeWire default)
 - AIOC pre-buffer: 3 blobs / 600ms; SDR pre-buffer: 2 blobs / 400ms
-- `PLAYBACK_VOLUME = 4.0`, `ANNOUNCE_INPUT_VOLUME = 4.0`
-- `SDR_AUDIO_BOOST = 2.0`, `SDR2_AUDIO_BOOST = 2.0`
-- `SDR_DUCK_COOLDOWN = 3.0`, `SDR_SIGNAL_THRESHOLD = -60.0`
+- `PLAYBACK_VOLUME = 2.0`, `ANNOUNCE_INPUT_VOLUME = 4.0`, `ENABLE_ANNOUNCE_INPUT = True`
+- `SDR_AUDIO_BOOST = 1.0`, `SDR2_AUDIO_BOOST = 1.5`
+- `SDR_DUCK_COOLDOWN = 3.0`, `SDR_SIGNAL_THRESHOLD = -70.0`, `SIGNAL_ATTACK_TIME = 0.25`
+- `CW_WPM = 20`, `CW_FREQUENCY = 600`, `CW_VOLUME = 1.5`, `PTT_TTS_DELAY = 0.5`
+- `REMOTE_AUDIO_PRIORITY = 0`, `ENABLE_PLAYBACK = True`, EchoLink: full bridge
 
 ## Keyboard Controls
 - MUTE: `t`=TX `r`=RX `m`=Global `s`=SDR1 `x`=SDR2 `c`=Remote `a`=Announce `o`=Speaker
@@ -132,3 +134,6 @@ not restored on exit, SDR periodic gaps, rebroadcast bugs, SV status bar.
 - Git user: ukbodypilot / robin.pengelly@gmail.com; token in remote URL
 - Arch Linux (EndeavourOS), XFCE4, RDP via xrdp+x11vnc
 - Python 3.14 on this machine
+- sudo password: `user`
+- Relay USB port: `2-1.3` → `/dev/relay_radio` (CH340 "USB Serial")
+- FTDI CAT cable: `2-1.1` → `/dev/ttyUSB1` (FT232R)

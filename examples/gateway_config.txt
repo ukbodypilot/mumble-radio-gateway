@@ -34,10 +34,10 @@ MUMBLE_PASSWORD =
 MUMBLE_CHANNEL =
 
 # Opus encoder bitrate (bits/sec): 40000=good | 72000=high | 96000=max
-MUMBLE_BITRATE = 96000
+MUMBLE_BITRATE = 72000
 
-# false=constant bitrate (recommended) | true=adapts to content
-MUMBLE_VBR = false
+# true=adapts bitrate to content | false=constant bitrate
+MUMBLE_VBR = true
 
 
 # ============================================================================
@@ -105,9 +105,9 @@ ENABLE_VAD = true
 # -45=very sensitive | -33=balanced | -25=less sensitive
 VAD_THRESHOLD = -45
 
-VAD_ATTACK = 0.05        # Seconds to activate
-VAD_RELEASE = 2           # Seconds to hold after silence
-VAD_MIN_DURATION = 0.25   # Minimum transmission length (seconds)
+VAD_ATTACK = 0.02        # Seconds to activate
+VAD_RELEASE = 1           # Seconds to hold after silence
+VAD_MIN_DURATION = 0.1    # Minimum transmission length (seconds)
 
 
 # ============================================================================
@@ -150,7 +150,8 @@ ENABLE_ECHO_CANCELLATION = false
 # SDR RECEIVER INTEGRATION
 # ============================================================================
 # Mix one or two SDR receivers into the gateway alongside AIOC radio.
-# Requires ALSA loopback (sudo modprobe snd-aloop).
+# PipeWire mode (recommended): uses virtual sinks, no ALSA loopback needed.
+# ALSA loopback mode (legacy): sudo modprobe snd-aloop.
 #
 # Priority: AIOC/Radio always ducks all SDRs. Between SDRs, lower
 # priority number = higher priority (SDR1 at 1 ducks SDR2 at 2).
@@ -158,14 +159,14 @@ ENABLE_ECHO_CANCELLATION = false
 # -------- SDR1 --------
 ENABLE_SDR = true
 
-# ALSA loopback device. Loopback pairs: if SDR writes to hw:N,0, read hw:N,1
-SDR_DEVICE_NAME = hw:6,1
+# PipeWire (recommended): pw:<sink_name>  |  ALSA loopback (legacy): hw:N,1
+SDR_DEVICE_NAME = pw:sdr_capture
 
 SDR_PRIORITY = 1          # Ducking priority (lower = higher priority)
 SDR_DUCK = true            # true=duck when higher-priority source active
 SDR_MIX_RATIO = 1.0        # Volume when ducking disabled (0.0 to 1.0)
 SDR_DISPLAY_GAIN = 1.0     # Status bar sensitivity (1.0=normal, 5.0=very sensitive)
-SDR_AUDIO_BOOST = 2.0      # Actual volume boost (1.0=unity, 2.0=double)
+SDR_AUDIO_BOOST = 1.0      # Actual volume boost (1.0=unity, 2.0=double)
 SDR_BUFFER_MULTIPLIER = 4  # ALSA read buffer (4=recommended | 8=extra stability)
 
 # Loopback watchdog — detects stalled ALSA reads after extended runtime.
@@ -177,12 +178,12 @@ SDR_WATCHDOG_MODPROBE = false   # Stage 3: requires sudoers NOPASSWD entry for m
 
 # -------- SDR2 --------
 ENABLE_SDR2 = false
-SDR2_DEVICE_NAME = hw:4,1
+SDR2_DEVICE_NAME = pw:sdr_capture2
 SDR2_PRIORITY = 2
 SDR2_DUCK = true
 SDR2_MIX_RATIO = 1.0
 SDR2_DISPLAY_GAIN = 1.0
-SDR2_AUDIO_BOOST = 2.0
+SDR2_AUDIO_BOOST = 1.5
 SDR2_BUFFER_MULTIPLIER = 4
 SDR2_WATCHDOG_TIMEOUT = 10
 SDR2_WATCHDOG_MAX_RESTARTS = 5
@@ -196,12 +197,12 @@ SDR2_WATCHDOG_MODPROBE = false
 # when it ends and SDR resumes.
 #
 # Recommended starting values:
-#   Sensitive/fast:   attack=0.1,  release=2.0, padding=0.1
-#   Balanced:         attack=0.15, release=3.0, padding=1.0
+#   Sensitive/fast:   attack=0.1,  release=1.0, padding=0.5
+#   Balanced:         attack=0.25, release=3.0, padding=1.0
 #   Conservative:     attack=0.5,  release=5.0, padding=1.0
 
 # Seconds of CONTINUOUS signal before a duck is triggered
-SIGNAL_ATTACK_TIME = 0.15
+SIGNAL_ATTACK_TIME = 0.25
 
 # Seconds of continuous silence before the ducked source resumes
 SIGNAL_RELEASE_TIME = 3
@@ -215,7 +216,7 @@ SDR_DUCK_COOLDOWN = 3.0
 
 # SDR signal threshold (dBFS). Chunks below this are treated as silence.
 # -50=default | -60=10dB more sensitive (good for weak signals)
-SDR_SIGNAL_THRESHOLD = -60.0
+SDR_SIGNAL_THRESHOLD = -70.0
 
 # SDR Rebroadcast: seconds to hold PTT after SDR audio signal stops.
 # Only used when rebroadcast is active (toggled with 'b' key at runtime).
@@ -247,7 +248,7 @@ REMOTE_AUDIO_ROLE = disabled       # server | client | disabled
 REMOTE_AUDIO_HOST =                # Server: client IP. Client: bind addr (blank=all)
 REMOTE_AUDIO_PORT = 9600
 REMOTE_AUDIO_DUCK = true           # Client: duck when higher-priority source active
-REMOTE_AUDIO_PRIORITY = 3          # Client: 0=ducks SDR1/SDR2, 3=lowest (default)
+REMOTE_AUDIO_PRIORITY = 0          # Client: 0=ducks SDR1/SDR2, 3=lowest
 REMOTE_AUDIO_DISPLAY_GAIN = 1.0    # Client: status bar sensitivity
 REMOTE_AUDIO_AUDIO_BOOST = 1.0     # Client: volume boost (1.0=no change)
 REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0  # Server: seconds between reconnect attempts
@@ -261,7 +262,7 @@ REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0  # Server: seconds between reconnect attem
 # PTT is audio-gated: silence below threshold does not key the radio.
 # Firewall: sudo ufw allow 9601/tcp
 
-ENABLE_ANNOUNCE_INPUT = false
+ENABLE_ANNOUNCE_INPUT = true
 ANNOUNCE_INPUT_PORT = 9601
 ANNOUNCE_INPUT_HOST =              # Bind address (blank = all interfaces)
 
@@ -281,16 +282,16 @@ ENABLE_PLAYBACK = true
 PLAYBACK_DIRECTORY = audio
 
 # Volume multiplier (clipped to int16; 1.0=normal, 2.0=double)
-PLAYBACK_VOLUME = 4.0
+PLAYBACK_VOLUME = 2.0
 
 # Auto-play station ID interval (seconds, 0=disabled)
 # Example: 3600 = play station_id file once per hour
 PLAYBACK_ANNOUNCEMENT_INTERVAL = 0
 
 # --- Morse Code (CW) ---
-CW_WPM = 15           # Words per minute (PARIS timing)
-CW_FREQUENCY = 700    # Tone frequency (Hz)
-CW_VOLUME = 1.0       # CW-specific volume (PLAYBACK_VOLUME also applies)
+CW_WPM = 20           # Words per minute (PARIS timing)
+CW_FREQUENCY = 600    # Tone frequency (Hz)
+CW_VOLUME = 1.5       # CW-specific volume (PLAYBACK_VOLUME also applies)
 
 # File naming:
 #   Station ID (key 0): station_id.mp3 or station_id.wav
@@ -315,7 +316,7 @@ TTS_VOLUME = 1.0          # Volume boost (1.0=normal, 2.0=double)
 TTS_DEFAULT_VOICE = 1
 
 # Silence padding before TTS audio (seconds) — prevents first words being cut off
-PTT_TTS_DELAY = 1.0
+PTT_TTS_DELAY = 0.5
 
 
 # ============================================================================
@@ -361,8 +362,8 @@ ECHOLINK_TX_PIPE = /tmp/echolink_tx   # Gateway writes to TheLinkBox
 
 # Audio routing
 ECHOLINK_TO_MUMBLE = true    # EchoLink -> Mumble
-ECHOLINK_TO_RADIO = false    # EchoLink -> Radio TX (will PTT)
-MUMBLE_TO_ECHOLINK = false   # Mumble -> EchoLink
+ECHOLINK_TO_RADIO = true     # EchoLink -> Radio TX (will PTT)
+MUMBLE_TO_ECHOLINK = true    # Mumble -> EchoLink
 RADIO_TO_ECHOLINK = true     # Radio RX -> EchoLink
 
 
