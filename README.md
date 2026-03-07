@@ -398,6 +398,10 @@ SMART_ANNOUNCE_3 = 7200, 2, 20, {Summarize the top 2 breaking news headlines fro
 ENABLE_SMART_ANNOUNCE = true
 SMART_ANNOUNCE_API_KEY = sk-ant-api03-your-key-here    # From console.anthropic.com
 
+# Time window (HH:MM, 24-hour). Blank = no restriction. Handles overnight wrap.
+SMART_ANNOUNCE_START_TIME = 08:00
+SMART_ANNOUNCE_END_TIME = 22:00
+
 SMART_ANNOUNCE_1 = interval_secs, voice, target_secs, {prompt text}
 # Up to 19 entries (SMART_ANNOUNCE_1 through SMART_ANNOUNCE_19)
 ```
@@ -1389,6 +1393,11 @@ PTT_TTS_DELAY = 1.0          # Silence padding before TTS (seconds)
 ```ini
 ENABLE_SMART_ANNOUNCE = false              # Enable AI-powered scheduled announcements
 SMART_ANNOUNCE_API_KEY =                   # Anthropic API key (console.anthropic.com)
+
+# Time window — only play between these times (system clock, 24-hour HH:MM)
+# Leave blank for no restriction. Handles overnight wrap (e.g. 22:00 to 06:00).
+SMART_ANNOUNCE_START_TIME = 08:00          # Earliest time to play announcements
+SMART_ANNOUNCE_END_TIME = 22:00            # Latest time to play announcements
 
 # Entry format: interval_secs, voice (1-9), target_secs (max 60), {prompt text}
 SMART_ANNOUNCE_1 = 3600, 1, 15, {Give a brief weather update for London, UK}
