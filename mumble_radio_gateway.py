@@ -3516,6 +3516,7 @@ class RadioCATClient:
         self._last_activity = 0  # monotonic timestamp of last send/recv (for status bar)
         self._stop = False       # set True to abort loops (ctrl+c)
         self._log = None         # file handle for debug log
+        self._rts_usb = None     # True = USB Controlled, False = Radio Controlled, None = unknown
 
     def _logmsg(self, msg, console=False):
         """Write debug message to cat_debug.log. Only prints to console if verbose or console=True."""
@@ -3540,6 +3541,7 @@ class RadioCATClient:
                 rts_resp = self._send_cmd("!rts True")
                 if rts_resp:
                     self._logmsg(f"  CAT RTS: {rts_resp}")
+                self._rts_usb = True
                 return True
             else:
                 print(f"  CAT auth failed: {resp}")
@@ -3650,6 +3652,17 @@ class RadioCATClient:
                 break
         # Process any buffered packets
         self._recv_line(timeout=0.1)
+
+    def set_rts(self, usb_controlled):
+        """Set RTS state. True = USB Controlled, False = Radio Controlled."""
+        resp = self._send_cmd(f"!rts {usb_controlled}")
+        self._rts_usb = usb_controlled
+        self._logmsg(f"  CAT RTS set to {'USB' if usb_controlled else 'Radio'} Controlled: {resp}")
+        return resp
+
+    def get_rts(self):
+        """Return last known RTS state. True = USB Controlled, False = Radio Controlled."""
+        return self._rts_usb
 
     def _parse_radio_packet(self, data):
         """Parse forwarded binary radio packets to update internal state."""
@@ -4087,7 +4100,30 @@ class SmartAnnouncementManager:
                 text = ' '.join(words[:max_words])
 
             print(f"\n[SmartAnnounce] #{entry['id']}: \"{text[:80]}...\" ({len(words)} words)")
+
+            # RTS management: if USB Controlled, switch to Radio Controlled for
+            # the announcement (so gateway PTT works), then restore afterwards.
+            # If already Radio Controlled, just play without changing RTS.
+            cat = self.gateway.cat_client
+            rts_was_usb = False
+            if cat and cat.get_rts() is True:
+                rts_was_usb = True
+                cat.set_rts(False)
+                time.sleep(0.2)
+
             self.gateway.speak_text(text, voice=entry['voice'])
+
+            # Wait for playback to finish before restoring RTS
+            if rts_was_usb and cat:
+                # Poll until playback completes (speak_text queues async)
+                pb = self.gateway.playback_source
+                if pb:
+                    for _ in range(600):  # up to 60s
+                        if not pb.is_playing:
+                            break
+                        time.sleep(0.1)
+                time.sleep(0.5)
+                cat.set_rts(True)
 
         except Exception as e:
             print(f"\n[SmartAnnounce] #{entry['id']}: API error: {e}")
