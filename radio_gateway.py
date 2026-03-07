@@ -271,9 +271,9 @@ class Config:
             # Smart Announcements (AI-powered)
             'ENABLE_SMART_ANNOUNCE': True,
             'SMART_ANNOUNCE_AI_BACKEND': 'duckduckgo',  # duckduckgo, google-scrape, claude, or gemini
-            'SMART_ANNOUNCE_OLLAMA_MODEL': 'llama3.2:3b',  # Ollama model (blank = auto-detect)
+            'SMART_ANNOUNCE_OLLAMA_MODEL': 'llama3.2:1b',  # Ollama model (blank = auto-detect)
             'SMART_ANNOUNCE_OLLAMA_TEMPERATURE': 0.5,  # 0.0=focused, 1.0=creative
-            'SMART_ANNOUNCE_OLLAMA_TOP_P': 0.9,        # nucleus sampling (0.0-1.0)
+            'SMART_ANNOUNCE_OLLAMA_TOP_P': 0.5,        # nucleus sampling (0.0-1.0)
             'SMART_ANNOUNCE_OLLAMA_NUM_CTX': 1024,     # context window (lower = less RAM/CPU)
             'SMART_ANNOUNCE_OLLAMA_NUM_THREAD': 2,     # CPU threads (0 = all cores)
             'SMART_ANNOUNCE_API_KEY': '',            # Claude API key
@@ -4654,10 +4654,10 @@ class SmartAnnouncementManager:
                 cleaned.append(line)
 
         pre_cleaned = ' '.join(cleaned)
-        # Trim to ~400 words max input to keep Ollama fast
+        # Trim input to keep Ollama fast
         words = pre_cleaned.split()
-        if len(words) > 400:
-            pre_cleaned = ' '.join(words[:400])
+        if len(words) > 200:
+            pre_cleaned = ' '.join(words[:200])
 
         print(f"[SmartAnnounce] #{entry['id']}: ── PRE-CLEANED ({len(pre_cleaned.split())} words) ──")
         print(f"  {pre_cleaned[:300]}...")
@@ -4671,8 +4671,8 @@ class SmartAnnouncementManager:
         prompt = (
             f"{system_prompt}\n\n"
             f"Web search results:\n{search_context}\n\n"
-            f"Based on the above, compose a spoken radio announcement "
-            f"in {max_words} words or fewer for: {entry['prompt']}"
+            f"Based on the above, compose a summary in not more than "
+            f"{max_words} words. No intro, no date or time, just the content."
         )
         print(f"[SmartAnnounce] #{entry['id']}: ── LLM PROMPT ({self._ollama_model}) ──")
         for line in prompt.split('\n'):

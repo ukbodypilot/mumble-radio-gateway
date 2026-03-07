@@ -432,13 +432,13 @@ SMART_ANNOUNCE_AI_BACKEND = duckduckgo
 
 # Ollama model for duckduckgo/google-scrape backends (blank = auto-detect first available)
 # Recommended: llama3.1:8b (PC w/ GPU), llama3.2:3b (PC CPU-only), llama3.2:1b (Pi)
-SMART_ANNOUNCE_OLLAMA_MODEL = llama3.2:3b
+SMART_ANNOUNCE_OLLAMA_MODEL = llama3.2:1b
 
 # Ollama generation parameters
-# temperature: 0.0 = deterministic/focused, 1.0 = creative/varied (default 0.9)
-# top_p: nucleus sampling cutoff, lower = more focused (default 0.9)
+# temperature: 0.0 = deterministic/focused, 1.0 = creative/varied (default 0.5)
+# top_p: nucleus sampling cutoff, lower = more focused (default 0.5)
 SMART_ANNOUNCE_OLLAMA_TEMPERATURE = 0.5
-SMART_ANNOUNCE_OLLAMA_TOP_P = 0.9
+SMART_ANNOUNCE_OLLAMA_TOP_P = 0.5
 
 # Context window size (lower = less RAM/CPU, 1024 is plenty for short announcements)
 SMART_ANNOUNCE_OLLAMA_NUM_CTX = 1024
