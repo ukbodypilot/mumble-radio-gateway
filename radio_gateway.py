@@ -4489,31 +4489,42 @@ class SmartAnnouncementManager:
                 'if(e.textContent.trim()==="Show more")e.click();});'
                 '})();'
             )
+            # Combined JS: click AI Mode, wait for response, then copy page text
+            # to a hidden textarea and select it — all in one console session.
+            # This avoids clicking the page body (which can hit ads/popups).
+            js_combined = (
+                '(async()=>{'
+                'let links=Array.from(document.querySelectorAll("a"));'
+                'let allIdx=links.findIndex(e=>e.textContent.trim()==="All");'
+                'let ai=allIdx>0?links[allIdx-1]:null;'
+                'if(!ai){ai=links.find(e=>e.textContent.trim()==="AI Mode")'
+                '||Array.from(document.querySelectorAll("a,div,span")).find(e=>{'
+                'let t=e.textContent.trim();'
+                'return t==="Dive deeper in AI mode"||t==="Dive deeper in AI Mode";});}'
+                'if(ai){ai.click();await new Promise(r=>setTimeout(r,10000));}'
+                'document.querySelectorAll("div[jsname],span,button").forEach(e=>{'
+                'if(e.textContent.trim()==="Show more")e.click();});'
+                'await new Promise(r=>setTimeout(r,1000));'
+                # Copy page text via hidden textarea (bypasses clipboard API restrictions)
+                'let ta=document.createElement("textarea");'
+                'ta.value=document.body.innerText;'
+                'document.body.appendChild(ta);'
+                'ta.select();'
+                'document.execCommand("copy");'
+                'document.body.removeChild(ta);'
+                '})();'
+            )
             subprocess.run(['xclip', '-selection', 'clipboard'],
-                           input=js_click.encode(), env=display_env, timeout=3)
+                           input=js_combined.encode(), env=display_env, timeout=3)
             xdo('key', 'ctrl+v')
             time.sleep(0.1)
             xdo('key', 'Return')
             print(f"[SmartAnnounce] google-scrape: waiting for AI Mode response...")
-            time.sleep(12)
+            time.sleep(14)
+
+            # Close console
             xdo('key', 'ctrl+shift+k')
             time.sleep(0.2)
-
-            # Click page body, select all, copy
-            geo = subprocess.run(['xdotool', 'getwindowgeometry', '--shell', best_wid],
-                                 capture_output=True, text=True, timeout=3, env=display_env)
-            cx, cy = 663, 500
-            for line in geo.stdout.strip().split('\n'):
-                if line.startswith('WIDTH='): cx = int(line.split('=')[1]) // 2
-                if line.startswith('HEIGHT='): cy = int(line.split('=')[1]) // 2
-            xdo('mousemove', '--window', best_wid, str(cx), str(cy))
-            time.sleep(0.1)
-            xdo('click', '1')
-            time.sleep(0.2)
-            xdo('key', 'ctrl+a')
-            time.sleep(0.2)
-            xdo('key', 'ctrl+c')
-            time.sleep(0.3)
 
             # Get clipboard
             page_text = xclip_get()
