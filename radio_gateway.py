@@ -4457,34 +4457,27 @@ class SmartAnnouncementManager:
         try:
             # Activate Firefox
             xdo('windowactivate', '--sync', best_wid)
-            time.sleep(0.5)
+            time.sleep(0.2)
 
-            # Navigate and click AI Mode in one JS console session.
-            # Open console first, then use window.location to navigate (avoids
-            # URL bar typing issues in raw terminal mode), wait, then click AI Mode.
+            # Open console, navigate via JS, close console, wait for page
             encoded_q = urllib.parse.quote_plus(search_query)
             url = f'https://www.google.com/search?q={encoded_q}&hl=en'
             print(f"[SmartAnnounce] google-scrape: navigating Firefox...")
             xdo('key', 'ctrl+shift+k')
-            time.sleep(1)
-
-            # Navigate via JS
+            time.sleep(0.3)
             nav_js = f'window.location.href="{url}";'
             subprocess.run(['xclip', '-selection', 'clipboard'],
                            input=nav_js.encode(), env=display_env, timeout=3)
             xdo('key', 'ctrl+v')
-            time.sleep(0.3)
+            time.sleep(0.1)
             xdo('key', 'Return')
-            time.sleep(0.5)
-            # Close console (page is navigating)
+            time.sleep(0.2)
             xdo('key', 'ctrl+shift+k')
+            time.sleep(5)
 
-            print(f"[SmartAnnounce] google-scrape: waiting for page load...")
-            time.sleep(8)
-
-            # Reopen console for AI Mode click
+            # Reopen console, click AI Mode + Show more via JS
             xdo('key', 'ctrl+shift+k')
-            time.sleep(1)
+            time.sleep(0.3)
             js_click = (
                 '(async()=>{'
                 # Find AI Mode: the <a> immediately before the "All" link in the toolbar
@@ -4496,26 +4489,22 @@ class SmartAnnouncementManager:
                 '||Array.from(document.querySelectorAll("a,div,span")).find(e=>{'
                 'let t=e.textContent.trim();'
                 'return t==="Dive deeper in AI mode"||t==="Dive deeper in AI Mode";});}'
-                'if(ai){ai.click();await new Promise(r=>setTimeout(r,12000));}'
+                'if(ai){ai.click();await new Promise(r=>setTimeout(r,10000));}'
                 'document.querySelectorAll("div[jsname],span,button").forEach(e=>{'
                 'if(e.textContent.trim()==="Show more")e.click();});'
                 '})();'
             )
-            # Put JS into clipboard and paste it (xdotool type fails in raw terminal mode)
             subprocess.run(['xclip', '-selection', 'clipboard'],
                            input=js_click.encode(), env=display_env, timeout=3)
             xdo('key', 'ctrl+v')
-            time.sleep(0.5)
+            time.sleep(0.1)
             xdo('key', 'Return')
-            print(f"[SmartAnnounce] google-scrape: JS pasted, waiting for AI Mode/Show more...")
-            # Wait for AI Mode/Show more to load
-            time.sleep(15)
-
-            # Close console
+            print(f"[SmartAnnounce] google-scrape: waiting for AI Mode response...")
+            time.sleep(12)
             xdo('key', 'ctrl+shift+k')
-            time.sleep(0.5)
+            time.sleep(0.2)
 
-            # Click page body to focus it (center of window)
+            # Click page body, select all, copy
             geo = subprocess.run(['xdotool', 'getwindowgeometry', '--shell', best_wid],
                                  capture_output=True, text=True, timeout=3, env=display_env)
             cx, cy = 663, 500
@@ -4523,15 +4512,13 @@ class SmartAnnouncementManager:
                 if line.startswith('WIDTH='): cx = int(line.split('=')[1]) // 2
                 if line.startswith('HEIGHT='): cy = int(line.split('=')[1]) // 2
             xdo('mousemove', '--window', best_wid, str(cx), str(cy))
-            time.sleep(0.2)
+            time.sleep(0.1)
             xdo('click', '1')
-            time.sleep(0.3)
-
-            # Select all and copy
+            time.sleep(0.2)
             xdo('key', 'ctrl+a')
-            time.sleep(0.3)
+            time.sleep(0.2)
             xdo('key', 'ctrl+c')
-            time.sleep(0.5)
+            time.sleep(0.3)
 
             # Get clipboard
             page_text = xclip_get()
