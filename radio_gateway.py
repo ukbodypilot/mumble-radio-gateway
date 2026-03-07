@@ -4459,26 +4459,44 @@ class SmartAnnouncementManager:
             xdo('windowactivate', '--sync', best_wid)
             time.sleep(0.5)
 
-            # Navigate to Google search in the current tab (F6 reliably focuses URL bar)
+            # Navigate to Google search using firefox CLI (reliable even when
+            # the gateway's keyboard listener is in raw/cbreak mode)
             encoded_q = urllib.parse.quote_plus(search_query)
             url = f'https://www.google.com/search?q={encoded_q}&hl=en'
-            xdo('key', 'F6')
-            time.sleep(0.5)
-            xdo('type', '--clearmodifiers', '--delay', '10', url, timeout=15)
-            time.sleep(0.3)
-            xdo('key', 'Return')
+            subprocess.run(['firefox', '--new-tab', url],
+                           env=display_env, timeout=5,
+                           capture_output=True)
 
             print(f"[SmartAnnounce] google-scrape: navigating, waiting for page load...")
-            time.sleep(8)
+            time.sleep(10)
 
-            # Open browser console to click "AI Mode" (if not already showing AI Overview)
+            # Re-find the Firefox window (may have changed with new tab)
+            result = xdo('search', '--name', 'Mozilla Firefox')
+            for wid in [w.strip() for w in result.stdout.strip().split('\n') if w.strip()]:
+                try:
+                    geo = subprocess.run(['xdotool', 'getwindowgeometry', '--shell', wid],
+                                         capture_output=True, text=True, timeout=3, env=display_env)
+                    w = h = 0
+                    for line in geo.stdout.strip().split('\n'):
+                        if line.startswith('WIDTH='): w = int(line.split('=')[1])
+                        if line.startswith('HEIGHT='): h = int(line.split('=')[1])
+                    if w * h > best_area:
+                        best_area = w * h
+                        best_wid = wid
+                except Exception:
+                    continue
+            xdo('windowactivate', '--sync', best_wid)
+            time.sleep(0.5)
+
+            # Open browser console to click "AI Mode" or "Dive deeper in AI mode"
             # and "Show more" buttons to expand truncated content
             xdo('key', 'ctrl+shift+k')
             time.sleep(1)
             js_click = (
                 '(async()=>{'
+                'let labels=["AI Mode","Dive deeper in AI mode","Dive deeper in AI Mode"];'
                 'let ai=Array.from(document.querySelectorAll("a,div,span"))'
-                '.find(e=>e.textContent.trim()==="AI Mode");'
+                '.find(e=>labels.includes(e.textContent.trim()));'
                 'if(ai){ai.click();await new Promise(r=>setTimeout(r,12000));}'
                 'document.querySelectorAll("div[jsname],span,button").forEach(e=>{'
                 'if(e.textContent.trim()==="Show more")e.click();});'
