@@ -4463,9 +4463,14 @@ class SmartAnnouncementManager:
             # the gateway's keyboard listener is in raw/cbreak mode)
             encoded_q = urllib.parse.quote_plus(search_query)
             url = f'https://www.google.com/search?q={encoded_q}&hl=en'
-            subprocess.run(['firefox', '--new-tab', url],
-                           env=display_env, timeout=5,
-                           capture_output=True)
+            print(f"[SmartAnnounce] google-scrape: opening URL in Firefox...")
+            print(f"  DISPLAY={display_env.get('DISPLAY', 'NOT SET')}")
+            nav_result = subprocess.run(['firefox', '--new-tab', url],
+                                        env=display_env, timeout=10,
+                                        capture_output=True, text=True)
+            if nav_result.returncode != 0:
+                print(f"[SmartAnnounce] google-scrape: firefox returned {nav_result.returncode}")
+                print(f"  stderr: {nav_result.stderr[:200]}")
 
             print(f"[SmartAnnounce] google-scrape: navigating, waiting for page load...")
             time.sleep(10)
@@ -4494,17 +4499,23 @@ class SmartAnnouncementManager:
             time.sleep(1)
             js_click = (
                 '(async()=>{'
-                'let labels=["AI Mode","Dive deeper in AI mode","Dive deeper in AI Mode"];'
-                'let ai=Array.from(document.querySelectorAll("a,div,span"))'
-                '.find(e=>labels.includes(e.textContent.trim()));'
+                'let ai=document.querySelector("a.XVMlrc")'
+                '||Array.from(document.querySelectorAll("a")).find(e=>e.textContent.trim()==="AI Mode")'
+                '||Array.from(document.querySelectorAll("a,div,span")).find(e=>{'
+                'let t=e.textContent.trim();'
+                'return t==="Dive deeper in AI mode"||t==="Dive deeper in AI Mode";});'
                 'if(ai){ai.click();await new Promise(r=>setTimeout(r,12000));}'
                 'document.querySelectorAll("div[jsname],span,button").forEach(e=>{'
                 'if(e.textContent.trim()==="Show more")e.click();});'
                 '})();'
             )
-            xdo('type', '--delay', '2', js_click, timeout=60)
-            time.sleep(0.2)
+            # Put JS into clipboard and paste it (xdotool type fails in raw terminal mode)
+            subprocess.run(['xclip', '-selection', 'clipboard'],
+                           input=js_click.encode(), env=display_env, timeout=3)
+            xdo('key', 'ctrl+v')
+            time.sleep(0.5)
             xdo('key', 'Return')
+            print(f"[SmartAnnounce] google-scrape: JS pasted, waiting for AI Mode/Show more...")
             # Wait for AI Mode/Show more to load
             time.sleep(15)
 
@@ -4536,27 +4547,55 @@ class SmartAnnouncementManager:
                 print(f"[SmartAnnounce] google-scrape: clipboard empty")
                 return None
 
-            # Extract AI Overview section
-            ai_start = page_text.find('AI Overview')
-            if ai_start == -1:
-                print(f"[SmartAnnounce] google-scrape: 'AI Overview' not found in page text ({len(page_text)} chars)")
-                # Check for CAPTCHA
-                if 'unusual traffic' in page_text.lower() or 'captcha' in page_text.lower():
-                    print(f"[SmartAnnounce] google-scrape: Google CAPTCHA detected — try searching manually first")
-                return None
-
-            # Find the end marker
-            ai_text = page_text[ai_start:]
-            for end_marker in ['Dive deeper in AI Mode', 'AI can make mistakes', 'Dive deeper']:
-                end_pos = ai_text.find(end_marker)
-                if end_pos > 0:
-                    ai_text = ai_text[:end_pos]
-                    break
-
-            # Clean up: remove "AI Overview" header and citation markers like +1, +2
+            # Extract AI content — two formats:
+            # 1. "AI Overview" section in regular search results
+            # 2. AI Mode page (content starts after search query, ends at sources/footer)
             import re
-            ai_text = ai_text.replace('AI Overview', '', 1).strip()
-            ai_text = re.sub(r'^\+\d+\s*', '', ai_text).strip()  # remove leading +1, +2 etc.
+            ai_start = page_text.find('AI Overview')
+            if ai_start != -1:
+                # Format 1: regular AI Overview
+                ai_text = page_text[ai_start:]
+                for end_marker in ['Dive deeper in AI Mode', 'AI can make mistakes', 'Dive deeper']:
+                    end_pos = ai_text.find(end_marker)
+                    if end_pos > 0:
+                        ai_text = ai_text[:end_pos]
+                        break
+                ai_text = ai_text.replace('AI Overview', '', 1).strip()
+                ai_text = re.sub(r'^\+\d+\s*', '', ai_text).strip()
+            else:
+                # Format 2: AI Mode — content is between the search query and footer/sources
+                # Page starts with: "Skip to main content...AI Mode\nAll\nNews...\n<search query>\n<AI content>"
+                lines = page_text.split('\n')
+                # Find the search query line, content starts after it
+                query_lower = search_query.lower().strip()
+                content_start = -1
+                for i, line in enumerate(lines):
+                    if line.strip().lower() == query_lower:
+                        content_start = i + 1
+                        break
+                if content_start == -1:
+                    # Try partial match
+                    for i, line in enumerate(lines):
+                        if query_lower[:30] in line.strip().lower():
+                            content_start = i + 1
+                            break
+                if content_start == -1:
+                    # Check for CAPTCHA
+                    if 'unusual traffic' in page_text.lower() or 'captcha' in page_text.lower():
+                        print(f"[SmartAnnounce] google-scrape: Google CAPTCHA detected")
+                    else:
+                        print(f"[SmartAnnounce] google-scrape: could not find AI content in {len(page_text)} chars")
+                    return None
+                # Content runs until sources/footer markers
+                ai_lines = []
+                for line in lines[content_start:]:
+                    lt = line.strip()
+                    # Stop at footer/source markers
+                    if lt in ('Sources', 'Related searches', 'People also search for',
+                              'HelpSend feedbackPrivacyTerms') or lt.startswith('Results are personalized'):
+                        break
+                    ai_lines.append(lt)
+                ai_text = '\n'.join(ai_lines).strip()
 
             return ai_text if ai_text else None
 
