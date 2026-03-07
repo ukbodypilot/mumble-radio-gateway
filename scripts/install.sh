@@ -166,7 +166,7 @@ set -e
 
 # Core packages (excluding pymumble — handled separately due to PyPI name variants)
 # Only install packages that are missing — avoids slow pip index checks on re-run
-CORE_PKGS="hid numpy pyaudio soundfile resampy psutil gtts pyserial"
+CORE_PKGS="hid numpy pyaudio soundfile resampy psutil gtts pyserial anthropic"
 MISSING_PKGS=""
 for pkg in $CORE_PKGS; do
     # Map pip names to Python import names where they differ

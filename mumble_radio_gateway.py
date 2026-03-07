@@ -268,6 +268,9 @@ class Config:
             'RELAY_CHARGER_BAUD': 9600,
             'RELAY_CHARGER_ON_TIME': '23:00',
             'RELAY_CHARGER_OFF_TIME': '06:00',
+            # Smart Announcements (AI-powered via Claude API)
+            'ENABLE_SMART_ANNOUNCE': False,
+            'SMART_ANNOUNCE_API_KEY': '',
             # TH-9800 CAT Control
             'ENABLE_CAT_CONTROL': False,
             'CAT_HOST': '127.0.0.1',
@@ -330,9 +333,18 @@ class Config:
                         if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
                             value = value[1:-1]
 
-                        # Strip inline comments (everything after #)
+                        # Strip inline comments (everything after #),
+                        # but preserve # inside {braces} (used by smart announce prompts)
                         if '#' in value:
-                            value = value.split('#')[0].strip()
+                            brace_start = value.find('{')
+                            if brace_start != -1 and value.rfind('}') > brace_start:
+                                # Has braces — only strip comments outside the braces
+                                before_brace = value[:brace_start]
+                                if '#' in before_brace:
+                                    value = before_brace.split('#')[0].strip()
+                                # else: # is inside braces, keep it
+                            else:
+                                value = value.split('#')[0].strip()
                         
                         # Skip if value is empty after stripping comments
                         if not value:
@@ -3916,6 +3928,184 @@ class RadioCATClient:
         return
 
 
+class SmartAnnouncementManager:
+    """AI-powered announcements using Claude API with web search.
+
+    Reads SMART_ANNOUNCE_N entries from config. Each entry has:
+        interval (seconds), voice (1-9), target_seconds (max speech length), {prompt}
+
+    Claude composes a spoken message based on the prompt, using web search
+    for real-time data (weather, news, time, etc). The result is fed to
+    the existing gTTS pipeline for broadcast.
+    """
+
+    # ~2.5 words/second for gTTS speech
+    WORDS_PER_SECOND = 2.5
+
+    def __init__(self, gateway):
+        self.gateway = gateway
+        self.config = gateway.config
+        self._entries = []  # list of dicts: {id, interval, voice, target_secs, prompt, last_run}
+        self._thread = None
+        self._stop = False
+        self._client = None  # anthropic.Anthropic instance
+        self._parse_entries()
+
+    def _parse_entries(self):
+        """Find all SMART_ANNOUNCE_N entries in config."""
+        for i in range(1, 20):
+            key = f'SMART_ANNOUNCE_{i}'
+            raw = getattr(self.config, key, None)
+            if raw is None:
+                continue
+            try:
+                entry = self._parse_entry(i, str(raw))
+                if entry:
+                    self._entries.append(entry)
+            except Exception as e:
+                print(f"  [SmartAnnounce] Error parsing {key}: {e}")
+
+    def _parse_entry(self, entry_id, raw):
+        """Parse: interval, voice, target_seconds, {prompt text here}"""
+        # Find the prompt in braces
+        brace_start = raw.find('{')
+        brace_end = raw.rfind('}')
+        if brace_start == -1 or brace_end == -1 or brace_end <= brace_start:
+            print(f"  [SmartAnnounce] Entry {entry_id}: missing {{prompt}} in braces")
+            return None
+        prompt = raw[brace_start + 1:brace_end].strip()
+        prefix = raw[:brace_start]
+        parts = [p.strip() for p in prefix.split(',') if p.strip()]
+        if len(parts) < 3:
+            print(f"  [SmartAnnounce] Entry {entry_id}: need interval, voice, target_seconds before {{prompt}}")
+            return None
+        return {
+            'id': entry_id,
+            'interval': int(parts[0]),
+            'voice': int(parts[1]),
+            'target_secs': min(int(parts[2]), 60),
+            'prompt': prompt,
+            'last_run': 0,
+        }
+
+    def start(self):
+        """Start the background timer thread."""
+        if not self._entries:
+            return
+        api_key = getattr(self.config, 'SMART_ANNOUNCE_API_KEY', '')
+        if not api_key:
+            print("  [SmartAnnounce] No API key configured (SMART_ANNOUNCE_API_KEY)")
+            return
+        try:
+            import anthropic
+            self._client = anthropic.Anthropic(api_key=api_key)
+            print(f"  [SmartAnnounce] Initialized with {len(self._entries)} scheduled announcement(s)")
+            for e in self._entries:
+                print(f"    #{e['id']}: every {e['interval']}s, voice {e['voice']}, "
+                      f"~{e['target_secs']}s, prompt: {e['prompt'][:60]}...")
+        except ImportError:
+            print("  [SmartAnnounce] anthropic package not installed")
+            print("    Install with: pip3 install anthropic --break-system-packages")
+            return
+        except Exception as e:
+            print(f"  [SmartAnnounce] Init error: {e}")
+            return
+
+        self._stop = False
+        self._thread = threading.Thread(target=self._timer_loop, daemon=True,
+                                        name="SmartAnnounce")
+        self._thread.start()
+
+    def stop(self):
+        """Stop the timer thread."""
+        self._stop = True
+
+    def _timer_loop(self):
+        """Check intervals and trigger announcements."""
+        # Stagger first runs: don't all fire at t=0
+        now = time.time()
+        for e in self._entries:
+            e['last_run'] = now
+        while not self._stop:
+            time.sleep(5)
+            now = time.time()
+            for e in self._entries:
+                if now - e['last_run'] >= e['interval']:
+                    e['last_run'] = now
+                    try:
+                        self._run_announcement(e)
+                    except Exception as ex:
+                        print(f"\n[SmartAnnounce] Error on #{e['id']}: {ex}")
+
+    def _run_announcement(self, entry):
+        """Call Claude API, get text, speak it."""
+        if not self._client:
+            return
+        # Don't announce while radio is busy (PTT active, playback in progress)
+        if getattr(self.gateway, 'vad_active', False):
+            return
+        if self.gateway.playback_source and self.gateway.playback_source.is_playing:
+            return
+
+        max_words = int(entry['target_secs'] * self.WORDS_PER_SECOND)
+        system_prompt = (
+            "You are a radio station announcement system. Generate a spoken announcement "
+            "based on the user's prompt. Your response will be converted to speech using "
+            "text-to-speech and broadcast on radio.\n\n"
+            "RULES:\n"
+            f"- Your response MUST be {max_words} words or fewer ({entry['target_secs']} seconds of speech)\n"
+            "- Write ONLY the words to be spoken — no quotes, no labels, no markdown\n"
+            "- Use natural spoken language (contractions, simple sentences)\n"
+            "- Do not start with 'Here is' or 'This is an announcement'\n"
+            "- Numbers: write them as spoken ('twenty-three', not '23')\n"
+            "- Times: use 12-hour format ('three forty-five PM')\n"
+            "- Be concise, informative, and clear for radio listeners\n"
+            "- If the prompt asks for real-time data, use web search to get current info"
+        )
+
+        try:
+            response = self._client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1024,
+                system=system_prompt,
+                tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+                messages=[{"role": "user", "content": entry['prompt']}],
+            )
+            # Extract text from response (may contain tool_use and text blocks)
+            text_parts = []
+            for block in response.content:
+                if hasattr(block, 'text'):
+                    text_parts.append(block.text)
+            text = ' '.join(text_parts).strip()
+            if not text:
+                print(f"\n[SmartAnnounce] #{entry['id']}: empty response from Claude")
+                return
+
+            # Truncate if over word limit (safety net)
+            words = text.split()
+            if len(words) > max_words + 10:
+                text = ' '.join(words[:max_words])
+
+            print(f"\n[SmartAnnounce] #{entry['id']}: \"{text[:80]}...\" ({len(words)} words)")
+            self.gateway.speak_text(text, voice=entry['voice'])
+
+        except Exception as e:
+            print(f"\n[SmartAnnounce] #{entry['id']}: API error: {e}")
+
+    def trigger(self, entry_id):
+        """Manually trigger a specific announcement. Returns True if found."""
+        for e in self._entries:
+            if e['id'] == entry_id:
+                threading.Thread(target=self._run_announcement, args=(e,),
+                                 daemon=True, name=f"SmartAnnounce-{entry_id}").start()
+                return True
+        return False
+
+    def get_entries(self):
+        """Return list of configured entries for status display."""
+        return self._entries
+
+
 class MumbleServerManager:
     """Manages local mumble-server (murmurd) instances.
 
@@ -4393,6 +4583,9 @@ class MumbleRadioGateway:
         self._charger_manual = False   # True when user manually overrode schedule
         self._charger_on_time = None   # (hour, minute) tuple
         self._charger_off_time = None  # (hour, minute) tuple
+
+        # Smart Announcements (AI-powered)
+        self.smart_announce = None  # SmartAnnouncementManager instance
 
         # TH-9800 CAT control
         self.cat_client = None  # RadioCATClient instance
@@ -5534,6 +5727,14 @@ class MumbleRadioGateway:
                         self.mumble_server_2.state = MumbleServerManager.STATE_ERROR
                         self.mumble_server_2.error_msg = str(e)
 
+            # Initialize Smart Announcements (AI-powered via Claude API)
+            if getattr(self.config, 'ENABLE_SMART_ANNOUNCE', False):
+                try:
+                    self.smart_announce = SmartAnnouncementManager(self)
+                    self.smart_announce.start()
+                except Exception as e:
+                    print(f"  [SmartAnnounce] Init error: {e}")
+
             # Initialize EchoLink source if enabled (Phase 3B)
             if self.config.ENABLE_ECHOLINK:
                 try:
@@ -6263,10 +6464,30 @@ class MumbleRadioGateway:
                 else:
                     self.send_text_message("Playback not available")
 
+            elif command == '!smart':
+                if not self.smart_announce or not self.smart_announce._client:
+                    self.send_text_message("Smart announcements not configured")
+                elif args and args.isdigit():
+                    entry_id = int(args)
+                    if self.smart_announce.trigger(entry_id):
+                        self.send_text_message(f"Triggering smart announcement #{entry_id}...")
+                    else:
+                        self.send_text_message(f"No smart announcement #{entry_id}")
+                else:
+                    entries = self.smart_announce.get_entries()
+                    if entries:
+                        lines = [f"#{e['id']}: every {e['interval']}s, voice {e['voice']}, "
+                                 f"~{e['target_secs']}s — {e['prompt'][:50]}" for e in entries]
+                        self.send_text_message("Smart announcements:\n" + "\n".join(lines)
+                                               + "\n\nUsage: !smart <N> to trigger")
+                    else:
+                        self.send_text_message("No smart announcements configured")
+
             elif command == '!help':
                 help_text = [
                     "=== Gateway Commands ===",
                     "!speak [voice#] <text> - TTS broadcast (voices 1-9)",
+                    "!smart [N]    - List or trigger smart announcement",
                     "!cw <text>    - Send Morse code on radio",
                     "!play <0-9>   - Play announcement by slot",
                     "!files        - List loaded announcement files",
@@ -8690,6 +8911,12 @@ class MumbleRadioGateway:
                 self.relay_charger.close()
                 if self.config.VERBOSE_LOGGING:
                     print("  Charger relay port closed")
+            except Exception:
+                pass
+
+        if self.smart_announce:
+            try:
+                self.smart_announce.stop()
             except Exception:
                 pass
 

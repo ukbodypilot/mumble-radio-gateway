@@ -398,6 +398,38 @@ RELAY_CHARGER_OFF_TIME = 06:00
 
 
 # ============================================================================
+# SMART ANNOUNCEMENTS (AI-powered via Claude API)
+# ============================================================================
+# Claude generates spoken announcements from prompts, with web search for
+# real-time data (weather, news, time, etc). Audio is broadcast via gTTS + PTT.
+#
+# Prerequisites:
+#   pip3 install anthropic --break-system-packages
+#
+# Mumble command: !smart <N> to trigger manually, !smart to list all
+#
+# Entry format:
+#   SMART_ANNOUNCE_N = interval_secs, voice, target_secs, {prompt text}
+#
+# Parameters:
+#   interval_secs  — how often to announce (seconds, e.g. 3600 = hourly)
+#   voice          — gTTS voice number (1=US, 2=British, 3=Australian, etc)
+#   target_secs    — target speech length in seconds (max 60)
+#   {prompt text}  — instructions for Claude (anything inside braces)
+
+ENABLE_SMART_ANNOUNCE = false
+
+# Anthropic API key (get one at console.anthropic.com)
+# WARNING: Do not commit this file with a real API key
+SMART_ANNOUNCE_API_KEY =
+
+# Example announcements (uncomment and customize):
+# SMART_ANNOUNCE_1 = 3600, 1, 15, {Give a brief weather update for London, UK including temperature and conditions}
+# SMART_ANNOUNCE_2 = 1800, 1, 10, {What is the current UTC time and date, spoken naturally}
+# SMART_ANNOUNCE_3 = 7200, 2, 20, {Summarize the top 2 breaking news headlines from the UK}
+
+
+# ============================================================================
 # TH-9800 CAT CONTROL
 # ============================================================================
 # Connects to TH9800_CAT.py TCP server to configure the radio on startup.
