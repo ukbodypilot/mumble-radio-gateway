@@ -4054,11 +4054,14 @@ class SmartAnnouncementManager:
     def _run_announcement(self, entry):
         """Call Claude API, get text, speak it."""
         if not self._client:
+            print(f"\n[SmartAnnounce] #{entry['id']}: No API client (missing key?)")
             return
         # Don't announce while radio is busy (PTT active, playback in progress)
         if getattr(self.gateway, 'vad_active', False):
+            print(f"\n[SmartAnnounce] #{entry['id']}: Skipped — VAD active (radio busy)")
             return
         if self.gateway.playback_source and self.gateway.playback_source.current_file:
+            print(f"\n[SmartAnnounce] #{entry['id']}: Skipped — playback in progress")
             return
 
         max_words = int(entry['target_secs'] * self.WORDS_PER_SECOND)
