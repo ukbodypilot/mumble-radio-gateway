@@ -108,6 +108,21 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ## TH-9800 CAT Control
 - `RadioCATClient` class: TCP client for TH9800_CAT.py server
 - Config: `ENABLE_CAT_CONTROL`, `CAT_HOST`, `CAT_PORT`, `CAT_PASSWORD`
+- `_logmsg` defaults to log-only (console=False); verbose shows on screen
+- `setup_radio` prints concise summary, not per-step spam
+- RTS read/set/toggle via TCP: `!rts`, `!rts True`, `!rts False`
+
+## Smart Announcements (Claude API)
+- `SmartAnnouncementManager`: scheduled AI-powered spoken announcements
+- Config: `ENABLE_SMART_ANNOUNCE`, `SMART_ANNOUNCE_API_KEY`, `SMART_ANNOUNCE_N`
+- Entry format: `interval_secs, voice, target_secs, {prompt text in braces}`
+- Uses Claude Sonnet with web_search tool (max 3 searches) for real-time data
+- Word limit: ~2.5 words/sec × target_secs; max 60s
+- Feeds text to existing gTTS → PTT pipeline
+- Mumble commands: `!smart` (list), `!smart N` (trigger)
+- Skips if radio busy (VAD active or playback in progress)
+- Anthropic API key stored in gateway_config.txt (NOT committed)
+- Dependency: `anthropic` SDK (added to installer)
 
 ## Desktop Shortcut
 - Template: `scripts/mumble-radio-gateway.desktop.template`
@@ -121,7 +136,10 @@ not restored on exit, SDR periodic gaps, rebroadcast bugs, SV status bar.
 
 ## Deployment Notes
 - WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`
-- start.sh sets CPU governor to `performance` and launches gateway with `nice -n -10`
+- start.sh: reads config first (`read_config` helper), sudo keepalive loop, renice approach
+- `START_TH9800_CAT`, `START_CLAUDE_CODE` config options control optional launches
+- DarkIce/FFmpeg only started if `ENABLE_STREAM_OUTPUT = true`
+- TH9800 output redirected to `/tmp/th9800_cat.log`
 - DarkIce runs FIFO RT 4; gateway runs nice -10 (SCHED_OTHER)
 
 ## User Preferences

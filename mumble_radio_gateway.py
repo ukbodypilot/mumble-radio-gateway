@@ -273,6 +273,7 @@ class Config:
             'SMART_ANNOUNCE_API_KEY': '',
             # TH-9800 CAT Control
             'ENABLE_CAT_CONTROL': False,
+            'CAT_STARTUP_COMMANDS': True,
             'CAT_HOST': '127.0.0.1',
             'CAT_PORT': 9800,
             'CAT_PASSWORD': '',
@@ -5705,20 +5706,23 @@ class MumbleRadioGateway:
                     self.cat_client = RadioCATClient(host, port, password, verbose=verbose)
                     if self.cat_client.connect():
                         print("  Connected to CAT server")
-                        # Install SIGINT handler to stop CAT loops
-                        _cat_ref = self.cat_client
-                        _prev_handler = signal.getsignal(signal.SIGINT)
-                        def _cat_sigint(sig, frame):
-                            _cat_ref._stop = True
-                        signal.signal(signal.SIGINT, _cat_sigint)
-                        try:
-                            self.cat_client.setup_radio(self.config)
-                        except KeyboardInterrupt:
-                            self.cat_client._stop = True
-                        finally:
-                            signal.signal(signal.SIGINT, _prev_handler)
-                        if self.cat_client._stop:
-                            print("\n  CAT setup interrupted")
+                        if self.config.CAT_STARTUP_COMMANDS:
+                            # Install SIGINT handler to stop CAT loops
+                            _cat_ref = self.cat_client
+                            _prev_handler = signal.getsignal(signal.SIGINT)
+                            def _cat_sigint(sig, frame):
+                                _cat_ref._stop = True
+                            signal.signal(signal.SIGINT, _cat_sigint)
+                            try:
+                                self.cat_client.setup_radio(self.config)
+                            except KeyboardInterrupt:
+                                self.cat_client._stop = True
+                            finally:
+                                signal.signal(signal.SIGINT, _prev_handler)
+                            if self.cat_client._stop:
+                                print("\n  CAT setup interrupted")
+                        else:
+                            print("  CAT startup commands disabled (CAT_STARTUP_COMMANDS = false)")
                     else:
                         print("  Failed to connect to CAT server")
                         self.cat_client = None

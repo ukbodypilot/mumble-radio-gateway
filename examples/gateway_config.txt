@@ -437,6 +437,7 @@ SMART_ANNOUNCE_API_KEY =
 # in its config.txt, or manually click Start Server in the GUI).
 
 ENABLE_CAT_CONTROL = false
+CAT_STARTUP_COMMANDS = true        # Send channel/volume/power commands on connect (false = connect only)
 CAT_HOST = 127.0.0.1
 CAT_PORT = 9800
 CAT_PASSWORD =
