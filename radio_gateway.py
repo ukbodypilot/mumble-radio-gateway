@@ -274,6 +274,8 @@ class Config:
             'SMART_ANNOUNCE_OLLAMA_MODEL': 'llama3.2:3b',  # Ollama model (blank = auto-detect)
             'SMART_ANNOUNCE_OLLAMA_TEMPERATURE': 0.5,  # 0.0=focused, 1.0=creative
             'SMART_ANNOUNCE_OLLAMA_TOP_P': 0.9,        # nucleus sampling (0.0-1.0)
+            'SMART_ANNOUNCE_OLLAMA_NUM_CTX': 1024,     # context window (lower = less RAM/CPU)
+            'SMART_ANNOUNCE_OLLAMA_NUM_THREAD': 2,     # CPU threads (0 = all cores)
             'SMART_ANNOUNCE_API_KEY': '',            # Claude API key
             'SMART_ANNOUNCE_GEMINI_API_KEY': '',     # Gemini API key
             'SMART_ANNOUNCE_START_TIME': '08:00',   # HH:MM — empty = no restriction
@@ -4657,16 +4659,22 @@ class SmartAnnouncementManager:
             print(f"  {line}")
         temperature = float(getattr(self.config, 'SMART_ANNOUNCE_OLLAMA_TEMPERATURE', 0.7))
         top_p = float(getattr(self.config, 'SMART_ANNOUNCE_OLLAMA_TOP_P', 0.9))
-        print(f"[SmartAnnounce] #{entry['id']}: Ollama options: temp={temperature}, top_p={top_p}, max_tokens={max_words * 3}")
+        num_ctx = int(getattr(self.config, 'SMART_ANNOUNCE_OLLAMA_NUM_CTX', 1024))
+        num_thread = int(getattr(self.config, 'SMART_ANNOUNCE_OLLAMA_NUM_THREAD', 0))
+        options = {
+            "num_predict": max_words * 3,
+            "temperature": temperature,
+            "top_p": top_p,
+            "num_ctx": num_ctx,
+        }
+        if num_thread > 0:
+            options["num_thread"] = num_thread
+        print(f"[SmartAnnounce] #{entry['id']}: Ollama options: temp={temperature}, top_p={top_p}, ctx={num_ctx}, threads={num_thread or 'all'}, max_tokens={max_words * 3}")
         payload = json.dumps({
             "model": self._ollama_model,
             "prompt": prompt,
             "stream": False,
-            "options": {
-                "num_predict": max_words * 3,
-                "temperature": temperature,
-                "top_p": top_p,
-            },
+            "options": options,
         }).encode()
         req = urllib.request.Request(
             'http://127.0.0.1:11434/api/generate',

@@ -440,6 +440,12 @@ SMART_ANNOUNCE_OLLAMA_MODEL = llama3.2:3b
 SMART_ANNOUNCE_OLLAMA_TEMPERATURE = 0.5
 SMART_ANNOUNCE_OLLAMA_TOP_P = 0.9
 
+# Context window size (lower = less RAM/CPU, 1024 is plenty for short announcements)
+SMART_ANNOUNCE_OLLAMA_NUM_CTX = 1024
+
+# CPU threads for Ollama (0 = all cores, 2 = leave cores free for gateway)
+SMART_ANNOUNCE_OLLAMA_NUM_THREAD = 2
+
 # Claude API key (used when AI_BACKEND = claude)
 # WARNING: Do not commit this file with a real API key
 SMART_ANNOUNCE_API_KEY =
