@@ -7617,6 +7617,17 @@ class MumbleRadioGateway:
                             if self.config.VERBOSE_LOGGING:
                                 print("\n[Keyboard] File playback not enabled")
 
+                    elif char in ('[', ']', '\\'):
+                        # Trigger smart announcement 1/2/3
+                        slot = {'[': 1, ']': 2, '\\': 3}[char]
+                        if self.smart_announce and self.smart_announce._client:
+                            if self.smart_announce.trigger(slot):
+                                print(f"\n[Smart] Triggering announcement #{slot}")
+                            else:
+                                print(f"\n[Smart] No announcement #{slot} configured")
+                        else:
+                            print(f"\n[Smart] Smart announcements not available")
+
                     elif char == 'q':
                         # Restart gateway (re-exec Python process, reloads config)
                         print(f"\n[Keyboard] Restarting gateway...")
@@ -8078,6 +8089,7 @@ class MumbleRadioGateway:
         print("  Play:  '1-9'=Announcements  '0'=StationID  '-'=Stop")
         print("  Net:   'k'=Reset remote audio connection")
         print("  Relay: 'j'=Radio power button  'h'=Charger toggle")
+        print("  Smart: '['=Smart#1  ']'=Smart#2  '\\'=Smart#3")
         print("  Trace: 'i'=Start/stop audio trace  'u'=Start/stop watchdog trace")
         print("  Misc:  'q'=Restart gateway  'z'=Clear and reprint console")
         print("=" * 60)
