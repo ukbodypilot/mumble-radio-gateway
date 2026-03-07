@@ -87,7 +87,7 @@ if pgrep -x "mumble" > /dev/null 2>&1; then
     echo "  ✓ Mumble already running (PID: $(pgrep -x mumble | head -1))"
 else
     if command -v mumble > /dev/null 2>&1; then
-        mumble &
+        mumble > /dev/null 2>&1 &
         disown
         sleep 2
         if pgrep -x "mumble" > /dev/null 2>&1; then
@@ -130,7 +130,7 @@ else
 
         if [ -n "$TH9800_CMD" ]; then
             echo "  Found TH-9800 at: $TH9800_DIR"
-            $TH9800_CMD &
+            $TH9800_CMD > /tmp/th9800_cat.log 2>&1 &
             TH9800_PID=$!
             sleep 2
             if ps -p $TH9800_PID > /dev/null 2>&1; then
@@ -341,10 +341,13 @@ echo "Press Ctrl+C to stop everything"
 echo ""
 sleep 2
 
-# Start gateway with elevated scheduling priority so it competes well against
-# CPU-heavy apps (e.g. SDRconnect).  nice -n -10 raises priority without RT
-# scheduling — safe, no risk of starving the kernel.
-sudo nice -n -10 sudo -u "$USER" python3 "$GATEWAY_FILE"
+# Start gateway with elevated scheduling priority.
+# Launch normally, then renice the process (avoids sudo wrapping the gateway,
+# which would break the sudo credential cache for internal sudo calls).
+python3 "$GATEWAY_FILE" &
+GATEWAY_PID=$!
+sudo renice -n -10 -p $GATEWAY_PID > /dev/null 2>&1
+wait $GATEWAY_PID
 
 # If gateway exits, cleanup
 cleanup
