@@ -4459,23 +4459,30 @@ class SmartAnnouncementManager:
             xdo('windowactivate', '--sync', best_wid)
             time.sleep(0.5)
 
-            # Navigate in the current tab — paste URL via clipboard (reliable in raw terminal mode)
+            # Navigate and click AI Mode in one JS console session.
+            # Open console first, then use window.location to navigate (avoids
+            # URL bar typing issues in raw terminal mode), wait, then click AI Mode.
             encoded_q = urllib.parse.quote_plus(search_query)
             url = f'https://www.google.com/search?q={encoded_q}&hl=en'
             print(f"[SmartAnnounce] google-scrape: navigating Firefox...")
+            xdo('key', 'ctrl+shift+k')
+            time.sleep(1)
+
+            # Navigate via JS
+            nav_js = f'window.location.href="{url}";'
             subprocess.run(['xclip', '-selection', 'clipboard'],
-                           input=url.encode(), env=display_env, timeout=3)
-            xdo('key', 'F6')
-            time.sleep(0.3)
+                           input=nav_js.encode(), env=display_env, timeout=3)
             xdo('key', 'ctrl+v')
             time.sleep(0.3)
             xdo('key', 'Return')
+            time.sleep(0.5)
+            # Close console (page is navigating)
+            xdo('key', 'ctrl+shift+k')
 
             print(f"[SmartAnnounce] google-scrape: waiting for page load...")
             time.sleep(8)
 
-            # Open browser console to click "AI Mode" or "Dive deeper in AI mode"
-            # and "Show more" buttons to expand truncated content
+            # Reopen console for AI Mode click
             xdo('key', 'ctrl+shift+k')
             time.sleep(1)
             js_click = (
