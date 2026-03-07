@@ -4078,6 +4078,7 @@ class SmartAnnouncementManager:
         )
 
         try:
+            print(f"\n[SmartAnnounce] #{entry['id']}: Calling Claude API (web search)...")
             response = self._client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=1024,
@@ -4092,7 +4093,7 @@ class SmartAnnouncementManager:
                     text_parts.append(block.text)
             text = ' '.join(text_parts).strip()
             if not text:
-                print(f"\n[SmartAnnounce] #{entry['id']}: empty response from Claude")
+                print(f"[SmartAnnounce] #{entry['id']}: empty response from Claude")
                 return
 
             # Truncate if over word limit (safety net)
@@ -4100,7 +4101,7 @@ class SmartAnnouncementManager:
             if len(words) > max_words + 10:
                 text = ' '.join(words[:max_words])
 
-            print(f"\n[SmartAnnounce] #{entry['id']}: \"{text[:80]}...\" ({len(words)} words)")
+            print(f"[SmartAnnounce] #{entry['id']}: \"{text[:80]}\" ({len(words)} words, voice {entry['voice']})")
 
             # RTS management: if USB Controlled, switch to Radio Controlled for
             # the announcement (so gateway PTT works), then restore afterwards.
@@ -4112,6 +4113,7 @@ class SmartAnnouncementManager:
                 cat.set_rts(False)
                 time.sleep(0.2)
 
+            print(f"[SmartAnnounce] #{entry['id']}: Speaking via TTS...")
             self.gateway.speak_text(text, voice=entry['voice'])
 
             # Wait for playback to finish before restoring RTS
@@ -4120,7 +4122,7 @@ class SmartAnnouncementManager:
                 pb = self.gateway.playback_source
                 if pb:
                     for _ in range(600):  # up to 60s
-                        if not pb.is_playing:
+                        if not pb.current_file:
                             break
                         time.sleep(0.1)
                 time.sleep(0.5)
