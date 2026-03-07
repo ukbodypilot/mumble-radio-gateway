@@ -3488,10 +3488,11 @@ class RadioCATClient:
     LEFT = 'LEFT'
     RIGHT = 'RIGHT'
 
-    def __init__(self, host, port, password=''):
+    def __init__(self, host, port, password='', verbose=False):
         self._host = host
         self._port = port
         self._password = password
+        self._verbose = verbose
         self._sock = None
         self._buf = b''
         # Radio state parsed from forwarded packets
@@ -3504,9 +3505,9 @@ class RadioCATClient:
         self._stop = False       # set True to abort loops (ctrl+c)
         self._log = None         # file handle for debug log
 
-    def _logmsg(self, msg, console=True):
-        """Write debug message to cat_debug.log and optionally print."""
-        if console:
+    def _logmsg(self, msg, console=False):
+        """Write debug message to cat_debug.log. Only prints to console if verbose or console=True."""
+        if console or self._verbose:
             print(msg)
         if self._log:
             self._log.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
@@ -3526,7 +3527,7 @@ class RadioCATClient:
                 # Ensure RTS is set to USB Controlled (required for CAT TX)
                 rts_resp = self._send_cmd("!rts True")
                 if rts_resp:
-                    print(f"  CAT RTS: {rts_resp}")
+                    self._logmsg(f"  CAT RTS: {rts_resp}")
                 return True
             else:
                 print(f"  CAT auth failed: {resp}")
@@ -3865,7 +3866,7 @@ class RadioCATClient:
         return False
 
     def setup_radio(self, config):
-        """Run full radio setup sequence from config."""
+        """Run full radio setup sequence from config. Prints concise summary."""
         left_ch = getattr(config, 'CAT_LEFT_CHANNEL', -1)
         right_ch = getattr(config, 'CAT_RIGHT_CHANNEL', -1)
         left_vol = getattr(config, 'CAT_LEFT_VOLUME', -1)
@@ -3873,59 +3874,46 @@ class RadioCATClient:
         left_pwr = str(getattr(config, 'CAT_LEFT_POWER', '')).strip()
         right_pwr = str(getattr(config, 'CAT_RIGHT_POWER', '')).strip()
 
-        if self._stop:
-            return
-
+        # Build list of tasks to run (default args capture values, not references)
+        tasks = []
         if int(left_ch) != -1:
-            try:
-                self.set_channel(self.LEFT, int(left_ch))
-            except Exception as e:
-                self._logmsg(f"  CAT: Left channel error: {e}")
-
-        if self._stop:
-            return
-
+            tasks.append(('L ch', lambda c=int(left_ch): self.set_channel(self.LEFT, c)))
         if int(right_ch) != -1:
-            try:
-                self.set_channel(self.RIGHT, int(right_ch))
-            except Exception as e:
-                self._logmsg(f"  CAT: Right channel error: {e}")
-
-        if self._stop:
-            return
-
+            tasks.append(('R ch', lambda c=int(right_ch): self.set_channel(self.RIGHT, c)))
         if int(left_vol) != -1:
-            try:
-                self.set_volume(self.LEFT, int(left_vol))
-            except Exception as e:
-                self._logmsg(f"  CAT: Left volume error: {e}")
-
-        if self._stop:
-            return
-
+            tasks.append(('L vol', lambda v=int(left_vol): self.set_volume(self.LEFT, v)))
         if int(right_vol) != -1:
-            try:
-                self.set_volume(self.RIGHT, int(right_vol))
-            except Exception as e:
-                self._logmsg(f"  CAT: Right volume error: {e}")
-
-        if self._stop:
-            return
-
+            tasks.append(('R vol', lambda v=int(right_vol): self.set_volume(self.RIGHT, v)))
         if left_pwr:
-            try:
-                self.set_power(self.LEFT, left_pwr)
-            except Exception as e:
-                self._logmsg(f"  CAT: Left power error: {e}")
+            tasks.append(('L pwr', lambda p=left_pwr: self.set_power(self.LEFT, p)))
+        if right_pwr:
+            tasks.append(('R pwr', lambda p=right_pwr: self.set_power(self.RIGHT, p)))
 
-        if self._stop:
+        if not tasks:
+            print("  CAT: No setup tasks configured")
             return
 
-        if right_pwr:
+        print(f"  CAT: Sending {len(tasks)} setup commands...")
+        results = []
+        for name, func in tasks:
+            if self._stop:
+                results.append((name, 'interrupted'))
+                break
             try:
-                self.set_power(self.RIGHT, right_pwr)
+                ok = func()
+                results.append((name, 'ok' if ok else 'failed'))
             except Exception as e:
-                self._logmsg(f"  CAT: Right power error: {e}")
+                results.append((name, f'error: {e}'))
+                self._logmsg(f"  CAT: {name} error: {e}")
+
+        # Print concise summary
+        ok_count = sum(1 for _, r in results if r == 'ok')
+        summary_parts = [f"{name}={status}" for name, status in results]
+        if ok_count == len(results):
+            print(f"  CAT: Setup complete ({ok_count}/{len(tasks)} ok)")
+        else:
+            print(f"  CAT: Setup done ({ok_count}/{len(tasks)} ok) — {', '.join(summary_parts)}")
+        return
 
 
 class MumbleServerManager:
@@ -5483,8 +5471,9 @@ class MumbleRadioGateway:
                     host = self.config.CAT_HOST
                     port = int(self.config.CAT_PORT)
                     password = str(self.config.CAT_PASSWORD)
+                    verbose = getattr(self.config, 'VERBOSE_LOGGING', False)
                     print(f"Connecting to TH-9800 CAT server ({host}:{port})...")
-                    self.cat_client = RadioCATClient(host, port, password)
+                    self.cat_client = RadioCATClient(host, port, password, verbose=verbose)
                     if self.cat_client.connect():
                         print("  Connected to CAT server")
                         # Install SIGINT handler to stop CAT loops

@@ -40,6 +40,9 @@ cleanup() {
         kill $FFMPEG_PID 2>/dev/null
         echo "  Stopped FFmpeg"
     fi
+    if [ ! -z "$SUDO_KEEPALIVE_PID" ]; then
+        kill $SUDO_KEEPALIVE_PID 2>/dev/null
+    fi
     rm -f /tmp/darkice_audio 2>/dev/null
     sudo modprobe -r snd-aloop 2>/dev/null
     echo "Done"
@@ -54,8 +57,11 @@ if [ "$EUID" -eq 0 ]; then
     echo ""
 fi
 
-# Cache sudo credentials once up front (avoids repeat password prompts)
+# Cache sudo credentials and keep them alive for the entire session
+# (avoids repeat password prompts when gateway uses sudo internally)
 sudo -v
+( while true; do sudo -n -v 2>/dev/null; sleep 50; done ) &
+SUDO_KEEPALIVE_PID=$!
 
 # 1. Kill any existing processes
 echo "[1/11] Checking for existing processes..."
