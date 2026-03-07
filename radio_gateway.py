@@ -4499,11 +4499,15 @@ class SmartAnnouncementManager:
             time.sleep(1)
             js_click = (
                 '(async()=>{'
-                'let ai=document.querySelector("a.XVMlrc")'
-                '||Array.from(document.querySelectorAll("a")).find(e=>e.textContent.trim()==="AI Mode")'
+                # Find AI Mode: the <a> immediately before the "All" link in the toolbar
+                'let links=Array.from(document.querySelectorAll("a"));'
+                'let allIdx=links.findIndex(e=>e.textContent.trim()==="All");'
+                'let ai=allIdx>0?links[allIdx-1]:null;'
+                # Fallback: match by text content
+                'if(!ai){ai=links.find(e=>e.textContent.trim()==="AI Mode")'
                 '||Array.from(document.querySelectorAll("a,div,span")).find(e=>{'
                 'let t=e.textContent.trim();'
-                'return t==="Dive deeper in AI mode"||t==="Dive deeper in AI Mode";});'
+                'return t==="Dive deeper in AI mode"||t==="Dive deeper in AI Mode";});}'
                 'if(ai){ai.click();await new Promise(r=>setTimeout(r,12000));}'
                 'document.querySelectorAll("div[jsname],span,button").forEach(e=>{'
                 'if(e.textContent.trim()==="Show more")e.click();});'
