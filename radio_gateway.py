@@ -269,12 +269,15 @@ class Config:
             'RELAY_CHARGER_ON_TIME': '23:00',
             'RELAY_CHARGER_OFF_TIME': '06:00',
             # Smart Announcements (AI-powered)
-            'ENABLE_SMART_ANNOUNCE': False,
+            'ENABLE_SMART_ANNOUNCE': True,
             'SMART_ANNOUNCE_AI_BACKEND': 'duckduckgo',  # duckduckgo, claude, or gemini
+            'SMART_ANNOUNCE_OLLAMA_MODEL': 'llama3.2:3b',  # Ollama model (blank = auto-detect)
+            'SMART_ANNOUNCE_OLLAMA_TEMPERATURE': 0.5,  # 0.0=focused, 1.0=creative
+            'SMART_ANNOUNCE_OLLAMA_TOP_P': 0.9,        # nucleus sampling (0.0-1.0)
             'SMART_ANNOUNCE_API_KEY': '',            # Claude API key
             'SMART_ANNOUNCE_GEMINI_API_KEY': '',     # Gemini API key
-            'SMART_ANNOUNCE_START_TIME': '',   # HH:MM — empty = no restriction
-            'SMART_ANNOUNCE_END_TIME': '',     # HH:MM — empty = no restriction
+            'SMART_ANNOUNCE_START_TIME': '08:00',   # HH:MM — empty = no restriction
+            'SMART_ANNOUNCE_END_TIME': '22:00',     # HH:MM — empty = no restriction
             # TH-9800 CAT Control
             'ENABLE_CAT_CONTROL': False,
             'CAT_STARTUP_COMMANDS': True,
@@ -4062,6 +4065,7 @@ class SmartAnnouncementManager:
                 return False
         # Check if Ollama is available for natural speech composition
         self._ollama_available = False
+        configured_model = str(getattr(self.config, 'SMART_ANNOUNCE_OLLAMA_MODEL', '') or '').strip()
         try:
             import urllib.request
             req = urllib.request.Request('http://127.0.0.1:11434/api/tags', method='GET')
@@ -4070,13 +4074,22 @@ class SmartAnnouncementManager:
                 import json
                 data = json.loads(resp.read())
                 models = [m.get('name', '') for m in data.get('models', [])]
-                if models:
+                if configured_model:
+                    # Use the configured model (verify it exists)
+                    if configured_model in models or any(m.startswith(configured_model) for m in models):
+                        self._ollama_model = configured_model
+                        self._ollama_available = True
+                        print(f"  [SmartAnnounce] Ollama — using configured model '{self._ollama_model}'")
+                    else:
+                        print(f"  [SmartAnnounce] Ollama model '{configured_model}' not found (available: {', '.join(models)})")
+                        print(f"    Pull it with: ollama pull {configured_model}")
+                elif models:
                     self._ollama_model = models[0]  # use first available model
                     self._ollama_available = True
-                    print(f"  [SmartAnnounce] Ollama detected — using model '{self._ollama_model}' for speech composition")
+                    print(f"  [SmartAnnounce] Ollama — auto-selected model '{self._ollama_model}'")
                 else:
                     print("  [SmartAnnounce] Ollama running but no models pulled — using search snippets directly")
-                    print("    Pull a model with: ollama pull llama3.2:3b")
+                    print("    Pull a model with: ollama pull llama3.1:8b")
         except Exception:
             print("  [SmartAnnounce] Ollama not detected — using search snippets directly")
             print("    For better results, install Ollama: curl -fsSL https://ollama.com/install.sh | sh")
@@ -4176,18 +4189,23 @@ class SmartAnnouncementManager:
 
         max_words = int(entry['target_secs'] * self.WORDS_PER_SECOND)
         system_prompt = (
-            "You are a radio station announcement system. Generate a spoken announcement "
-            "based on the user's prompt. Your response will be converted to speech using "
-            "text-to-speech and broadcast on radio.\n\n"
-            "RULES:\n"
-            f"- Your response MUST be {max_words} words or fewer ({entry['target_secs']} seconds of speech)\n"
-            "- Write ONLY the words to be spoken — no quotes, no labels, no markdown\n"
-            "- Use natural spoken language (contractions, simple sentences)\n"
-            "- Do not start with 'Here is' or 'This is an announcement'\n"
-            "- Numbers: write them as spoken ('twenty-three', not '23')\n"
-            "- Times: use 12-hour format ('three forty-five PM')\n"
-            "- Be concise, informative, and clear for radio listeners\n"
-            "- If the prompt asks for real-time data, use web search to get current info"
+            f"Extract facts from the search results and rewrite them as spoken text. "
+            f"Maximum {max_words} words.\n\n"
+            "DO:\n"
+            "- Start directly with the facts. Example: 'In Moscow, protests continued today...'\n"
+            "- Use natural spoken English with contractions\n"
+            "- Write numbers as words (twenty-three, not 23)\n"
+            "- Write times in 12-hour format (three forty-five PM)\n\n"
+            "DO NOT:\n"
+            "- No greetings (Good evening, Hello, Welcome)\n"
+            "- No sign-offs (Stay tuned, We'll keep you updated, That's all)\n"
+            "- No station names or placeholders ([station name])\n"
+            "- No intros (Here are the headlines, Breaking news)\n"
+            "- No website names (BBC, CNN, Reuters)\n"
+            "- No filler or padding — every word must be factual content\n"
+            "- No website boilerplate, navigation text, or descriptions of websites\n\n"
+            "If the search results only contain website descriptions and no actual facts, "
+            "say 'No current information available.'"
         )
 
         try:
@@ -4205,11 +4223,11 @@ class SmartAnnouncementManager:
             if len(words) > max_words + 10:
                 text = ' '.join(words[:max_words])
 
-            print(f"[SmartAnnounce] #{entry['id']}: \"{text[:80]}\" ({len(words)} words, voice {entry['voice']})")
+            print(f"[SmartAnnounce] #{entry['id']}: ── SENDING TO gTTS ({len(words)} words, voice {entry['voice']}) ──")
+            print(f"  {text}")
 
             # Playback triggers AIOC PTT automatically via the audio loop
             # (set_ptt_state writes HID GPIO to key the radio).
-            print(f"[SmartAnnounce] #{entry['id']}: Speaking via TTS...")
             self.gateway.speak_text(text, voice=entry['voice'])
 
         except Exception as e:
@@ -4264,16 +4282,48 @@ class SmartAnnouncementManager:
             from duckduckgo_search import DDGS
         import re
 
-        print(f"\n[SmartAnnounce] #{entry['id']}: DuckDuckGo web search...")
+        search_query = entry['prompt']
+        print(f"\n[SmartAnnounce] #{entry['id']}: ── SEARCH QUERY ──")
+        print(f"  {search_query}")
         ddgs = DDGS()
-        search_results = ddgs.text(entry['prompt'], max_results=5)
-        if not search_results:
+
+        # Use both web search and news search for richer results
+        web_results = []
+        news_results = []
+        try:
+            web_results = ddgs.text(search_query, max_results=5) or []
+        except Exception as e:
+            print(f"[SmartAnnounce] #{entry['id']}: web search error: {e}")
+        try:
+            news_results = ddgs.news(search_query, max_results=5) or []
+        except Exception as e:
+            print(f"[SmartAnnounce] #{entry['id']}: news search error: {e}")
+
+        if not web_results and not news_results:
             print(f"[SmartAnnounce] #{entry['id']}: no search results")
             return None
 
-        search_context = "\n".join(
-            f"- {r.get('title', '')}: {r.get('body', '')}" for r in search_results
-        )
+        # Build context — news results first (more relevant for current events)
+        context_parts = []
+        if news_results:
+            context_parts.append("NEWS HEADLINES:")
+            for r in news_results:
+                context_parts.append(f"- {r.get('title', '')}: {r.get('body', '')}")
+        if web_results:
+            context_parts.append("WEB RESULTS:")
+            for r in web_results:
+                context_parts.append(f"- {r.get('title', '')}: {r.get('body', '')}")
+        search_context = "\n".join(context_parts)
+
+        print(f"[SmartAnnounce] #{entry['id']}: ── SEARCH RESULTS ({len(news_results)} news, {len(web_results)} web) ──")
+        if news_results:
+            print(f"  NEWS:")
+            for r in news_results:
+                print(f"    {r.get('title', '')}: {r.get('body', '')[:120]}")
+        if web_results:
+            print(f"  WEB:")
+            for r in web_results:
+                print(f"    {r.get('title', '')}: {r.get('body', '')[:120]}")
 
         # If Ollama is available, use it to compose natural speech
         if getattr(self, '_ollama_available', False):
@@ -4299,18 +4349,27 @@ class SmartAnnouncementManager:
     def _ollama_compose(self, entry, system_prompt, max_words, search_context):
         """Use local Ollama to compose natural speech from search results."""
         import urllib.request, json
-        print(f"[SmartAnnounce] #{entry['id']}: Ollama composing ({self._ollama_model})...")
         prompt = (
             f"{system_prompt}\n\n"
             f"Web search results:\n{search_context}\n\n"
             f"Based on the above, compose a spoken radio announcement "
             f"in {max_words} words or fewer for: {entry['prompt']}"
         )
+        print(f"[SmartAnnounce] #{entry['id']}: ── LLM PROMPT ({self._ollama_model}) ──")
+        for line in prompt.split('\n'):
+            print(f"  {line}")
+        temperature = float(getattr(self.config, 'SMART_ANNOUNCE_OLLAMA_TEMPERATURE', 0.7))
+        top_p = float(getattr(self.config, 'SMART_ANNOUNCE_OLLAMA_TOP_P', 0.9))
+        print(f"[SmartAnnounce] #{entry['id']}: Ollama options: temp={temperature}, top_p={top_p}, max_tokens={max_words * 3}")
         payload = json.dumps({
             "model": self._ollama_model,
             "prompt": prompt,
             "stream": False,
-            "options": {"num_predict": max_words * 3},  # ~tokens, generous limit
+            "options": {
+                "num_predict": max_words * 3,
+                "temperature": temperature,
+                "top_p": top_p,
+            },
         }).encode()
         req = urllib.request.Request(
             'http://127.0.0.1:11434/api/generate',
@@ -4324,6 +4383,8 @@ class SmartAnnouncementManager:
         if not text:
             print(f"[SmartAnnounce] #{entry['id']}: empty response from Ollama")
             return None
+        print(f"[SmartAnnounce] #{entry['id']}: ── LLM RESPONSE ──")
+        print(f"  {text}")
         return text
 
     def trigger(self, entry_id):

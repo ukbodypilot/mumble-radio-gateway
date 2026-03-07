@@ -423,10 +423,20 @@ RELAY_CHARGER_OFF_TIME = 06:00
 #   target_secs    — target speech length in seconds (max 60)
 #   {prompt text}  — instructions for the AI (anything inside braces)
 
-ENABLE_SMART_ANNOUNCE = false
+ENABLE_SMART_ANNOUNCE = true
 
 # AI Backend — choose: duckduckgo (free, no key), claude, or gemini
 SMART_ANNOUNCE_AI_BACKEND = duckduckgo
+
+# Ollama model for duckduckgo backend (blank = auto-detect first available)
+# Recommended: llama3.1:8b (PC w/ GPU), llama3.2:3b (PC CPU-only), llama3.2:1b (Pi)
+SMART_ANNOUNCE_OLLAMA_MODEL = llama3.2:3b
+
+# Ollama generation parameters
+# temperature: 0.0 = deterministic/focused, 1.0 = creative/varied (default 0.9)
+# top_p: nucleus sampling cutoff, lower = more focused (default 0.9)
+SMART_ANNOUNCE_OLLAMA_TEMPERATURE = 0.5
+SMART_ANNOUNCE_OLLAMA_TOP_P = 0.9
 
 # Claude API key (used when AI_BACKEND = claude)
 # WARNING: Do not commit this file with a real API key
@@ -438,13 +448,13 @@ SMART_ANNOUNCE_GEMINI_API_KEY =
 # Time window — scheduled announcements only play between these times (system clock)
 # Format: HH:MM (24-hour). Leave blank for no restriction.
 # Handles overnight wrap (e.g. 22:00 start, 06:00 end = 10pm to 6am)
-SMART_ANNOUNCE_START_TIME =
-SMART_ANNOUNCE_END_TIME =
+SMART_ANNOUNCE_START_TIME = 08:00
+SMART_ANNOUNCE_END_TIME = 22:00
 
 # Example announcements (uncomment and customize):
-# SMART_ANNOUNCE_1 = 3600, 1, 15, {Give a brief weather update for London, UK including temperature and conditions}
-# SMART_ANNOUNCE_2 = 1800, 1, 10, {What is the current UTC time and date, spoken naturally}
-# SMART_ANNOUNCE_3 = 7200, 2, 20, {Summarize the top 2 breaking news headlines from the UK}
+SMART_ANNOUNCE_1 = 3600, 1, 15, {weather update los angeles usa including temperature and conditions}
+SMART_ANNOUNCE_2 = 7200, 3, 15, {is donald trump still alive, how long will this last}
+SMART_ANNOUNCE_3 = 1800, 2, 40, {Global news headlines from bbc.com}
 
 
 # ============================================================================
