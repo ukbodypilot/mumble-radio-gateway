@@ -7,7 +7,7 @@ Update MEMORY.md and detail files at the end of every session and whenever a sig
 Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Optional SDR input via PipeWire virtual sink or ALSA loopback. Optional Broadcastify streaming via DarkIce. Python 3, runs on Raspberry Pi, Debian amd64, and Arch Linux.
 
 **Main file:** `radio_gateway.py` (~5000+ lines)
-**Installer:** `scripts/install.sh` (12 steps, targets Debian/Ubuntu/RPi/Arch Linux)
+**Installer:** `scripts/install.sh` (13 steps, targets Debian/Ubuntu/RPi/Arch Linux)
 **Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
 **Start script:** `start.sh` (11 steps: kill procs, Mumble GUI, TH-9800 CAT, Claude Code, CPU governor, loopback, AIOC USB reset, pipe, DarkIce, FFmpeg, gateway w/nice -10)
 **Windows client:** `windows_audio_client.py` (server: send audio, client: receive audio, `m` to switch)
@@ -122,16 +122,19 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Config: `ENABLE_SMART_ANNOUNCE`, `SMART_ANNOUNCE_AI_BACKEND`, `SMART_ANNOUNCE_N`
 - Entry format: `interval_secs, voice, target_secs, {prompt text in braces}`
 - **Backends** (`SMART_ANNOUNCE_AI_BACKEND`):
+  - `google-scrape`: free. Drives real Firefox via xdotool, clicks AI Mode, scrapes Google AI Overview. Requires Firefox logged into Google on DISPLAY=:0, xdotool, xclip.
   - `duckduckgo` (default): free, no key. DuckDuckGo web search + Ollama local LLM. Falls back to search snippets if no Ollama.
   - `claude`: Anthropic API + web search. Key: `SMART_ANNOUNCE_API_KEY`
   - `gemini`: Google Gemini API + Google Search. Key: `SMART_ANNOUNCE_GEMINI_API_KEY`
+- google-scrape flow: open JS console → `window.location.href=URL` → wait → paste JS to click AI Mode (link before "All" in toolbar) → Ctrl+A/C → parse AI content → Ollama or direct TTS
+- Ollama params: `SMART_ANNOUNCE_OLLAMA_MODEL`, `_TEMPERATURE`, `_TOP_P`
 - Word limit: ~2.5 words/sec × target_secs; max 60s
 - Feeds text to existing gTTS → AIOC PTT pipeline (no CAT/TCP RTS switching)
 - Keyboard: `[`=Smart#1, `]`=Smart#2, `\`=Smart#3
 - Mumble commands: `!smart` (list), `!smart N` (trigger)
 - Manual triggers (keyboard/Mumble) skip time window check
 - Skips if radio busy (VAD active or playback in progress)
-- Dependencies: `ddgs` (default), `anthropic` (claude), `google-genai` (gemini), Ollama (optional)
+- Dependencies: `xdotool`+`xclip` (google-scrape), `ddgs` (duckduckgo), `anthropic` (claude), `google-genai` (gemini), Ollama (optional)
 - Installer step 7: installs Ollama + pulls model (llama3.2:3b on PC, llama3.2:1b on Pi)
 
 ## Desktop Shortcut

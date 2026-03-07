@@ -91,7 +91,7 @@ A multi-source radio audio gateway with Mumble VoIP bridging, SDR integration, A
 - **Voice Activity Detection (VAD)**: Smart audio gate prevents noise transmission (enabled by default)
 - **Real-Time Audio Processing**: Noise gate, AGC, filters, echo cancellation
 - **Live Status Display**: Real-time bars showing TX/RX/SDR levels with color coding
-- **Smart Announcements**: AI-powered scheduled broadcasts with pluggable backend (DuckDuckGo+Ollama free, Claude, or Gemini)
+- **Smart Announcements**: AI-powered scheduled broadcasts with pluggable backend (Google AI scrape, DuckDuckGo+Ollama, Claude, or Gemini)
 - **Local Mumble Server**: Run up to 2 managed mumble-server instances on the same machine
 
 ### Audio Sources (Priority-Based Mixing)
@@ -368,6 +368,7 @@ RELAY_CHARGER_OFF_TIME = 06:00
 Scheduled radio announcements with a pluggable AI backend. The gateway searches for live data, an AI composes a natural spoken message, and the gateway broadcasts it via gTTS.
 
 **AI Backends:**
+- **`google-scrape`** — Free, no API key needed. Drives the user's real Firefox browser via `xdotool` to perform a Google search, clicks AI Mode, and extracts the AI Overview text. Optionally feeds the result through Ollama for speech formatting. Requires Firefox running and logged into Google on the desktop (`DISPLAY=:0`), plus `xdotool` and `xclip`.
 - **`duckduckgo`** (default) — Free, no API key needed. Uses DuckDuckGo web search for live data + Ollama local LLM for natural speech composition. Falls back to formatted search snippets if Ollama is not installed.
 - **`claude`** — Anthropic Claude API with built-in web search. Requires API key and credits.
 - **`gemini`** — Google Gemini API with Google Search grounding. Requires API key.
@@ -401,8 +402,13 @@ SMART_ANNOUNCE_3 = 7200, 2, 20, {Summarize the top 2 breaking news headlines fro
 ```ini
 ENABLE_SMART_ANNOUNCE = true
 
-# AI Backend — choose: duckduckgo (free, no key), claude, or gemini
+# AI Backend — choose: google-scrape (free), duckduckgo (free), claude, or gemini
 SMART_ANNOUNCE_AI_BACKEND = duckduckgo
+
+# Ollama model for google-scrape/duckduckgo backends (blank = auto-detect)
+SMART_ANNOUNCE_OLLAMA_MODEL = llama3.2:3b
+SMART_ANNOUNCE_OLLAMA_TEMPERATURE = 0.5
+SMART_ANNOUNCE_OLLAMA_TOP_P = 0.9
 
 # Claude API key (used when AI_BACKEND = claude)
 SMART_ANNOUNCE_API_KEY =
@@ -418,6 +424,15 @@ SMART_ANNOUNCE_1 = interval_secs, voice, target_secs, {prompt text}
 # Up to 19 entries (SMART_ANNOUNCE_1 through SMART_ANNOUNCE_19)
 ```
 
+**Google-scrape backend setup (free):**
+```bash
+sudo pacman -S xdotool xclip   # or: sudo apt install xdotool xclip
+# Open Firefox, log into Google, and keep it running on the desktop
+# Optional: install Ollama to reformat AI Overview text for speech
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull llama3.2:3b
+```
+
 **DuckDuckGo backend setup (free):**
 ```bash
 pip3 install ddgs --break-system-packages
@@ -426,7 +441,7 @@ curl -fsSL https://ollama.com/install.sh | sh
 ollama pull llama3.2:3b    # or llama3.2:1b on Raspberry Pi
 ```
 
-**Requires:** `pip3 install ddgs` for the default backend (handled by `scripts/install.sh`). Claude/Gemini backends require their respective API keys.
+**Requires:** `xdotool` + `xclip` for google-scrape, `ddgs` for duckduckgo (all handled by `scripts/install.sh`). Claude/Gemini backends require their respective API keys.
 
 ### TH-9800 CAT Control
 
@@ -1414,8 +1429,12 @@ PTT_TTS_DELAY = 1.0          # Silence padding before TTS (seconds)
 ```ini
 ENABLE_SMART_ANNOUNCE = false              # Enable AI-powered scheduled announcements
 
-# AI Backend — duckduckgo (free, no key), claude, or gemini
+# AI Backend — google-scrape (free), duckduckgo (free), claude, or gemini
+# google-scrape: drives real Firefox via xdotool, scrapes Google AI Overview
 SMART_ANNOUNCE_AI_BACKEND = duckduckgo
+SMART_ANNOUNCE_OLLAMA_MODEL = llama3.2:3b  # Ollama model for google-scrape/duckduckgo
+SMART_ANNOUNCE_OLLAMA_TEMPERATURE = 0.5    # 0.0=focused, 1.0=creative
+SMART_ANNOUNCE_OLLAMA_TOP_P = 0.9          # Nucleus sampling (0.0-1.0)
 SMART_ANNOUNCE_API_KEY =                   # Claude API key (used when backend = claude)
 SMART_ANNOUNCE_GEMINI_API_KEY =            # Gemini API key (used when backend = gemini)
 
