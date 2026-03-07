@@ -7702,13 +7702,18 @@ class MumbleRadioGateway:
                 elif pid != self._darkice_pid:
                     self._darkice_pid = pid  # PID changed (external restart)
 
-            # Charger relay schedule check (only on state change)
+            # Charger relay schedule check
+            # When manually overridden, wait until the schedule's *next* transition
+            # (i.e. should_on flips to match the manual state) before resuming auto control
             if self.relay_charger:
                 should_on = self._charger_should_be_on()
-                if should_on != self.relay_charger_on:
+                if self._charger_manual:
+                    # Manual override active — clear it once schedule agrees with current state
+                    if should_on == self.relay_charger_on:
+                        self._charger_manual = False
+                elif should_on != self.relay_charger_on:
                     self.relay_charger.set_state(should_on)
                     self.relay_charger_on = should_on
-                    self._charger_manual = False  # schedule took over
                     self._trace_events.append((time.monotonic(), 'relay_charger', 'on' if should_on else 'off'))
 
             # SDR loopback watchdog checks
