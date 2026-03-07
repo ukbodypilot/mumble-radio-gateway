@@ -342,12 +342,10 @@ echo ""
 sleep 2
 
 # Start gateway with elevated scheduling priority.
-# Launch normally, then renice the process (avoids sudo wrapping the gateway,
-# which would break the sudo credential cache for internal sudo calls).
-python3 "$GATEWAY_FILE" &
-GATEWAY_PID=$!
-sudo renice -n -10 -p $GATEWAY_PID > /dev/null 2>&1
-wait $GATEWAY_PID
+# Renice the current shell (children inherit nice value), then run gateway
+# in the foreground so it keeps stdin for keyboard controls.
+sudo renice -n -10 -p $$ > /dev/null 2>&1
+python3 "$GATEWAY_FILE"
 
 # If gateway exits, cleanup
 cleanup
