@@ -472,6 +472,19 @@ SMART_ANNOUNCE_3 = 1800, 2, 40, {Global news headlines from bbc.com}
 
 
 # ============================================================================
+# DYNAMIC DNS (No-IP compatible)
+# ============================================================================
+# Updates a DDNS hostname with the machine's public IP at a regular interval.
+# Uses the No-IP update protocol (works with No-IP, DynDNS, etc.).
+
+ENABLE_DDNS = false
+DDNS_USERNAME =                     # No-IP username or email
+DDNS_PASSWORD =                     # No-IP password
+DDNS_HOSTNAME =                     # Hostname to update (e.g. myhost.ddns.net)
+DDNS_UPDATE_INTERVAL = 300          # Seconds between updates (default 5 min, min 60)
+DDNS_UPDATE_URL = https://dynupdate.no-ip.com/nic/update
+
+# ============================================================================
 # TH-9800 CAT CONTROL
 # ============================================================================
 # Connects to TH9800_CAT.py TCP server to configure the radio on startup.

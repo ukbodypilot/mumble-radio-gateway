@@ -124,8 +124,10 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `SmartAnnouncementManager`: scheduled AI-powered spoken announcements
 - Config: `ENABLE_SMART_ANNOUNCE`, `SMART_ANNOUNCE_AI_BACKEND`, `SMART_ANNOUNCE_N`
 - Entry format: `interval_secs, voice, target_secs, {prompt text in braces}`
+- Time window: `SMART_ANNOUNCE_START_TIME` / `SMART_ANNOUNCE_END_TIME` (HH:MM)
+- Logs transition messages when entering/leaving time window
 - **Backends** (`SMART_ANNOUNCE_AI_BACKEND`):
-  - `google-scrape`: free. Drives real Firefox via xdotool, clicks AI Mode, scrapes Google AI Overview. Requires Firefox logged into Google on DISPLAY=:0, xdotool, xclip.
+  - `google-scrape`: free. Drives real Firefox via xdotool, clicks AI Mode, scrapes Google AI Overview. Requires Firefox logged into Google on DISPLAY=:0, xdotool, xclip. Auto-launches Firefox if closed (area-based readiness check, 5s settle).
   - `duckduckgo` (default): free, no key. DuckDuckGo web search + Ollama local LLM. Falls back to search snippets if no Ollama.
   - `claude`: Anthropic API + web search. Key: `SMART_ANNOUNCE_API_KEY`
   - `gemini`: Google Gemini API + Google Search. Key: `SMART_ANNOUNCE_GEMINI_API_KEY`
@@ -146,10 +148,19 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Installer step 12: detects terminal emulator, substitutes `__TERMINAL__` and `__GATEWAY_DIR__`
 - Opens terminal, cd to gateway dir, runs `start.sh`, keeps shell open on exit
 
+## Logging & Status Bar
+- `StatusBarWriter` wraps `sys.stdout` and `sys.stderr` for status bar + timestamps
+- All log output gets `[HH:MM:SS]` system time prefix (line-aware `_at_line_start` tracking)
+- `start.sh` uses `ts()` function for same `[HH:MM:SS]` format
+- Two-line status bar: Line 1 = audio indicators, Line 2 = UP timer + smart countdowns + hardware
+- Uptime format: `Xd HH:MM:SS` (fixed-width, starts at `0d 00:00:00`)
+- Terminal geometry: 130x25 (narrowed from 150x25)
+- ALSA suppression: must hardcode fd 2, not `sys.stderr.fileno()` (StatusBarWriter returns fd 1)
+
 ## Known Bugs Fixed (details in bugs.md)
 See bugs.md for full history. Key fixes: SDR burst audio, Mumble encoder starvation,
 duck-out regression, config parser crash, DarkIce/WirePlumber issues, terminal raw mode
-not restored on exit, SDR periodic gaps, rebroadcast bugs, SV status bar.
+not restored on exit, SDR periodic gaps, rebroadcast bugs, SV status bar, ALSA fd suppression.
 
 ## Deployment Notes
 - WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`

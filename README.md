@@ -445,6 +445,30 @@ ollama pull llama3.2:3b    # or llama3.2:1b on Raspberry Pi
 
 **Requires:** `xdotool` + `xclip` for google-scrape, `ddgs` for duckduckgo (all handled by `scripts/install.sh`). Claude/Gemini backends require their respective API keys.
 
+### Dynamic DNS (No-IP)
+
+Built-in DDNS updater that keeps a hostname pointed at the machine's current public IP. Uses the No-IP update protocol (also compatible with DynDNS and other providers that use the same API).
+
+A background thread sends an update every `DDNS_UPDATE_INTERVAL` seconds (default 300 / 5 minutes, minimum 60). Logs the IP on first update and whenever it changes; silent otherwise.
+
+```ini
+ENABLE_DDNS = true
+DDNS_USERNAME = user@example.com
+DDNS_PASSWORD = secret
+DDNS_HOSTNAME = myhost.ddns.net
+DDNS_UPDATE_INTERVAL = 300
+DDNS_UPDATE_URL = https://dynupdate.no-ip.com/nic/update
+```
+
+| Setting | Description |
+|---------|-------------|
+| `ENABLE_DDNS` | Enable the DDNS updater (`true` / `false`) |
+| `DDNS_USERNAME` | No-IP account username or email |
+| `DDNS_PASSWORD` | No-IP account password |
+| `DDNS_HOSTNAME` | Hostname to update (e.g. `myhost.ddns.net`) |
+| `DDNS_UPDATE_INTERVAL` | Seconds between updates (default 300, minimum 60) |
+| `DDNS_UPDATE_URL` | Update API endpoint (default: No-IP) |
+
 ### TH-9800 CAT Control
 
 Connects to the [TH9800_CAT.py](https://github.com/your-repo/th9800) TCP server to configure a TYT TH-9800 radio on gateway startup. Sets channel, volume, and power level for both VFOs independently.
@@ -866,12 +890,22 @@ Bars appear in this order on line 1: TX → RX → SP → SDR1 → SDR2 → SV o
 
 | Indicator | Format | Meaning |
 |-----------|--------|---------|
-| **UP:HH:MM:SS** | Cyan | Gateway uptime |
-| **S1:HH:MM:SS** | Yellow | Countdown to next Smart Announcement #1 |
-| **S2:HH:MM:SS** | Yellow | Countdown to next Smart Announcement #2 |
-| **S3:HH:MM:SS** | Yellow | Countdown to next Smart Announcement #3 |
+| **UP:Xd HH:MM:SS** | Cyan | Gateway uptime (days + hours:minutes:seconds) |
+| **S1:Xd HH:MM:SS** | Yellow | Countdown to next Smart Announcement #1 |
+| **S2:Xd HH:MM:SS** | Yellow | Countdown to next Smart Announcement #2 |
+| **S3:Xd HH:MM:SS** | Yellow | Countdown to next Smart Announcement #3 |
 
-All timers use fixed-width `HH:MM:SS` format.
+All timers use fixed-width `Xd HH:MM:SS` format (e.g. `0d 02:14:37`).
+
+### Line 2 — Dynamic DNS
+
+| Indicator | Color | Meaning |
+|-----------|-------|---------|
+| **DNS:IP** | Green | DDNS updated successfully (shows current public IP) |
+| **DNS:ERR** | Red | Last DDNS update failed |
+| **DNS:...** | Yellow | Waiting for first update |
+
+Only shown when `ENABLE_DDNS = true`.
 
 ### Line 2 — File Status (0-9)
 - **Green number** = File loaded
@@ -1607,6 +1641,17 @@ RADIO_TO_ECHOLINK = true
 MUMBLE_TO_ECHOLINK = false
 ```
 
+### Dynamic DNS Settings
+
+```ini
+ENABLE_DDNS = false                    # Enable built-in DDNS updater
+DDNS_USERNAME =                        # No-IP username or email
+DDNS_PASSWORD =                        # No-IP password
+DDNS_HOSTNAME =                        # Hostname to update (e.g. myhost.ddns.net)
+DDNS_UPDATE_INTERVAL = 300             # Seconds between updates (min 60)
+DDNS_UPDATE_URL = https://dynupdate.no-ip.com/nic/update
+```
+
 ### TH-9800 CAT Control Settings
 
 ```ini
@@ -1973,11 +2018,23 @@ class MySource(AudioSource):
 
 ## Changelog
 
+### v1.3.0
+
+**Dynamic DNS** — Built-in No-IP compatible DDNS updater. Background thread updates hostname with public IP on startup and then at configured interval. Status bar shows `DNS:` indicator with current IP (green), error (red), or waiting (yellow). Config: `ENABLE_DDNS`, `DDNS_USERNAME`, `DDNS_PASSWORD`, `DDNS_HOSTNAME`, `DDNS_UPDATE_INTERVAL`, `DDNS_UPDATE_URL`.
+
+**Log timestamps** — All gateway and `start.sh` log messages now prefixed with `[HH:MM:SS]` system time. Uptime format changed to `Xd HH:MM:SS` (fixed-width, starts at `0d 00:00:00`).
+
+**Time window messages** — Smart announce and charger schedule now log transition messages when entering/leaving their configured time windows. Smart announce shows time window config at startup.
+
+**ALSA suppression fix** — Fixed ALSA warning spam during startup caused by `StatusBarWriter` making `sys.stderr.fileno()` return fd 1 instead of fd 2. Hardcoded fd 2 in all three PyAudio init sites.
+
+**Firefox auto-launch** — google-scrape backend auto-launches Firefox if closed, with area-based readiness detection and 5s settle time.
+
 ### v1.2.0
 
-**Two-line status bar** — Status bar now uses two terminal lines. Line 1 shows audio indicators (M, PTT, VAD, TX, RX, SP, SDR1, SDR2, SV/CL, AN). Line 2 shows uptime, smart announcement countdowns, file slots, hardware indicators (PWRB, CHG, CAT, MS), volume, processing flags, and diagnostics.
+**Two-line status bar** — Status bar now uses two terminal lines. Line 1 shows audio indicators (M, PTT, VAD, TX, RX, SP, SDR1, SDR2, SV/CL, AN). Line 2 shows uptime, smart announcement countdowns, DDNS status, file slots, hardware indicators (PWRB, CHG, CAT, MS), volume, processing flags, and diagnostics.
 
-**Uptime and countdown timers** — Line 2 displays `UP:HH:MM:SS` gateway uptime and `S1:`/`S2:`/`S3:` countdowns to the next scheduled smart announcement, all in fixed-width `HH:MM:SS` format.
+**Uptime and countdown timers** — Line 2 displays `UP:Xd HH:MM:SS` gateway uptime and `S1:`/`S2:`/`S3:` countdowns to the next scheduled smart announcement, all in fixed-width `Xd HH:MM:SS` format.
 
 **Windows audio client volume control** — `,`/`<` and `.`/`>` keys adjust output volume 0-100% in 5% steps. Level bar shows `|` marker at volume ceiling; dB value scaled by volume. Client mode scales PCM output by volume percentage.
 
