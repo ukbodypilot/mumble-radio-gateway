@@ -1321,7 +1321,17 @@ class SDRSource(AudioSource):
         """Initialize SDR audio input from ALSA loopback"""
         try:
             import pyaudio
-            self.pyaudio = pyaudio.PyAudio()
+            import os as _os
+            if not self.config.VERBOSE_LOGGING:
+                _saved = _os.dup(2)
+                try:
+                    _dn = _os.open(_os.devnull, _os.O_WRONLY)
+                    _os.dup2(_dn, 2); _os.close(_dn)
+                    self.pyaudio = pyaudio.PyAudio()
+                finally:
+                    _os.dup2(_saved, 2); _os.close(_saved)
+            else:
+                self.pyaudio = pyaudio.PyAudio()
 
             if self.config.VERBOSE_LOGGING:
                 config_device_attr = 'SDR2_DEVICE_NAME' if self.name == "SDR2" else 'SDR_DEVICE_NAME'
@@ -4135,6 +4145,12 @@ class SmartAnnouncementManager:
             if not ok:
                 return
             print(f"  [SmartAnnounce] Backend: {self._backend}")
+            _sa_start = str(getattr(self.config, 'SMART_ANNOUNCE_START_TIME', '') or '')
+            _sa_end = str(getattr(self.config, 'SMART_ANNOUNCE_END_TIME', '') or '')
+            if _sa_start and _sa_end:
+                print(f"  [SmartAnnounce] Time window: {_sa_start}-{_sa_end}")
+            else:
+                print(f"  [SmartAnnounce] Time window: unrestricted")
             print(f"  [SmartAnnounce] Initialized with {len(self._entries)} scheduled announcement(s)")
             for e in self._entries:
                 print(f"    #{e['id']}: every {e['interval']}s, voice {e['voice']}, "
@@ -4191,9 +4207,24 @@ class SmartAnnouncementManager:
         with self._lock:
             for e in self._entries:
                 e['last_run'] = now
+        _was_in_window = self._in_time_window()
+        if _was_in_window:
+            start_str = str(getattr(self.config, 'SMART_ANNOUNCE_START_TIME', '') or '')
+            end_str = str(getattr(self.config, 'SMART_ANNOUNCE_END_TIME', '') or '')
+            if start_str and end_str:
+                print(f"[SmartAnnounce] Active — time window {start_str}-{end_str}")
         while not self._stop:
             time.sleep(5)
-            if not self._in_time_window():
+            _in_window = self._in_time_window()
+            if _in_window != _was_in_window:
+                start_str = str(getattr(self.config, 'SMART_ANNOUNCE_START_TIME', '') or '')
+                end_str = str(getattr(self.config, 'SMART_ANNOUNCE_END_TIME', '') or '')
+                if _in_window:
+                    print(f"\n[SmartAnnounce] Active — time window {start_str}-{end_str} started")
+                else:
+                    print(f"\n[SmartAnnounce] Paused — time window {start_str}-{end_str} ended")
+                _was_in_window = _in_window
+            if not _in_window:
                 continue
             now = time.time()
             with self._lock:
@@ -4405,33 +4436,63 @@ class SmartAnnouncementManager:
             return r.stdout if r.returncode == 0 else ''
 
         # Find the main Firefox window (largest one with "Mozilla Firefox" in title)
-        result = xdo('search', '--name', 'Mozilla Firefox')
-        if result.returncode != 0 or not result.stdout.strip():
-            print(f"[SmartAnnounce] google-scrape: Firefox window not found")
-            return None
-        wids = [w.strip() for w in result.stdout.strip().split('\n') if w.strip()]
+        def _find_firefox_window():
+            """Return (wid, area) of the largest Firefox window, or (None, 0)."""
+            r = xdo('search', '--name', 'Mozilla Firefox')
+            if r.returncode != 0 or not r.stdout.strip():
+                return None, 0
+            wids = [w.strip() for w in r.stdout.strip().split('\n') if w.strip()]
+            best_wid, best_area = None, 0
+            for wid in wids:
+                try:
+                    geo = subprocess.run(['xdotool', 'getwindowgeometry', '--shell', wid],
+                                         capture_output=True, text=True, timeout=3, env=display_env)
+                    w = h = 0
+                    for line in geo.stdout.strip().split('\n'):
+                        if line.startswith('WIDTH='): w = int(line.split('=')[1])
+                        if line.startswith('HEIGHT='): h = int(line.split('=')[1])
+                    area = w * h
+                    if area > best_area:
+                        best_area = area
+                        best_wid = wid
+                except Exception:
+                    continue
+            return best_wid, best_area
 
-        # Find the largest window (the actual browser, not internal widgets)
-        best_wid = None
-        best_area = 0
-        for wid in wids:
-            try:
-                geo = subprocess.run(['xdotool', 'getwindowgeometry', '--shell', wid],
-                                     capture_output=True, text=True, timeout=3, env=display_env)
-                w = h = 0
-                for line in geo.stdout.strip().split('\n'):
-                    if line.startswith('WIDTH='): w = int(line.split('=')[1])
-                    if line.startswith('HEIGHT='): h = int(line.split('=')[1])
-                area = w * h
-                if area > best_area:
-                    best_area = area
-                    best_wid = wid
-            except Exception:
-                continue
+        best_wid, best_area = _find_firefox_window()
 
         if not best_wid or best_area < 10000:
-            print(f"[SmartAnnounce] google-scrape: no usable Firefox window found")
-            return None
+            # No usable Firefox window — try to launch it
+            launched = False
+            if best_wid is None:
+                print(f"[SmartAnnounce] google-scrape: Firefox not running, launching...")
+                try:
+                    subprocess.Popen(['firefox'], env=display_env,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    launched = True
+                except Exception as e:
+                    print(f"[SmartAnnounce] google-scrape: failed to launch Firefox: {e}")
+                    return None
+            else:
+                print(f"[SmartAnnounce] google-scrape: Firefox window too small, waiting for it to load...")
+                launched = True
+
+            if launched:
+                # Wait up to 30s for a fully-rendered window (area >= 10000)
+                for _wait in range(30):
+                    time.sleep(1)
+                    best_wid, best_area = _find_firefox_window()
+                    if best_wid and best_area >= 10000:
+                        print(f"[SmartAnnounce] google-scrape: Firefox ready after {_wait + 1}s")
+                        # Extra settle time for freshly launched Firefox to finish
+                        # loading its home page so it doesn't interfere with navigation
+                        time.sleep(5)
+                        # Re-find window in case IDs changed during load
+                        best_wid, best_area = _find_firefox_window()
+                        break
+                else:
+                    print(f"[SmartAnnounce] google-scrape: Firefox not ready within 30s")
+                    return None
 
         # Save currently active window to restore later
         active_result = xdo('getactivewindow')
@@ -5033,6 +5094,7 @@ class StatusBarWriter:
         self._last_status = ""   # last status bar text (for redraw)
         self._bar_drawn = False  # True when status bar is on screen
         self._bar_lines = 1     # how many lines the status bar occupies
+        self._at_line_start = True  # track whether next write starts a new line
         # Forward all attributes that print() and other code might check
         for attr in ('encoding', 'errors', 'mode', 'name', 'newlines',
                      'fileno', 'isatty', 'readable', 'seekable', 'writable'):
@@ -5062,7 +5124,28 @@ class StatusBarWriter:
                 # status bar; the wrapper now clears the bar instead.
                 if text.startswith('\n'):
                     text = text[1:]
-            self._orig.write(text)
+            # Prepend system time at the start of each new line
+            if text:
+                import datetime as _dt
+                lines = text.split('\n')
+                out_parts = []
+                for i, line in enumerate(lines):
+                    if i > 0:
+                        out_parts.append('\n')
+                        self._at_line_start = True
+                    if line:
+                        if self._at_line_start:
+                            _ts = _dt.datetime.now().strftime("%H:%M:%S")
+                            out_parts.append(f"[{_ts}] {line}")
+                        else:
+                            out_parts.append(line)
+                        self._at_line_start = False
+                # If text ended with \n, next write starts a new line
+                if text.endswith('\n'):
+                    self._at_line_start = True
+                self._orig.write(''.join(out_parts))
+            else:
+                self._orig.write(text)
         return len(text)
 
     def draw_status(self, status_line, line2=None):
@@ -5797,28 +5880,20 @@ class RadioGateway:
         """Find AIOC audio device index"""
         # Suppress ALSA warnings if not in verbose mode
         import os
-        import sys
-        
+
         # Only suppress if not verbose
         if not self.config.VERBOSE_LOGGING:
-            # Save stderr
-            stderr_fd = sys.stderr.fileno()
-            saved_stderr = os.dup(stderr_fd)
-            
+            # Hardcode fd 2 — sys.stderr may be StatusBarWriter (fileno→stdout)
+            saved_stderr = os.dup(2)
             try:
-                # Redirect stderr to /dev/null
                 devnull = os.open(os.devnull, os.O_WRONLY)
-                os.dup2(devnull, stderr_fd)
+                os.dup2(devnull, 2)
                 os.close(devnull)
-                
                 p = pyaudio.PyAudio()
-                
             finally:
-                # Restore stderr
-                os.dup2(saved_stderr, stderr_fd)
+                os.dup2(saved_stderr, 2)
                 os.close(saved_stderr)
         else:
-            # Verbose mode - show ALSA messages
             p = pyaudio.PyAudio()
         
         aioc_input_index = None
@@ -5985,16 +6060,15 @@ class RadioGateway:
         # Suppress ALSA warnings during PyAudio initialization if not verbose
         if not self.config.VERBOSE_LOGGING:
             import os
-            import sys
-            stderr_fd = sys.stderr.fileno()
-            saved_stderr = os.dup(stderr_fd)
+            # Hardcode fd 2 — sys.stderr may be StatusBarWriter (fileno→stdout)
+            saved_stderr = os.dup(2)
             try:
                 devnull = os.open(os.devnull, os.O_WRONLY)
-                os.dup2(devnull, stderr_fd)
+                os.dup2(devnull, 2)
                 os.close(devnull)
                 self.pyaudio_instance = pyaudio.PyAudio()
             finally:
-                os.dup2(saved_stderr, stderr_fd)
+                os.dup2(saved_stderr, 2)
                 os.close(saved_stderr)
         else:
             self.pyaudio_instance = pyaudio.PyAudio()
@@ -8549,9 +8623,10 @@ class RadioGateway:
 
                 # Line 2: uptime, files, relays, CAT, servers, vol, proc, diag, smart countdowns
                 def _fmt_hms(secs):
-                    h, rem = divmod(int(secs), 3600)
+                    d, rem = divmod(int(secs), 86400)
+                    h, rem = divmod(rem, 3600)
                     m, s = divmod(rem, 60)
-                    return f"{h:02d}:{m:02d}:{s:02d}"
+                    return f"{d}d {h:02d}:{m:02d}:{s:02d}"
 
                 uptime_s = current_time - self.start_time
                 line2_parts = [f"{WHITE}UP:{CYAN}{_fmt_hms(uptime_s)}{RESET}"]
@@ -8635,6 +8710,12 @@ class RadioGateway:
                 elif should_on != self.relay_charger_on:
                     self.relay_charger.set_state(should_on)
                     self.relay_charger_on = should_on
+                    on_str = str(self.config.RELAY_CHARGER_ON_TIME)
+                    off_str = str(self.config.RELAY_CHARGER_OFF_TIME)
+                    if should_on:
+                        print(f"\n[Charger] CHARGING started (schedule {on_str}-{off_str})")
+                    else:
+                        print(f"\n[Charger] DRAINING started (schedule {on_str}-{off_str})")
                     self._trace_events.append((time.monotonic(), 'relay_charger', 'on' if should_on else 'off'))
 
             # SDR loopback watchdog checks
@@ -8774,6 +8855,12 @@ class RadioGateway:
 
     def run(self):
         """Main application"""
+        # Install stdout/stderr wrapper early so ALL messages get timestamps
+        self._status_writer = StatusBarWriter(sys.stdout)
+        sys.stdout = self._status_writer
+        self._orig_stderr = sys.stderr
+        sys.stderr = self._status_writer
+
         print("=" * 60)
         print("Radio Gateway")
         print(f"Version {__version__}")
@@ -8799,14 +8886,7 @@ class RadioGateway:
             print("  Radio audio, SDR, and other features will still work.")
 
         self._print_banner()
-        
-        # Install stdout wrapper so print() clears the status bar first
-        self._status_writer = StatusBarWriter(sys.stdout)
-        sys.stdout = self._status_writer
-        # Redirect Python stderr through the same wrapper so warnings from
-        # libraries clear the status bar before printing.
-        self._orig_stderr = sys.stderr
-        sys.stderr = self._status_writer
+
         # Redirect OS-level fd 2 (C stderr) through a pipe that feeds back
         # into the StatusBarWriter.  This catches output from external
         # processes (murmurd, Mumble GUI Qt warnings) that share our terminal.
