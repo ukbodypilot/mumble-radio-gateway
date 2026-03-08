@@ -823,9 +823,11 @@ Press keys during operation to control the gateway:
 
 ![Status Bar Example](docs/img/status_bar_example.svg)
 
-The status bar stays fixed on the last terminal line. Log messages (connection events, key presses, errors) scroll above it so the bar is always visible.
+The status bar uses two lines fixed at the bottom of the terminal. Log messages scroll above so both lines are always visible.
 
-### Status Indicators
+**Line 1** — audio indicators. **Line 2** — timers, file slots, hardware, diagnostics.
+
+### Line 1 — Status Indicators
 
 | Indicator | Meaning |
 |-----------|---------|
@@ -839,9 +841,9 @@ The status bar stays fixed on the last terminal line. Log messages (connection e
 | **VAD:--** | VAD silent (gray) |
 | **-48dB** | Current VAD level (when enabled) |
 
-### Audio Level Bars
+### Line 1 — Audio Level Bars
 
-Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL → AN → PWRB → CHG → CAT → MS1 → MS2
+Bars appear in this order on line 1: TX → RX → SP → SDR1 → SDR2 → SV or CL → AN
 
 | Bar | Color | Meaning |
 |-----|-------|---------|
@@ -853,11 +855,6 @@ Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL → A
 | **SV:[bar]** | Yellow | Remote Audio Link — server mode: audio level being sent to remote client |
 | **CL:[bar]** | Green | Remote Audio Link — client mode: audio level received from remote server (SDRSV) |
 | **AN:[bar]** | Red | Announcement Input — audio level from TCP port 9601 (only shown when `ENABLE_ANNOUNCE_INPUT = true`; shows 0 when no client connected) |
-| **PWRB** | White/Yellow | Radio power button relay — white when idle, yellow during 0.5s pulse (only shown when `ENABLE_RELAY_RADIO = true`) |
-| **CHG:CHRGE/DRAIN** | Green/Red | Charger relay — green when charging, red when draining; `*` suffix indicates manual override active (only shown when `ENABLE_RELAY_CHARGER = true`) |
-| **CAT** | White/Green/Red | TH-9800 CAT control — white when enabled but not connected, green when connected idle, red when active (only shown when `ENABLE_CAT_CONTROL = true`) |
-| **MS1** | White/Green/Red | Mumble Server 1 — white when configured, green when running, red on error (only shown when `ENABLE_MUMBLE_SERVER_1 = true`) |
-| **MS2** | White/Green/Red | Mumble Server 2 — white when configured, green when running, red on error (only shown when `ENABLE_MUMBLE_SERVER_2 = true`) |
 
 **Bar States:**
 
@@ -865,14 +862,35 @@ Bars appear in this order: TX → RX → SP → SDR1 → SDR2 → SV or CL → A
 
 **All bars have fixed width** (11 visible characters: 6-char bar + space + 4-char suffix) to prevent line length changes.
 
-### File Status (0-9)
+### Line 2 — Timers
+
+| Indicator | Format | Meaning |
+|-----------|--------|---------|
+| **UP:HH:MM:SS** | Cyan | Gateway uptime |
+| **S1:HH:MM:SS** | Yellow | Countdown to next Smart Announcement #1 |
+| **S2:HH:MM:SS** | Yellow | Countdown to next Smart Announcement #2 |
+| **S3:HH:MM:SS** | Yellow | Countdown to next Smart Announcement #3 |
+
+All timers use fixed-width `HH:MM:SS` format.
+
+### Line 2 — File Status (0-9)
 - **Green number** = File loaded
 - **Red number** = File currently playing
 - **White number** = No file assigned
 
-### Processing Flags
+### Line 2 — Hardware Indicators
 
-Flags appear in yellow brackets at the end: `[N,F,G,W,E,D]`
+| Indicator | Color | Meaning |
+|-----------|-------|---------|
+| **PWRB** | White/Yellow | Radio power button relay — white when idle, yellow during 0.5s pulse (only shown when `ENABLE_RELAY_RADIO = true`) |
+| **CHG:CHRGE/DRAIN** | Green/Red | Charger relay — green when charging, red when draining; `*` suffix indicates manual override active (only shown when `ENABLE_RELAY_CHARGER = true`) |
+| **CAT** | White/Green/Red | TH-9800 CAT control — white when enabled but not connected, green when connected idle, red when active (only shown when `ENABLE_CAT_CONTROL = true`) |
+| **MS1** | White/Green/Red | Mumble Server 1 — white when configured, green when running, red on error (only shown when `ENABLE_MUMBLE_SERVER_1 = true`) |
+| **MS2** | White/Green/Red | Mumble Server 2 — white when configured, green when running, red on error (only shown when `ENABLE_MUMBLE_SERVER_2 = true`) |
+
+### Line 2 — Processing Flags
+
+Flags appear in yellow brackets: `[N,F,G,W,E,D]`
 
 | Flag | Meaning |
 |------|---------|
@@ -885,14 +903,14 @@ Flags appear in yellow brackets at the end: `[N,F,G,W,E,D]`
 | **D** | SDR Ducking enabled |
 | **X** | Stream Health DISABLED |
 
-### Diagnostics
+### Line 2 — Diagnostics
 
 | Indicator | Meaning |
 |-----------|---------|
 | **Vol:1.0x** | RX volume multiplier |
 | **R:5** | Stream restart count (only if >0) |
 | **S:2** | DarkIce restart count (only if >0) |
-| **W2** | SDR watchdog recovery count (only if >0; appended directly after SDR bar, no colon) |
+| **W2** | SDR watchdog recovery count (only if >0; appended directly after SDR bar on line 1, no colon) |
 
 ## Audio Level Calculation
 

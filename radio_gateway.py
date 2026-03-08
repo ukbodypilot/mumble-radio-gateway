@@ -4148,6 +4148,16 @@ class SmartAnnouncementManager:
                                         name="SmartAnnounce")
         self._thread.start()
 
+    def get_countdowns(self):
+        """Return list of (id, seconds_remaining) for each entry."""
+        now = time.time()
+        result = []
+        with self._lock:
+            for e in self._entries:
+                remaining = max(0, e['interval'] - (now - e['last_run']))
+                result.append((e['id'], int(remaining)))
+        return result
+
     def stop(self):
         """Stop the timer thread."""
         self._stop = True
@@ -5022,6 +5032,7 @@ class StatusBarWriter:
         self._lock = threading.Lock()
         self._last_status = ""   # last status bar text (for redraw)
         self._bar_drawn = False  # True when status bar is on screen
+        self._bar_lines = 1     # how many lines the status bar occupies
         # Forward all attributes that print() and other code might check
         for attr in ('encoding', 'errors', 'mode', 'name', 'newlines',
                      'fileno', 'isatty', 'readable', 'seekable', 'writable'):
@@ -5034,13 +5045,18 @@ class StatusBarWriter:
     def write(self, text):
         with self._lock:
             if self._bar_drawn and text and text != '\n':
-                # Clear the status bar line before printing log text
+                # Clear status bar lines before printing log text
                 try:
                     import shutil as _sh
                     cols = _sh.get_terminal_size().columns
                 except Exception:
                     cols = 120
-                self._orig.write(f"\r{' ' * cols}\r")
+                blank = ' ' * cols
+                if self._bar_lines == 2:
+                    # Clear line 2 (below), then line 1 (current)
+                    self._orig.write(f"\n\r{blank}\r\033[A\r{blank}\r")
+                else:
+                    self._orig.write(f"\r{blank}\r")
                 self._bar_drawn = False
                 # Strip leading \n — it was only there to push past the old
                 # status bar; the wrapper now clears the bar instead.
@@ -5049,10 +5065,20 @@ class StatusBarWriter:
             self._orig.write(text)
         return len(text)
 
-    def draw_status(self, status_line):
-        """Called by the status monitor to paint the bar (no newline)."""
+    def draw_status(self, status_line, line2=None):
+        """Called by the status monitor to paint the bar (no newline).
+
+        If *line2* is given, a two-line status bar is drawn.  The cursor
+        is left on line 1 so that the next draw_status or write() can
+        overwrite cleanly.
+        """
         with self._lock:
-            self._orig.write(f"\r{status_line}")
+            if line2:
+                self._orig.write(f"\r{status_line}\n\r{line2}\033[A\r")
+                self._bar_lines = 2
+            else:
+                self._orig.write(f"\r{status_line}")
+                self._bar_lines = 1
             self._orig.flush()
             self._last_status = status_line
             self._bar_drawn = True
@@ -8475,11 +8501,6 @@ class RadioGateway:
                 # Only show brackets if there are flags (saves space)
                 proc_info = f" {WHITE}[{YELLOW}{','.join(proc_flags)}{WHITE}]{RESET}" if proc_flags else ""
                 
-                # File status indicators (if playback enabled)
-                file_status_info = ""
-                if self.playback_source:
-                    file_status_info = " " + self.playback_source.get_file_status_string()
-
                 # Speaker output indicator
                 sp_bar = ""
                 if self.config.ENABLE_SPEAKER_OUTPUT and self.speaker_stream:
@@ -8523,36 +8544,62 @@ class RadioGateway:
                         else:
                             msrv_bar += f" {WHITE}{_ms_label}{RESET}"
 
-                # Extra padding to clear any orphaned text when line shortens
-                # Order: ...Vol → FileStatus → ProcessingFlags → Diagnostics
-                status_line = f"{status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{annin_bar}{relay_bar}{cat_bar}{msrv_bar}{vol_info}{file_status_info}{proc_info}{diag}     "
-                # Truncate to terminal width to prevent line wrapping (which
-                # breaks \r-based single-line updates).  Count only visible
-                # chars (not ANSI escapes) and cut at terminal_width - 1.
+                # Line 1: audio indicators
+                status_line = f"{status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}PTT:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{annin_bar}     "
+
+                # Line 2: uptime, files, relays, CAT, servers, vol, proc, diag, smart countdowns
+                def _fmt_hms(secs):
+                    h, rem = divmod(int(secs), 3600)
+                    m, s = divmod(rem, 60)
+                    return f"{h:02d}:{m:02d}:{s:02d}"
+
+                uptime_s = current_time - self.start_time
+                line2_parts = [f"{WHITE}UP:{CYAN}{_fmt_hms(uptime_s)}{RESET}"]
+
+                if self.smart_announce:
+                    for sa_id, sa_rem in self.smart_announce.get_countdowns():
+                        line2_parts.append(f"{WHITE}S{sa_id}:{YELLOW}{_fmt_hms(sa_rem)}{RESET}")
+
+                if self.playback_source:
+                    line2_parts.append(self.playback_source.get_file_status_string())
+
+                line2_tail = f"{relay_bar}{cat_bar}{msrv_bar}{vol_info}{proc_info}{diag}"
+                if line2_tail.strip():
+                    line2_parts.append(line2_tail.strip())
+
+                status_line2 = "  ".join(line2_parts) + "     "
+
+                # Truncate both lines to terminal width to prevent line wrapping
                 try:
                     import shutil as _shutil
                     _term_cols = _shutil.get_terminal_size().columns
                     import re as _re
-                    _visible_len = len(_re.sub(r'\033\[[0-9;]*m', '', status_line))
-                    if _visible_len > _term_cols - 1:
-                        _out = []
-                        _vcount = 0
-                        _i = 0
-                        while _i < len(status_line) and _vcount < _term_cols - 1:
-                            if status_line[_i] == '\033':
-                                _j = status_line.find('m', _i)
-                                if _j != -1:
-                                    _out.append(status_line[_i:_j+1])
-                                    _i = _j + 1
+
+                    def _truncate_ansi(s, maxw):
+                        vlen = len(_re.sub(r'\033\[[0-9;]*m', '', s))
+                        if vlen <= maxw:
+                            return s
+                        out = []
+                        vc = 0
+                        i = 0
+                        while i < len(s) and vc < maxw:
+                            if s[i] == '\033':
+                                j = s.find('m', i)
+                                if j != -1:
+                                    out.append(s[i:j+1])
+                                    i = j + 1
                                     continue
-                            _out.append(status_line[_i])
-                            _vcount += 1
-                            _i += 1
-                        status_line = ''.join(_out) + RESET
+                            out.append(s[i])
+                            vc += 1
+                            i += 1
+                        return ''.join(out) + RESET
+
+                    status_line = _truncate_ansi(status_line, _term_cols - 1)
+                    status_line2 = _truncate_ansi(status_line2, _term_cols - 1)
                 except Exception:
                     pass
 
-                self._status_writer.draw_status(status_line)
+                self._status_writer.draw_status(status_line, line2=status_line2)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
