@@ -6719,8 +6719,16 @@ class RadioGateway:
                             print(f"[TTS] Speed adjusted to {tts_speed}x")
                     else:
                         print(f"[TTS] ⚠ Speed adjustment failed, using original")
+                        try:
+                            os.unlink(speed_path)
+                        except Exception:
+                            pass
                 except Exception as speed_err:
                     print(f"[TTS] ⚠ Speed adjustment error: {speed_err}")
+                    try:
+                        os.unlink(speed_path)
+                    except Exception:
+                        pass
 
             # Verify file exists and has valid content
             if not os.path.exists(temp_path):
