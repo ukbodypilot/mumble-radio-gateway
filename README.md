@@ -504,18 +504,30 @@ WEB_CONFIG_PASSWORD =
 - Fixed-width grid layout — bars and values don't shift when levels change
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Mumble: OK    PTT: off (AIOC)   VAD: ON -52dB   Vol: 1.0x       │
-│  Muted: None   Duck: ON                                           │
-│                                                                     │
-│  Uptime: 0d 04:12:33   Smart#1: 0d 01:45:00   DNS: 203.0.113.5   │
-│                                                                     │
-│  TX:   0% ░░░░░░░░░░░░   RX:  34% ████████░░░░                   │
-│  SDR1: 67% ██████████████████░░   SV:  12% ███░░░░░░░░           │
-│  AN:   0% ░░░░░░░░░░░░                                            │
-│                                                                     │
-│  [Mute TX] [Mute RX] [Global] [SDR1] [VAD] [PTT] [1][2][3]...    │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                              Radio Gateway — Live Dashboard                                  │
+│                                                                                              │
+│  Mumble: OK     PTT: off (AIOC)  VAD: ON -52dB   Vol: 1.0x   Proc: [D]   Muted: None       │
+│  Duck: ON       Rebroadcast: OFF  Manual PTT: off  MS1: ON   MS2: ON  CAT: ON  PWRB: off   │
+│                                                                                              │
+│  Uptime: 0d 04:12:33    Smart#1: 0d 01:45:00    Smart#2: 0d 03:22:11    DNS: 203.0.113.5   │
+│                                                                                              │
+│  TX:    0% ░░░░░░░░░░     RX:   34% ████████░░     SDR1:  67% █████████████████░            │
+│  SV:   12% ███░░░░░░░     AN:    0% ░░░░░░░░░░                                              │
+│                                                                                              │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   │
+│  │Mute TX │ │Mute RX │ │ Global │ │  SDR1  │ │  SDR2  │ │ Remote │ │Announce│ │Speaker │   │
+│  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘   │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   │
+│  │  VAD   │ │ Gate   │ │  HPF   │ │  AGC   │ │Spectral│ │ Wiener │ │  Echo  │ │Man PTT │   │
+│  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘   │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐              │
+│  │  Vol-  │ │  Vol+  │ │  Duck  │ │Rebroad │ │Smart #1│ │Smart #2│ │Smart #3│              │
+│  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘              │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐              │
+│  │ File 1 │ │ File 2 │ │ File 3 │ │  ...   │ │ File 0 │ │  Stop  │ │  PWR   │              │
+│  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘              │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Status bar (line 2):** `WEB:8080` in green when enabled, showing the listen port.
@@ -2112,7 +2124,7 @@ class MySource(AudioSource):
 
 **Web configuration UI** — Built-in web interface for editing `gateway_config.txt` from any browser. No extra dependencies (uses Python's `http.server`). Settings grouped by INI section, sensitive fields masked, Save and Save & Restart buttons. Config: `ENABLE_WEB_CONFIG`, `WEB_CONFIG_PORT`, `WEB_CONFIG_PASSWORD`. Status bar shows `WEB:port`.
 
-**Live dashboard** — Real-time status page at `/dashboard` with 1-second JSON polling. Audio level bars for all sources (TX, RX, SP, SDR1, SDR2, SV/CL, AN) matching console order. Uptime timer, smart announcement countdowns, Mumble/PTT/VAD/mute states, DDNS/charger/CAT indicators. Remote key control buttons for all keyboard shortcuts. Fixed-width grid layout prevents UI shifting. Auto-reconnects on gateway restart.
+**Live dashboard** — Real-time status page at `/dashboard` with 1-second JSON polling. Audio level bars for all sources (TX, RX, SP, SDR1, SDR2, SV/CL, AN) matching console order. Uptime timer, smart announcement countdowns, Mumble/PTT/VAD/volume/mute states, MS1/MS2/CAT/PWRB/rebroadcast/duck indicators. Remote key control buttons for all keyboard shortcuts. Fixed-width grid layout prevents UI shifting. Auto-reconnects on gateway restart.
 
 **INI config format** — Configuration file reorganized into standard INI format with `[section]` headers. All key names unchanged — fully backwards compatible. Enables use of standard INI editors and tools.
 
