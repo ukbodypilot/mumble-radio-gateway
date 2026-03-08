@@ -299,6 +299,11 @@ class Config:
             'CAT_LEFT_POWER': '',       # L/M/H or blank = don't change
             'CAT_RIGHT_POWER': '',      # L/M/H or blank = don't change
             # Dynamic DNS (No-IP compatible)
+            # Web Configuration UI
+            'ENABLE_WEB_CONFIG': False,
+            'WEB_CONFIG_PORT': 8080,
+            'WEB_CONFIG_PASSWORD': '',    # Basic auth password (user: admin), blank = no auth
+            # Dynamic DNS (No-IP compatible)
             'ENABLE_DDNS': False,
             'DDNS_USERNAME': '',
             'DDNS_PASSWORD': '',
@@ -329,6 +334,9 @@ class Config:
             'MUMBLE_SERVER_2_AUTOSTART': True,
         }
         
+        # Store defaults for type inference (used by WebConfigServer)
+        self._defaults = dict(defaults)
+
         # Set defaults
         for key, value in defaults.items():
             setattr(self, key, value)
@@ -342,8 +350,8 @@ class Config:
             with open(self.config_file, 'r') as f:
                 for line in f:
                     line = line.strip()
-                    # Skip comments and empty lines
-                    if not line or line.startswith('#'):
+                    # Skip comments, empty lines, and INI section headers
+                    if not line or line.startswith('#') or line.startswith('['):
                         continue
                     
                     # Parse key = value
@@ -5172,6 +5180,606 @@ class MumbleServerManager:
         return self.state, port
 
 
+# ============================================================================
+# WEB CONFIGURATION UI
+# ============================================================================
+
+class WebConfigServer:
+    """Lightweight web UI for editing gateway_config.txt.
+
+    Runs Python's built-in http.server on a daemon thread.  Serves a
+    single-page form grouped by INI sections with Save and Save & Restart.
+    """
+
+    # Keys whose values should be masked in the UI
+    _SENSITIVE_KEYS = {
+        'STREAM_PASSWORD', 'MUMBLE_PASSWORD', 'CAT_PASSWORD', 'DDNS_PASSWORD',
+        'SMART_ANNOUNCE_API_KEY', 'SMART_ANNOUNCE_GEMINI_API_KEY',
+        'WEB_CONFIG_PASSWORD', 'MUMBLE_SERVER_1_PASSWORD', 'MUMBLE_SERVER_2_PASSWORD',
+    }
+
+    # Keys that store hex integers
+    _HEX_KEYS = {'AIOC_VID', 'AIOC_PID'}
+
+    # Section display names
+    _SECTION_NAMES = {
+        'startup': 'Startup Script',
+        'mumble': 'Mumble Server',
+        'radio': 'Radio Interface (AIOC)',
+        'audio': 'Audio Format & Buffering',
+        'levels': 'Audio Levels',
+        'ptt': 'PTT (Push-to-Talk)',
+        'vad': 'Voice Activity Detection',
+        'vox': 'VOX',
+        'processing': 'Audio Processing',
+        'sdr1': 'SDR Receiver 1',
+        'sdr2': 'SDR Receiver 2',
+        'switching': 'Signal Detection & Switching',
+        'remote': 'Remote Audio Link',
+        'announce': 'Announcement Input',
+        'playback': 'File Playback',
+        'tts': 'Text-to-Speech',
+        'speaker': 'Speaker Output',
+        'streaming': 'Broadcastify Streaming',
+        'echolink': 'EchoLink',
+        'relay': 'Relay Control',
+        'smart': 'Smart Announcements',
+        'ddns': 'Dynamic DNS',
+        'web': 'Web Configuration',
+        'cat': 'TH-9800 CAT Control',
+        'mumble-server-1': 'Mumble Server 1',
+        'mumble-server-2': 'Mumble Server 2',
+        'advanced': 'Advanced / Diagnostics',
+    }
+
+    def __init__(self, config, gateway=None):
+        self.config = config
+        self.gateway = gateway
+        self._server = None
+        self._thread = None
+        self._defaults = getattr(config, '_defaults', {})
+
+    def start(self):
+        """Start the HTTP server on a daemon thread."""
+        import http.server
+        import socketserver
+
+        port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
+        password = str(getattr(self.config, 'WEB_CONFIG_PASSWORD', '') or '')
+        parent = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass  # Suppress request logging
+
+            def _check_auth(self):
+                if not password:
+                    return True
+                import base64
+                auth = self.headers.get('Authorization', '')
+                if not auth.startswith('Basic '):
+                    self._send_auth_required()
+                    return False
+                try:
+                    decoded = base64.b64decode(auth[6:]).decode('utf-8')
+                    user, pw = decoded.split(':', 1)
+                    if user == 'admin' and pw == password:
+                        return True
+                except Exception:
+                    pass
+                self._send_auth_required()
+                return False
+
+            def _send_auth_required(self):
+                self.send_response(401)
+                self.send_header('WWW-Authenticate', 'Basic realm="Gateway Config"')
+                self.send_header('Content-Type', 'text/html')
+                self.end_headers()
+                self.wfile.write(b'<h1>401 Unauthorized</h1>')
+
+            def do_GET(self):
+                if not self._check_auth():
+                    return
+                import json as json_mod
+
+                if self.path == '/status':
+                    # JSON status endpoint for live dashboard
+                    data = parent.gateway.get_status_dict() if parent.gateway else {}
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.end_headers()
+                    self.wfile.write(json_mod.dumps(data).encode('utf-8'))
+                elif self.path == '/dashboard':
+                    # Live status dashboard
+                    html = parent._generate_dashboard()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    self.wfile.write(html.encode('utf-8'))
+                else:
+                    # Config editor (default page)
+                    html = parent._generate_html()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    self.wfile.write(html.encode('utf-8'))
+
+            def do_POST(self):
+                if not self._check_auth():
+                    return
+                import urllib.parse
+                import json as json_mod
+
+                if self.path == '/key':
+                    # Key command endpoint
+                    length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(length).decode('utf-8')
+                    try:
+                        data = json_mod.loads(body)
+                        key_char = data.get('key', '')
+                        if key_char and parent.gateway:
+                            parent.gateway.handle_key(key_char)
+                    except Exception:
+                        pass
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(b'{"ok":true}')
+                    return
+
+                length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(length).decode('utf-8')
+                form = urllib.parse.parse_qs(body, keep_blank_values=True)
+                # Flatten: parse_qs returns lists
+                values = {k: v[0] for k, v in form.items() if k != '_action'}
+                action = form.get('_action', ['save'])[0]
+
+                # Checkboxes: unchecked boxes are absent from form data.
+                # We need to detect boolean keys and set them to 'false' if missing.
+                section_map = parent._build_section_map()
+                for key, default_val in parent._defaults.items():
+                    if isinstance(default_val, bool) and key not in values:
+                        if key in section_map or hasattr(parent.config, key):
+                            values[key] = 'false'
+
+                parent._save_config(values)
+                if action == 'restart' and parent.gateway:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    msg = parent._wrap_html('Restarting...',
+                        '<h2>Configuration saved</h2>'
+                        '<p>Gateway is restarting... this page will reload in 5 seconds.</p>'
+                        f'<script>setTimeout(function(){{window.location="http://"+window.location.hostname+":{port}/"}},5000)</script>')
+                    self.wfile.write(msg.encode('utf-8'))
+                    # Signal restart via main loop
+                    parent.gateway.restart_requested = True
+                    parent.gateway.running = False
+                else:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    msg = parent._wrap_html('Saved',
+                        '<h2>Configuration saved</h2>'
+                        '<p>Settings saved to gateway_config.txt.</p>'
+                        '<p>Restart the gateway for changes to take effect.</p>'
+                        '<p><a href="/">Back to config</a></p>')
+                    self.wfile.write(msg.encode('utf-8'))
+
+        class ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        try:
+            self._server = ThreadedServer(('0.0.0.0', port), Handler)
+            self._thread = threading.Thread(target=self._server.serve_forever,
+                                            name='WebConfig', daemon=True)
+            self._thread.start()
+            print(f"  [WebConfig] Listening on http://0.0.0.0:{port}/")
+        except Exception as e:
+            print(f"  [WebConfig] Failed to start: {e}")
+
+    def stop(self):
+        """Shut down the HTTP server."""
+        if self._server:
+            try:
+                self._server.shutdown()
+            except Exception:
+                pass
+
+    def _build_section_map(self):
+        """Parse config file to map KEY -> section_name."""
+        section_map = {}
+        current_section = 'default'
+        config_path = self.config.config_file
+        if not os.path.exists(config_path):
+            return section_map
+        try:
+            with open(config_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('[') and ']' in line:
+                        current_section = line[1:line.index(']')].strip()
+                    elif '=' in line and not line.startswith('#'):
+                        key = line.split('=', 1)[0].strip()
+                        section_map[key] = current_section
+        except Exception:
+            pass
+        return section_map
+
+    def _save_config(self, new_values):
+        """Write updated values to config file, preserving comments and structure."""
+        config_path = self.config.config_file
+        if not os.path.exists(config_path):
+            return
+
+        lines = []
+        written_keys = set()
+
+        with open(config_path, 'r') as f:
+            raw_lines = f.readlines()
+
+        for raw_line in raw_lines:
+            stripped = raw_line.strip()
+            # Check if this is a key=value line (not comment, not section, not blank)
+            if stripped and not stripped.startswith('#') and not stripped.startswith('[') and '=' in stripped:
+                key = stripped.split('=', 1)[0].strip()
+                if key in new_values:
+                    new_val = new_values[key]
+                    # Format the value
+                    if key in self._HEX_KEYS:
+                        try:
+                            new_val = hex(int(new_val))
+                        except (ValueError, TypeError):
+                            pass
+                    # Preserve inline comment if any (but not for brace-containing values)
+                    old_after_eq = stripped.split('=', 1)[1]
+                    inline_comment = ''
+                    if '#' in old_after_eq and '{' not in old_after_eq:
+                        val_part = old_after_eq.split('#')[0].strip()
+                        comment_part = old_after_eq[old_after_eq.index('#'):]
+                        inline_comment = '  ' + comment_part
+                    lines.append(f"{key} = {new_val}{inline_comment}\n")
+                    written_keys.add(key)
+                else:
+                    lines.append(raw_line)
+            else:
+                lines.append(raw_line)
+
+        # Write atomically via temp file
+        tmp_path = config_path + '.tmp'
+        with open(tmp_path, 'w') as f:
+            f.writelines(lines)
+        os.replace(tmp_path, config_path)
+
+    def _wrap_html(self, title, body):
+        """Wrap body content in the standard HTML shell."""
+        return f'''<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radio Gateway - {title}</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+         background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 20px; }}
+  h1 {{ color: #00d4ff; margin: 0 0 20px; font-size: 1.4em; }}
+  h2 {{ color: #00d4ff; margin: 10px 0; font-size: 1.2em; }}
+  a {{ color: #00d4ff; }}
+  details {{ background: #16213e; border: 1px solid #0f3460; border-radius: 6px;
+            margin: 8px 0; }}
+  summary {{ cursor: pointer; padding: 10px 14px; font-weight: bold; color: #00d4ff;
+            font-size: 0.95em; user-select: none; }}
+  summary:hover {{ background: #1a2744; }}
+  .fields {{ padding: 8px 14px 14px; }}
+  .field {{ display: flex; align-items: center; margin: 4px 0; gap: 8px; }}
+  .field label {{ min-width: 320px; font-size: 0.85em; color: #b0b0b0; }}
+  .field input[type="text"], .field input[type="number"], .field input[type="password"] {{
+    flex: 1; background: #0d1b2a; border: 1px solid #1b3a5c; color: #e0e0e0;
+    padding: 5px 8px; border-radius: 3px; font-family: monospace; font-size: 0.85em;
+    max-width: 500px; }}
+  .field input[type="checkbox"] {{ width: 18px; height: 18px; accent-color: #00d4ff; }}
+  .field .default {{ font-size: 0.75em; color: #666; margin-left: 8px; }}
+  .buttons {{ position: sticky; top: 0; background: #1a1a2e; padding: 10px 0;
+             z-index: 10; border-bottom: 1px solid #0f3460; margin-bottom: 10px;
+             display: flex; gap: 10px; }}
+  button {{ padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer;
+           font-size: 0.9em; font-weight: bold; }}
+  .btn-save {{ background: #0f3460; color: #e0e0e0; }}
+  .btn-save:hover {{ background: #1a4a7a; }}
+  .btn-restart {{ background: #c0392b; color: #fff; }}
+  .btn-restart:hover {{ background: #e74c3c; }}
+</style>
+</head><body>{body}</body></html>'''
+
+    def _generate_dashboard(self):
+        """Build the live status dashboard HTML page."""
+        port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
+        body = '''
+<h1 style="font-size:1.8em">Radio Gateway Dashboard</h1>
+<p style="margin:0 0 14px;font-size:1.1em"><a href="/">Config Editor</a></p>
+
+<div id="status">Loading...</div>
+
+<div class="controls">
+  <div class="ctrl-group">
+    <h3>Mute Controls</h3>
+    <button onclick="sendKey('t')" id="btn-t">TX Mute</button>
+    <button onclick="sendKey('r')" id="btn-r">RX Mute</button>
+    <button onclick="sendKey('m')" id="btn-m">Global Mute</button>
+    <button onclick="sendKey('s')" id="btn-s">SDR1 Mute</button>
+    <button onclick="sendKey('x')" id="btn-x">SDR2 Mute</button>
+    <button onclick="sendKey('c')" id="btn-c">Remote Mute</button>
+    <button onclick="sendKey('a')" id="btn-a">Announce Mute</button>
+    <button onclick="sendKey('o')" id="btn-o">Speaker Mute</button>
+  </div>
+  <div class="ctrl-group">
+    <h3>Audio</h3>
+    <button onclick="sendKey('v')" id="btn-v">VAD Toggle</button>
+    <button onclick="sendKey(',')">,  Vol-</button>
+    <button onclick="sendKey('.')">. Vol+</button>
+  </div>
+  <div class="ctrl-group">
+    <h3>Processing</h3>
+    <button onclick="sendKey('n')" id="btn-n">Gate</button>
+    <button onclick="sendKey('f')" id="btn-f">HPF</button>
+    <button onclick="sendKey('g')" id="btn-g">AGC</button>
+    <button onclick="sendKey('y')" id="btn-y">Spectral</button>
+    <button onclick="sendKey('w')" id="btn-w">Wiener</button>
+    <button onclick="sendKey('e')" id="btn-e">Echo</button>
+  </div>
+  <div class="ctrl-group">
+    <h3>SDR</h3>
+    <button onclick="sendKey('d')" id="btn-d">Duck Toggle</button>
+    <button onclick="sendKey('b')" id="btn-b">Rebroadcast</button>
+  </div>
+  <div class="ctrl-group">
+    <h3>PTT & Relay</h3>
+    <button onclick="sendKey('p')" id="btn-p">Manual PTT</button>
+    <button onclick="sendKey('j')" id="btn-j">Radio Power</button>
+    <button onclick="sendKey('h')" id="btn-h">Charger Toggle</button>
+  </div>
+  <div class="ctrl-group">
+    <h3>Playback</h3>
+    <button onclick="sendKey('0')">0 StationID</button>
+    <button onclick="sendKey('1')">1</button>
+    <button onclick="sendKey('2')">2</button>
+    <button onclick="sendKey('3')">3</button>
+    <button onclick="sendKey('4')">4</button>
+    <button onclick="sendKey('5')">5</button>
+    <button onclick="sendKey('6')">6</button>
+    <button onclick="sendKey('7')">7</button>
+    <button onclick="sendKey('8')">8</button>
+    <button onclick="sendKey('9')">9</button>
+    <button onclick="sendKey('-')">Stop</button>
+  </div>
+  <div class="ctrl-group">
+    <h3>Smart Announce</h3>
+    <button onclick="sendKey('[')">Smart #1</button>
+    <button onclick="sendKey(']')">Smart #2</button>
+    <button onclick="sendKey(String.fromCharCode(92))">Smart #3</button>
+  </div>
+  <div class="ctrl-group">
+    <h3>System</h3>
+    <button onclick="if(confirm('Restart gateway?'))sendKey('q')" class="btn-restart">Restart</button>
+  </div>
+</div>
+
+<style>
+  .controls { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 18px; }
+  .ctrl-group { background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 14px; min-width: 220px; }
+  .ctrl-group h3 { margin: 0 0 10px; color: #00d4ff; font-size: 1.1em; }
+  .ctrl-group button { padding: 10px 18px; margin: 3px; border: 1px solid #1b3a5c; border-radius: 4px;
+    background: #0d1b2a; color: #e0e0e0; cursor: pointer; font-family: monospace; font-size: 1.05em; }
+  .ctrl-group button:hover { background: #1a2744; }
+  .ctrl-group button:active { background: #0f3460; }
+  .ctrl-group button.active { background: #0f3460; border-color: #00d4ff; color: #00d4ff; }
+  .ctrl-group button.muted { background: #5c1a1a; border-color: #c0392b; color: #ff6b6b; }
+  #status { background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 18px; font-family: monospace; font-size: 1.15em; }
+  .st-row { display: grid; grid-template-columns: repeat(auto-fill, 220px); gap: 8px 0; margin: 6px 0; }
+  .st-item { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+  .st-label { color: #888; }
+  .st-val { font-weight: bold; }
+  .bar { display: inline-block; height: 18px; border-radius: 3px; min-width: 4px; vertical-align: middle; }
+  .bar-rx { background: #2ecc71; } .bar-tx { background: #e74c3c; }
+  .bar-sdr1 { background: #00d4ff; } .bar-sdr2 { background: #e056a0; }
+  .bar-sv { background: #f1c40f; } .bar-cl { background: #2ecc71; }
+  .bar-sp { background: #00d4ff; } .bar-an { background: #e74c3c; }
+  .bar-pct { display: inline-block; width: 3.5em; text-align: right; color: #ccc; }
+  .green { color: #2ecc71; } .red { color: #e74c3c; } .yellow { color: #f39c12; }
+  .cyan { color: #00d4ff; } .white { color: #e0e0e0; }
+</style>
+
+<script>
+function sendKey(k) {
+  fetch('/key', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:k})});
+}
+
+function bar(pct, cls) {
+  var w = Math.round(Math.min(Math.max(pct, 0), 100) * 1.5);
+  var p = pct < 10 ? '  '+pct : pct < 100 ? ' '+pct : ''+pct;
+  return '<span class="bar-pct">'+p+'%</span><span class="bar '+cls+'" style="width:'+w+'px"></span>';
+}
+
+function updateStatus() {
+  fetch('/status').then(r=>r.json()).then(function(s) {
+    var h = '<div class="st-row info-row">';
+    h += '<div class="st-item"><span class="st-label">Mumble:</span><span class="st-val '+(s.mumble?'green':'red')+'">'+(s.mumble?'OK':'DOWN')+'</span></div>';
+    h += '<div class="st-item"><span class="st-label">PTT:</span><span class="st-val '+(s.ptt_active?'red':'green')+'">'+(s.ptt_active?'ON':'off')+'</span> <span class="st-label">('+s.ptt_method+')</span></div>';
+    h += '<div class="st-item"><span class="st-label">VAD:</span><span class="st-val '+(s.vad_enabled?'green':'red')+'">'+(s.vad_enabled?'ON':'off')+'</span> <span class="st-val yellow">'+s.vad_db+'dB</span></div>';
+    h += '<div class="st-item"><span class="st-label">Vol:</span><span class="st-val yellow">'+s.volume+'x</span></div>';
+    if(s.processing.length) h += '<div class="st-item"><span class="st-label">Proc:</span><span class="st-val yellow">['+s.processing.join(',')+']</span></div>';
+    var mutes = [];
+    if(s.tx_muted) mutes.push('TX');
+    if(s.rx_muted) mutes.push('RX');
+    if(s.sdr1_muted) mutes.push('SDR1');
+    if(s.sdr2_muted) mutes.push('SDR2');
+    if(s.remote_muted) mutes.push('Remote');
+    if(s.announce_muted) mutes.push('Announce');
+    if(s.speaker_muted && s.speaker_enabled) mutes.push('Speaker');
+    h += '<div class="st-item"><span class="st-label">Muted:</span><span class="st-val '+(mutes.length?'red':'green')+'">'+(mutes.length?mutes.join(', '):'None')+'</span></div>';
+    if(s.sdr1_duck) h += '<div class="st-item"><span class="st-label">Duck:</span><span class="st-val green">ON</span></div>';
+    if(s.sdr_rebroadcast) h += '<div class="st-item"><span class="st-label">Rebroadcast:</span><span class="st-val yellow">ON</span></div>';
+    if(s.manual_ptt) h += '<div class="st-item"><span class="st-label">Manual PTT:</span><span class="st-val red">ON</span></div>';
+    h += '</div>';
+
+    // Timers row: uptime + smart announce countdowns
+    h += '<div class="st-row timer-row">';
+    h += '<div class="st-item"><span class="st-label">Uptime:</span><span class="st-val cyan">'+s.uptime+'</span></div>';
+    for(var i=0;i<s.smart_countdowns.length;i++) {
+      h += '<div class="st-item"><span class="st-label">Smart#'+s.smart_countdowns[i].id+':</span><span class="st-val yellow">'+s.smart_countdowns[i].remaining+'</span></div>';
+    }
+    if(s.ddns) h += '<div class="st-item"><span class="st-label">DNS:</span><span class="st-val green">'+s.ddns+'</span></div>';
+    if(s.charger) h += '<div class="st-item"><span class="st-label">Charger:</span><span class="st-val '+(s.charger.startsWith("CHARGING")?'green':'red')+'">'+s.charger+'</span></div>';
+    if(s.cat) h += '<div class="st-item"><span class="st-label">CAT:</span><span class="st-val '+(s.cat==="idle"?'green':s.cat==="active"?'red':'white')+'">'+s.cat+'</span></div>';
+    h += '</div>';
+
+    // Audio levels — same order as console: TX RX SP SDR1 SDR2 SV/CL AN
+    h += '<div class="st-row audio-row">';
+    h += '<div class="st-item"><span class="st-label">TX:</span>'+bar(s.radio_tx,'bar-tx')+'</div>';
+    h += '<div class="st-item"><span class="st-label">RX:</span>'+bar(s.radio_rx,'bar-rx')+'</div>';
+    if(s.speaker_enabled) h += '<div class="st-item"><span class="st-label">SP:</span>'+bar(s.speaker_level,'bar-sp')+'</div>';
+    if(s.sdr1_enabled) h += '<div class="st-item"><span class="st-label">SDR1:</span>'+bar(s.sdr1_level,'bar-sdr1')+'</div>';
+    if(s.sdr2_enabled) h += '<div class="st-item"><span class="st-label">SDR2:</span>'+bar(s.sdr2_level,'bar-sdr2')+'</div>';
+    if(s.remote_enabled) h += '<div class="st-item"><span class="st-label">'+s.remote_mode+':</span>'+bar(s.remote_level, s.remote_mode==='SV'?'bar-sv':'bar-cl')+'</div>';
+    if(s.announce_enabled) h += '<div class="st-item"><span class="st-label">AN:</span>'+bar(s.an_level,'bar-an')+'</div>';
+    h += '</div>';
+
+    document.getElementById('status').innerHTML = h;
+
+    // Update button states
+    function setBtn(id, active, cls) { var b=document.getElementById(id); if(b) { b.className=active?(cls||'active'):''; } }
+    setBtn('btn-t', s.tx_muted, 'muted');
+    setBtn('btn-r', s.rx_muted, 'muted');
+    setBtn('btn-m', s.tx_muted && s.rx_muted, 'muted');
+    setBtn('btn-s', s.sdr1_muted, 'muted');
+    setBtn('btn-x', s.sdr2_muted, 'muted');
+    setBtn('btn-c', s.remote_muted, 'muted');
+    setBtn('btn-a', s.announce_muted, 'muted');
+    setBtn('btn-o', s.speaker_muted, 'muted');
+    setBtn('btn-v', s.vad_enabled, 'active');
+    setBtn('btn-p', s.manual_ptt, 'active');
+    setBtn('btn-d', s.sdr1_duck, 'active');
+    setBtn('btn-b', s.sdr_rebroadcast, 'active');
+    setBtn('btn-n', s.processing.indexOf('Gate')>=0, 'active');
+    setBtn('btn-f', s.processing.indexOf('HPF')>=0, 'active');
+    setBtn('btn-g', s.processing.indexOf('AGC')>=0, 'active');
+    setBtn('btn-y', s.processing.indexOf('Spectral')>=0, 'active');
+    setBtn('btn-w', s.processing.indexOf('Wiener')>=0, 'active');
+    setBtn('btn-e', s.processing.indexOf('Echo')>=0, 'active');
+  }).catch(function(){ _lost=true; document.getElementById('status').innerHTML='<span class="red">Gateway offline — waiting for restart...</span>'; });
+}
+
+var _lost = false;
+setInterval(function() {
+  if(_lost) {
+    fetch('/status').then(function(r){ if(r.ok){ _lost=false; window.location.reload(); } }).catch(function(){});
+  } else {
+    updateStatus();
+  }
+}, 1000);
+updateStatus();
+</script>
+'''
+        return self._wrap_html('Dashboard', body)
+
+    def _generate_html(self):
+        """Build the full HTML page with form inputs grouped by section."""
+        section_map = self._build_section_map()
+
+        # Build ordered list of (section, [(key, current_value, default_value)])
+        sections = {}  # section -> [(key, cur_val, default_val)]
+        section_order = []
+
+        # Walk config file to get key order and sections
+        config_path = self.config.config_file
+        current_section = 'default'
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('[') and ']' in line:
+                        current_section = line[1:line.index(']')].strip()
+                        if current_section not in sections:
+                            sections[current_section] = []
+                            section_order.append(current_section)
+                    elif '=' in line and not line.startswith('#'):
+                        key = line.split('=', 1)[0].strip()
+                        cur_val = getattr(self.config, key, '')
+                        default_val = self._defaults.get(key, None)
+                        if current_section not in sections:
+                            sections[current_section] = []
+                            section_order.append(current_section)
+                        sections[current_section].append((key, cur_val, default_val))
+
+        # Build form HTML
+        form_parts = []
+        for section in section_order:
+            display_name = self._SECTION_NAMES.get(section, section)
+            fields_html = []
+            for key, cur_val, default_val in sections[section]:
+                field = self._render_field(key, cur_val, default_val)
+                fields_html.append(field)
+
+            # Default open for first 3 sections, collapsed for rest
+            open_attr = ' open' if section_order.index(section) < 3 else ''
+            form_parts.append(
+                f'<details{open_attr}><summary>{display_name}</summary>'
+                f'<div class="fields">{"".join(fields_html)}</div></details>')
+
+        body = (
+            '<h1>Radio Gateway Configuration</h1>'
+            '<p style="margin:0 0 10px"><a href="/dashboard">Live Dashboard</a></p>'
+            '<form method="POST" action="/">'
+            '<div class="buttons">'
+            '<button type="submit" name="_action" value="save" class="btn-save">Save</button>'
+            '<button type="submit" name="_action" value="restart" class="btn-restart"'
+            ' onclick="return confirm(\'Save and restart the gateway?\')">Save &amp; Restart</button>'
+            '</div>'
+            + ''.join(form_parts) +
+            '</form>'
+        )
+        return self._wrap_html('Config', body)
+
+    def _render_field(self, key, cur_val, default_val):
+        """Render a single config field as HTML."""
+        import html as html_mod
+
+        is_bool = isinstance(default_val, bool) if default_val is not None else isinstance(cur_val, bool)
+        is_sensitive = key in self._SENSITIVE_KEYS
+
+        if is_bool:
+            checked = ' checked' if cur_val else ''
+            # Hidden field ensures unchecked boxes submit 'false'
+            inp = (f'<input type="hidden" name="{key}" value="false">'
+                   f'<input type="checkbox" name="{key}" value="true"{checked}>')
+            default_str = str(default_val).lower() if default_val is not None else ''
+        elif is_sensitive:
+            val = html_mod.escape(str(cur_val)) if cur_val else ''
+            inp = f'<input type="password" name="{key}" value="{val}" autocomplete="off">'
+            default_str = '(hidden)'
+        elif isinstance(cur_val, (int, float)) and not isinstance(cur_val, bool):
+            val = str(cur_val)
+            # Use text input for numbers to support hex
+            if key in self._HEX_KEYS:
+                val = hex(int(cur_val)) if isinstance(cur_val, int) else val
+            inp = f'<input type="text" name="{key}" value="{html_mod.escape(val)}">'
+            default_str = str(default_val) if default_val is not None else ''
+            if key in self._HEX_KEYS and isinstance(default_val, int):
+                default_str = hex(default_val)
+        else:
+            val = html_mod.escape(str(cur_val)) if cur_val else ''
+            inp = f'<input type="text" name="{key}" value="{val}">'
+            default_str = html_mod.escape(str(default_val)) if default_val is not None else ''
+
+        default_hint = f'<span class="default">default: {default_str}</span>' if default_str else ''
+
+        return (f'<div class="field">'
+                f'<label for="{key}">{key}</label>{inp}{default_hint}'
+                f'</div>')
+
+
 class StatusBarWriter:
     """Wraps sys.stdout so that any print() clears the status bar first.
 
@@ -5386,6 +5994,9 @@ class RadioGateway:
 
         # Smart Announcements (AI-powered, Claude or Gemini)
         self.smart_announce = None  # SmartAnnouncementManager instance
+
+        # Web configuration UI
+        self.web_config_server = None
 
         # Dynamic DNS updater
         self.ddns_updater = None  # DDNSUpdater instance
@@ -6569,6 +7180,14 @@ class RadioGateway:
                     self.smart_announce.start()
                 except Exception as e:
                     print(f"  [SmartAnnounce] Init error: {e}")
+
+            # Initialize web configuration UI
+            if getattr(self.config, 'ENABLE_WEB_CONFIG', False):
+                try:
+                    self.web_config_server = WebConfigServer(self.config, gateway=self)
+                    self.web_config_server.start()
+                except Exception as e:
+                    print(f"  [WebConfig] Init error: {e}")
 
             # Initialize DDNS updater
             if getattr(self.config, 'ENABLE_DDNS', False):
@@ -8210,191 +8829,9 @@ class RadioGateway:
                 # Check if input is available (non-blocking)
                 if select.select([sys.stdin], [], [], 0.1)[0]:
                     char = sys.stdin.read(1).lower()
-                    
-                    if char == 't':
-                        # Toggle TX mute (Mumble → Radio)
-                        self.tx_muted = not self.tx_muted
-                        self._trace_events.append((time.monotonic(), 'tx_mute', 'on' if self.tx_muted else 'off'))
 
-                    elif char == 'r':
-                        # Toggle RX mute (Radio → Mumble)
-                        self.rx_muted = not self.rx_muted
-                        self._trace_events.append((time.monotonic(), 'rx_mute', 'on' if self.rx_muted else 'off'))
-                    
-                    elif char == 'm':
-                        # Global mute toggle
-                        if self.tx_muted and self.rx_muted:
-                            # Both muted → unmute both
-                            self.tx_muted = False
-                            self.rx_muted = False
-                        else:
-                            # One or both unmuted → mute both
-                            self.tx_muted = True
-                            self.rx_muted = True
-                        self._trace_events.append((time.monotonic(), 'global_mute', f'tx={self.tx_muted} rx={self.rx_muted}'))
-                    
-                    elif char == 's':
-                        # Toggle SDR mute
-                        if self.sdr_source:
-                            self.sdr_muted = not self.sdr_muted
-                            self.sdr_source.muted = self.sdr_muted
-                            self._trace_events.append((time.monotonic(), 'sdr_mute', 'on' if self.sdr_muted else 'off'))
-                            if self.config.VERBOSE_LOGGING:
-                                state = "MUTED" if self.sdr_muted else "UNMUTED"
-                                print(f"\n[SDR] {state}")
-                    
-                    elif char == 'd':
-                        # Toggle SDR ducking on/off
-                        if self.sdr_source:
-                            self.sdr_source.duck = not self.sdr_source.duck
-                            if self.config.VERBOSE_LOGGING:
-                                if self.sdr_source.duck:
-                                    print(f"\n[SDR1] Ducking ENABLED (SDR silenced when higher priority audio active)")
-                                else:
-                                    print(f"\n[SDR1] Ducking DISABLED (SDR mixed at {self.sdr_source.mix_ratio:.1f}x ratio)")
-                    
-                    elif char == 'x':
-                        # Toggle SDR2 mute
-                        if self.sdr2_source:
-                            self.sdr2_muted = not self.sdr2_muted
-                            self.sdr2_source.muted = self.sdr2_muted
-                            self._trace_events.append((time.monotonic(), 'sdr2_mute', 'on' if self.sdr2_muted else 'off'))
-                            if self.config.VERBOSE_LOGGING:
-                                state = "MUTED" if self.sdr2_muted else "UNMUTED"
-                                print(f"\n[SDR2] {state}")
-                    
-                    elif char == 'c':
-                        # Toggle remote audio mute (client only)
-                        if self.remote_audio_source:
-                            self.remote_audio_muted = not self.remote_audio_muted
-                            self.remote_audio_source.muted = self.remote_audio_muted
-                            self._trace_events.append((time.monotonic(), 'remote_mute', 'on' if self.remote_audio_muted else 'off'))
-                            if self.config.VERBOSE_LOGGING:
-                                state = "MUTED" if self.remote_audio_muted else "UNMUTED"
-                                print(f"\n[SDRSV] {state}")
-
-                    elif char == 'k':
-                        # Reset remote audio TCP connection
-                        if self.remote_audio_server:
-                            self.remote_audio_server.reset()
-                            print(f"\n[RemoteAudio] Server connection reset — reconnecting to {self.remote_audio_server.host}:{self.remote_audio_server.port}")
-                            self._trace_events.append((time.monotonic(), 'remote_reset', 'server'))
-                        elif self.remote_audio_source:
-                            self.remote_audio_source.reset()
-                            print(f"\n[SDRSV] Client connection reset — waiting for reconnect")
-                            self._trace_events.append((time.monotonic(), 'remote_reset', 'client'))
-
-                    elif char == 'v':
-                        # Toggle VAD on/off
-                        self.config.ENABLE_VAD = not self.config.ENABLE_VAD
-                    
-                    elif char == ',':
-                        # Decrease RX volume (Radio → Mumble)
-                        self.config.INPUT_VOLUME = max(0.1, self.config.INPUT_VOLUME - 0.1)
-                    
-                    elif char == '.':
-                        # Increase RX volume (Radio → Mumble)
-                        self.config.INPUT_VOLUME = min(3.0, self.config.INPUT_VOLUME + 0.1)
-                    
-                    elif char == 'n':
-                        # Toggle noise gate
-                        self.config.ENABLE_NOISE_GATE = not self.config.ENABLE_NOISE_GATE
-                    
-                    elif char == 'f':
-                        # Toggle high-pass filter
-                        self.config.ENABLE_HIGHPASS_FILTER = not self.config.ENABLE_HIGHPASS_FILTER
-                    
-                    elif char == 'a':
-                        # Toggle announcement input mute
-                        if self.announce_input_source:
-                            self.announce_input_muted = not self.announce_input_muted
-                            self.announce_input_source.muted = self.announce_input_muted
-                            if self.config.VERBOSE_LOGGING:
-                                state = "MUTED" if self.announce_input_muted else "UNMUTED"
-                                print(f"\n[ANNIN] {state}")
-
-                    elif char == 'g':
-                        # Toggle AGC
-                        self.config.ENABLE_AGC = not self.config.ENABLE_AGC
-                    
-                    elif char == 'y':
-                        # Toggle spectral noise suppression
-                        if self.config.ENABLE_NOISE_SUPPRESSION and self.config.NOISE_SUPPRESSION_METHOD == 'spectral':
-                            # Currently on with spectral → turn off
-                            self.config.ENABLE_NOISE_SUPPRESSION = False
-                        else:
-                            # Turn on with spectral
-                            self.config.ENABLE_NOISE_SUPPRESSION = True
-                            self.config.NOISE_SUPPRESSION_METHOD = 'spectral'
-                    
-                    elif char == 'w':
-                        # Toggle Wiener noise suppression
-                        if self.config.ENABLE_NOISE_SUPPRESSION and self.config.NOISE_SUPPRESSION_METHOD == 'wiener':
-                            # Currently on with wiener → turn off
-                            self.config.ENABLE_NOISE_SUPPRESSION = False
-                        else:
-                            # Turn on with wiener
-                            self.config.ENABLE_NOISE_SUPPRESSION = True
-                            self.config.NOISE_SUPPRESSION_METHOD = 'wiener'
-                    
-                    elif char == 'e':
-                        # Toggle echo cancellation
-                        self.config.ENABLE_ECHO_CANCELLATION = not self.config.ENABLE_ECHO_CANCELLATION
-                    
-                    elif char == 'p':
-                        # Toggle manual PTT mode (requires AIOC)
-                        if not self.aioc_device:
-                            if self.config.VERBOSE_LOGGING:
-                                print(f"\n[Keyboard] PTT disabled — no AIOC device")
-                        else:
-                            # Queue the HID write so it runs between audio reads in the
-                            # audio thread rather than concurrently with input_stream.read().
-                            # This prevents simultaneous USB HID + isochronous audio
-                            # transfers on the same AIOC composite device, which can
-                            # cause a brief audio click.
-                            self.manual_ptt_mode = not self.manual_ptt_mode
-                            self._pending_ptt_state = self.manual_ptt_mode
-                            self._trace_events.append((time.monotonic(), 'ptt', 'on' if self.manual_ptt_mode else 'off'))
-
-                    elif char == 'b':
-                        # Toggle SDR rebroadcast (route SDR mix to radio TX)
-                        self.sdr_rebroadcast = not self.sdr_rebroadcast
-                        if not self.sdr_rebroadcast:
-                            if self._rebroadcast_ptt_active and self.ptt_active:
-                                self.set_ptt_state(False)
-                                self._ptt_change_time = time.monotonic()
-                                self._rebroadcast_ptt_active = False
-                            # Re-enable AIOC source if it was disabled during rebroadcast TX
-                            if self.radio_source:
-                                self.radio_source.enabled = True
-                            self._rebroadcast_sending = False
-                            self._rebroadcast_ptt_hold_until = 0
-                        self._trace_events.append((time.monotonic(), 'sdr_rebroadcast', 'on' if self.sdr_rebroadcast else 'off'))
-
-                    elif char == 'j':
-                        # Pulse radio power button (relay ON 0.5s then OFF)
-                        if self.relay_radio and not self._relay_radio_pressing:
-                            def _pulse_power():
-                                self._relay_radio_pressing = True
-                                self.relay_radio.set_state(True)
-                                self._trace_events.append((time.monotonic(), 'relay_radio', 'press'))
-                                time.sleep(1.0)
-                                self.relay_radio.set_state(False)
-                                self._relay_radio_pressing = False
-                                self._trace_events.append((time.monotonic(), 'relay_radio', 'release'))
-                            threading.Thread(target=_pulse_power, daemon=True).start()
-
-                    elif char == 'h':
-                        # Toggle charger relay manually (overrides schedule until next timed change)
-                        if self.relay_charger:
-                            new_state = not self.relay_charger_on
-                            self.relay_charger.set_state(new_state)
-                            self.relay_charger_on = new_state
-                            self._charger_manual = True
-                            self._trace_events.append((time.monotonic(), 'relay_charger', f'manual_{"on" if new_state else "off"}'))
-
-                    elif char == 'i':
-                        # Toggle audio trace recording
+                    # Keys handled locally (need terminal access)
+                    if char == 'i':
                         self._trace_recording = not self._trace_recording
                         if self._trace_recording:
                             self._audio_trace.clear()
@@ -8407,7 +8844,6 @@ class RadioGateway:
                         self._trace_events.append((time.monotonic(), 'trace', 'on' if self._trace_recording else 'off'))
 
                     elif char == 'u':
-                        # Toggle watchdog trace (long-running diagnostics)
                         self._watchdog_active = not self._watchdog_active
                         if self._watchdog_active:
                             self._watchdog_t0 = time.monotonic()
@@ -8418,84 +8854,7 @@ class RadioGateway:
                         else:
                             print(f"\n[Watchdog] Trace STOPPED")
 
-                    elif char == 'o':
-                        # Toggle speaker output mute
-                        if self.speaker_stream:
-                            self.speaker_muted = not self.speaker_muted
-                            self._trace_events.append((time.monotonic(), 'spk_mute', 'on' if self.speaker_muted else 'off'))
-
-                    elif char == 'l':
-                        # Send CAT configuration commands to radio
-                        if self.cat_client:
-                            print(f"\n[CAT] Sending configuration commands...")
-                            def _send_cat_config():
-                                try:
-                                    self.cat_client._stop = False
-                                    self.cat_client.setup_radio(self.config)
-                                    if not self.cat_client._stop:
-                                        print(f"\n[CAT] Configuration commands sent successfully")
-                                except Exception as ex:
-                                    print(f"\n[CAT] Error sending commands: {ex}")
-                            threading.Thread(target=_send_cat_config, daemon=True,
-                                             name="CAT-ManualConfig").start()
-                        else:
-                            print(f"\n[CAT] CAT control not connected")
-
-                    elif char in '0123456789':
-                        # Play announcement 0-9 (requires AIOC for radio TX)
-                        if not self.aioc_device:
-                            if self.config.VERBOSE_LOGGING:
-                                print(f"\n[Keyboard] Announcement keys disabled — no AIOC device")
-                        elif self.playback_source:
-                            # Use the stored path from file_status
-                            stored_path = self.playback_source.file_status[char]['path']
-                            stored_filename = self.playback_source.file_status[char].get('filename', '')
-                            
-                            if stored_path:
-                                # File exists, queue it directly
-                                if self.config.VERBOSE_LOGGING:
-                                    print(f"\n[Keyboard] Key '{char}' pressed - queueing {stored_filename}")
-                                self.playback_source.queue_file(stored_path)
-                            else:
-                                # File not found
-                                if self.config.VERBOSE_LOGGING:
-                                    if char == '0':
-                                        print(f"\n[Playback] Station ID not found (looked for station_id.mp3 or station_id.wav)")
-                                    else:
-                                        print(f"\n[Playback] No file assigned to key '{char}'")
-                        else:
-                            if self.config.VERBOSE_LOGGING:
-                                print("\n[Keyboard] File playback not enabled")
-                    
-                    elif char == '-':
-                        # Stop playback
-                        if self.playback_source:
-                            if self.config.VERBOSE_LOGGING:
-                                print("\n[Keyboard] Key '-' pressed - stopping playback")
-                            self.playback_source.stop_playback()
-                        else:
-                            if self.config.VERBOSE_LOGGING:
-                                print("\n[Keyboard] File playback not enabled")
-
-                    elif char in ('[', ']', '\\'):
-                        # Trigger smart announcement 1/2/3
-                        slot = {'[': 1, ']': 2, '\\': 3}[char]
-                        if self.smart_announce and self.smart_announce._client:
-                            if self.smart_announce.trigger(slot):
-                                print(f"\n[Smart] Triggering announcement #{slot}")
-                            else:
-                                print(f"\n[Smart] No announcement #{slot} configured")
-                        else:
-                            print(f"\n[Smart] Smart announcements not available")
-
-                    elif char == 'q':
-                        # Restart gateway (re-exec Python process, reloads config)
-                        print(f"\n[Keyboard] Restarting gateway...")
-                        self.restart_requested = True
-                        self.running = False
-
                     elif char == 'z':
-                        # Clear console and reprint banner
                         writer = getattr(sys.stdout, '_orig', sys.stdout)
                         writer.write("\033[2J\033[H")
                         writer.flush()
@@ -8503,15 +8862,270 @@ class RadioGateway:
                             sys.stdout._bar_drawn = False
                         self._print_banner()
 
+                    else:
+                        # All other keys go through shared handler
+                        self.handle_key(char)
+
                 time.sleep(0.05)
-        
+
         finally:
             # Restore terminal settings
             try:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
             except:
                 pass
-    
+
+    def handle_key(self, char):
+        """Process a key command (called by keyboard loop and web UI)."""
+        char = char.lower()
+
+        if char == 't':
+            self.tx_muted = not self.tx_muted
+            self._trace_events.append((time.monotonic(), 'tx_mute', 'on' if self.tx_muted else 'off'))
+        elif char == 'r':
+            self.rx_muted = not self.rx_muted
+            self._trace_events.append((time.monotonic(), 'rx_mute', 'on' if self.rx_muted else 'off'))
+        elif char == 'm':
+            if self.tx_muted and self.rx_muted:
+                self.tx_muted = False
+                self.rx_muted = False
+            else:
+                self.tx_muted = True
+                self.rx_muted = True
+            self._trace_events.append((time.monotonic(), 'global_mute', f'tx={self.tx_muted} rx={self.rx_muted}'))
+        elif char == 's':
+            if self.sdr_source:
+                self.sdr_muted = not self.sdr_muted
+                self.sdr_source.muted = self.sdr_muted
+                self._trace_events.append((time.monotonic(), 'sdr_mute', 'on' if self.sdr_muted else 'off'))
+        elif char == 'd':
+            if self.sdr_source:
+                self.sdr_source.duck = not self.sdr_source.duck
+        elif char == 'x':
+            if self.sdr2_source:
+                self.sdr2_muted = not self.sdr2_muted
+                self.sdr2_source.muted = self.sdr2_muted
+                self._trace_events.append((time.monotonic(), 'sdr2_mute', 'on' if self.sdr2_muted else 'off'))
+        elif char == 'c':
+            if self.remote_audio_source:
+                self.remote_audio_muted = not self.remote_audio_muted
+                self.remote_audio_source.muted = self.remote_audio_muted
+                self._trace_events.append((time.monotonic(), 'remote_mute', 'on' if self.remote_audio_muted else 'off'))
+        elif char == 'k':
+            if self.remote_audio_server:
+                self.remote_audio_server.reset()
+                self._trace_events.append((time.monotonic(), 'remote_reset', 'server'))
+            elif self.remote_audio_source:
+                self.remote_audio_source.reset()
+                self._trace_events.append((time.monotonic(), 'remote_reset', 'client'))
+        elif char == 'v':
+            self.config.ENABLE_VAD = not self.config.ENABLE_VAD
+        elif char == ',':
+            self.config.INPUT_VOLUME = max(0.1, self.config.INPUT_VOLUME - 0.1)
+        elif char == '.':
+            self.config.INPUT_VOLUME = min(3.0, self.config.INPUT_VOLUME + 0.1)
+        elif char == 'n':
+            self.config.ENABLE_NOISE_GATE = not self.config.ENABLE_NOISE_GATE
+        elif char == 'f':
+            self.config.ENABLE_HIGHPASS_FILTER = not self.config.ENABLE_HIGHPASS_FILTER
+        elif char == 'a':
+            if self.announce_input_source:
+                self.announce_input_muted = not self.announce_input_muted
+                self.announce_input_source.muted = self.announce_input_muted
+        elif char == 'g':
+            self.config.ENABLE_AGC = not self.config.ENABLE_AGC
+        elif char == 'y':
+            if self.config.ENABLE_NOISE_SUPPRESSION and self.config.NOISE_SUPPRESSION_METHOD == 'spectral':
+                self.config.ENABLE_NOISE_SUPPRESSION = False
+            else:
+                self.config.ENABLE_NOISE_SUPPRESSION = True
+                self.config.NOISE_SUPPRESSION_METHOD = 'spectral'
+        elif char == 'w':
+            if self.config.ENABLE_NOISE_SUPPRESSION and self.config.NOISE_SUPPRESSION_METHOD == 'wiener':
+                self.config.ENABLE_NOISE_SUPPRESSION = False
+            else:
+                self.config.ENABLE_NOISE_SUPPRESSION = True
+                self.config.NOISE_SUPPRESSION_METHOD = 'wiener'
+        elif char == 'e':
+            self.config.ENABLE_ECHO_CANCELLATION = not self.config.ENABLE_ECHO_CANCELLATION
+        elif char == 'p':
+            if self.aioc_device or str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower() != 'aioc':
+                self.manual_ptt_mode = not self.manual_ptt_mode
+                self._pending_ptt_state = self.manual_ptt_mode
+                self._trace_events.append((time.monotonic(), 'ptt', 'on' if self.manual_ptt_mode else 'off'))
+        elif char == 'b':
+            self.sdr_rebroadcast = not self.sdr_rebroadcast
+            if not self.sdr_rebroadcast:
+                if self._rebroadcast_ptt_active and self.ptt_active:
+                    self.set_ptt_state(False)
+                    self._ptt_change_time = time.monotonic()
+                    self._rebroadcast_ptt_active = False
+                if self.radio_source:
+                    self.radio_source.enabled = True
+                self._rebroadcast_sending = False
+                self._rebroadcast_ptt_hold_until = 0
+            self._trace_events.append((time.monotonic(), 'sdr_rebroadcast', 'on' if self.sdr_rebroadcast else 'off'))
+        elif char == 'j':
+            if self.relay_radio and not self._relay_radio_pressing:
+                def _pulse_power():
+                    self._relay_radio_pressing = True
+                    self.relay_radio.set_state(True)
+                    self._trace_events.append((time.monotonic(), 'relay_radio', 'press'))
+                    time.sleep(1.0)
+                    self.relay_radio.set_state(False)
+                    self._relay_radio_pressing = False
+                    self._trace_events.append((time.monotonic(), 'relay_radio', 'release'))
+                threading.Thread(target=_pulse_power, daemon=True).start()
+        elif char == 'h':
+            if self.relay_charger:
+                new_state = not self.relay_charger_on
+                self.relay_charger.set_state(new_state)
+                self.relay_charger_on = new_state
+                self._charger_manual = True
+                self._trace_events.append((time.monotonic(), 'relay_charger', f'manual_{"on" if new_state else "off"}'))
+        elif char == 'o':
+            if self.speaker_stream:
+                self.speaker_muted = not self.speaker_muted
+                self._trace_events.append((time.monotonic(), 'spk_mute', 'on' if self.speaker_muted else 'off'))
+        elif char == 'l':
+            if self.cat_client:
+                def _send_cat_config():
+                    try:
+                        self.cat_client._stop = False
+                        self.cat_client.setup_radio(self.config)
+                    except Exception:
+                        pass
+                threading.Thread(target=_send_cat_config, daemon=True, name="CAT-ManualConfig").start()
+        elif char in '0123456789':
+            if self.playback_source:
+                stored_path = self.playback_source.file_status[char]['path']
+                if stored_path:
+                    self.playback_source.queue_file(stored_path)
+        elif char == '-':
+            if self.playback_source:
+                self.playback_source.stop_playback()
+        elif char in ('[', ']', '\\'):
+            slot = {'[': 1, ']': 2, '\\': 3}[char]
+            if self.smart_announce and self.smart_announce._client:
+                self.smart_announce.trigger(slot)
+        elif char == 'q':
+            print(f"\n[WebUI] Restarting gateway...")
+            self.restart_requested = True
+            self.running = False
+
+    def get_status_dict(self):
+        """Return current gateway status as a dict for the web UI."""
+        import json
+        uptime_s = time.time() - self.start_time if hasattr(self, 'start_time') else 0
+        d, rem = divmod(int(uptime_s), 86400)
+        h, rem2 = divmod(rem, 3600)
+        mi, s = divmod(rem2, 60)
+        uptime_str = f"{d}d {h:02d}:{mi:02d}:{s:02d}"
+
+        mumble_ok = getattr(self, 'mumble', None) and getattr(self.mumble, 'is_alive', lambda: False)()
+
+        # Audio levels (note: rx_audio_level = Mumble→Radio TX, tx_audio_level = Radio→Mumble RX)
+        radio_tx = getattr(self, 'rx_audio_level', 0)
+        radio_rx = getattr(self, 'tx_audio_level', 0)
+        sdr1_level = self.sdr_source.audio_level if self.sdr_source and hasattr(self.sdr_source, 'audio_level') else 0
+        sdr2_level = self.sdr2_source.audio_level if self.sdr2_source and hasattr(self.sdr2_source, 'audio_level') else 0
+        sv_level = getattr(self, 'sv_audio_level', 0)
+        speaker_level = getattr(self, 'speaker_audio_level', 0)
+        an_level = self.announce_input_source.audio_level if self.announce_input_source and hasattr(self.announce_input_source, 'audio_level') else 0
+        cl_level = self.remote_audio_source.audio_level if self.remote_audio_source and hasattr(self.remote_audio_source, 'audio_level') else 0
+
+        # PTT method tag
+        _ptt_m = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
+        _ptt_tag = {'aioc': 'AIOC', 'relay': 'Relay', 'software': 'Software'}.get(_ptt_m, _ptt_m)
+
+        # Processing flags
+        proc = []
+        if self.config.ENABLE_NOISE_GATE: proc.append('Gate')
+        if self.config.ENABLE_HIGHPASS_FILTER: proc.append('HPF')
+        if self.config.ENABLE_AGC: proc.append('AGC')
+        if self.config.ENABLE_NOISE_SUPPRESSION: proc.append(self.config.NOISE_SUPPRESSION_METHOD.title())
+        if self.config.ENABLE_ECHO_CANCELLATION: proc.append('Echo')
+
+        # Smart announce countdowns
+        sa_countdowns = []
+        if self.smart_announce and hasattr(self.smart_announce, 'get_countdowns'):
+            for sa_id, sa_secs in self.smart_announce.get_countdowns():
+                sd, sr = divmod(int(sa_secs), 86400)
+                sh, sr2 = divmod(sr, 3600)
+                sm, ss = divmod(sr2, 60)
+                sa_countdowns.append({'id': sa_id, 'remaining': f"{sd}d {sh:02d}:{sm:02d}:{ss:02d}"})
+
+        # DDNS
+        ddns_status = ''
+        if self.ddns_updater:
+            ddns_status = self.ddns_updater.get_status() or '...'
+
+        # Charger
+        charger_state = ''
+        if self.relay_charger:
+            charger_state = 'CHARGING' if self.relay_charger_on else 'DRAINING'
+            if self._charger_manual:
+                charger_state += '*'
+
+        # CAT
+        cat_state = ''
+        if self.cat_client:
+            cat_state = 'active' if time.monotonic() - self.cat_client._last_activity < 1.0 else 'idle'
+        elif getattr(self.config, 'ENABLE_CAT_CONTROL', False):
+            cat_state = 'disconnected'
+
+        # Build file status
+        file_slots = {}
+        if self.playback_source:
+            for k, v in self.playback_source.file_status.items():
+                file_slots[k] = {
+                    'name': v.get('filename', ''),
+                    'loaded': bool(v.get('path')),
+                    'playing': v.get('playing', False),
+                }
+
+        return {
+            'uptime': uptime_str,
+            'mumble': mumble_ok,
+            'ptt_active': getattr(self, 'ptt_active', False),
+            'ptt_method': _ptt_tag,
+            'manual_ptt': getattr(self, 'manual_ptt_mode', False),
+            'vad_enabled': self.config.ENABLE_VAD,
+            'vad_db': round(getattr(self, 'vad_envelope', -100), 1),
+            'tx_muted': self.tx_muted,
+            'rx_muted': self.rx_muted,
+            'sdr1_muted': getattr(self, 'sdr_muted', False),
+            'sdr2_muted': getattr(self, 'sdr2_muted', False),
+            'sdr1_duck': self.sdr_source.duck if self.sdr_source and hasattr(self.sdr_source, 'duck') else False,
+            'sdr_rebroadcast': getattr(self, 'sdr_rebroadcast', False),
+            'remote_muted': getattr(self, 'remote_audio_muted', False),
+            'announce_muted': getattr(self, 'announce_input_muted', False),
+            'speaker_muted': getattr(self, 'speaker_muted', True),
+            'radio_rx': radio_rx,
+            'radio_tx': radio_tx,
+            'sdr1_level': sdr1_level,
+            'sdr2_level': sdr2_level,
+            'remote_level': sv_level if self.remote_audio_server else cl_level,
+            'remote_mode': 'SV' if self.remote_audio_server else 'CL',
+            'speaker_level': speaker_level,
+            'an_level': an_level,
+            'volume': round(self.config.INPUT_VOLUME, 1),
+            'processing': proc,
+            'smart_countdowns': sa_countdowns,
+            'ddns': ddns_status,
+            'charger': charger_state,
+            'cat': cat_state,
+            'relay_pressing': getattr(self, '_relay_radio_pressing', False),
+            'sdr1_enabled': bool(self.sdr_source),
+            'sdr2_enabled': bool(self.sdr2_source),
+            'speaker_enabled': bool(self.speaker_stream),
+            'remote_enabled': bool(self.remote_audio_source or self.remote_audio_server),
+            'announce_enabled': bool(self.announce_input_source),
+            'relay_radio_enabled': bool(self.relay_radio),
+            'relay_charger_enabled': bool(self.relay_charger),
+            'files': file_slots,
+        }
+
     def status_monitor_loop(self):
         """Monitor PTT release timeout and audio transmit status"""
         # Note: Priority scheduling removed - system manages all threads
@@ -8769,8 +9383,11 @@ class RadioGateway:
                         else:
                             msrv_bar += f" {WHITE}{_ms_label}{RESET}"
 
-                # Line 1: audio indicators
-                status_line = f"{status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}{_ptt_label}:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{annin_bar}     "
+                # Line 1: audio indicators + file slots
+                _file_bar = ""
+                if self.playback_source:
+                    _file_bar = f" {self.playback_source.get_file_status_string()}"
+                status_line = f"{status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}{_ptt_label}:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{annin_bar}{_file_bar}     "
 
                 # Line 2: uptime, files, relays, CAT, servers, vol, proc, diag, smart countdowns
                 def _fmt_hms(secs):
@@ -8791,8 +9408,9 @@ class RadioGateway:
                     _dns_color = GREEN if self.ddns_updater._last_status in ('good', 'nochg') else (RED if self.ddns_updater._last_status else YELLOW)
                     line2_parts.append(f"{WHITE}DNS:{_dns_color}{_dns_st}{RESET}")
 
-                if self.playback_source:
-                    line2_parts.append(self.playback_source.get_file_status_string())
+                if self.web_config_server:
+                    _web_port = getattr(self.config, 'WEB_CONFIG_PORT', 8080)
+                    line2_parts.append(f"{WHITE}WEB:{GREEN}{_web_port}{RESET}")
 
                 line2_tail = f"{relay_bar}{cat_bar}{msrv_bar}{vol_info}{proc_info}{diag}"
                 if line2_tail.strip():
@@ -9865,6 +10483,12 @@ class RadioGateway:
         if self.smart_announce:
             try:
                 self.smart_announce.stop()
+            except Exception:
+                pass
+
+        if self.web_config_server:
+            try:
+                self.web_config_server.stop()
             except Exception:
                 pass
 

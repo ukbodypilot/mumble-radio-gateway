@@ -8,7 +8,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 **Main file:** `radio_gateway.py` (~5000+ lines)
 **Installer:** `scripts/install.sh` (13 steps, targets Debian/Ubuntu/RPi/Arch Linux)
-**Config:** `gateway_config.txt` (copied from `examples/gateway_config.txt` on install)
+**Config:** `gateway_config.txt` (INI format with `[section]` headers, copied from `examples/` on install)
 **Start script:** `start.sh` (11 steps: kill procs, Mumble GUI, TH-9800 CAT, Claude Code, CPU governor, loopback, AIOC USB reset, pipe, DarkIce, FFmpeg, gateway w/nice -10)
 **Windows client:** `windows_audio_client.py` (server: send audio, client: receive audio, `m` to switch)
 
@@ -105,6 +105,32 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Software: CAT TCP `!rts` via `_ptt_software()`, requires `ENABLE_CAT_CONTROL = true`
 - Status bar: `PTT:` (AIOC), `PTTR:` (relay), `PTTS:` (software)
 - Installer step 4b: `p` option for PTT relay udev assignment
+
+## Web Configuration UI & Live Dashboard
+- `WebConfigServer` class: built-in HTTP server (Python `http.server`, no Flask dependency)
+- Config: `ENABLE_WEB_CONFIG`, `WEB_CONFIG_PORT` (default 8080), `WEB_CONFIG_PASSWORD`
+- Reads config file to build section map, renders form grouped by `[section]` headers
+- Save preserves comments line-by-line; Save & Restart sets `gateway.restart_requested = True`
+- Basic auth (user: `admin`) when password is set; no auth when blank
+- Status bar line 2: `WEB:8080` in green
+- Sensitive keys (passwords, API keys) rendered as `type="password"` inputs
+- **Live Dashboard** (`/dashboard`): JS polls `/status` every 1s, shows all gateway state
+  - `handle_key(char)` — extracted shared key handler, used by both terminal and web `/key` endpoint
+  - `get_status_dict()` — returns runtime state as JSON (uptime, levels, mutes, smart countdowns, etc.)
+  - Audio bars for all sources: TX, RX, SP, SDR1, SDR2, SV/CL, AN (same order as console)
+  - Fixed-width CSS grid layout (220px columns) — bars and values don't shift
+  - Bar width: pct × 1.5px (max 150px), percentage shown left of bar in fixed-width span
+  - Auto-reconnect: on fetch failure shows "offline" message, polls until gateway returns, then reloads
+  - Button grid for all keyboard shortcuts (mute, PTT, playback, smart triggers, etc.)
+  - Terminal-only keys (`i`, `u`, `z`) stay in keyboard loop, not exposed to web
+
+## INI Config Format
+- Config files use standard INI `[section]` headers (v1.4.0)
+- Parser skips `[section]` lines alongside `#` comments — one-line change
+- Key names remain flat (no `section.key` namespacing), all `self.KEY` access unchanged
+- Sections: startup, mumble, radio, audio, levels, ptt, vad, vox, processing, sdr1, sdr2,
+  switching, remote, announce, playback, tts, speaker, streaming, echolink, relay, smart,
+  web, ddns, cat, mumble-server-1, mumble-server-2, advanced
 
 ## Relay Control (CH340 USB Relays)
 - `RelayController` class: 4-byte serial commands, lazy `import serial`

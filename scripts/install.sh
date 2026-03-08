@@ -887,6 +887,18 @@ echo "  Configure port, password, and max users as needed"
 echo "  The gateway will create and manage the server instance via systemd"
 echo "  Firewall: sudo ufw allow 64738/tcp && sudo ufw allow 64738/udp"
 echo
+echo "WEB CONFIGURATION UI & LIVE DASHBOARD (optional):"
+echo "  Set ENABLE_WEB_CONFIG = true in gateway_config.txt"
+echo "  Config editor: http://<gateway-ip>:8080/"
+echo "  Live dashboard: http://<gateway-ip>:8080/dashboard"
+echo "  Set WEB_CONFIG_PASSWORD for basic auth (user: admin)"
+echo "  Firewall: sudo ufw allow 8080/tcp"
+echo
+echo "DYNAMIC DNS (optional):"
+echo "  Set ENABLE_DDNS = true in gateway_config.txt"
+echo "  Configure DDNS_USERNAME, DDNS_PASSWORD, DDNS_HOSTNAME"
+echo "  Updates on startup and then every DDNS_UPDATE_INTERVAL seconds"
+echo
 echo "DOCS:"
 echo "  README.md                       — full documentation"
 echo "  docs/MANUAL.txt                 — user guide"

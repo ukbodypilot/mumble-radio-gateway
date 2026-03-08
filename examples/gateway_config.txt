@@ -1,5 +1,5 @@
 # ============================================================================
-# RADIO GATEWAY - CONFIGURATION FILE
+# RADIO GATEWAY - CONFIGURATION FILE (INI format)
 # ============================================================================
 #
 # Bidirectional audio gateway between Mumble VoIP and radio via AIOC
@@ -24,9 +24,8 @@
 # ============================================================================
 
 
-# ============================================================================
-# STARTUP SCRIPT OPTIONS (used by start.sh, not the gateway itself)
-# ============================================================================
+[startup]
+# Startup script options (used by start.sh, not the gateway itself)
 
 # Launch TH-9800 CAT control GUI on startup
 START_TH9800_CAT = false
@@ -35,9 +34,8 @@ START_TH9800_CAT = false
 START_CLAUDE_CODE = false
 
 
-# ============================================================================
-# MUMBLE SERVER
-# ============================================================================
+[mumble]
+# Mumble server connection
 
 MUMBLE_SERVER = 192.168.2.128
 MUMBLE_PORT = 64738
@@ -52,9 +50,8 @@ MUMBLE_BITRATE = 72000
 MUMBLE_VBR = true
 
 
-# ============================================================================
-# RADIO INTERFACE (AIOC)
-# ============================================================================
+[radio]
+# Radio interface (AIOC)
 
 # AIOC USB identifiers (defaults work for most AIOC devices)
 AIOC_VID = 0x1209
@@ -68,9 +65,8 @@ AIOC_OUTPUT_DEVICE =
 AIOC_PTT_CHANNEL = 3
 
 
-# ============================================================================
-# AUDIO FORMAT & BUFFERING
-# ============================================================================
+[audio]
+# Audio format and buffering
 
 AUDIO_RATE = 48000       # Hz (48000 matches Mumble — don't change)
 AUDIO_CHANNELS = 1       # Mono (recommended for radio)
@@ -83,9 +79,8 @@ AUDIO_BITS = 16          # 16-bit PCM (don't change)
 AUDIO_CHUNK_SIZE = 2400
 
 
-# ============================================================================
-# AUDIO LEVELS
-# ============================================================================
+[levels]
+# Audio levels
 
 # Radio RX -> Mumble volume (0.5=half | 1.0=unity | 2.0=double)
 INPUT_VOLUME = 1.0
@@ -94,9 +89,9 @@ INPUT_VOLUME = 1.0
 OUTPUT_VOLUME = 1.0
 
 
-# ============================================================================
-# PTT (PUSH-TO-TALK)
-# ============================================================================
+[ptt]
+# Push-to-talk control
+#
 # Three PTT methods available:
 #   aioc     = AIOC USB HID GPIO (default, requires AIOC device)
 #   relay    = CH340 USB relay module (separate from radio power/charger relays)
@@ -118,11 +113,10 @@ PTT_RELEASE_DELAY = 0.5      # Seconds to hold PTT after audio stops
 PTT_ANNOUNCEMENT_DELAY = 0.5
 
 
-# ============================================================================
-# VOICE ACTIVITY DETECTION (VAD)
-# ============================================================================
+[vad]
+# Voice activity detection — controls Radio RX -> Mumble
 
-# Controls Radio RX -> Mumble: only transmit when signal detected
+# Only transmit when signal detected
 ENABLE_VAD = true
 
 # Threshold in dBFS (more negative = more sensitive)
@@ -134,9 +128,8 @@ VAD_RELEASE = 1           # Seconds to hold after silence
 VAD_MIN_DURATION = 0.1    # Minimum transmission length (seconds)
 
 
-# ============================================================================
-# VOX (VOICE-OPERATED SWITCH) — alternative to VAD
-# ============================================================================
+[vox]
+# Voice-operated switch — alternative to VAD
 
 ENABLE_VOX = false
 VOX_THRESHOLD = -30       # dBFS threshold
@@ -144,9 +137,8 @@ VOX_ATTACK_TIME = 0.05    # Seconds to activate
 VOX_RELEASE_TIME = 0.5    # Seconds to hold after silence
 
 
-# ============================================================================
-# AUDIO PROCESSING
-# ============================================================================
+[processing]
+# Audio processing
 
 # Noise Gate — removes low-level background noise
 ENABLE_NOISE_GATE = false
@@ -170,9 +162,9 @@ NOISE_SUPPRESSION_STRENGTH = 0.5     # 0.0 to 1.0
 ENABLE_ECHO_CANCELLATION = false
 
 
-# ============================================================================
-# SDR RECEIVER INTEGRATION
-# ============================================================================
+[sdr1]
+# SDR receiver 1
+#
 # Mix one or two SDR receivers into the gateway alongside AIOC radio.
 # PipeWire mode (recommended): uses virtual sinks, no ALSA loopback needed.
 # ALSA loopback mode (legacy): sudo modprobe snd-aloop.
@@ -180,7 +172,6 @@ ENABLE_ECHO_CANCELLATION = false
 # Priority: AIOC/Radio always ducks all SDRs. Between SDRs, lower
 # priority number = higher priority (SDR1 at 1 ducks SDR2 at 2).
 
-# -------- SDR1 --------
 ENABLE_SDR = true
 
 # PipeWire (recommended): pw:<sink_name>  |  ALSA loopback (legacy): hw:N,1
@@ -200,7 +191,10 @@ SDR_WATCHDOG_TIMEOUT = 10       # Seconds before triggering recovery
 SDR_WATCHDOG_MAX_RESTARTS = 5   # Max recovery attempts (then stays silent)
 SDR_WATCHDOG_MODPROBE = false   # Stage 3: requires sudoers NOPASSWD entry for modprobe
 
-# -------- SDR2 --------
+
+[sdr2]
+# SDR receiver 2
+
 ENABLE_SDR2 = false
 SDR2_DEVICE_NAME = pw:sdr_capture2
 SDR2_PRIORITY = 2
@@ -214,9 +208,9 @@ SDR2_WATCHDOG_MAX_RESTARTS = 5
 SDR2_WATCHDOG_MODPROBE = false
 
 
-# ============================================================================
-# SIGNAL DETECTION & SOURCE SWITCHING
-# ============================================================================
+[switching]
+# Signal detection and source switching
+#
 # Controls ducking transitions: when radio RX arrives and ducks SDR, and
 # when it ends and SDR resumes.
 #
@@ -247,9 +241,9 @@ SDR_SIGNAL_THRESHOLD = -70.0
 SDR_REBROADCAST_PTT_HOLD = 3.0
 
 
-# ============================================================================
-# REMOTE AUDIO LINK (TCP)
-# ============================================================================
+[remote]
+# Remote audio link (TCP)
+#
 # Links two gateway instances, or a gateway to windows_audio_client.py.
 # Server sends its mixed audio to the client; client receives it as source
 # "SDRSV" with duck/priority support.
@@ -278,9 +272,9 @@ REMOTE_AUDIO_AUDIO_BOOST = 1.0     # Client: volume boost (1.0=no change)
 REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0  # Server: seconds between reconnect attempts
 
 
-# ============================================================================
-# ANNOUNCEMENT INPUT (TCP port 9601)
-# ============================================================================
+[announce]
+# Announcement input (TCP port 9601)
+#
 # Receives length-prefixed 16-bit mono PCM over TCP and transmits it on
 # the radio via PTT. Use with windows_audio_client.py in Announcement mode.
 # PTT is audio-gated: silence below threshold does not key the radio.
@@ -298,9 +292,8 @@ ANNOUNCE_INPUT_THRESHOLD = -45.0
 ANNOUNCE_INPUT_VOLUME = 4.0
 
 
-# ============================================================================
-# FILE PLAYBACK (Announcements & Station ID)
-# ============================================================================
+[playback]
+# File playback (announcements and station ID)
 
 ENABLE_PLAYBACK = true
 PLAYBACK_DIRECTORY = audio
@@ -324,9 +317,9 @@ CW_VOLUME = 1.0       # CW-specific volume (PLAYBACK_VOLUME also applies)
 #   Formats: .mp3, .wav, .ogg, .flac, .m4a
 
 
-# ============================================================================
-# TEXT-TO-SPEECH & TEXT COMMANDS
-# ============================================================================
+[tts]
+# Text-to-speech and text commands
+#
 # Mumble chat commands: !speak, !cw, !play, !status, !help
 # Requires: pip3 install gtts --break-system-packages
 
@@ -344,9 +337,9 @@ TTS_DEFAULT_VOICE = 1
 PTT_TTS_DELAY = 0.5
 
 
-# ============================================================================
-# SPEAKER OUTPUT (Local Monitoring)
-# ============================================================================
+[speaker]
+# Speaker output (local monitoring)
+#
 # Play radio RX through a local speaker. Find device names with VERBOSE_LOGGING.
 # Device examples: (blank)=default, "USB Audio"=name match, hw:2,0, or index
 
@@ -356,9 +349,9 @@ SPEAKER_VOLUME = 1.0
 SPEAKER_START_MUTED = true  # Start muted (unmute at runtime)
 
 
-# ============================================================================
-# BROADCASTIFY STREAMING
-# ============================================================================
+[streaming]
+# Broadcastify streaming
+#
 # Requires: sudo apt-get install darkice lame ffmpeg
 # Audio flow: Gateway -> Pipe -> FFmpeg -> ALSA Loopback -> DarkIce -> Broadcastify
 
@@ -373,9 +366,9 @@ STREAM_FORMAT = mp3       # mp3 or ogg
 STREAM_BITRATE = 16       # kbps (16=common for scanner audio)
 
 
-# ============================================================================
-# ECHOLINK (via TheLinkBox)
-# ============================================================================
+[echolink]
+# EchoLink integration (via TheLinkBox)
+#
 # Prerequisites: thelinkbox package, echolink.org registration with callsign
 # NAT-friendly — uses EchoLink public proxy servers automatically
 
@@ -392,9 +385,9 @@ MUMBLE_TO_ECHOLINK = true    # Mumble -> EchoLink
 RADIO_TO_ECHOLINK = true     # Radio RX -> EchoLink
 
 
-# ============================================================================
-# RELAY CONTROL
-# ============================================================================
+[relay]
+# Relay control (CH340 USB relays)
+#
 # Requires: pip3 install pyserial --break-system-packages
 # Udev rules: see scripts/99-relay-udev.rules for persistent /dev symlinks
 
@@ -411,9 +404,9 @@ RELAY_CHARGER_ON_TIME = 23:00
 RELAY_CHARGER_OFF_TIME = 06:00
 
 
-# ============================================================================
-# SMART ANNOUNCEMENTS (AI-powered)
-# ============================================================================
+[smart]
+# Smart announcements (AI-powered)
+#
 # AI generates spoken announcements from prompts, with web search for
 # real-time data (weather, news, time, etc). Audio is broadcast via gTTS + PTT.
 #
@@ -421,6 +414,8 @@ RELAY_CHARGER_OFF_TIME = 06:00
 #   duckduckgo — Free, no API key. DuckDuckGo search + Ollama local LLM.
 #                Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
 #                Then: ollama pull llama3.2:3b (or llama3.2:1b on Raspberry Pi)
+#   google-scrape — Free. Drives real Firefox via xdotool, scrapes Google AI Overview.
+#                   Requires: xdotool, xclip, Firefox running on DISPLAY=:0
 #   claude     — Anthropic Claude API with web search. Requires API key + credits.
 #   gemini     — Google Gemini API with Google Search. Requires API key.
 #
@@ -439,8 +434,6 @@ RELAY_CHARGER_OFF_TIME = 06:00
 ENABLE_SMART_ANNOUNCE = true
 
 # AI Backend — choose: duckduckgo (free), google-scrape (free), claude, or gemini
-# google-scrape: uses xdotool to drive your real Firefox browser, scrapes Google AI Overview
-#   Requires: xdotool, xclip, Firefox running and logged into Google on DISPLAY=:0
 SMART_ANNOUNCE_AI_BACKEND = google-scrape
 
 # Ollama model for duckduckgo/google-scrape backends (blank = auto-detect first available)
@@ -483,9 +476,20 @@ SMART_ANNOUNCE_2 = 7200, 3, 15, {is donald trump still alive, how long will this
 SMART_ANNOUNCE_3 = 1800, 2, 40, {Global news headlines from bbc.com}
 
 
-# ============================================================================
-# DYNAMIC DNS (No-IP compatible)
-# ============================================================================
+[web]
+# Web-based configuration editor
+#
+# Access at http://<gateway-ip>:<port>/ to view and edit settings.
+# If WEB_CONFIG_PASSWORD is set, HTTP Basic Auth is required (user: admin).
+
+ENABLE_WEB_CONFIG = false
+WEB_CONFIG_PORT = 8080
+WEB_CONFIG_PASSWORD =
+
+
+[ddns]
+# Dynamic DNS (No-IP compatible)
+#
 # Updates a DDNS hostname with the machine's public IP at a regular interval.
 # Uses the No-IP update protocol (works with No-IP, DynDNS, etc.).
 
@@ -496,9 +500,10 @@ DDNS_HOSTNAME =                     # Hostname to update (e.g. myhost.ddns.net)
 DDNS_UPDATE_INTERVAL = 300          # Seconds between updates (default 5 min, min 60)
 DDNS_UPDATE_URL = https://dynupdate.no-ip.com/nic/update
 
-# ============================================================================
-# TH-9800 CAT CONTROL
-# ============================================================================
+
+[cat]
+# TH-9800 CAT control
+#
 # Connects to TH9800_CAT.py TCP server to configure the radio on startup.
 # Requires TH9800_CAT.py running with TCP server enabled (auto_start_server=true
 # in its config.txt, or manually click Start Server in the GUI).
@@ -522,16 +527,15 @@ CAT_LEFT_POWER =
 CAT_RIGHT_POWER =
 
 
-# ============================================================================
-# LOCAL MUMBLE SERVER
-# ============================================================================
+[mumble-server-1]
+# Local Mumble server instance 1
+#
 # Run one or two mumble-server (murmurd) instances managed by the gateway.
 # Each instance gets its own config, database, and systemd service.
 # Requires: sudo apt-get install mumble-server (handled by install.sh)
 #
 # Status bar: MS1/MS2 — white=configured, green=running, red=error
 
-# -------- Mumble Server 1 --------
 ENABLE_MUMBLE_SERVER_1 = false
 MUMBLE_SERVER_1_PORT = 64738
 MUMBLE_SERVER_1_PASSWORD =
@@ -543,7 +547,10 @@ MUMBLE_SERVER_1_ALLOW_HTML = true
 MUMBLE_SERVER_1_OPUS_THRESHOLD = 0
 MUMBLE_SERVER_1_AUTOSTART = true
 
-# -------- Mumble Server 2 --------
+
+[mumble-server-2]
+# Local Mumble server instance 2
+
 ENABLE_MUMBLE_SERVER_2 = false
 MUMBLE_SERVER_2_PORT = 64739
 MUMBLE_SERVER_2_PASSWORD =
@@ -556,9 +563,8 @@ MUMBLE_SERVER_2_OPUS_THRESHOLD = 0
 MUMBLE_SERVER_2_AUTOSTART = true
 
 
-# ============================================================================
-# ADVANCED: STREAM HEALTH & DIAGNOSTICS
-# ============================================================================
+[advanced]
+# Stream health and diagnostics
 
 # Auto-restart audio input stream on errors (may cause brief dropouts)
 ENABLE_STREAM_HEALTH = false

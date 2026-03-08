@@ -469,6 +469,57 @@ DDNS_UPDATE_URL = https://dynupdate.no-ip.com/nic/update
 | `DDNS_UPDATE_INTERVAL` | Seconds between updates (default 300, minimum 60) |
 | `DDNS_UPDATE_URL` | Update API endpoint (default: No-IP) |
 
+### Web Configuration UI & Live Dashboard
+
+A built-in web interface for editing gateway config and monitoring live status from any browser. Runs Python's built-in HTTP server on a daemon thread — no extra dependencies.
+
+```ini
+[web]
+ENABLE_WEB_CONFIG = true
+WEB_CONFIG_PORT = 8080
+WEB_CONFIG_PASSWORD =
+```
+
+| Setting | Description |
+|---------|-------------|
+| `ENABLE_WEB_CONFIG` | Enable the web config editor (`true` / `false`) |
+| `WEB_CONFIG_PORT` | HTTP port to listen on (default `8080`) |
+| `WEB_CONFIG_PASSWORD` | Basic auth password (user: `admin`). Blank = no auth |
+
+**Config Editor** (`http://<gateway-ip>:8080/`):
+- Settings grouped by INI section with collapsible panels
+- Sensitive fields (passwords, API keys) shown as password inputs
+- **Save** button writes changes to `gateway_config.txt` (preserves comments)
+- **Save & Restart** button saves and restarts the gateway for changes to take effect
+- Dark theme matching the gateway console aesthetic
+
+**Live Dashboard** (`http://<gateway-ip>:8080/dashboard`):
+- Real-time gateway status updated every second via JSON polling
+- Audio level bars for all sources (TX, RX, SP, SDR1, SDR2, SV/CL, AN) — same order as console
+- Uptime timer and smart announcement countdowns
+- Mumble connection, PTT, VAD, volume, processing flags, mute states
+- DDNS, charger, CAT control indicators
+- Remote key control buttons — same keyboard shortcuts available via clickable buttons
+- Auto-reconnects when gateway restarts (no manual refresh needed)
+- Fixed-width grid layout — bars and values don't shift when levels change
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Mumble: OK    PTT: off (AIOC)   VAD: ON -52dB   Vol: 1.0x       │
+│  Muted: None   Duck: ON                                           │
+│                                                                     │
+│  Uptime: 0d 04:12:33   Smart#1: 0d 01:45:00   DNS: 203.0.113.5   │
+│                                                                     │
+│  TX:   0% ░░░░░░░░░░░░   RX:  34% ████████░░░░                   │
+│  SDR1: 67% ██████████████████░░   SV:  12% ███░░░░░░░░           │
+│  AN:   0% ░░░░░░░░░░░░                                            │
+│                                                                     │
+│  [Mute TX] [Mute RX] [Global] [SDR1] [VAD] [PTT] [1][2][3]...    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Status bar (line 2):** `WEB:8080` in green when enabled, showing the listen port.
+
 ### TH-9800 CAT Control
 
 Connects to the [TH9800_CAT.py](https://github.com/your-repo/th9800) TCP server to configure a TYT TH-9800 radio on gateway startup. Sets channel, volume, and power level for both VFOs independently.
@@ -906,6 +957,14 @@ All timers use fixed-width `Xd HH:MM:SS` format (e.g. `0d 02:14:37`).
 | **DNS:...** | Yellow | Waiting for first update |
 
 Only shown when `ENABLE_DDNS = true`.
+
+### Line 2 — Web Config
+
+| Indicator | Color | Meaning |
+|-----------|-------|---------|
+| **WEB:8080** | Green | Web config UI active on port 8080 |
+
+Only shown when `ENABLE_WEB_CONFIG = true`.
 
 ### Line 2 — File Status (0-9)
 - **Green number** = File loaded
@@ -1662,6 +1721,14 @@ RADIO_TO_ECHOLINK = true
 MUMBLE_TO_ECHOLINK = false
 ```
 
+### Web Configuration Settings
+
+```ini
+ENABLE_WEB_CONFIG = false              # Enable web config editor
+WEB_CONFIG_PORT = 8080                 # HTTP listen port
+WEB_CONFIG_PASSWORD =                  # Basic auth password (user: admin), blank = no auth
+```
+
 ### Dynamic DNS Settings
 
 ```ini
@@ -2040,6 +2107,14 @@ class MySource(AudioSource):
 - PyAudio: Python audio interface
 
 ## Changelog
+
+### v1.4.0
+
+**Web configuration UI** — Built-in web interface for editing `gateway_config.txt` from any browser. No extra dependencies (uses Python's `http.server`). Settings grouped by INI section, sensitive fields masked, Save and Save & Restart buttons. Config: `ENABLE_WEB_CONFIG`, `WEB_CONFIG_PORT`, `WEB_CONFIG_PASSWORD`. Status bar shows `WEB:port`.
+
+**Live dashboard** — Real-time status page at `/dashboard` with 1-second JSON polling. Audio level bars for all sources (TX, RX, SP, SDR1, SDR2, SV/CL, AN) matching console order. Uptime timer, smart announcement countdowns, Mumble/PTT/VAD/mute states, DDNS/charger/CAT indicators. Remote key control buttons for all keyboard shortcuts. Fixed-width grid layout prevents UI shifting. Auto-reconnects on gateway restart.
+
+**INI config format** — Configuration file reorganized into standard INI format with `[section]` headers. All key names unchanged — fully backwards compatible. Enables use of standard INI editors and tools.
 
 ### v1.3.0
 
