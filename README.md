@@ -510,8 +510,6 @@ WEB_CONFIG_PASSWORD =
 ![Live Dashboard](docs/img/dashboard.png)
 *Live dashboard showing gateway status, audio level bars, control buttons, and the browser audio player streaming at 2:51 elapsed.*
 
-**Status bar (line 2):** `WEB:8080` in green when enabled, showing the listen port.
-
 ### Cloudflare Tunnel
 
 Free public HTTPS access to the web dashboard without port forwarding or a domain name. Launches `cloudflared` as a subprocess — the tunnel connects outbound so it works behind NAT and ISP port blocking.
