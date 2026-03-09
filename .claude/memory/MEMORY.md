@@ -66,6 +66,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - RELAY: `j`=Radio power button `h`=Charger toggle
 - SMART: `[`=Smart#1 `]`=Smart#2 `\`=Smart#3
 - TRACE: `i`=Start/stop audio trace `u`=Start/stop watchdog trace
+- EMAIL: `@`=Send status email
 - MISC: `q`=Restart gateway (re-exec, reloads config) `z`=Clear console
 
 ## Python / pymumble
@@ -177,6 +178,22 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Dependencies: `xdotool`+`xclip` (google-scrape), `ddgs` (duckduckgo), `anthropic` (claude), `google-genai` (gemini), Ollama (optional)
 - Installer step 7: installs Ollama + pulls model (llama3.2:3b on PC, llama3.2:1b on Pi)
 
+## Cloudflare Tunnel
+- `CloudflareTunnel` class: launches `cloudflared tunnel --url http://localhost:PORT`
+- Config: `ENABLE_CLOUDFLARE_TUNNEL` — free quick tunnel, no account/domain needed
+- Assigns random `*.trycloudflare.com` URL each restart (URL changes every time)
+- Parses URL from cloudflared stderr, shows on status bar line 3
+- No port forwarding needed — outbound connection bypasses ISP port blocking
+- Dependency: `cloudflared` package
+
+## Email Notifications
+- `EmailNotifier` class: Gmail SMTP via `smtplib` (stdlib, no deps)
+- Config: `ENABLE_EMAIL`, `EMAIL_ADDRESS`, `EMAIL_APP_PASSWORD`, `EMAIL_RECIPIENT`, `EMAIL_ON_STARTUP`
+- Sends status email on startup (waits up to 15s for tunnel URL)
+- Includes tunnel URL (clickable), local dashboard link, Mumble server, DDNS hostname
+- Keyboard: `@` sends status email on demand
+- Requires Gmail App Password (Google Account → Security → 2-Step Verification → App passwords)
+
 ## Desktop Shortcut
 - Template: `scripts/radio-gateway.desktop.template`
 - Installer step 12: detects terminal emulator, substitutes `__TERMINAL__` and `__GATEWAY_DIR__`
@@ -186,7 +203,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `StatusBarWriter` wraps `sys.stdout` and `sys.stderr` for status bar + timestamps
 - All log output gets `[HH:MM:SS]` system time prefix (line-aware `_at_line_start` tracking)
 - `start.sh` uses `ts()` function for same `[HH:MM:SS]` format
-- Two-line status bar: Line 1 = audio indicators, Line 2 = UP timer + smart countdowns + hardware
+- Three-line status bar: Line 1 = audio indicators, Line 2 = UP timer + smart countdowns + hardware, Line 3 = DNS + Cloudflare tunnel URL
 - Uptime format: `Xd HH:MM:SS` (fixed-width, starts at `0d 00:00:00`)
 - Terminal geometry: 130x25 (narrowed from 150x25)
 - ALSA suppression: must hardcode fd 2, not `sys.stderr.fileno()` (StatusBarWriter returns fd 1)

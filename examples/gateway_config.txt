@@ -477,14 +477,26 @@ SMART_ANNOUNCE_3 = 1800, 2, 40, {Global news headlines from bbc.com}
 
 
 [web]
-# Web-based configuration editor
+# Web-based configuration editor and live dashboard
 #
-# Access at http://<gateway-ip>:<port>/ to view and edit settings.
+# Config editor: http(s)://<gateway-ip>:<port>/
+# Live dashboard: http(s)://<gateway-ip>:<port>/dashboard
 # If WEB_CONFIG_PASSWORD is set, HTTP Basic Auth is required (user: admin).
+# HTTPS uses a self-signed certificate (auto-generated on first run).
 
 ENABLE_WEB_CONFIG = false
 WEB_CONFIG_PORT = 8080
 WEB_CONFIG_PASSWORD =
+WEB_CONFIG_HTTPS = false           # false, self-signed, or letsencrypt (uses DDNS_HOSTNAME)
+ENABLE_CLOUDFLARE_TUNNEL = false   # free public HTTPS via *.trycloudflare.com (no port fwd needed)
+
+# Email notifications (Gmail SMTP)
+# Requires a Gmail App Password: Google Account → Security → 2-Step Verification → App passwords
+ENABLE_EMAIL = false
+EMAIL_ADDRESS =                    # Gmail address (sender)
+EMAIL_APP_PASSWORD =               # Gmail app password (16 chars, not your regular password)
+EMAIL_RECIPIENT =                  # Recipient (blank = same as sender)
+EMAIL_ON_STARTUP = true            # Send status email when gateway starts
 
 
 [ddns]

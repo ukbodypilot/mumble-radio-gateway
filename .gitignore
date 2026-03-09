@@ -47,6 +47,9 @@ Thumbs.db
 gateway_config.txt
 gateway_config_local.txt
 windows_audio_client.json
+web_cert.pem
+web_key.pem
+certs/
 
 # Audio test files — kept locally but never committed (sensitive content)
 audio/

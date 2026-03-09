@@ -93,6 +93,8 @@ A multi-source radio audio gateway with Mumble VoIP bridging, SDR integration, A
 - **Live Status Display**: Real-time bars showing TX/RX/SDR levels with color coding
 - **Smart Announcements**: AI-powered scheduled broadcasts with pluggable backend (Google AI scrape, DuckDuckGo+Ollama, Claude, or Gemini)
 - **Local Mumble Server**: Run up to 2 managed mumble-server instances on the same machine
+- **Cloudflare Tunnel**: Free public HTTPS access via `*.trycloudflare.com` — no port forwarding or domain needed
+- **Email Notifications**: Gmail SMTP alerts with gateway status and tunnel URL on startup or on demand
 
 ### Audio Sources (Priority-Based Mixing)
 
@@ -507,6 +509,50 @@ WEB_CONFIG_PASSWORD =
 
 **Status bar (line 2):** `WEB:8080` in green when enabled, showing the listen port.
 
+### Cloudflare Tunnel
+
+Free public HTTPS access to the web dashboard without port forwarding or a domain name. Launches `cloudflared` as a subprocess — the tunnel connects outbound so it works behind NAT and ISP port blocking.
+
+```ini
+[web]
+ENABLE_CLOUDFLARE_TUNNEL = true
+```
+
+| Setting | Description |
+|---------|-------------|
+| `ENABLE_CLOUDFLARE_TUNNEL` | Launch a Cloudflare quick tunnel on startup (`true` / `false`) |
+
+The tunnel assigns a random `https://random-words.trycloudflare.com` URL each time the gateway starts. The URL is printed at startup, shown on status bar line 3, and included in the startup email (if email is enabled).
+
+**Requires:** `cloudflared` (`sudo pacman -S cloudflared` or `sudo apt install cloudflared`).
+
+**Status bar (line 3):** `CF:https://....trycloudflare.com` in yellow.
+
+### Email Notifications
+
+Send gateway status emails via Gmail SMTP. Emails include the Cloudflare tunnel URL (clickable), local dashboard URL, Mumble server info, and DDNS hostname.
+
+```ini
+[web]
+ENABLE_EMAIL = true
+EMAIL_ADDRESS = user@gmail.com
+EMAIL_APP_PASSWORD = xxxx xxxx xxxx xxxx
+EMAIL_RECIPIENT = user@gmail.com
+EMAIL_ON_STARTUP = true
+```
+
+| Setting | Description |
+|---------|-------------|
+| `ENABLE_EMAIL` | Enable email notifications (`true` / `false`) |
+| `EMAIL_ADDRESS` | Gmail address (sender) |
+| `EMAIL_APP_PASSWORD` | Gmail app password (16-char, not your regular password) |
+| `EMAIL_RECIPIENT` | Recipient address (blank = same as sender) |
+| `EMAIL_ON_STARTUP` | Send status email automatically on startup (`true` / `false`) |
+
+**Requires:** A Gmail App Password — Google Account → Security → 2-Step Verification → App passwords.
+
+**Keyboard:** `@` sends a status email on demand.
+
 ### TH-9800 CAT Control
 
 Connects to the [TH9800_CAT.py](https://github.com/your-repo/th9800) TCP server to configure a TYT TH-9800 radio on gateway startup. Sets channel, volume, and power level for both VFOs independently.
@@ -881,13 +927,16 @@ Press keys during operation to control the gateway:
 - `q` = Restart gateway (clean shutdown + re-exec; reloads `gateway_config.txt`)
 - `z` = Clear console and reprint banner
 
+### Email
+- `@` = Send status email (gateway info + tunnel URL)
+
 ## Status Bar
 
 ![Status Bar Example](docs/img/status_bar_example.svg)
 
-The status bar uses two lines fixed at the bottom of the terminal. Log messages scroll above so both lines are always visible.
+The status bar uses up to three lines fixed at the bottom of the terminal. Log messages scroll above so all lines are always visible.
 
-**Line 1** — audio indicators. **Line 2** — timers, file slots, hardware, diagnostics.
+**Line 1** — audio indicators. **Line 2** — timers, file slots, hardware, diagnostics. **Line 3** — network (DNS, Cloudflare tunnel).
 
 ### Line 1 — Status Indicators
 
@@ -929,21 +978,30 @@ Bars appear in this order on line 1: TX → RX → SP → SDR1 → SDR2 → SV o
 | Indicator | Format | Meaning |
 |-----------|--------|---------|
 | **UP:Xd HH:MM:SS** | Cyan | Gateway uptime (days + hours:minutes:seconds) |
-| **S1:Xd HH:MM:SS** | Yellow | Countdown to next Smart Announcement #1 |
-| **S2:Xd HH:MM:SS** | Yellow | Countdown to next Smart Announcement #2 |
-| **S3:Xd HH:MM:SS** | Yellow | Countdown to next Smart Announcement #3 |
+| **S1:Xd HH:MM:SS** | Magenta | Countdown to next Smart Announcement #1 |
+| **S2:Xd HH:MM:SS** | Magenta | Countdown to next Smart Announcement #2 |
+| **S3:Xd HH:MM:SS** | Magenta | Countdown to next Smart Announcement #3 |
 
 All timers use fixed-width `Xd HH:MM:SS` format (e.g. `0d 02:14:37`).
 
-### Line 2 — Dynamic DNS
+### Line 3 — Dynamic DNS
 
 | Indicator | Color | Meaning |
 |-----------|-------|---------|
-| **DNS:IP** | Green | DDNS updated successfully (shows current public IP) |
+| **DNS:hostname → IP** | Yellow | DDNS updated successfully (shows hostname and current public IP) |
 | **DNS:ERR** | Red | Last DDNS update failed |
 | **DNS:...** | Yellow | Waiting for first update |
 
 Only shown when `ENABLE_DDNS = true`.
+
+### Line 3 — Cloudflare Tunnel
+
+| Indicator | Color | Meaning |
+|-----------|-------|---------|
+| **CF:https://...** | Yellow | Full Cloudflare tunnel URL (clickable in some terminals) |
+| **CF:starting...** | Yellow | Tunnel connecting |
+
+Only shown when `ENABLE_CLOUDFLARE_TUNNEL = true`.
 
 ### Line 2 — Web Config
 

@@ -182,6 +182,10 @@ MISC
       Clears the terminal and reprints the full Gateway Active banner,
       status info, and keyboard controls summary.
 
+  @ = Send Status Email
+      Sends a gateway status email (info + tunnel URL).
+      Requires ENABLE_EMAIL = true in the config.
+
 STREAM HEALTH
 -------------
   (no key)  = Stream health can be toggled via config (ENABLE_STREAM_HEALTH)
@@ -191,9 +195,9 @@ STREAM HEALTH
 STATUS LINE
 ================================================================================
 
-The status bar stays fixed on the last terminal line.  Log messages
-(connection events, key presses, errors) scroll above it so the bar
-is always visible during operation.
+The status bar stays fixed at the bottom of the terminal and uses up
+to 3 lines.  Log messages (connection events, key presses, errors)
+scroll above it so the bar is always visible during operation.
 
 Example:
   [92m✓[0m [97mM:[0m[92m✓[0m [97mPTT:[0m  [92mON[0m [97mVAD:[0m[92m🔊[0m [93m -28[0m[97mdB[0m [97mTX:[0m[91m████--[0m [93m 67%[0m [97mRX:[0m[92m███---[0m [93m 50%[0m [97mSP:[0m[96m██----[0m [93m 34%[0m [97mSDR1:[0m[96m██----[0m [93m 34%[0m [97mVol:[0m[93m1.0[0m[97mx[0m [92m1[0m[92m2[0m[97m3[0m[97m4[0m[97m5[0m[97m6[0m[97m7[0m[97m8[0m[97m9[0m[92m0[0m [97m[[0m[93mD[0m[97m][0m
@@ -289,6 +293,20 @@ Wn (after SDR bar, no colon)
   SDR watchdog recovery count. Only shown if > 0.
   Indicates the watchdog has attempted to recover from a stalled ALSA read.
   See SDR WATCHDOG section above.
+
+WEB:8080
+  Web config server port (green). Shown on line 2.
+  Only shown when ENABLE_WEB_CONFIG = true.
+
+DNS:hostname → IP
+  DDNS status (line 3). Shows hostname and resolved IP in yellow when OK.
+  Red on error. Yellow "..." while waiting for first update.
+  Only shown when ENABLE_DDNS = true.
+
+CF:https://....trycloudflare.com
+  Full Cloudflare tunnel URL in yellow (line 3).
+  Shows "starting..." while the tunnel is connecting.
+  Only shown when ENABLE_CLOUDFLARE_TUNNEL = true.
 
 ================================================================================
 CONFIGURATION FILE: gateway_config.txt

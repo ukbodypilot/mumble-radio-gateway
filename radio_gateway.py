@@ -303,6 +303,15 @@ class Config:
             'ENABLE_WEB_CONFIG': False,
             'WEB_CONFIG_PORT': 8080,
             'WEB_CONFIG_PASSWORD': '',    # Basic auth password (user: admin), blank = no auth
+            'WEB_CONFIG_HTTPS': False,    # false, self-signed, or letsencrypt
+            # Cloudflare Tunnel (free public HTTPS access, no port forwarding needed)
+            'ENABLE_CLOUDFLARE_TUNNEL': False,
+            # Email notifications (Gmail SMTP)
+            'ENABLE_EMAIL': False,
+            'EMAIL_ADDRESS': '',          # Gmail address (sender)
+            'EMAIL_APP_PASSWORD': '',     # Gmail app password (not regular password)
+            'EMAIL_RECIPIENT': '',        # Where to send notifications (blank = same as EMAIL_ADDRESS)
+            'EMAIL_ON_STARTUP': True,     # Send status email on startup
             # Dynamic DNS (No-IP compatible)
             'ENABLE_DDNS': False,
             'DDNS_USERNAME': '',
@@ -4054,6 +4063,180 @@ class DDNSUpdater:
                 time.sleep(1)
 
 
+class EmailNotifier:
+    """Gmail SMTP email sender for gateway notifications."""
+
+    def __init__(self, config, gateway=None):
+        self.config = config
+        self.gateway = gateway
+        self._address = str(getattr(config, 'EMAIL_ADDRESS', '') or '').strip()
+        self._password = str(getattr(config, 'EMAIL_APP_PASSWORD', '') or '').strip()
+        self._recipient = str(getattr(config, 'EMAIL_RECIPIENT', '') or '').strip() or self._address
+
+    def is_configured(self):
+        return bool(self._address and self._password)
+
+    def send(self, subject, body):
+        """Send an email. Returns True on success."""
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        if not self.is_configured():
+            print("  [Email] Not configured (missing EMAIL_ADDRESS or EMAIL_APP_PASSWORD)")
+            return False
+
+        msg = MIMEMultipart('alternative')
+        msg['From'] = self._address
+        msg['To'] = self._recipient
+        msg['Subject'] = subject
+
+        # Plain text version
+        msg.attach(MIMEText(body, 'plain'))
+
+        # HTML version (makes URLs clickable)
+        html_body = body.replace('\n', '<br>\n')
+        # Make URLs clickable
+        import re
+        html_body = re.sub(r'(https?://\S+)', r'<a href="\1">\1</a>', html_body)
+        msg.attach(MIMEText(f'<html><body style="font-family:monospace;font-size:14px">{html_body}</body></html>', 'html'))
+
+        try:
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=15) as server:
+                server.login(self._address, self._password)
+                server.sendmail(self._address, self._recipient, msg.as_string())
+            print(f"  [Email] Sent to {self._recipient}: {subject}")
+            return True
+        except Exception as e:
+            print(f"  [Email] Failed: {e}")
+            return False
+
+    def send_startup_status(self):
+        """Send a status email with gateway info and tunnel URL."""
+        import datetime
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        lines = [f"Radio Gateway started at {now}", ""]
+
+        # Tunnel URL
+        if self.gateway and self.gateway.cloudflare_tunnel:
+            url = self.gateway.cloudflare_tunnel.get_url()
+            if url:
+                lines.append(f"Dashboard: {url}/dashboard")
+                lines.append(f"Config:    {url}")
+                lines.append("")
+
+        # Web config local
+        port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
+        lines.append(f"Local:     http://localhost:{port}/dashboard")
+        lines.append("")
+
+        # Mumble server
+        mumble_srv = str(getattr(self.config, 'MUMBLE_SERVER', '') or '')
+        mumble_port = int(getattr(self.config, 'MUMBLE_PORT', 64738))
+        if mumble_srv:
+            lines.append(f"Mumble:    {mumble_srv}:{mumble_port}")
+
+        # DDNS
+        ddns_host = str(getattr(self.config, 'DDNS_HOSTNAME', '') or '')
+        if ddns_host:
+            lines.append(f"DDNS:      {ddns_host}")
+
+        lines.append("")
+        lines.append("-- Radio Gateway")
+
+        hostname = ''
+        try:
+            import socket
+            hostname = socket.gethostname()
+        except Exception:
+            pass
+
+        subject = f"Gateway Online{' — ' + hostname if hostname else ''}"
+        self.send(subject, '\n'.join(lines))
+
+    def send_startup_delayed(self):
+        """Wait for tunnel URL (up to 15s) then send startup email."""
+        def _delayed():
+            # Wait for tunnel URL if tunnel is enabled
+            if self.gateway and self.gateway.cloudflare_tunnel:
+                for _ in range(15):
+                    if self.gateway.cloudflare_tunnel.get_url():
+                        break
+                    time.sleep(1)
+            self.send_startup_status()
+
+        t = threading.Thread(target=_delayed, daemon=True, name="email-startup")
+        t.start()
+
+
+class CloudflareTunnel:
+    """Cloudflare quick tunnel — free public HTTPS access with no port forwarding.
+
+    Launches `cloudflared tunnel --url http://localhost:PORT` as a subprocess.
+    Parses the assigned *.trycloudflare.com URL from stderr.
+    """
+
+    def __init__(self, config):
+        self.config = config
+        self._process = None
+        self._url = None
+        self._thread = None
+
+    def start(self):
+        import subprocess
+        port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
+        try:
+            self._process = subprocess.Popen(
+                ['cloudflared', 'tunnel', '--url', f'http://localhost:{port}'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+        except FileNotFoundError:
+            print("  [Tunnel] cloudflared not found — install with: sudo pacman -S cloudflared")
+            return
+        except Exception as e:
+            print(f"  [Tunnel] Failed to start: {e}")
+            return
+
+        # Read stderr in background to capture the URL
+        self._thread = threading.Thread(target=self._read_output, daemon=True,
+                                        name="cf-tunnel")
+        self._thread.start()
+        print(f"  [Tunnel] Starting Cloudflare tunnel for port {port}...")
+
+    def stop(self):
+        if self._process:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+
+    def get_url(self):
+        return self._url
+
+    def _read_output(self):
+        """Parse cloudflared stderr to find the assigned URL."""
+        import re
+        try:
+            for line in self._process.stderr:
+                line = line.decode('utf-8', errors='replace').strip()
+                # Look for the trycloudflare.com URL
+                match = re.search(r'(https://[a-zA-Z0-9-]+\.trycloudflare\.com)', line)
+                if match:
+                    self._url = match.group(1)
+                    print(f"  [Tunnel] Public URL: {self._url}")
+                if self._process.poll() is not None:
+                    break
+        except Exception:
+            pass
+        if self._process and self._process.poll() is not None and self._process.returncode != 0:
+            print(f"\n[Tunnel] cloudflared exited (code {self._process.returncode})")
+
+
 class SmartAnnouncementManager:
     """AI-powered announcements with pluggable backend (Claude or Gemini).
 
@@ -5196,6 +5379,7 @@ class WebConfigServer:
         'STREAM_PASSWORD', 'MUMBLE_PASSWORD', 'CAT_PASSWORD', 'DDNS_PASSWORD',
         'SMART_ANNOUNCE_API_KEY', 'SMART_ANNOUNCE_GEMINI_API_KEY',
         'WEB_CONFIG_PASSWORD', 'MUMBLE_SERVER_1_PASSWORD', 'MUMBLE_SERVER_2_PASSWORD',
+        'EMAIL_APP_PASSWORD',
     }
 
     # Keys that store hex integers
@@ -5331,8 +5515,9 @@ class WebConfigServer:
                 length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(length).decode('utf-8')
                 form = urllib.parse.parse_qs(body, keep_blank_values=True)
-                # Flatten: parse_qs returns lists
-                values = {k: v[0] for k, v in form.items() if k != '_action'}
+                # Flatten: parse_qs returns lists; for checkboxes with hidden fallback,
+                # take the LAST value (checkbox 'true' comes after hidden 'false')
+                values = {k: v[-1] for k, v in form.items() if k != '_action'}
                 action = form.get('_action', ['save'])[0]
 
                 # Checkboxes: unchecked boxes are absent from form data.
@@ -5373,10 +5558,35 @@ class WebConfigServer:
 
         try:
             self._server = ThreadedServer(('0.0.0.0', port), Handler)
+
+            # HTTPS: false, self-signed, or letsencrypt
+            https_mode = str(getattr(self.config, 'WEB_CONFIG_HTTPS', 'false')).lower().strip()
+            if https_mode in ('true', '1', 'yes', 'self-signed'):
+                https_mode = 'self-signed'
+            elif https_mode in ('letsencrypt', 'lets-encrypt', 'le'):
+                https_mode = 'letsencrypt'
+            else:
+                https_mode = 'false'
+
+            scheme = 'http'
+            if https_mode != 'false':
+                import ssl
+                cert_file, key_file = self._get_cert(https_mode)
+                if cert_file and key_file:
+                    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                    ctx.load_cert_chain(cert_file, key_file)
+                    self._server.socket = ctx.wrap_socket(self._server.socket, server_side=True)
+                    scheme = 'https'
+                    self._https_mode = https_mode
+                    if https_mode == 'letsencrypt':
+                        self._start_renewal_thread(cert_file)
+                else:
+                    print(f"  [WebConfig] HTTPS failed, falling back to HTTP")
+
             self._thread = threading.Thread(target=self._server.serve_forever,
                                             name='WebConfig', daemon=True)
             self._thread.start()
-            print(f"  [WebConfig] Listening on http://0.0.0.0:{port}/")
+            print(f"  [WebConfig] Listening on {scheme}://0.0.0.0:{port}/")
         except Exception as e:
             print(f"  [WebConfig] Failed to start: {e}")
 
@@ -5387,6 +5597,144 @@ class WebConfigServer:
                 self._server.shutdown()
             except Exception:
                 pass
+
+    def _get_cert(self, mode):
+        """Get SSL cert/key paths. Returns (cert_path, key_path) or (None, None)."""
+        cert_dir = os.path.join(os.path.dirname(os.path.abspath(self.config.config_file)), 'certs')
+        os.makedirs(cert_dir, exist_ok=True)
+
+        if mode == 'letsencrypt':
+            domain = str(getattr(self.config, 'DDNS_HOSTNAME', '') or '').strip()
+            if not domain:
+                print(f"  [WebConfig] Let's Encrypt requires DDNS_HOSTNAME to be set")
+                return None, None
+            cert_file = os.path.join(cert_dir, 'fullchain.pem')
+            key_file = os.path.join(cert_dir, 'privkey.pem')
+            # Check if cert exists and is not expiring within 30 days
+            if os.path.exists(cert_file) and os.path.exists(key_file):
+                if not self._cert_expiring_soon(cert_file, 30):
+                    print(f"  [WebConfig] Using existing Let's Encrypt cert for {domain}")
+                    return cert_file, key_file
+                print(f"  [WebConfig] Certificate expiring soon, renewing...")
+            # Obtain/renew via certbot
+            if self._run_certbot(domain, cert_dir):
+                return cert_file, key_file
+            # Existing cert still valid enough? Use it even if renewal failed
+            if os.path.exists(cert_file) and os.path.exists(key_file):
+                print(f"  [WebConfig] Certbot failed but existing cert still present, using it")
+                return cert_file, key_file
+            print(f"  [WebConfig] Let's Encrypt failed, falling back to self-signed")
+            mode = 'self-signed'
+
+        # self-signed
+        cert_file = os.path.join(cert_dir, 'self_signed.pem')
+        key_file = os.path.join(cert_dir, 'self_signed_key.pem')
+        if not os.path.exists(cert_file) or not os.path.exists(key_file):
+            print(f"  [WebConfig] Generating self-signed certificate...")
+            import subprocess
+            subprocess.run([
+                'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
+                '-keyout', key_file, '-out', cert_file,
+                '-days', '3650', '-nodes',
+                '-subj', '/CN=RadioGateway'
+            ], capture_output=True)
+            print(f"  [WebConfig] Self-signed certificate saved")
+        return cert_file, key_file
+
+    def _run_certbot(self, domain, cert_dir):
+        """Run certbot standalone to obtain/renew a certificate."""
+        import subprocess
+        email = str(getattr(self.config, 'DDNS_USERNAME', '') or '').strip()
+        email_args = ['--email', email, '--no-eff-email'] if email and '@' in email else ['--register-unsafely-without-email']
+        port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
+        cmd = [
+            'certbot', 'certonly', '--standalone',
+            '--preferred-challenges', 'http',
+            '--http-01-port', '80',
+            '-d', domain,
+            '--cert-path', os.path.join(cert_dir, 'fullchain.pem'),
+            '--key-path', os.path.join(cert_dir, 'privkey.pem'),
+            '--fullchain-path', os.path.join(cert_dir, 'fullchain.pem'),
+            '--config-dir', os.path.join(cert_dir, 'certbot_config'),
+            '--work-dir', os.path.join(cert_dir, 'certbot_work'),
+            '--logs-dir', os.path.join(cert_dir, 'certbot_logs'),
+            '--non-interactive', '--agree-tos',
+        ] + email_args
+        print(f"  [WebConfig] Running certbot for {domain}...")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode == 0:
+                # certbot may put certs in its own live/ dir; copy them to our cert_dir
+                live_dir = os.path.join(cert_dir, 'certbot_config', 'live', domain)
+                target_cert = os.path.join(cert_dir, 'fullchain.pem')
+                target_key = os.path.join(cert_dir, 'privkey.pem')
+                if os.path.isdir(live_dir):
+                    # certbot uses symlinks into archive/; resolve and copy
+                    import shutil
+                    live_cert = os.path.join(live_dir, 'fullchain.pem')
+                    live_key = os.path.join(live_dir, 'privkey.pem')
+                    if os.path.exists(live_cert):
+                        shutil.copy2(os.path.realpath(live_cert), target_cert)
+                    if os.path.exists(live_key):
+                        shutil.copy2(os.path.realpath(live_key), target_key)
+                print(f"  [WebConfig] Let's Encrypt certificate obtained for {domain}")
+                return True
+            else:
+                print(f"  [WebConfig] Certbot failed (exit {result.returncode})")
+                stderr = result.stderr.strip()
+                if stderr:
+                    for line in stderr.split('\n')[-3:]:
+                        print(f"  [WebConfig]   {line}")
+                return False
+        except FileNotFoundError:
+            print(f"  [WebConfig] certbot not found — install with: sudo apt install certbot")
+            return False
+        except subprocess.TimeoutExpired:
+            print(f"  [WebConfig] Certbot timed out")
+            return False
+        except Exception as e:
+            print(f"  [WebConfig] Certbot error: {e}")
+            return False
+
+    def _cert_expiring_soon(self, cert_path, days=30):
+        """Check if certificate expires within N days."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['openssl', 'x509', '-enddate', '-noout', '-in', cert_path],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                return True
+            # Parse "notAfter=Mar  8 12:00:00 2026 GMT"
+            date_str = result.stdout.strip().split('=', 1)[1]
+            from email.utils import parsedate_to_datetime
+            import datetime
+            # openssl format: "Mar  8 12:00:00 2026 GMT"
+            from datetime import datetime as dt, timedelta, timezone
+            expiry = dt.strptime(date_str.strip(), '%b %d %H:%M:%S %Y %Z').replace(tzinfo=timezone.utc)
+            remaining = expiry - dt.now(timezone.utc)
+            return remaining < timedelta(days=days)
+        except Exception:
+            return True  # if we can't check, assume it needs renewal
+
+    def _start_renewal_thread(self, cert_path):
+        """Background thread to check/renew Let's Encrypt cert every 12 hours."""
+        def _renewal_loop():
+            import time
+            while True:
+                time.sleep(12 * 3600)  # 12 hours
+                try:
+                    if self._cert_expiring_soon(cert_path, 30):
+                        domain = str(getattr(self.config, 'DDNS_HOSTNAME', '') or '').strip()
+                        cert_dir = os.path.dirname(cert_path)
+                        if domain and self._run_certbot(domain, cert_dir):
+                            print(f"\n[WebConfig] Certificate renewed — restart gateway to use new cert")
+                except Exception as e:
+                    print(f"\n[WebConfig] Renewal check error: {e}")
+
+        t = threading.Thread(target=_renewal_loop, name='CertRenewal', daemon=True)
+        t.start()
 
     def _build_section_map(self):
         """Parse config file to map KEY -> section_name."""
@@ -5562,6 +5910,7 @@ class WebConfigServer:
   </div>
   <div class="ctrl-group">
     <h3>System</h3>
+    <button onclick="sendKey('@')">Send Email</button>
     <button onclick="if(confirm('Restart gateway?'))sendKey('q')" class="btn-restart">Restart</button>
   </div>
 </div>
@@ -5822,8 +6171,9 @@ class StatusBarWriter:
                 except Exception:
                     cols = 120
                 blank = ' ' * cols
-                if self._bar_lines == 2:
-                    # Clear line 2 (below), then line 1 (current)
+                if self._bar_lines == 3:
+                    self._orig.write(f"\n\n\r{blank}\r\033[A\r{blank}\r\033[A\r{blank}\r")
+                elif self._bar_lines == 2:
                     self._orig.write(f"\n\r{blank}\r\033[A\r{blank}\r")
                 else:
                     self._orig.write(f"\r{blank}\r")
@@ -5856,15 +6206,17 @@ class StatusBarWriter:
                 self._orig.write(text)
         return len(text)
 
-    def draw_status(self, status_line, line2=None):
+    def draw_status(self, status_line, line2=None, line3=None):
         """Called by the status monitor to paint the bar (no newline).
 
-        If *line2* is given, a two-line status bar is drawn.  The cursor
-        is left on line 1 so that the next draw_status or write() can
-        overwrite cleanly.
+        Supports up to 3 lines.  The cursor is left on line 1 so that
+        the next draw_status or write() can overwrite cleanly.
         """
         with self._lock:
-            if line2:
+            if line3 and line2:
+                self._orig.write(f"\r{status_line}\n\r{line2}\n\r{line3}\033[2A\r")
+                self._bar_lines = 3
+            elif line2:
                 self._orig.write(f"\r{status_line}\n\r{line2}\033[A\r")
                 self._bar_lines = 2
             else:
@@ -6005,6 +6357,8 @@ class RadioGateway:
 
         # Dynamic DNS updater
         self.ddns_updater = None  # DDNSUpdater instance
+        self.cloudflare_tunnel = None  # CloudflareTunnel instance
+        self.email_notifier = None  # EmailNotifier instance
 
         # TH-9800 CAT control
         self.cat_client = None  # RadioCATClient instance
@@ -7201,6 +7555,28 @@ class RadioGateway:
                     self.ddns_updater.start()
                 except Exception as e:
                     print(f"  [DDNS] Init error: {e}")
+
+            # Initialize Cloudflare Tunnel
+            if getattr(self.config, 'ENABLE_CLOUDFLARE_TUNNEL', False):
+                try:
+                    self.cloudflare_tunnel = CloudflareTunnel(self.config)
+                    self.cloudflare_tunnel.start()
+                except Exception as e:
+                    print(f"  [Tunnel] Init error: {e}")
+
+            # Initialize Email notifier
+            if getattr(self.config, 'ENABLE_EMAIL', False):
+                try:
+                    self.email_notifier = EmailNotifier(self.config, self)
+                    if self.email_notifier.is_configured():
+                        print(f"  [Email] Notifier ready ({self.email_notifier._recipient})")
+                        if getattr(self.config, 'EMAIL_ON_STARTUP', True):
+                            self.email_notifier.send_startup_delayed()
+                    else:
+                        print(f"  [Email] Missing credentials — skipping")
+                        self.email_notifier = None
+                except Exception as e:
+                    print(f"  [Email] Init error: {e}")
 
             # Initialize EchoLink source if enabled (Phase 3B)
             if self.config.ENABLE_ECHOLINK:
@@ -9013,6 +9389,13 @@ class RadioGateway:
             slot = {'[': 1, ']': 2, '\\': 3}[char]
             if self.smart_announce and self.smart_announce._client:
                 self.smart_announce.trigger(slot)
+        elif char == '@':
+            if self.email_notifier:
+                print(f"\n[Email] Sending status email...")
+                threading.Thread(target=self.email_notifier.send_startup_status,
+                                 daemon=True, name="email-manual").start()
+            else:
+                print(f"\n[Email] Not configured")
         elif char == 'q':
             print(f"\n[WebUI] Restarting gateway...")
             self.restart_requested = True
@@ -9180,6 +9563,7 @@ class RadioGateway:
                 GRAY = '\033[90m'
                 CYAN = '\033[96m'
                 MAGENTA = '\033[95m'
+                BLUE = '\033[94m'
                 RESET = '\033[0m'
                 
                 # Format status with color-coded symbols (fixed width for alignment)
@@ -9409,24 +9793,37 @@ class RadioGateway:
 
                 if self.smart_announce:
                     for sa_id, sa_rem in self.smart_announce.get_countdowns():
-                        line2_parts.append(f"{WHITE}S{sa_id}:{YELLOW}{_fmt_hms(sa_rem)}{RESET}")
-
-                if self.ddns_updater:
-                    _dns_st = self.ddns_updater.get_status()
-                    _dns_color = GREEN if self.ddns_updater._last_status in ('good', 'nochg') else (RED if self.ddns_updater._last_status else YELLOW)
-                    line2_parts.append(f"{WHITE}DNS:{_dns_color}{_dns_st}{RESET}")
+                        line2_parts.append(f"{WHITE}S{sa_id}:{MAGENTA}{_fmt_hms(sa_rem)}{RESET}")
 
                 if self.web_config_server:
                     _web_port = getattr(self.config, 'WEB_CONFIG_PORT', 8080)
-                    line2_parts.append(f"{WHITE}WEB:{GREEN}{_web_port}{RESET}")
+                    _https_val = str(getattr(self.config, 'WEB_CONFIG_HTTPS', 'false')).lower().strip()
+                    _web_s = 'S' if _https_val not in ('false', '0', 'no', '') else ''
+                    line2_parts.append(f"{WHITE}WEB{_web_s}:{GREEN}{_web_port}{RESET}")
+
+                # Line 3: network info (DNS IP + Cloudflare tunnel URL)
+                line3_parts = []
+                if self.ddns_updater:
+                    _dns_st = self.ddns_updater.get_status()
+                    _dns_color = YELLOW if self.ddns_updater._last_status in ('good', 'nochg') else (RED if self.ddns_updater._last_status else YELLOW)
+                    _dns_host = str(getattr(self.config, 'DDNS_HOSTNAME', '') or '')
+                    line3_parts.append(f"{WHITE}DNS:{_dns_color}{_dns_host} → {_dns_st}{RESET}")
+
+                if self.cloudflare_tunnel:
+                    _cf_url = self.cloudflare_tunnel.get_url()
+                    if _cf_url:
+                        line3_parts.append(f"{WHITE}CF:{YELLOW}{_cf_url}{RESET}")
+                    else:
+                        line3_parts.append(f"{WHITE}CF:{YELLOW}starting...{RESET}")
 
                 line2_tail = f"{relay_bar}{cat_bar}{msrv_bar}{vol_info}{proc_info}{diag}"
                 if line2_tail.strip():
                     line2_parts.append(line2_tail.strip())
 
                 status_line2 = "  ".join(line2_parts) + "     "
+                status_line3 = "  ".join(line3_parts) + "     " if line3_parts else None
 
-                # Truncate both lines to terminal width to prevent line wrapping
+                # Truncate all lines to terminal width to prevent line wrapping
                 try:
                     import shutil as _shutil
                     _term_cols = _shutil.get_terminal_size().columns
@@ -9453,10 +9850,12 @@ class RadioGateway:
 
                     status_line = _truncate_ansi(status_line, _term_cols - 1)
                     status_line2 = _truncate_ansi(status_line2, _term_cols - 1)
+                    if status_line3:
+                        status_line3 = _truncate_ansi(status_line3, _term_cols - 1)
                 except Exception:
                     pass
 
-                self._status_writer.draw_status(status_line, line2=status_line2)
+                self._status_writer.draw_status(status_line, line2=status_line2, line3=status_line3)
             
             # Always check for stuck audio (even if status reporting is disabled)
             elif status_check_interval == 0:
@@ -10503,6 +10902,12 @@ class RadioGateway:
         if self.ddns_updater:
             try:
                 self.ddns_updater.stop()
+            except Exception:
+                pass
+
+        if self.cloudflare_tunnel:
+            try:
+                self.cloudflare_tunnel.stop()
             except Exception:
                 pass
 
