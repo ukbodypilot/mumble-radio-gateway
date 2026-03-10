@@ -343,7 +343,7 @@ class Config:
             'MUMBLE_SERVER_2_REGISTER_NAME': '',
             'MUMBLE_SERVER_2_ALLOW_HTML': True,
             'MUMBLE_SERVER_2_OPUS_THRESHOLD': 0,
-            'MUMBLE_SERVER_2_AUTOSTART': True,
+            'MUMBLE_SERVER_2_AUTOSTART': False,
         }
         
         # Store defaults for type inference (used by WebConfigServer)
@@ -6938,15 +6938,16 @@ fetch('/logdata?after=0')
   </div>
 </div>
 
-<!-- Common controls: SET button + common icons -->
+<!-- Common controls: Menu/SET + Single VFO | PTT -->
 <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px;">
   <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
     <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">Menu / SET</div>
-    <div style="display:flex; gap:6px; justify-content:center;">
+    <div style="display:flex; gap:6px; justify-content:center; flex-wrap:wrap;">
       <button class="rb" onclick="catCmd('N_SET')">SET</button>
       <button class="rb" onclick="catCmd('N_SET_HOLD')">SET (Hold)</button>
       <button class="rb" onclick="catCmd('L_SET_VFO')">VFO&#8594;L</button>
       <button class="rb" onclick="catCmd('R_SET_VFO')">VFO&#8594;R</button>
+      <button class="rb" onclick="catCmd('L_VOLUME_HOLD')">Single VFO</button>
     </div>
     <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; font-size:0.85em;">
       <span id="c-apo" class="icon-off">APO</span>
@@ -6957,63 +6958,71 @@ fetch('/logdata?after=0')
   </div>
 
   <!-- PTT -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px; display:flex; flex-direction:column; align-items:center; justify-content:center;">
-    <button id="ptt-btn" class="rb" style="width:80px; height:80px; font-size:1.4em; font-weight:bold; border-radius:50%;"
-      onclick="togglePTT()">PTT</button>
-    <span style="color:#888; font-size:0.8em; margin-top:6px;">Click to toggle TX</span>
+  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
+    <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">PTT</div>
+    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
+      <button id="ptt-btn" class="rb" style="width:80px; height:80px; font-size:1.4em; font-weight:bold; border-radius:50%;"
+        onclick="togglePTT()">PTT</button>
+      <span style="color:#888; font-size:0.8em; margin-top:6px;">Click to toggle TX</span>
+    </div>
   </div>
 </div>
 
-<!-- Hyper Memories -->
-<div style="margin-bottom:14px; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 14px;">
-  <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">Hyper Memories</div>
-  <div style="display:flex; gap:6px; flex-wrap:wrap;">
-    <button class="rb" onclick="catCmd('HYPER_A')">A</button>
-    <button class="rb" onclick="catCmd('HYPER_B')">B</button>
-    <button class="rb" onclick="catCmd('HYPER_C')">C</button>
-    <button class="rb" onclick="catCmd('HYPER_D')">D</button>
-    <button class="rb" onclick="catCmd('HYPER_E')">E</button>
-    <button class="rb" onclick="catCmd('HYPER_F')">F</button>
-    <button class="rb" onclick="catCmd('L_VOLUME_HOLD')" style="margin-left:14px;">Single VFO</button>
+<!-- Hyper Memories + Mic Keypad + P1-P4/UP/DOWN -->
+<div style="display:grid; grid-template-columns:auto 1fr auto; gap:14px; margin-bottom:14px;">
+
+  <!-- Hyper Memories -->
+  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 14px;">
+    <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">Hyper Memories</div>
+    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+      <button class="rb" onclick="catCmd('HYPER_A')">A</button>
+      <button class="rb" onclick="catCmd('HYPER_B')">B</button>
+      <button class="rb" onclick="catCmd('HYPER_C')">C</button>
+      <button class="rb" onclick="catCmd('HYPER_D')">D</button>
+      <button class="rb" onclick="catCmd('HYPER_E')">E</button>
+      <button class="rb" onclick="catCmd('HYPER_F')">F</button>
+    </div>
   </div>
-</div>
 
-<!-- Mic Keypad -->
-<div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px; margin-bottom:14px;">
-  <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">Microphone Keypad</div>
-  <div style="display:grid; grid-template-columns:repeat(4, 50px) 1fr; gap:6px; justify-items:center;">
-    <button class="rb" onclick="catCmd('MIC_1')">1</button>
-    <button class="rb" onclick="catCmd('MIC_2')">2</button>
-    <button class="rb" onclick="catCmd('MIC_3')">3</button>
-    <button class="rb" onclick="catCmd('MIC_A')">A</button>
-    <div></div>
+  <!-- Mic Keypad (number grid only) -->
+  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 14px;">
+    <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">Mic Keypad</div>
+    <div style="display:grid; grid-template-columns:repeat(4, 50px); gap:6px; justify-content:center;">
+      <button class="rb" onclick="catCmd('MIC_1')">1</button>
+      <button class="rb" onclick="catCmd('MIC_2')">2</button>
+      <button class="rb" onclick="catCmd('MIC_3')">3</button>
+      <button class="rb" onclick="catCmd('MIC_A')">A</button>
 
-    <button class="rb" onclick="catCmd('MIC_4')">4</button>
-    <button class="rb" onclick="catCmd('MIC_5')">5</button>
-    <button class="rb" onclick="catCmd('MIC_6')">6</button>
-    <button class="rb" onclick="catCmd('MIC_B')">B</button>
-    <div></div>
+      <button class="rb" onclick="catCmd('MIC_4')">4</button>
+      <button class="rb" onclick="catCmd('MIC_5')">5</button>
+      <button class="rb" onclick="catCmd('MIC_6')">6</button>
+      <button class="rb" onclick="catCmd('MIC_B')">B</button>
 
-    <button class="rb" onclick="catCmd('MIC_7')">7</button>
-    <button class="rb" onclick="catCmd('MIC_8')">8</button>
-    <button class="rb" onclick="catCmd('MIC_9')">9</button>
-    <button class="rb" onclick="catCmd('MIC_C')">C</button>
-    <div></div>
+      <button class="rb" onclick="catCmd('MIC_7')">7</button>
+      <button class="rb" onclick="catCmd('MIC_8')">8</button>
+      <button class="rb" onclick="catCmd('MIC_9')">9</button>
+      <button class="rb" onclick="catCmd('MIC_C')">C</button>
 
-    <button class="rb" onclick="catCmd('MIC_STAR')">*</button>
-    <button class="rb" onclick="catCmd('MIC_0')">0</button>
-    <button class="rb" onclick="catCmd('MIC_POUND')">#</button>
-    <button class="rb" onclick="catCmd('MIC_D')">D</button>
-    <div></div>
+      <button class="rb" onclick="catCmd('MIC_STAR')">*</button>
+      <button class="rb" onclick="catCmd('MIC_0')">0</button>
+      <button class="rb" onclick="catCmd('MIC_POUND')">#</button>
+      <button class="rb" onclick="catCmd('MIC_D')">D</button>
+    </div>
   </div>
-  <div style="display:flex; gap:6px; justify-content:center; margin-top:8px;">
-    <button class="rb" onclick="catCmd('MIC_P1')">P1</button>
-    <button class="rb" onclick="catCmd('MIC_P2')">P2</button>
-    <button class="rb" onclick="catCmd('MIC_P3')">P3</button>
-    <button class="rb" onclick="catCmd('MIC_P4')">P4</button>
-    <button class="rb" onclick="catCmd('MIC_UP')">&#9650; UP</button>
-    <button class="rb" onclick="catCmd('MIC_DOWN')">&#9660; DOWN</button>
+
+  <!-- Mic Controls -->
+  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 14px;">
+    <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">Mic Controls</div>
+    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+      <button class="rb" onclick="catCmd('MIC_P1')">P1</button>
+      <button class="rb" onclick="catCmd('MIC_P2')">P2</button>
+      <button class="rb" onclick="catCmd('MIC_P3')">P3</button>
+      <button class="rb" onclick="catCmd('MIC_P4')">P4</button>
+      <button class="rb" onclick="catCmd('MIC_UP')">&#9650; UP</button>
+      <button class="rb" onclick="catCmd('MIC_DOWN')">&#9660; DN</button>
+    </div>
   </div>
+
 </div>
 
 </div><!-- /radio-panel -->

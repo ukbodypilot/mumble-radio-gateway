@@ -11,7 +11,10 @@ cd "$SCRIPT_DIR"
 # Capture all startup output so the gateway can load it into the web /logs viewer
 STARTUP_LOG="/tmp/gateway_startup.log"
 > "$STARTUP_LOG"  # truncate
-exec > >(tee -a "$STARTUP_LOG") 2>&1
+# Log to file only (avoids process-substitution fork that causes duplicate gateway
+# launches under nohup). Console output goes to /tmp/gateway_start_output.log via
+# the nohup redirect in the caller.
+exec >> "$STARTUP_LOG" 2>&1
 
 # Timestamped echo — prepends [HH:MM:SS] to every message
 ts() { echo "[$(date +%H:%M:%S)] $*"; }

@@ -43,7 +43,7 @@ echo "Package manager: $DISTRO"
 echo
 
 # ── 1. System packages ───────────────────────────────────────
-echo "[ 1/13 ] Installing system packages..."
+echo "[ 1/14 ] Installing system packages..."
 if [ "$DISTRO" = "arch" ]; then
     sudo pacman -Sy --noconfirm --needed \
         python \
@@ -76,7 +76,7 @@ echo "  ✓ System packages installed"
 echo
 
 # ── 2. ALSA loopback module ──────────────────────────────────
-echo "[ 2/13 ] Setting up ALSA loopback (for SDR input)..."
+echo "[ 2/14 ] Setting up ALSA loopback (for SDR input)..."
 
 # Write modprobe options first:
 #   enable=1,1,1 → enable 3 independent loopback cards
@@ -152,7 +152,7 @@ echo "$LOOPBACK_LINES" | grep "Loopback" | sed 's/^/    /' || true
 echo
 
 # ── 3. Python packages ───────────────────────────────────────
-echo "[ 3/13 ] Installing Python packages..."
+echo "[ 3/14 ] Installing Python packages..."
 
 # Helper: try --break-system-packages (Debian 12+), then plain pip
 _pip() {
@@ -239,7 +239,7 @@ fi
 echo
 
 # ── 4. UDEV rules for AIOC ──────────────────────────────────
-echo "[ 4/13 ] Setting up UDEV rules for AIOC USB device..."
+echo "[ 4/14 ] Setting up UDEV rules for AIOC USB device..."
 UDEV_RULE='SUBSYSTEM=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="audio"
 SUBSYSTEM=="hidraw", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="audio"
 SUBSYSTEM=="tty", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", MODE="0666", GROUP="uucp"'
@@ -461,7 +461,7 @@ fi
 echo
 
 # ── 5. Audio group, realtime limits, and sudoers ─────────────────
-echo "[ 5/13 ] Setting up audio permissions..."
+echo "[ 5/14 ] Setting up audio permissions..."
 set +e   # None of this should abort the install
 
 # Determine the real (non-root) user running this script
@@ -542,7 +542,7 @@ fi
 echo
 
 # ── 6. Darkice (optional — for Broadcastify/Icecast streaming) ───
-echo "[ 6/13 ] Darkice streaming (optional)..."
+echo "[ 6/14 ] Darkice streaming (optional)..."
 set +e
 if [ "$DISTRO" = "arch" ]; then
     if sudo pacman -S --noconfirm --needed lame 2>/dev/null; then
@@ -643,7 +643,7 @@ set -e
 echo
 
 # ── 7. Ollama local LLM (optional — for free Smart Announcements) ──
-echo "[ 7/13 ] Installing Ollama local LLM (optional — for Smart Announcements)..."
+echo "[ 7/14 ] Installing Ollama local LLM (optional — for Smart Announcements)..."
 set +e
 if command -v ollama &>/dev/null; then
     echo "  ✓ Ollama already installed"
@@ -694,7 +694,7 @@ set -e
 echo
 
 # ── 8. Mumble GUI client ─────────────────────────────────────
-echo "[ 8/13 ] Installing Mumble client..."
+echo "[ 8/14 ] Installing Mumble client..."
 set +e
 if [ "$DISTRO" = "arch" ]; then
     sudo pacman -S --noconfirm --needed mumble 2>/dev/null
@@ -710,7 +710,7 @@ set -e
 echo
 
 # ── 8. Mumble server (murmurd) ───────────────────────────────
-echo "[ 9/13 ] Installing Mumble server (optional — for local server instances)..."
+echo "[ 9/14 ] Installing Mumble server (optional — for local server instances)..."
 set +e
 if [ "$DISTRO" = "arch" ]; then
     if sudo pacman -S --noconfirm --needed mumble-server 2>/dev/null; then
@@ -759,7 +759,7 @@ set -e
 echo
 
 # ── 9. OpenSSL TLS compatibility (for older Mumble servers) ──
-echo "[ 10/13 ] Configuring OpenSSL for TLS 1.0 compatibility..."
+echo "[ 10/14 ] Configuring OpenSSL for TLS 1.0 compatibility..."
 OPENSSL_CNF="/etc/ssl/openssl.cnf"
 if [ -f "$OPENSSL_CNF" ]; then
     # Check if already patched
@@ -788,7 +788,7 @@ fi
 echo
 
 # ── 10. Gateway configuration ────────────────────────────────
-echo "[ 11/13 ] Setting up configuration..."
+echo "[ 11/14 ] Setting up configuration..."
 
 CONFIG_DEST="$GATEWAY_DIR/gateway_config.txt"
 CONFIG_SRC="$GATEWAY_DIR/examples/gateway_config.txt"
@@ -810,37 +810,85 @@ echo "  ✓ audio/ directory ready (place announcement files here)"
 echo
 
 # ── 11. Make scripts executable ──────────────────────────────
-echo "[ 12/13 ] Setting permissions..."
+echo "[ 12/14 ] Setting permissions..."
 chmod +x "$GATEWAY_DIR/radio_gateway.py" 2>/dev/null || true
 chmod +x "$GATEWAY_DIR/scripts/"*.sh 2>/dev/null || true
 chmod +x "$GATEWAY_DIR/start.sh" 2>/dev/null || true
 echo "  ✓ Scripts are executable"
 echo
 
-# ── 12. Desktop shortcut ────────────────────────────────────
-echo "[ 13/13 ] Creating desktop shortcut..."
+# ── 12. Systemd service ─────────────────────────────────────
+echo "[ 13/14 ] Installing systemd service..."
+ACTUAL_USER=${SUDO_USER:-$USER}
+ACTUAL_HOME=$(eval echo "~$ACTUAL_USER")
+ACTUAL_UID=$(id -u "$ACTUAL_USER")
+SYSTEMCTL_BIN=$(command -v systemctl 2>/dev/null || echo /usr/bin/systemctl)
+
+SERVICE_DEST="/etc/systemd/system/radio-gateway.service"
+SERVICE_TEMPLATE="$SCRIPT_DIR/radio-gateway.service.template"
+if [ -f "$SERVICE_TEMPLATE" ]; then
+    sed -e "s|__USER__|$ACTUAL_USER|g" \
+        -e "s|__GATEWAY_DIR__|$GATEWAY_DIR|g" \
+        -e "s|__HOME__|$ACTUAL_HOME|g" \
+        -e "s|__UID__|$ACTUAL_UID|g" \
+        "$SERVICE_TEMPLATE" | sudo tee "$SERVICE_DEST" > /dev/null
+    sudo systemctl daemon-reload
+    sudo systemctl enable radio-gateway.service 2>/dev/null || true
+    echo "  ✓ radio-gateway.service installed and enabled"
+    echo "    Start:   sudo systemctl start radio-gateway"
+    echo "    Stop:    sudo systemctl stop radio-gateway"
+    echo "    Restart: sudo systemctl restart radio-gateway"
+    echo "    Logs:    journalctl -u radio-gateway -f"
+else
+    echo "  ⚠ Service template not found ($SERVICE_TEMPLATE) — skipping"
+fi
+
+# Passwordless sudo for systemctl start/stop/restart (needed by desktop shortcuts)
+SUDOERS_GW="/etc/sudoers.d/radio-gateway"
+printf '%s ALL=(ALL) NOPASSWD: %s start radio-gateway.service\n' \
+    "$ACTUAL_USER" "$SYSTEMCTL_BIN" > /tmp/_sudoers_gw
+printf '%s ALL=(ALL) NOPASSWD: %s stop radio-gateway.service\n' \
+    "$ACTUAL_USER" "$SYSTEMCTL_BIN" >> /tmp/_sudoers_gw
+printf '%s ALL=(ALL) NOPASSWD: %s restart radio-gateway.service\n' \
+    "$ACTUAL_USER" "$SYSTEMCTL_BIN" >> /tmp/_sudoers_gw
+if visudo -cf /tmp/_sudoers_gw > /dev/null 2>&1; then
+    sudo cp /tmp/_sudoers_gw "$SUDOERS_GW"
+    sudo chmod 440 "$SUDOERS_GW"
+    echo "  ✓ Passwordless sudo configured for gateway service commands"
+else
+    echo "  ⚠ Could not validate sudoers rule — desktop shortcuts will prompt for password"
+fi
+rm -f /tmp/_sudoers_gw
+echo
+
+# ── 13. Desktop shortcuts ──────────────────────────────────
+echo "[ 14/14 ] Creating desktop shortcuts..."
 DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
 if [ -d "$DESKTOP_DIR" ] || mkdir -p "$DESKTOP_DIR" 2>/dev/null; then
-    # Pick the first available terminal emulator
-    TERM_BIN=""
-    for t in xfce4-terminal lxterminal gnome-terminal x-terminal-emulator; do
-        if command -v "$t" > /dev/null 2>&1; then
-            TERM_BIN="$t"
-            break
+    # Remove old manual-launch shortcut (replaced by systemd service shortcuts)
+    rm -f "$DESKTOP_DIR/radio-gateway.desktop" 2>/dev/null
+
+    SHORTCUTS_OK=0
+    for tmpl in gateway-start gateway-stop gateway-restart; do
+        SRC="$SCRIPT_DIR/${tmpl}.desktop.template"
+        DEST="$DESKTOP_DIR/${tmpl}.desktop"
+        if [ -f "$SRC" ]; then
+            cp "$SRC" "$DEST"
+            chmod +x "$DEST"
+            SHORTCUTS_OK=$((SHORTCUTS_OK + 1))
         fi
     done
-    if [ -n "$TERM_BIN" ]; then
-        sed -e "s|__TERMINAL__|$TERM_BIN|g" \
-            -e "s|__GATEWAY_DIR__|$GATEWAY_DIR|g" \
-            "$SCRIPT_DIR/radio-gateway.desktop.template" \
-            > "$DESKTOP_DIR/radio-gateway.desktop"
-        chmod +x "$DESKTOP_DIR/radio-gateway.desktop"
-        echo "  ✓ Desktop shortcut created ($DESKTOP_DIR/radio-gateway.desktop)"
+
+    if [ $SHORTCUTS_OK -eq 3 ]; then
+        echo "  ✓ Desktop shortcuts created:"
+        echo "    Gateway Start   — start the service"
+        echo "    Gateway Stop    — stop the service"
+        echo "    Gateway Restart — restart the service"
     else
-        echo "  ⚠ No supported terminal emulator found (skipping shortcut)"
+        echo "  ⚠ Some shortcut templates missing ($SHORTCUTS_OK/3 created)"
     fi
 else
-    echo "  ⚠ Desktop directory not found (skipping shortcut)"
+    echo "  ⚠ Desktop directory not found (skipping shortcuts)"
 fi
 echo
 
@@ -867,8 +915,9 @@ echo
 echo "  4. Log out and back in so audio group membership takes effect"
 echo "     (needed for darkice realtime scheduling without sudo)"
 echo
-echo "  5. Run the gateway:"
-echo "       python3 $GATEWAY_DIR/radio_gateway.py"
+echo "  5. Start the gateway (use desktop shortcuts or systemctl):"
+echo "       sudo systemctl start radio-gateway"
+echo "     Or use the Gateway Start shortcut on your desktop"
 echo
 echo "SDR INPUT (optional):"
 echo "  Route SDR software audio output to ALSA loopback hw:X,0"

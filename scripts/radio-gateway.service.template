@@ -1,0 +1,39 @@
+[Unit]
+Description=Radio Gateway — Mumble to Radio Bridge
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__GATEWAY_DIR__
+ExecStart=__GATEWAY_DIR__/start.sh
+ExecStop=/bin/kill -TERM $MAINPID
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# Restart on crash, but not on clean exit (Ctrl+C / 'q' key)
+Restart=on-failure
+RestartSec=5
+
+# Logging — stdout/stderr go to journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=radio-gateway
+
+# Allow real-time scheduling and nice -10
+AmbientCapabilities=CAP_SYS_NICE
+LimitRTPRIO=99
+
+# Audio device access
+SupplementaryGroups=audio uucp
+
+# Environment (PipeWire/PulseAudio need these)
+Environment=HOME=__HOME__
+Environment=XDG_RUNTIME_DIR=/run/user/__UID__
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/__UID__/bus
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Gateway Restart
+Comment=Restart the Radio Gateway service
+Exec=bash -c 'sudo systemctl restart radio-gateway.service && notify-send "Radio Gateway" "Restarted" || notify-send "Radio Gateway" "Failed to restart"'
+Icon=view-refresh
+Terminal=false
+Type=Application
+Categories=Audio;Network;
+StartupNotify=false
