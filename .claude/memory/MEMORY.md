@@ -229,7 +229,16 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ## Known Bugs Fixed (details in bugs.md)
 See bugs.md for full history. Key fixes: SDR burst audio, Mumble encoder starvation,
 duck-out regression, config parser crash, DarkIce/WirePlumber issues, terminal raw mode
-not restored on exit, SDR periodic gaps, rebroadcast bugs, SV status bar, ALSA fd suppression.
+not restored on exit, SDR periodic gaps, rebroadcast bugs, SV status bar, ALSA fd suppression,
+pymumble ghost reconnect cycling (see below).
+
+## pymumble Reconnect Bug (fixed 2026-03-09)
+- pymumble `reconnect=True` causes 10-second reconnect cycling on local mumble servers
+- Root cause: pymumble's `loop()` exits with socket.error on localhost connections; `reconnect=True` then creates a new connection → murmur sees duplicate username → "Disconnecting ghost"
+- Fix: set `reconnect=False` in Mumble() constructor (line ~9269)
+- Also added `autobanAttempts=0` and `timeout=300` to generated mumble-server .ini to prevent IP bans and premature timeouts
+- pymumble patches in site-packages: SSLWantWriteError retry in send_message/send_audio (may still be present)
+- This only affects local mumble-server instances; remote servers (192.168.2.126) were unaffected
 
 ## Deployment Notes
 - WirePlumber config must be in `~/.config/wireplumber/wireplumber.conf.d/`

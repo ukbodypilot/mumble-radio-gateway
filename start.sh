@@ -8,6 +8,11 @@ cd "$SCRIPT_DIR"
 # Ensure ~/.local/bin is in PATH (not present in non-login shells like desktop shortcuts)
 [[ -d "$HOME/.local/bin" && ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
 
+# Capture all startup output so the gateway can load it into the web /logs viewer
+STARTUP_LOG="/tmp/gateway_startup.log"
+> "$STARTUP_LOG"  # truncate
+exec > >(tee -a "$STARTUP_LOG") 2>&1
+
 # Timestamped echo — prepends [HH:MM:SS] to every message
 ts() { echo "[$(date +%H:%M:%S)] $*"; }
 
@@ -51,7 +56,7 @@ cleanup() {
         kill $SUDO_KEEPALIVE_PID 2>/dev/null
     fi
     rm -f /tmp/darkice_audio 2>/dev/null
-    sudo modprobe -r snd-aloop 2>/dev/null
+    try_sudo modprobe -r snd-aloop 2>/dev/null
     # Restore terminal from raw mode (gateway sets cbreak for keyboard controls)
     stty sane 2>/dev/null
     ts "Done"
@@ -66,11 +71,22 @@ if [ "$EUID" -eq 0 ]; then
     echo ""
 fi
 
-# Cache sudo credentials and keep them alive for the entire session
-# (avoids repeat password prompts when gateway uses sudo internally)
-sudo -v
-( while true; do sudo -n -v 2>/dev/null; sleep 50; done ) &
-SUDO_KEEPALIVE_PID=$!
+# Cache sudo credentials (skip if no TTY — running as systemd service)
+if sudo -n true 2>/dev/null; then
+    HAVE_SUDO=true
+elif [ -t 0 ]; then
+    sudo -v && HAVE_SUDO=true || HAVE_SUDO=false
+    if [ "$HAVE_SUDO" = "true" ]; then
+        ( while true; do sudo -n -v 2>/dev/null; sleep 50; done ) &
+        SUDO_KEEPALIVE_PID=$!
+    fi
+else
+    HAVE_SUDO=false
+    ts "  No TTY — sudo commands will be skipped (running as service)"
+fi
+
+# Wrapper: run command with sudo if available, skip otherwise
+try_sudo() { if [ "$HAVE_SUDO" = "true" ]; then sudo "$@"; else return 0; fi; }
 
 # 1. Kill any existing processes
 ts "[1/11] Checking for existing processes..."
@@ -85,7 +101,7 @@ pkill -9 -f "radio_gateway" 2>/dev/null && ts "  Killed existing gateway"
 # linger on stale ports (the gateway will start fresh ones with current config)
 for svc in mumble-server-gw1 mumble-server-gw2; do
     if systemctl is-active --quiet "$svc.service" 2>/dev/null; then
-        sudo systemctl stop "$svc.service" 2>/dev/null && ts "  Stopped $svc"
+        try_sudo systemctl stop "$svc.service" 2>/dev/null && ts "  Stopped $svc"
     fi
 done
 sleep 1
@@ -249,15 +265,15 @@ fi
 # 5. Set CPU governor to performance for consistent scheduling latency
 ts "[5/11] Setting CPU governor to performance..."
 for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-    echo performance | sudo tee "$cpu" > /dev/null 2>&1 || true
+    echo performance | try_sudo tee "$cpu" > /dev/null 2>&1 || true
 done
 ts "  CPU governor set (or unsupported on this platform)"
 
 # 6. Unload and reload ALSA loopback (fresh start)
 ts "[6/11] Resetting ALSA loopback..."
-sudo modprobe -r snd-aloop 2>/dev/null
+try_sudo modprobe -r snd-aloop 2>/dev/null
 sleep 1
-sudo modprobe snd-aloop
+try_sudo modprobe snd-aloop
 if [ $? -ne 0 ]; then
     ts "  Failed to load ALSA loopback"
     exit 1
@@ -287,7 +303,7 @@ if [ -n "$AIOC_USB" ] && [ -f "$AIOC_USB/authorized" ]; then
         echo 1 > "$AIOC_USB/authorized"
     else
         # Needs root — reuse the sudo credential already cached from modprobe above
-        sudo sh -c "echo 0 > $AIOC_USB/authorized && sleep 1 && echo 1 > $AIOC_USB/authorized"
+        try_sudo sh -c "echo 0 > $AIOC_USB/authorized && sleep 1 && echo 1 > $AIOC_USB/authorized"
     fi
     sleep 2  # Wait for USB re-enumeration
     ts "  AIOC USB reset complete"
@@ -401,7 +417,7 @@ sleep 2
 # Start gateway with elevated scheduling priority.
 # Renice the current shell (children inherit nice value), then run gateway
 # in the foreground so it keeps stdin for keyboard controls.
-sudo renice -n -10 -p $$ > /dev/null 2>&1
+try_sudo renice -n -10 -p $$ > /dev/null 2>&1
 python3 "$GATEWAY_FILE"
 
 # If gateway exits, cleanup

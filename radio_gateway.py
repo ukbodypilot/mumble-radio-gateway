@@ -159,6 +159,9 @@ class Config:
             'MUMBLE_DEBUG': False,
             'NETWORK_TIMEOUT': 10,
             'TCP_NODELAY': True,
+            'HEADLESS_MODE': False,         # No console status bar, log to file + web UI
+            'LOG_BUFFER_LINES': 2000,      # Lines kept in memory for web /logs viewer
+            'LOG_FILE_DAYS': 7,            # Days to keep rolling log files
             'VERBOSE_LOGGING': False,
             'STATUS_UPDATE_INTERVAL': 1.0,  # seconds
             'MAX_MUMBLE_BUFFER_SECONDS': 1.0,
@@ -5555,6 +5558,12 @@ class MumbleServerManager:
             f'registerName={reg_name}',
             f'bonjour=false',
             '',
+            '# Disable autoban (gateway pymumble reconnects trigger it)',
+            'autobanAttempts=0',
+            '',
+            '# Long client timeout (pymumble protocol 1.2.4 ping may not satisfy newer murmur)',
+            'timeout=300',
+            '',
             f'database={self._db_path}',
             f'logfile={self._log_path}',
             f'pidfile={self._pid_path}',
@@ -6011,6 +6020,33 @@ class WebConfigServer:
                     self.send_header('Content-Type', 'text/html; charset=utf-8')
                     self.end_headers()
                     self.wfile.write(html.encode('utf-8'))
+                elif self.path == '/logs':
+                    # Log viewer page
+                    html = parent._generate_logs_page()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    self.wfile.write(html.encode('utf-8'))
+                elif self.path.startswith('/logdata'):
+                    # Log data API — returns JSON lines after given sequence number
+                    import urllib.parse as _up
+                    qs = _up.parse_qs(_up.urlparse(self.path).query)
+                    after = int(qs.get('after', ['0'])[0])
+                    writer = parent.gateway._status_writer if parent.gateway else None
+                    lines = []
+                    last_seq = after
+                    if writer:
+                        for seq, text in writer.get_log_lines(after_seq=after, limit=500):
+                            lines.append(text)
+                            last_seq = seq
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-cache')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps({'seq': last_seq, 'lines': lines}).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
                 else:
                     # Config editor (default page)
                     html = parent._generate_html()
@@ -6160,10 +6196,23 @@ class WebConfigServer:
                                     result = {'ok': bool(ret)}
                     except Exception as e:
                         result = {'ok': False, 'error': str(e)}
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(result).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                    return
+                elif self.path == '/exit':
+                    # Graceful full shutdown (no restart)
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/json')
                     self.end_headers()
-                    self.wfile.write(json_mod.dumps(result).encode('utf-8'))
+                    self.wfile.write(b'{"ok":true}')
+                    if parent.gateway:
+                        parent.gateway.restart_requested = False
+                        parent.gateway.running = False
                     return
 
                 length = int(self.headers.get('Content-Length', 0))
@@ -6593,14 +6642,114 @@ class WebConfigServer:
   .btn-save:hover {{ background: #1a4a7a; }}
   .btn-restart {{ background: #c0392b; color: #fff; }}
   .btn-restart:hover {{ background: #e74c3c; }}
+  .btn-exit {{ background: #7d3c98; color: #fff; margin-left: auto; }}
+  .btn-exit:hover {{ background: #9b59b6; }}
 </style>
 </head><body>{body}</body></html>'''
+
+    def _generate_logs_page(self):
+        """Build the live log viewer HTML page."""
+        body = '''
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+  <h2 style="margin:0;">Gateway Logs</h2>
+  <div>
+    <a href="/" class="rb rb-sm" style="text-decoration:none;">Config</a>
+    <a href="/dashboard" class="rb rb-sm" style="text-decoration:none;">Dashboard</a>
+    <a href="/radio" class="rb rb-sm" style="text-decoration:none;">Radio</a>
+  </div>
+</div>
+<div style="margin-bottom:8px; display:flex; gap:10px; align-items:center;">
+  <label style="color:#888; font-size:0.85em;">
+    <input type="checkbox" id="auto-scroll" checked> Auto-scroll
+  </label>
+  <label style="color:#888; font-size:0.85em;">
+    Filter: <input type="text" id="log-filter" placeholder="regex..." style="background:#0d1b2a; color:#e0e0e0; border:1px solid #1b3a5c; border-radius:3px; padding:2px 6px; width:200px; font-size:0.85em;">
+  </label>
+  <button class="rb rb-sm" onclick="clearLog()">Clear</button>
+  <span id="log-status" style="color:#888; font-size:0.8em;"></span>
+</div>
+<div id="log-box" style="background:#0a0a0a; border:1px solid #1b3a5c; border-radius:4px; padding:8px; height:calc(100vh - 160px); overflow-y:auto; font-family:'Courier New',monospace; font-size:0.82em; line-height:1.5; white-space:pre-wrap; word-break:break-all; color:#c0c0c0;">
+</div>
+
+<script>
+var _seq = 0;
+var _paused = false;
+
+function clearLog() {
+  document.getElementById('log-box').innerHTML = '';
+}
+
+function escHtml(s) {
+  var d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+}
+
+function pollLogs() {
+  fetch('/logdata?after=' + _seq)
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (d.seq) _seq = d.seq;
+      if (d.lines && d.lines.length > 0) {
+        var box = document.getElementById('log-box');
+        var filter = document.getElementById('log-filter').value;
+        var re = null;
+        try { if (filter) re = new RegExp(filter, 'i'); } catch(e) {}
+        var frag = document.createDocumentFragment();
+        for (var i = 0; i < d.lines.length; i++) {
+          if (re && !re.test(d.lines[i])) continue;
+          var div = document.createElement('div');
+          div.textContent = d.lines[i];
+          // Color-code errors/warnings
+          var t = d.lines[i];
+          if (t.indexOf('error') >= 0 || t.indexOf('Error') >= 0 || t.indexOf('ERROR') >= 0)
+            div.style.color = '#e74c3c';
+          else if (t.indexOf('Warning') >= 0 || t.indexOf('warning') >= 0)
+            div.style.color = '#f39c12';
+          else if (t.indexOf('[CAT]') >= 0 || t.indexOf('CAT') >= 0)
+            div.style.color = '#3498db';
+          frag.appendChild(div);
+        }
+        box.appendChild(frag);
+        // Cap DOM nodes to prevent memory growth
+        while (box.childNodes.length > 5000) box.removeChild(box.firstChild);
+        if (document.getElementById('auto-scroll').checked) {
+          box.scrollTop = box.scrollHeight;
+        }
+      }
+      document.getElementById('log-status').textContent = d.lines ? d.lines.length + ' new' : '';
+      setTimeout(pollLogs, 1000);
+    })
+    .catch(function() {
+      document.getElementById('log-status').textContent = 'offline';
+      setTimeout(pollLogs, 3000);
+    });
+}
+
+// Load initial backlog
+fetch('/logdata?after=0')
+  .then(function(r){ return r.json(); })
+  .then(function(d) {
+    if (d.seq) _seq = d.seq;
+    if (d.lines) {
+      var box = document.getElementById('log-box');
+      for (var i = 0; i < d.lines.length; i++) {
+        var div = document.createElement('div');
+        div.textContent = d.lines[i];
+        box.appendChild(div);
+      }
+      box.scrollTop = box.scrollHeight;
+    }
+    setTimeout(pollLogs, 1000);
+  })
+  .catch(function(){ setTimeout(pollLogs, 1000); });
+</script>
+'''
+        return self._wrap_html('Gateway Logs', body)
 
     def _generate_radio_page(self):
         """Build the TH-9800 radio control HTML page."""
         body = '''
 <h1 style="font-size:1.8em">TH-9800 Radio Control</h1>
-<p><a href="/dashboard">Dashboard</a> | <a href="/">Config Editor</a></p>
+<p><a href="/dashboard">Dashboard</a> | <a href="/">Config Editor</a> | <a href="/logs">Logs</a></p>
 
 <div id="cat-offline" style="display:none; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px; margin-bottom:14px;">
   <span id="cat-offline-msg" style="color:#e74c3c; font-weight:bold;">CAT not connected</span>
@@ -7079,7 +7228,7 @@ updateRadio();
         port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
         body = '''
 <h1 style="font-size:1.8em">Radio Gateway Dashboard</h1>
-<p style="margin:0 0 14px;font-size:1.1em"><a href="/">Config Editor</a> | <a href="/radio">Radio Control</a></p>
+<p style="margin:0 0 14px;font-size:1.1em"><a href="/">Config Editor</a> | <a href="/radio">Radio Control</a> | <a href="/logs">Logs</a></p>
 
 <div id="status">Loading...</div>
 
@@ -7145,6 +7294,7 @@ updateRadio();
     <h3>System</h3>
     <button onclick="sendKey('@')">Send Email</button>
     <button onclick="if(confirm('Restart gateway?'))sendKey('q')" class="btn-restart">Restart</button>
+    <button onclick="if(confirm('Exit the gateway server? This will stop all services.')){fetch('/exit',{method:'POST'}).then(()=>{document.body.innerHTML='<h1 style=\"color:#e0e0e0;text-align:center;margin-top:40vh\">Gateway stopped.</h1>';});}" class="btn-exit">Exit Server</button>
   </div>
 </div>
 
@@ -7413,12 +7563,14 @@ function setVolume(v) {
 
         body = (
             '<h1>Radio Gateway Configuration</h1>'
-            '<p style="margin:0 0 10px"><a href="/dashboard">Live Dashboard</a></p>'
+            '<p style="margin:0 0 10px"><a href="/dashboard">Live Dashboard</a> | <a href="/logs">Logs</a></p>'
             '<form method="POST" action="/">'
             '<div class="buttons">'
             '<button type="submit" name="_action" value="save" class="btn-save">Save</button>'
             '<button type="submit" name="_action" value="restart" class="btn-restart"'
             ' onclick="return confirm(\'Save and restart the gateway?\')">Save &amp; Restart</button>'
+            '<button type="button" class="btn-exit"'
+            ' onclick="if(confirm(\'Exit the gateway server? This will stop all services.\')){fetch(\'/exit\',{method:\'POST\'}).then(()=>{document.body.innerHTML=\'<h1 style=color:#e0e0e0;text-align:center;margin-top:40vh>Gateway stopped.</h1>\'});}">Exit Server</button>'
             '</div>'
             + ''.join(form_parts) +
             '</form>'
@@ -7472,15 +7624,25 @@ class StatusBarWriter:
       1. Clears the current status bar line (\r + spaces + \r)
       2. Writes the log text (which scrolls the terminal up)
       3. Lets the next draw_status() tick repaint the bar below
+
+    In headless mode, the status bar is suppressed but all output is still
+    captured in the ring buffer and written to the log file.
     """
 
-    def __init__(self, original):
+    def __init__(self, original, headless=False, buffer_lines=2000, log_file=None):
         self._orig = original
         self._lock = threading.Lock()
         self._last_status = ""   # last status bar text (for redraw)
         self._bar_drawn = False  # True when status bar is on screen
         self._bar_lines = 1     # how many lines the status bar occupies
         self._at_line_start = True  # track whether next write starts a new line
+        self._headless = headless
+        # Ring buffer for web log viewer
+        import collections
+        self._log_buffer = collections.deque(maxlen=buffer_lines)
+        self._log_seq = 0  # monotonic sequence number for polling
+        # Rolling log file
+        self._log_file = log_file  # file object (set up externally)
         # Forward all attributes that print() and other code might check
         for attr in ('encoding', 'errors', 'mode', 'name', 'newlines',
                      'fileno', 'isatty', 'readable', 'seekable', 'writable'):
@@ -7490,9 +7652,35 @@ class StatusBarWriter:
                 except (AttributeError, TypeError):
                     pass
 
+    def _append_log(self, timestamped_line):
+        """Add a line to the ring buffer and log file."""
+        self._log_seq += 1
+        self._log_buffer.append((self._log_seq, timestamped_line))
+        if self._log_file:
+            try:
+                self._log_file.write(timestamped_line + '\n')
+                self._log_file.flush()
+            except Exception:
+                pass
+
+    def get_log_lines(self, after_seq=0, limit=200):
+        """Return log lines with seq > after_seq. For web polling."""
+        result = []
+        for seq, line in self._log_buffer:
+            if seq > after_seq:
+                result.append((seq, line))
+                if len(result) >= limit:
+                    break
+        return result
+
+    def get_recent_lines(self, count=200):
+        """Return the most recent N log lines."""
+        items = list(self._log_buffer)
+        return items[-count:] if len(items) > count else items
+
     def write(self, text):
         with self._lock:
-            if self._bar_drawn and text and text != '\n':
+            if not self._headless and self._bar_drawn and text and text != '\n':
                 # Clear status bar lines before printing log text
                 try:
                     import shutil as _sh
@@ -7523,16 +7711,20 @@ class StatusBarWriter:
                     if line:
                         if self._at_line_start:
                             _ts = _dt.datetime.now().strftime("%H:%M:%S")
-                            out_parts.append(f"[{_ts}] {line}")
+                            stamped = f"[{_ts}] {line}"
+                            out_parts.append(stamped)
+                            self._append_log(stamped)
                         else:
                             out_parts.append(line)
                         self._at_line_start = False
                 # If text ended with \n, next write starts a new line
                 if text.endswith('\n'):
                     self._at_line_start = True
-                self._orig.write(''.join(out_parts))
+                if not self._headless:
+                    self._orig.write(''.join(out_parts))
             else:
-                self._orig.write(text)
+                if not self._headless:
+                    self._orig.write(text)
         return len(text)
 
     def draw_status(self, status_line, line2=None, line3=None):
@@ -7540,7 +7732,11 @@ class StatusBarWriter:
 
         Supports up to 3 lines.  The cursor is left on line 1 so that
         the next draw_status or write() can overwrite cleanly.
+        In headless mode, status bar is suppressed (web dashboard shows status).
         """
+        if self._headless:
+            self._last_status = status_line
+            return
         with self._lock:
             if line3 and line2:
                 self._orig.write(f"\r{status_line}\n\r{line2}\n\r{line3}\033[2A\r")
@@ -9063,39 +9259,6 @@ class RadioGateway:
         print(f"\nConnecting to Mumble: {self.config.MUMBLE_SERVER}:{self.config.MUMBLE_PORT}...")
 
         try:
-            # Test if server is reachable first
-            import socket
-            print(f"  Testing connection to {self.config.MUMBLE_SERVER}:{self.config.MUMBLE_PORT}...")
-            test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            test_sock.settimeout(3)
-            try:
-                test_sock.connect((self.config.MUMBLE_SERVER, self.config.MUMBLE_PORT))
-                test_sock.close()
-                print(f"  ✓ Server is reachable")
-            except socket.timeout:
-                print(f"\n✗ CONNECTION FAILED: Server connection timed out")
-                print(f"  Server: {self.config.MUMBLE_SERVER}:{self.config.MUMBLE_PORT}")
-                print(f"\n  Possible causes:")
-                print(f"  • Server is not running")
-                print(f"  • Wrong IP address in gateway_config.txt")
-                print(f"  • Firewall blocking connection")
-                print(f"  • Network connectivity issue")
-                print(f"\n  Check your config:")
-                print(f"    MUMBLE_SERVER = {self.config.MUMBLE_SERVER}")
-                print(f"    MUMBLE_PORT = {self.config.MUMBLE_PORT}")
-                return False
-            except socket.error as e:
-                print(f"\n✗ CONNECTION FAILED: {e}")
-                print(f"  Server: {self.config.MUMBLE_SERVER}:{self.config.MUMBLE_PORT}")
-                print(f"\n  Possible causes:")
-                print(f"  • Wrong IP address (check MUMBLE_SERVER in config)")
-                print(f"  • Wrong port (check MUMBLE_PORT in config)")
-                print(f"  • Server not running")
-                print(f"\n  Current config:")
-                print(f"    MUMBLE_SERVER = {self.config.MUMBLE_SERVER}")
-                print(f"    MUMBLE_PORT = {self.config.MUMBLE_PORT}")
-                return False
-            
             # Create Mumble client
             print(f"  Creating Mumble client...")
             self.mumble = Mumble(
@@ -9103,7 +9266,7 @@ class RadioGateway:
                 self.config.MUMBLE_USERNAME,
                 port=self.config.MUMBLE_PORT,
                 password=self.config.MUMBLE_PASSWORD if self.config.MUMBLE_PASSWORD else '',
-                reconnect=self.config.MUMBLE_RECONNECT,
+                reconnect=False,  # pymumble reconnect causes ghost cycling on local servers
                 stereo=self.config.MUMBLE_STEREO,
                 debug=self.config.MUMBLE_DEBUG
             )
@@ -10527,12 +10690,17 @@ class RadioGateway:
     
     def keyboard_listener_loop(self):
         """Listen for keyboard input to toggle mute states"""
+        # In headless mode, all controls come from web UI — skip terminal input
+        if getattr(self.config, 'HEADLESS_MODE', False):
+            print("  Headless mode — keyboard controls disabled (use web UI)")
+            return
+
         import sys
         import tty
         import termios
-        
+
         # Note: Priority scheduling removed - system manages all threads
-        
+
         # Save terminal settings
         try:
             old_settings = termios.tcgetattr(sys.stdin)
@@ -11283,6 +11451,34 @@ class RadioGateway:
                 if self.mumble_server_2:
                     self.mumble_server_2.check_health()
 
+            # Mumble client connection state change detection (debounced)
+            mumble_alive = bool(self.mumble and self.mumble.is_alive()) if self.mumble else False
+            if not hasattr(self, '_mumble_client_was_connected'):
+                self._mumble_client_was_connected = mumble_alive
+                self._mumble_state_since = time.monotonic()
+            now_mono = time.monotonic()
+            if mumble_alive != self._mumble_client_was_connected:
+                # State changed — wait 3s before confirming (avoids flicker)
+                if not hasattr(self, '_mumble_pending_state'):
+                    self._mumble_pending_state = mumble_alive
+                    self._mumble_state_since = now_mono
+                elif self._mumble_pending_state != mumble_alive:
+                    # Flickered back — cancel pending change
+                    del self._mumble_pending_state
+                elif now_mono - self._mumble_state_since >= 3.0:
+                    # Stable for 3s — confirm the change
+                    self._mumble_client_was_connected = mumble_alive
+                    del self._mumble_pending_state
+                    srv = getattr(self.config, 'MUMBLE_SERVER', '?')
+                    port = getattr(self.config, 'MUMBLE_PORT', 64738)
+                    if mumble_alive:
+                        print(f"\n[Mumble] Connected to {srv}:{port}")
+                    else:
+                        print(f"\n[Mumble] Disconnected from {srv}:{port}")
+            elif hasattr(self, '_mumble_pending_state'):
+                # State went back to previous — cancel pending
+                del self._mumble_pending_state
+
             time.sleep(0.1)
           except BaseException as _status_err:
             # Log crash so it's visible in the trace, then keep running.
@@ -11403,11 +11599,63 @@ class RadioGateway:
 
     def run(self):
         """Main application"""
+        # Set up rolling log file (daily rotation, keeps LOG_FILE_DAYS days)
+        log_file = None
+        try:
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            # Open today's log file (append mode)
+            import datetime as _dt
+            today = _dt.date.today().strftime('%Y-%m-%d')
+            log_path = os.path.join(log_dir, f'gateway-{today}.log')
+            log_file = open(log_path, 'a', encoding='utf-8')
+            # Clean up old log files beyond retention
+            keep_days = int(getattr(self.config, 'LOG_FILE_DAYS', 7))
+            import glob
+            for old_log in sorted(glob.glob(os.path.join(log_dir, 'gateway-*.log'))):
+                try:
+                    fname = os.path.basename(old_log)
+                    date_str = fname.replace('gateway-', '').replace('.log', '')
+                    log_date = _dt.datetime.strptime(date_str, '%Y-%m-%d').date()
+                    if (_dt.date.today() - log_date).days > keep_days:
+                        os.remove(old_log)
+                except (ValueError, OSError):
+                    pass
+            self._log_dir = log_dir
+        except Exception as e:
+            print(f"  [Warning] Could not set up log file: {e}", file=sys.stderr)
+
+        # Clean up stale /tmp log files from previous runs
+        for tmp_log in ['/tmp/th9800_cat.log', '/tmp/darkice.log', '/tmp/ffmpeg.log']:
+            try:
+                if os.path.exists(tmp_log):
+                    sz = os.path.getsize(tmp_log)
+                    if sz > 10 * 1024 * 1024:  # >10MB, truncate
+                        open(tmp_log, 'w').close()
+            except Exception:
+                pass
+
         # Install stdout/stderr wrapper early so ALL messages get timestamps
-        self._status_writer = StatusBarWriter(sys.stdout)
+        headless = getattr(self.config, 'HEADLESS_MODE', False)
+        buf_lines = int(getattr(self.config, 'LOG_BUFFER_LINES', 2000))
+        self._status_writer = StatusBarWriter(
+            sys.stdout, headless=headless, buffer_lines=buf_lines, log_file=log_file
+        )
         sys.stdout = self._status_writer
         self._orig_stderr = sys.stderr
         sys.stderr = self._status_writer
+
+        # Pre-populate log buffer with start.sh output so web /logs shows full boot sequence
+        try:
+            startup_log = '/tmp/gateway_startup.log'
+            if os.path.exists(startup_log):
+                with open(startup_log, 'r') as f:
+                    for line in f:
+                        line = line.rstrip('\n')
+                        if line:
+                            self._status_writer._append_log(line)
+        except Exception:
+            pass
 
         print("=" * 60)
         print("Radio Gateway")
@@ -12293,9 +12541,21 @@ class RadioGateway:
             except Exception:
                 pass
 
-        # Stop local Mumble Server instances (leave them running — they are services)
-        # We don't stop them on gateway exit so users stay connected between restarts.
-        # The services are managed by systemd independently.
+        # Stop local Mumble Server instances on gateway exit
+        if self.mumble_server_1:
+            try:
+                self.mumble_server_1.stop()
+                if self.config.VERBOSE_LOGGING:
+                    print("  Mumble Server 1 stopped")
+            except Exception:
+                pass
+        if self.mumble_server_2:
+            try:
+                self.mumble_server_2.stop()
+                if self.config.VERBOSE_LOGGING:
+                    print("  Mumble Server 2 stopped")
+            except Exception:
+                pass
 
         if self.input_stream:
             try:

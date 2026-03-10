@@ -591,6 +591,17 @@ VERBOSE_LOGGING = false
 # Status bar refresh rate (seconds; lower=smoother, higher CPU)
 STATUS_UPDATE_INTERVAL = 1
 
+# Headless mode: no console status bar or keyboard controls
+# All output goes to web /logs viewer and logs/gateway.log file
+# Set to true when running as a background service (systemd, etc.)
+HEADLESS_MODE = false
+
+# Number of log lines kept in memory for web /logs viewer
+LOG_BUFFER_LINES = 2000
+
+# Days to keep rolling log files (logs/gateway.log, rotates at midnight)
+LOG_FILE_DAYS = 7
+
 
 # ============================================================================
 # TROUBLESHOOTING
