@@ -1,5 +1,21 @@
 # Bug History — Radio Gateway
 
+## SDR Control Page — Multiple Init Bugs (2026-03-10)
+**Symptom:** Web UI crashed entirely (no pages served), SDR commands returned NameError, settings lost on restart, sample rate dropdown showed blank.
+
+**Root causes & fixes:**
+1. **`shutil` not imported at module level** — `shutil.which('rtl_airband')` in `WebConfigServer.start()` crashed the entire web server. Fix: added `import shutil` to top-level imports.
+2. **`subprocess` not imported at module level** — all `RTLAirbandManager` operations failed with NameError. Fix: added `import subprocess` to top-level imports.
+3. **`json` not imported at module level** — `_save_channels()` silently wrote empty file (0 bytes). Fix: added `import json as json_mod` to top-level imports.
+4. **rtl_airband daemonizes** — `Popen.poll()` always showed exited (parent forks and exits). Fix: always use `pgrep` for status, use `subprocess.run()` instead of `Popen` to start.
+5. **sdrplay_apiService ignores SIGTERM** — `systemctl restart sdrplay.service` hung for 30s+. Fix: `killall -9 sdrplay_apiService` then `systemctl start`.
+6. **rtl_airband ignores SIGTERM** — `killall rtl_airband` didn't kill old instances. Fix: `killall -9`.
+7. **Audio level bar scaling wrong** — divided by 327.68 (raw PCM), but `audio_level` is already 0-100%. Fix: use value directly.
+8. **`squelch_threshold` wrong type** — wrote positive integers, rtl_airband v5 requires negative dBFS. Fix: slider range -60 to 0, 0 = auto.
+9. **Sample rate dropdown blank** — JS `select.value = 2.0` becomes `"2"`, doesn't match option `"2.0"`. Fix: `setSelectByValue()` matches by closest numeric value.
+10. **Settings lost on restart** — no persistence. Fix: save `current` dict alongside channels in `sdr_channels.json`.
+11. **Misleading Bandwidth dropdown** — rtl_airband `sample_rate` IS the bandwidth. Removed separate bandwidth dropdown, expanded sample rate options to all RSPduo-supported values.
+
 ## TH9800 CAT CHANNEL_TEXT VFO Mapping (2026-03-09) — MAJOR
 **Symptom:** `set_channel()` set channels on the wrong VFO, detected wrong mode, or failed entirely.
 
