@@ -3904,13 +3904,32 @@ class RadioCATClient:
             return False
 
     def close(self):
-        """Close TCP connection."""
+        """Gracefully close TCP connection to CAT server."""
+        # Stop drain thread first so it doesn't race with socket close
+        self._stop = True
+
         if self._sock:
+            # Send !exit so the server closes its end cleanly
+            try:
+                self._sock.sendall(b'!exit\n')
+            except Exception:
+                pass
+            # Brief pause to let the server process the exit command
+            time.sleep(0.1)
+            # Shut down socket (signals EOF to server even if !exit was lost)
+            try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
             try:
                 self._sock.close()
             except Exception:
                 pass
             self._sock = None
+
+        # Give drain thread time to notice _stop and exit
+        time.sleep(0.15)
+
         if self._log:
             try:
                 self._log.close()
@@ -6908,9 +6927,11 @@ class WebConfigServer:
                                     resp = cat._recv_line(timeout=10.0)
                             finally:
                                 cat._drain_paused = False
-                            ok = resp and 'connected' in resp and 'already' not in resp
+                            ok = resp and 'connected' in resp
+                            already = ok and 'already' in resp
                             if ok:
                                 cat._serial_connected = True
+                            if ok and not already:
                                 # Display refresh: press+release each VFO dial
                                 time.sleep(0.3)
                                 cat._pause_drain()
@@ -11095,6 +11116,49 @@ class RadioGateway:
                     self.cat_client = RadioCATClient(host, port, password, verbose=verbose)
                     if self.cat_client.connect():
                         print("  Connected to CAT server")
+                        # Check if serial is already connected, or auto-connect if not
+                        try:
+                            serial_resp = self.cat_client._send_cmd("!serial status")
+                            if serial_resp and 'connected' in serial_resp and 'disconnected' not in serial_resp:
+                                self.cat_client._serial_connected = True
+                                print("  Serial already connected")
+                            else:
+                                # Serial not connected — send connect command
+                                print("  Connecting serial...")
+                                with self.cat_client._sock_lock:
+                                    self.cat_client._sock.sendall(b"!serial connect\n")
+                                    self.cat_client._last_activity = time.monotonic()
+                                    connect_resp = self.cat_client._recv_line(timeout=10.0)
+                                if connect_resp and 'connected' in connect_resp:
+                                    self.cat_client._serial_connected = True
+                                    print(f"  Serial connected: {connect_resp}")
+                                else:
+                                    print(f"  Serial connect failed: {connect_resp}")
+                        except Exception as e:
+                            print(f"  Serial status/connect error: {e}")
+                        # If serial is connected, refresh display and read RTS state
+                        if self.cat_client._serial_connected:
+                            try:
+                                with open('/tmp/th9800_rts_state', 'r') as f:
+                                    self.cat_client._rts_usb = f.read().strip() == '1'
+                            except Exception:
+                                pass
+                            # Display refresh: press+release each VFO dial to populate freq/channel
+                            try:
+                                cat = self.cat_client
+                                cat._send_button([0x00, 0x25], 3, 5)  # L_DIAL_PRESS
+                                time.sleep(0.15)
+                                cat._send_button_release()
+                                time.sleep(0.3)
+                                cat._drain(0.5)
+                                cat._send_button([0x00, 0xA5], 3, 5)  # R_DIAL_PRESS
+                                time.sleep(0.15)
+                                cat._send_button_release()
+                                time.sleep(0.3)
+                                cat._drain(0.5)
+                                print("  Display refreshed")
+                            except Exception as e:
+                                print(f"  Display refresh failed: {e}")
                         # Pre-set volume from config so dashboard sliders show
                         # correct values even if setup_radio is disabled or fails
                         left_vol = getattr(self.config, 'CAT_LEFT_VOLUME', -1)
