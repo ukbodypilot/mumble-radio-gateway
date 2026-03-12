@@ -4872,10 +4872,10 @@ class EmailNotifier:
         msg.attach(MIMEText(body, 'plain'))
 
         # HTML version (makes URLs clickable)
-        html_body = body.replace('\n', '<br>\n')
-        # Make URLs clickable
+        # Linkify URLs BEFORE inserting <br> tags, otherwise <br> gets captured in the URL
         import re
-        html_body = re.sub(r'(https?://\S+)', r'<a href="\1">\1</a>', html_body)
+        html_body = re.sub(r'(https?://\S+)', r'<a href="\1">\1</a>', body)
+        html_body = html_body.replace('\n', '<br>\n')
         msg.attach(MIMEText(f'<html><body style="font-family:monospace;font-size:14px">{html_body}</body></html>', 'html'))
 
         try:
@@ -4903,8 +4903,17 @@ class EmailNotifier:
                 lines.append(f"Config:    {url}")
                 lines.append("")
 
-        # Web config local
+        # LAN link
         port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('8.8.8.8', 80))
+            lan_ip = s.getsockname()[0]
+            s.close()
+            lines.append(f"LAN:       http://{lan_ip}:{port}/dashboard")
+        except Exception:
+            pass
         lines.append(f"Local:     http://localhost:{port}/dashboard")
         lines.append("")
 
@@ -4952,17 +4961,48 @@ class CloudflareTunnel:
 
     Launches `cloudflared tunnel --url http://localhost:PORT` as a subprocess.
     Parses the assigned *.trycloudflare.com URL from stderr.
+
+    The tunnel process is kept alive across gateway restarts so the URL stays
+    stable. On start(), if an existing cloudflared is already running for the
+    same port, we adopt it and read the cached URL from /tmp/cloudflare_tunnel_url.
     """
+
+    URL_FILE = '/tmp/cloudflare_tunnel_url'
 
     def __init__(self, config):
         self.config = config
-        self._process = None
+        self._process = None  # only set if WE launched it
         self._url = None
         self._thread = None
+        self._adopted = False  # True if we reused an existing process
 
     def start(self):
         import subprocess
         port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
+
+        # Check if cloudflared is already running
+        try:
+            result = subprocess.run(
+                ['pgrep', '-x', 'cloudflared'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Existing cloudflared found — adopt it
+                self._adopted = True
+                try:
+                    with open(self.URL_FILE, 'r') as f:
+                        self._url = f.read().strip()
+                except FileNotFoundError:
+                    pass
+                if self._url:
+                    print(f"  [Tunnel] Reusing existing cloudflared (URL: {self._url})")
+                else:
+                    print(f"  [Tunnel] Reusing existing cloudflared (URL not yet cached)")
+                return
+        except Exception:
+            pass
+
+        # No existing process — launch a new one
         try:
             self._process = subprocess.Popen(
                 ['cloudflared', 'tunnel', '--url', f'http://localhost:{port}'],
@@ -4982,15 +5022,8 @@ class CloudflareTunnel:
         print(f"  [Tunnel] Starting Cloudflare tunnel for port {port}...")
 
     def stop(self):
-        if self._process:
-            try:
-                self._process.terminate()
-                self._process.wait(timeout=5)
-            except Exception:
-                try:
-                    self._process.kill()
-                except Exception:
-                    pass
+        # Don't kill cloudflared — leave it running so the URL survives gateway restarts
+        pass
 
     def get_url(self):
         return self._url
@@ -5005,6 +5038,12 @@ class CloudflareTunnel:
                 match = re.search(r'(https://[a-zA-Z0-9-]+\.trycloudflare\.com)', line)
                 if match:
                     self._url = match.group(1)
+                    # Cache URL so restarts can read it
+                    try:
+                        with open(self.URL_FILE, 'w') as f:
+                            f.write(self._url)
+                    except Exception:
+                        pass
                     print(f"  [Tunnel] Public URL: {self._url}")
                 if self._process.poll() is not None:
                     break
