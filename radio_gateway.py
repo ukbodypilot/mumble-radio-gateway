@@ -170,7 +170,7 @@ class Config:
             'SDR_PROC_NOISE_GATE_THRESHOLD': -40,
             'SDR_PROC_NOISE_GATE_ATTACK': 0.01,
             'SDR_PROC_NOISE_GATE_RELEASE': 0.1,
-            'SDR_PROC_ENABLE_HPF': False,
+            'SDR_PROC_ENABLE_HPF': True,
             'SDR_PROC_HPF_CUTOFF': 300,
             'SDR_PROC_ENABLE_LPF': False,
             'SDR_PROC_LPF_CUTOFF': 3000,
@@ -4615,37 +4615,25 @@ class RadioCATClient:
         return False
 
     def set_volume(self, vfo, target_level):
-        """Set volume on specified VFO by stepping toward target. level=0-100."""
+        """Set volume on specified VFO. level=0-100.
+        Sends a minor nudge first to wake the radio's volume control,
+        then sets the actual target value."""
         target_level = max(0, min(100, target_level))
         vfo_letter = 'LEFT' if vfo == self.LEFT else 'RIGHT'
-        # Start from radio default (25) — radio resets volume on power cycle
-        current = 25
-        step = 2
-        self._logmsg(f"  CAT: Setting {vfo} volume to {target_level}% (from {current})...")
+        self._logmsg(f"  CAT: Setting {vfo} volume to {target_level}%...")
 
-        if current == target_level:
-            self._logmsg(f"    Already at volume {target_level}")
-            return True
+        # Nudge: set volume slightly off-target to force the radio to
+        # actually process a volume change (avoids stale/assumed values)
+        nudge = target_level + 1 if target_level < 100 else target_level - 1
+        resp = self._send_cmd(f"!vol {vfo_letter} {nudge}")
+        self._logmsg(f"    Volume nudge: {nudge}", console=False)
+        time.sleep(0.1)
 
-        # Step toward target
-        iterations = 0
-        while current != target_level:
-            if self._stop:
-                self._logmsg(f"    Aborted")
-                return False
-            if current < target_level:
-                current = min(current + step, target_level)
-            else:
-                current = max(current - step, target_level)
-            resp = self._send_cmd(f"!vol {vfo_letter} {current}")
-            self._logmsg(f"    Volume step: {current}", console=False)
-            time.sleep(0.02)
-            iterations += 1
-            if iterations > 100:
-                self._logmsg(f"    Volume max iterations")
-                break
-
+        # Now set the real target
+        resp = self._send_cmd(f"!vol {vfo_letter} {target_level}")
         self._logmsg(f"    Volume set to {target_level}%")
+        time.sleep(0.05)
+
         self._volume[vfo] = target_level
         return True
 
@@ -6810,8 +6798,8 @@ class WebConfigServer:
                         print(f"[Stream] Disconnected {_client_ip} ({_kb}KB sent)")
                         parent._unsubscribe_stream(ev)
                     return
-                elif self.path == '/dashboard':
-                    # Live status dashboard
+                elif self.path == '/dashboard' or self.path == '/':
+                    # Live status dashboard (default page)
                     html = parent._generate_dashboard()
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -6844,8 +6832,8 @@ class WebConfigServer:
                         self.wfile.write(json_mod.dumps({'seq': last_seq, 'lines': lines}).encode('utf-8'))
                     except BrokenPipeError:
                         pass
-                else:
-                    # Config editor (default page)
+                elif self.path == '/config':
+                    # Config editor
                     html = parent._generate_html()
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -7595,7 +7583,7 @@ class WebConfigServer:
   <h2 style="margin:0;">Gateway Logs</h2>
   <div>
     <a href="/" class="rb rb-sm" style="text-decoration:none;">Config</a>
-    <a href="/dashboard" class="rb rb-sm" style="text-decoration:none;">Dashboard</a>
+    <a href="/" class="rb rb-sm" style="text-decoration:none;">Dashboard</a>
     <a href="/radio" class="rb rb-sm" style="text-decoration:none;">Radio</a>
     <a href="/sdr" class="rb rb-sm" style="text-decoration:none;">SDR</a>
   </div>
@@ -7691,7 +7679,7 @@ fetch('/logdata?after=0')
         """Build the TH-9800 radio control HTML page."""
         body = '''
 <h1 style="font-size:1.8em">TH-9800 Radio Control</h1>
-<p><a href="/dashboard">Dashboard</a> | <a href="/">Config Editor</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>
+<p><a href="/">Dashboard</a> | <a href="/config">Config Editor</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>
 
 <div id="cat-offline" style="display:none; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px; margin-bottom:14px;">
   <span id="cat-offline-msg" style="color:#e74c3c; font-weight:bold;">CAT not connected</span>
@@ -8178,7 +8166,7 @@ updateRadio();
         """Build the SDR control HTML page."""
         body = '''
 <h1 style="font-size:1.8em">SDR Control</h1>
-<p><a href="/dashboard">Dashboard</a> | <a href="/radio">Radio</a> | <a href="/">Config</a> | <a href="/logs">Logs</a></p>
+<p><a href="/">Dashboard</a> | <a href="/radio">Radio</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
 
 <!-- Status bar -->
 <div id="sdr-status-bar" style="display:flex; align-items:center; gap:14px; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 16px; margin-bottom:14px;">
@@ -8917,7 +8905,7 @@ pollTimer = setInterval(pollStatus, 1000);
         port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
         body = '''
 <h1 style="font-size:1.8em">Radio Gateway Dashboard</h1>
-<p style="margin:0 0 14px;font-size:1.1em"><a href="/">Config Editor</a> | <a href="/radio">Radio Control</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>
+<p style="margin:0 0 14px;font-size:1.1em"><a href="/config">Config Editor</a> | <a href="/radio">Radio Control</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>
 
 <div id="status">Loading...</div>
 
@@ -8926,70 +8914,14 @@ pollTimer = setInterval(pollStatus, 1000);
 <div class="controls">
   <div class="ctrl-group">
     <h3>Mute Controls</h3>
-    <button onclick="sendKey('t')" id="btn-t">TX Mute</button>
-    <button onclick="sendKey('r')" id="btn-r">RX Mute</button>
-    <button onclick="sendKey('m')" id="btn-m">Global Mute</button>
-    <button onclick="sendKey('s')" id="btn-s">SDR1 Mute</button>
-    <button onclick="sendKey('x')" id="btn-x">SDR2 Mute</button>
-    <button onclick="sendKey('c')" id="btn-c">Remote Mute</button>
-    <button onclick="sendKey('a')" id="btn-a">Announce Mute</button>
-    <button onclick="sendKey('o')" id="btn-o">Speaker Mute</button>
-  </div>
-  <div class="ctrl-group">
-    <h3>Audio</h3>
-    <button onclick="sendKey('v')" id="btn-v">VAD Toggle</button>
-    <button onclick="sendKey(',')">,  Vol-</button>
-    <button onclick="sendKey('.')">. Vol+</button>
-  </div>
-  <div class="ctrl-group">
-    <h3>Radio Processing</h3>
-    <button onclick="togProc('radio','gate')" id="btn-rp-gate">Gate</button>
-    <button onclick="togProc('radio','hpf')" id="btn-rp-hpf">HPF</button>
-    <button onclick="togProc('radio','lpf')" id="btn-rp-lpf">LPF</button>
-    <button onclick="togProc('radio','notch')" id="btn-rp-notch">Notch</button>
-    <button onclick="togProc('radio','deesser')" id="btn-rp-deesser">DeEss</button>
-    <button onclick="togProc('radio','spectral')" id="btn-rp-spectral">Spectral</button>
-  </div>
-  <div class="ctrl-group">
-    <h3>SDR Processing</h3>
-    <button onclick="togProc('sdr','gate')" id="btn-sp-gate">Gate</button>
-    <button onclick="togProc('sdr','hpf')" id="btn-sp-hpf">HPF</button>
-    <button onclick="togProc('sdr','lpf')" id="btn-sp-lpf">LPF</button>
-    <button onclick="togProc('sdr','notch')" id="btn-sp-notch">Notch</button>
-    <button onclick="togProc('sdr','deesser')" id="btn-sp-deesser">DeEss</button>
-    <button onclick="togProc('sdr','spectral')" id="btn-sp-spectral">Spectral</button>
-  </div>
-  <div class="ctrl-group">
-    <h3>SDR</h3>
-    <button onclick="sendKey('d')" id="btn-d">Duck Toggle</button>
-    <button onclick="sendKey('b')" id="btn-b">Rebroadcast</button>
-  </div>
-  <div class="ctrl-group">
-    <h3>PTT & Relay</h3>
-    <button onclick="sendKey('p')" id="btn-p">Manual PTT</button>
-    <button onclick="sendKey('j')" id="btn-j">Radio Power</button>
-    <button onclick="sendKey('h')" id="btn-h">Charger Toggle</button>
-  </div>
-  <div class="ctrl-group" style="display:none;">
-    <h3>Playback (moved)</h3>
-  </div>
-  <div class="ctrl-group" style="display:none;">
-    <h3>Smart Announce (moved)</h3>
-  </div>
-  <div class="ctrl-group">
-    <h3>System</h3>
-    <button onclick="sendKey('@')">Send Email</button>
-    <button onclick="if(confirm('Restart gateway?'))sendKey('q')" class="btn-restart">Restart</button>
-    <button onclick="if(confirm('Exit the gateway server? This will stop all services.')){fetch('/exit',{method:'POST'}).then(()=>{document.body.innerHTML='<h1 style=&quot;color:#e0e0e0;text-align:center;margin-top:40vh&quot;>Gateway stopped.</h1>';});}" class="btn-exit">Exit Server</button>
-  </div>
-  <div class="ctrl-group" id="broadcastify-group">
-    <h3>Broadcastify</h3>
-    <div style="margin-bottom:8px;">
-      <span id="bc-status" style="font-size:0.95em;">...</span>
-    </div>
-    <button onclick="darkiceCmd('start')" id="btn-bc-start">Start</button>
-    <button onclick="darkiceCmd('stop')" id="btn-bc-stop">Stop</button>
-    <button onclick="darkiceCmd('restart')" id="btn-bc-restart">Restart</button>
+    <button onclick="sendKey('t')" id="btn-t">TX</button>
+    <button onclick="sendKey('r')" id="btn-r">RX</button>
+    <button onclick="sendKey('m')" id="btn-m">Global</button>
+    <button onclick="sendKey('s')" id="btn-s">SDR1</button>
+    <button onclick="sendKey('x')" id="btn-x">SDR2</button>
+    <button onclick="sendKey('c')" id="btn-c">Remote</button>
+    <button onclick="sendKey('a')" id="btn-a">Announce</button>
+    <button onclick="sendKey('o')" id="btn-o">Speaker</button>
   </div>
   <div class="ctrl-group">
     <h3>Listen</h3>
@@ -9012,12 +8944,56 @@ pollTimer = setInterval(pollStatus, 1000);
       </div>
     </div>
   </div>
-</div>
+  <div class="ctrl-group">
+    <h3>Radio Processing</h3>
+    <button onclick="togProc('radio','gate')" id="btn-rp-gate">Gate</button>
+    <button onclick="togProc('radio','hpf')" id="btn-rp-hpf">HPF</button>
+    <button onclick="togProc('radio','lpf')" id="btn-rp-lpf">LPF</button>
+    <button onclick="togProc('radio','notch')" id="btn-rp-notch">Notch</button>
+    <button onclick="togProc('radio','deesser')" id="btn-rp-deesser">DeEss</button>
+    <button onclick="togProc('radio','spectral')" id="btn-rp-spectral">Spectral</button>
+  </div>
+  <div class="ctrl-group">
+    <h3>Audio</h3>
+    <button onclick="sendKey('v')" id="btn-v">VAD Toggle</button>
+    <button onclick="sendKey(',')">,  Vol-</button>
+    <button onclick="sendKey('.')">. Vol+</button>
+  </div>
+  <div class="ctrl-group" id="broadcastify-group">
+    <h3>Broadcastify</h3>
+    <div style="margin-bottom:8px;">
+      <span id="bc-status" style="font-size:0.95em;">...</span>
+    </div>
+    <button onclick="darkiceCmd('start')" id="btn-bc-start">Start</button>
+    <button onclick="darkiceCmd('stop')" id="btn-bc-stop">Stop</button>
+    <button onclick="darkiceCmd('restart')" id="btn-bc-restart">Restart</button>
+  </div>
+  <div class="ctrl-group">
+    <h3>SDR Processing</h3>
+    <button onclick="togProc('sdr','gate')" id="btn-sp-gate">Gate</button>
+    <button onclick="togProc('sdr','hpf')" id="btn-sp-hpf">HPF</button>
+    <button onclick="togProc('sdr','lpf')" id="btn-sp-lpf">LPF</button>
+    <button onclick="togProc('sdr','notch')" id="btn-sp-notch">Notch</button>
+    <button onclick="togProc('sdr','deesser')" id="btn-sp-deesser">DeEss</button>
+    <button onclick="togProc('sdr','spectral')" id="btn-sp-spectral">Spectral</button>
+  </div>
+  <div class="ctrl-group">
+    <h3>SDR</h3>
+    <button onclick="sendKey('d')" id="btn-d">Duck Toggle</button>
+    <button onclick="sendKey('b')" id="btn-b">Rebroadcast</button>
+  </div>
+  <div class="ctrl-group" style="display:none;">
+    <h3>Playback (moved)</h3>
+  </div>
+  <div class="ctrl-group" style="display:none;">
+    <h3>Smart Announce (moved)</h3>
+  </div>
+  </div>
 
-<div id="playback-section" style="margin-top:18px;">
-  <div class="ctrl-group" style="min-width:280px;">
+<div id="playback-section" style="margin-top:18px; display:flex; gap:14px; align-items:flex-start;">
+  <div class="ctrl-group" style="min-width:0; display:inline-block;">
     <h3 style="margin:0 0 10px; color:#00d4ff; font-size:1.1em;">Playback &amp; Announcements</h3>
-    <div style="display:flex; gap:18px; flex-wrap:wrap;">
+    <div style="display:flex; gap:18px; flex-wrap:nowrap;">
       <div>
         <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:3px;">
           <button onclick="sendKey('1')" id="btn-f1">1</button>
@@ -9033,17 +9009,33 @@ pollTimer = setInterval(pollStatus, 1000);
           <button onclick="sendKey('-')" style="grid-column:span 2;">Stop</button>
         </div>
       </div>
-      <div style="min-width:160px;">
+      <div style="margin-left:100px;">
         <div id="playback-status" style="font-family:monospace; font-size:0.85em;">Loading...</div>
       </div>
-      <div style="min-width:160px; margin-left:80px;">
-        <div style="display:flex; gap:3px; margin-bottom:6px; flex-wrap:wrap;">
+      <div style="margin-left:80px;">
+        <div style="display:flex; flex-direction:column; gap:3px; margin-bottom:6px;">
           <button onclick="sendKey('[')">Smart #1</button>
           <button onclick="sendKey(']')">Smart #2</button>
           <button onclick="sendKey(String.fromCharCode(92))">Smart #3</button>
         </div>
         <div id="smart-status" style="font-family:monospace; font-size:0.85em; color:#888;">Idle</div>
       </div>
+    </div>
+  </div>
+  <div class="ctrl-group" style="min-width:0;">
+    <h3>System</h3>
+    <div style="display:flex; flex-direction:column; gap:3px;">
+      <button onclick="sendKey('@')">Send Email</button>
+      <button onclick="if(confirm('Restart gateway?'))sendKey('q')" class="btn-restart">Restart</button>
+      <button onclick="if(confirm('Exit the gateway server? This will stop all services.')){fetch('/exit',{method:'POST'}).then(()=>{document.body.innerHTML='<h1 style=&quot;color:#e0e0e0;text-align:center;margin-top:40vh&quot;>Gateway stopped.</h1>';});}" class="btn-exit">Exit Server</button>
+    </div>
+  </div>
+  <div class="ctrl-group" style="min-width:0;">
+    <h3>PTT &amp; Relay</h3>
+    <div style="display:flex; flex-direction:column; gap:3px;">
+      <button onclick="sendKey('p')" id="btn-p">Manual PTT</button>
+      <button onclick="sendKey('j')" id="btn-j">Radio Power</button>
+      <button onclick="sendKey('h')" id="btn-h">Charger Toggle</button>
     </div>
   </div>
 </div>
@@ -9648,7 +9640,7 @@ updateSysInfo();
 
         body = (
             '<h1>Radio Gateway Configuration</h1>'
-            '<p style="margin:0 0 10px"><a href="/dashboard">Live Dashboard</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>'
+            '<p style="margin:0 0 10px"><a href="/">Live Dashboard</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>'
             '<form method="POST" action="/">'
             '<div class="buttons">'
             '<button type="submit" name="_action" value="save" class="btn-save">Save</button>'
@@ -11167,24 +11159,7 @@ class RadioGateway:
                             self.cat_client._volume[self.cat_client.LEFT] = int(left_vol)
                         if int(right_vol) != -1:
                             self.cat_client._volume[self.cat_client.RIGHT] = int(right_vol)
-                        if self.config.CAT_STARTUP_COMMANDS:
-                            # Install SIGINT handler to stop CAT loops
-                            _cat_ref = self.cat_client
-                            _prev_handler = signal.getsignal(signal.SIGINT)
-                            def _cat_sigint(sig, frame):
-                                _cat_ref._stop = True
-                            signal.signal(signal.SIGINT, _cat_sigint)
-                            try:
-                                self.cat_client.setup_radio(self.config)
-                            except KeyboardInterrupt:
-                                self.cat_client._stop = True
-                            finally:
-                                signal.signal(signal.SIGINT, _prev_handler)
-                            if self.cat_client._stop:
-                                print("\n  CAT setup interrupted")
-                        else:
-                            print("  CAT startup commands disabled (CAT_STARTUP_COMMANDS = false)")
-                        # Start background drain after setup (must not run during setup)
+                        # Start background drain (setup_radio runs later, near end of init)
                         self.cat_client.start_background_drain()
                     else:
                         print("  Failed to connect to CAT server")
@@ -11335,6 +11310,25 @@ class RadioGateway:
                     self._darkice_pid = pid
                     self._darkice_was_running = True
                     print(f"  DarkIce detected (PID {pid})")
+
+            # CAT startup commands — run late so everything else is settled
+            if self.cat_client and self.config.CAT_STARTUP_COMMANDS:
+                print("Sending CAT startup commands...")
+                _cat_ref = self.cat_client
+                _prev_handler = signal.getsignal(signal.SIGINT)
+                def _cat_sigint(sig, frame):
+                    _cat_ref._stop = True
+                signal.signal(signal.SIGINT, _cat_sigint)
+                try:
+                    self.cat_client.setup_radio(self.config)
+                except KeyboardInterrupt:
+                    self.cat_client._stop = True
+                finally:
+                    signal.signal(signal.SIGINT, _prev_handler)
+                if self.cat_client._stop:
+                    print("\n  CAT setup interrupted")
+            elif self.cat_client:
+                print("  CAT startup commands disabled (CAT_STARTUP_COMMANDS = false)")
 
             return True
             
