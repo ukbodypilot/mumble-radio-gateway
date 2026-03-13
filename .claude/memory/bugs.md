@@ -1,5 +1,25 @@
 # Bug History — Radio Gateway
 
+## Browser Mic PTT — No Audio Transmitted (2026-03-12)
+**Symptom:** MIC PTT button keyed radio but no audio was heard over the air. Two separate bugs.
+
+**Bug 1: ScriptProcessorNode buffer size not power of 2**
+`createScriptProcessor(2400, 1, 1)` — 2400 is invalid. ScriptProcessorNode requires power-of-2 buffer sizes (256, 512, 1024, 2048, etc.). Browser silently fails and `onaudioprocess` never fires, so no PCM data is sent over WebSocket. Debug log confirmed `push_audio` was never called.
+**Fix:** Changed to `createScriptProcessor(2048, 1, 1)` (~42ms at 48kHz).
+
+**Bug 2: Browser mic levels extremely low**
+`getUserMedia` was called with `autoGainControl:false, noiseSuppression:false`. Raw mic levels were RMS ~4-35 (out of 32767). Even with 25x volume multiplier, output was barely audible.
+**Fix:** Changed to `autoGainControl:true, noiseSuppression:true, echoCancellation:true`. Dramatically boosted input levels.
+
+**Bug 3 (earlier): AIOC GPIO PTT doesn't key radio**
+`PTT_METHOD=aioc` uses AIOC HID GPIO for PTT. But the user's radio PTT is wired through the CAT serial cable (FTDI), not the AIOC data port. `set_ptt_state(True)` wrote to AIOC GPIO which isn't connected to PTT.
+**Fix:** WebMic handler keys PTT via CAT `!ptt` command directly (same as the working regular PTT button). Added `_webmic_ptt_active` flag to prevent PTT release timer interference.
+
+**Bug 4 (earlier, reverted): `set_rts(True/False)` broke all PTT**
+First attempted fix used `cat_client.set_rts(True)` to key PTT. This put the serial RTS into "USB Controlled" mode, which interfered with the normal `!ptt` command. Both PTT buttons stopped working. Reverted to using `!ptt` toggle instead.
+
+**Lesson:** `ScriptProcessorNode` buffer size MUST be power of 2 — browsers silently fail. Browser mic `autoGainControl` should generally be enabled for web-to-radio audio. Don't use `!rts` for PTT control — it changes RTS mode and interferes with `!ptt`.
+
 ## CAT Serial Not Cleaned Up on Restart — Orphaned Processes (2026-03-12)
 **Symptom:** After each gateway restart, orphaned `start.sh`, `cloudflared`, `ffmpeg` processes accumulated. After several restarts, 13+ orphaned start.sh, 10+ cloudflared, 15+ ffmpeg lingering.
 
@@ -22,6 +42,13 @@
 1. On CAT TCP connect, gateway sends `!serial status` — if disconnected, auto-sends `!serial connect`.
 2. If serial is connected (fresh or already), refreshes display via VFO dial press+release and reads RTS state.
 3. Web UI SERIAL_CONNECT: "already connected" now treated as success (`_serial_connected = True`), but skips display refresh (already populated).
+
+## Email URL Corruption — `%3Cbr%3E` in Cloudflare Links (2026-03-12)
+**Symptom:** Cloudflare tunnel links in emails didn't work. URLs ended with `%3Cbr%3E`.
+
+**Root cause:** `body.replace('\n', '<br>\n')` ran BEFORE the URL regex `re.sub(r'(https?://\S+)', ...)`. The `<br>` was captured as part of the URL.
+
+**Fix:** Swapped order — linkify URLs first, then insert `<br>` tags.
 
 ## Audio Processing Has No Audible Effect (2026-03-11)
 **Symptom:** All audio processing buttons (HPF, LPF, notch, de-esser, spectral NS, noise gate) had zero audible effect when toggled via dashboard or keyboard, for both radio and SDR sources.
@@ -49,7 +76,7 @@
 **Root causes & fixes:**
 1. **Stuttering:** No pre-buffering + Nagle's algorithm buffering small writes. Fix: Added 50ms pre-buffer, TCP_NODELAY, per-client send queues with dedicated sender threads.
 2. **Half-speed playback:** `push_ws_audio()` called twice per audio loop iteration — once early in mixer path (line ~11849) and again at end of common path (line ~12178). Doubled the data rate. Fix: Removed duplicate push at end; keep only early pushes in mixer and direct-AIOC paths.
-3. **High latency (~2s):** Three sources: (a) PipeWire SDR source used FFmpeg which buffers heavily by default. Fix: Replaced FFmpeg with native `parec --latency-msec=20`. (b) AIOC ALSA period was 200ms (4× chunk) with 3-blob pre-buffer (600ms). Fix: Reduced to 100ms period (2×) with 2-blob pre-buffer (200ms). (c) Client-side buffer caps too high (500ms). Fix: Reduced to 150ms.
+3. **High latency (~2s):** Three sources: (a) PipeWire SDR source used FFmpeg which buffers heavily by default. Fix: Replaced FFmpeg with native `parec --latency-msec=20`. (b) AIOC ALSA period was 200ms (4x chunk) with 3-blob pre-buffer (600ms). Fix: Reduced to 100ms period (2x) with 2-blob pre-buffer (200ms). (c) Client-side buffer caps too high (500ms). Fix: Reduced to 150ms.
 
 ## /status BrokenPipeError (2026-03-11)
 **Symptom:** Stack trace logged when browser disconnected during `/status` JSON response.

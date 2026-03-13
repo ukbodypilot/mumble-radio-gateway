@@ -6,7 +6,7 @@ Update MEMORY.md and detail files at the end of every session and whenever a sig
 ## Project Overview
 Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Optional SDR input via PipeWire virtual sink or ALSA loopback. Optional Broadcastify streaming via DarkIce. Python 3, runs on Raspberry Pi, Debian amd64, and Arch Linux.
 
-**Main file:** `radio_gateway.py` (~14000+ lines)
+**Main file:** `radio_gateway.py` (~15000+ lines)
 **Installer:** `scripts/install.sh` (13 steps, targets Debian/Ubuntu/RPi/Arch Linux)
 **Config:** `gateway_config.txt` (INI format with `[section]` headers, copied from `examples/` on install)
 **Start script:** `start.sh` (11 steps: kill procs, Mumble GUI, TH-9800 CAT, Claude Code, CPU governor, loopback, AIOC USB reset, pipe, DarkIce, FFmpeg, gateway w/nice -10)
@@ -35,10 +35,21 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `ptt_control=True`, `priority=0` — mixer routes audio to radio TX and activates PTT
 - Audio-gated PTT: discards silence below `ANNOUNCE_INPUT_THRESHOLD` (-45 dBFS)
 
+## Browser Microphone PTT (2026-03-12)
+- `WebMicSource` class: receives browser mic audio via WebSocket `/ws_mic`, routes to radio TX
+- PTT keyed/unkeyed via CAT `!ptt` command on WebSocket connect/disconnect
+- **CRITICAL:** AIOC GPIO PTT (`PTT_METHOD=aioc`) does NOT key this user's radio — PTT is wired via CAT serial cable only. WebMic uses CAT `!ptt` directly.
+- `_webmic_ptt_active` flag prevents PTT release timer from interfering
+- Browser: `getUserMedia` with AGC+noise suppression enabled, `ScriptProcessorNode` (buffer=2048, must be power of 2), Float32→Int16 PCM conversion
+- Config: `ENABLE_WEB_MIC` (default True), `WEB_MIC_VOLUME` (default 25.0, raw multiplier)
+- Single client only (409 Conflict if already connected)
+- Queue: 64 slots, drop-oldest on overflow
+
 ## Key Architecture
 - `AIOCRadioSource` — reads from AIOC ALSA device (radio RX audio)
 - `SDRSource` — reads from ALSA loopback via background reader thread
 - `PipeWireSDRSource` — reads from PipeWire virtual sink monitor via `parec` subprocess
+- `WebMicSource` — receives browser mic audio via WebSocket for radio TX
 - `RemoteAudioServer` / `RemoteAudioSource` — TCP audio link
 - `AudioMixer` — mixes SDR + AIOC with duck-out logic; returns 8-tuple
 - `audio_transmit_loop()` — feeds Mumble encoder
@@ -54,6 +65,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **WebSocket PCM**: low-latency binary audio, AudioWorklet + 50ms pre-buffer, 200ms cap, TCP_NODELAY, per-client send queues
 - **Broadcastify controls**: start/stop/restart DarkIce, live stats
 - **Smart Announce status**: step-by-step progress display
+- **Responsive layouts**: all pages use `repeat(auto-fit, minmax())` grids for narrow screens
 
 ## TH-9800 CAT Control
 - `RadioCATClient` class: TCP client for TH9800_CAT.py server
@@ -85,6 +97,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ## PTT Methods
 - `PTT_METHOD`: `aioc` (default), `relay`, or `software`
 - AIOC: HID GPIO, Relay: CH340 USB relay, Software: CAT TCP `!rts`
+- **Note:** On this machine, AIOC GPIO PTT doesn't key the radio; CAT serial RTS does
 
 ## Smart Announcements (Modular AI Backend)
 - `SmartAnnouncementManager`: scheduled AI-powered spoken announcements
@@ -92,16 +105,18 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Keyboard: `[`=Smart#1, `]`=Smart#2, `\`=Smart#3; Mumble: `!smart`/`!smart N`
 
 ## Other Features
-- **Cloudflare Tunnel**: free `*.trycloudflare.com` URL, no port forwarding needed
-- **Email**: Gmail SMTP on startup/demand (`@` key), includes tunnel URL
+- **Cloudflare Tunnel**: persists across gateway restarts (adopted if already running), `*.trycloudflare.com` URL cached in `/tmp/cloudflare_tunnel_url`
+- **Email**: Gmail SMTP on startup/demand (`@` key), includes tunnel URL + LAN link; URLs linkified before `<br>` insertion to avoid corruption
 - **Relay Control**: `RelayController` class, radio power (`j`), charger (auto), PTT relay
 - **SDR Rebroadcast**: `b` key, routes SDR audio to radio TX
 - **Status Bar**: 3-line display, `[HH:MM:SS]` timestamps, `StatusBarWriter` wraps stdout/stderr
+- **Config page**: unsaved changes warning via `beforeunload` event
 
 ## Known Bugs Fixed (details in bugs.md)
 See bugs.md for full history. Key recent: audio processing silent (scipy missing + PipeWire path missing call),
 WebSocket PCM double-push/latency, pymumble ghost reconnect, SDR control page init bugs,
-CAT serial orphans + no auto-connect on startup (2026-03-12).
+CAT serial orphans + no auto-connect on startup (2026-03-12),
+email URL corruption (2026-03-12), ScriptProcessor non-power-of-2 buffer (2026-03-12).
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis
