@@ -297,6 +297,9 @@ class Config:
             'ANNOUNCE_INPUT_HOST': '',
             'ANNOUNCE_INPUT_THRESHOLD': -45.0,  # dBFS — below this is treated as silence
             'ANNOUNCE_INPUT_VOLUME': 4.0,       # volume multiplier for announcement audio
+            # Web Microphone PTT (browser mic → radio TX via WebSocket)
+            'ENABLE_WEB_MIC': True,
+            'WEB_MIC_VOLUME': 4.0,              # volume multiplier for browser mic audio
             # Relay Control — Radio Power
             'ENABLE_RELAY_RADIO': False,
             'RELAY_RADIO_DEVICE': '/dev/relay_radio',
@@ -3020,6 +3023,90 @@ class NetworkAnnouncementSource(AudioSource):
             self._reader_thread.join(timeout=2.0)
             if self._reader_thread.is_alive():
                 print(f"[ANNIN] Warning: reader thread did not stop within 2s")
+        self._sub_buffer = b''
+
+
+class WebMicSource(AudioSource):
+    """Receives browser microphone audio via WebSocket and routes to radio TX.
+
+    PTT is explicitly controlled by the user's button toggle — active for the
+    entire duration of the WebSocket connection, not gated by audio level.
+    """
+    def __init__(self, config, gateway):
+        super().__init__("WEBMIC", config)
+        self.gateway = gateway
+        self.priority = 0
+        self.ptt_control = True
+        self.volume = float(getattr(config, 'WEB_MIC_VOLUME', 25.0))
+        self.enabled = True
+        self.muted = False
+
+        self.audio_level = 0
+        self.client_connected = False
+
+        self._chunk_queue = _queue_mod.Queue(maxsize=64)
+        self._sub_buffer = b''
+        self._chunk_bytes = config.AUDIO_CHUNK_SIZE * 2  # 16-bit mono
+
+    def setup_audio(self):
+        return True  # WebSocket handler manages connections
+
+    def push_audio(self, pcm_bytes):
+        """Called by WebSocket handler to push raw PCM into the queue."""
+        try:
+            self._chunk_queue.put_nowait(pcm_bytes)
+        except _queue_mod.Full:
+            try:
+                self._chunk_queue.get_nowait()
+            except _queue_mod.Empty:
+                pass
+            try:
+                self._chunk_queue.put_nowait(pcm_bytes)
+            except _queue_mod.Full:
+                pass
+
+    def get_audio(self, chunk_size):
+        if not self.enabled or self.muted or not self.client_connected:
+            return None, False
+
+        cb = self._chunk_bytes
+
+        while len(self._sub_buffer) < cb:
+            try:
+                blob = self._chunk_queue.get_nowait()
+                self._sub_buffer += blob
+            except _queue_mod.Empty:
+                # No audio in queue but client is connected — send silence, keep PTT keyed
+                return b'\x00' * cb, True
+
+        raw = self._sub_buffer[:cb]
+        self._sub_buffer = self._sub_buffer[cb:]
+
+        # Level metering (for UI display only)
+        arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
+        raw_level = max(0, min(100, (20 * _math_mod.log10(rms / 32767.0) + 60) * (100 / 60))) if rms > 0 else 0
+        self.audio_level = raw_level if raw_level > self.audio_level else int(self.audio_level * 0.7 + raw_level * 0.3)
+
+        # Apply volume multiplier
+        if self.volume != 1.0:
+            arr = arr * self.volume
+            raw = np.clip(arr, -32768, 32767).astype(np.int16).tobytes()
+
+        return raw, True
+
+    def is_active(self):
+        return self.enabled and not self.muted and self.client_connected
+
+    def get_status(self):
+        if not self.enabled:
+            return "WEBMIC: Disabled"
+        elif self.client_connected:
+            return f"WEBMIC: TX ({self.audio_level}%)"
+        else:
+            return "WEBMIC: Idle"
+
+    def cleanup(self):
         self._sub_buffer = b''
 
 
@@ -6778,6 +6865,117 @@ class WebConfigServer:
                                 pass
                         print(f"[WS-Audio] Disconnected {_client_ip}")
                     return
+                elif self.path == '/ws_mic':
+                    # WebSocket endpoint for browser microphone → radio TX
+                    self._upgrading_ws = True
+                    import hashlib, base64
+                    ws_key = self.headers.get('Sec-WebSocket-Key', '')
+                    if not ws_key or self.headers.get('Upgrade', '').lower() != 'websocket':
+                        self._upgrading_ws = False
+                        self.send_response(400)
+                        self.end_headers()
+                        return
+                    # Check if web mic source is available
+                    _mic_src = parent.gateway.web_mic_source if parent.gateway else None
+                    if not _mic_src:
+                        self._upgrading_ws = False
+                        self.send_response(503)
+                        self.end_headers()
+                        return
+                    # Reject if another mic client is already connected
+                    if _mic_src.client_connected:
+                        self._upgrading_ws = False
+                        self.send_response(409)  # Conflict
+                        self.end_headers()
+                        return
+                    # WebSocket handshake
+                    _WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+                    accept = base64.b64encode(
+                        hashlib.sha1((ws_key + _WS_MAGIC).encode()).digest()
+                    ).decode()
+                    self.wfile.flush()
+                    handshake = (
+                        'HTTP/1.1 101 Switching Protocols\r\n'
+                        'Upgrade: websocket\r\n'
+                        'Connection: Upgrade\r\n'
+                        f'Sec-WebSocket-Accept: {accept}\r\n'
+                        '\r\n'
+                    )
+                    self.request.sendall(handshake.encode('ascii'))
+                    self.close_connection = True
+                    _sock = self.request
+                    _client_ip = self.client_address[0]
+                    _sock.settimeout(30)
+                    _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    _mic_src.client_connected = True
+                    print(f"\n[WS-Mic] Browser mic connected from {_client_ip}")
+                    # Key PTT via CAT !ptt command (same as regular PTT button)
+                    _gw = parent.gateway
+                    _cat_ptt_keyed = False
+                    if _gw and _gw.cat_client:
+                        try:
+                            _gw.cat_client._send_cmd("!ptt")
+                            _cat_ptt_keyed = True
+                            _gw.ptt_active = True
+                            _gw._webmic_ptt_active = True
+                            _gw.last_sound_time = time.time()
+                            print(f"[WS-Mic] PTT keyed via CAT !ptt")
+                        except Exception as _ce:
+                            print(f"[WS-Mic] CAT PTT key failed: {_ce}")
+                    try:
+                        while True:
+                            try:
+                                hdr = _sock.recv(2)
+                                if not hdr or len(hdr) < 2:
+                                    break
+                                opcode = hdr[0] & 0x0F
+                                masked = (hdr[1] & 0x80) != 0
+                                payload_len = hdr[1] & 0x7F
+                                if payload_len == 126:
+                                    ext = _sock.recv(2)
+                                    payload_len = int.from_bytes(ext, 'big')
+                                elif payload_len == 127:
+                                    ext = _sock.recv(8)
+                                    payload_len = int.from_bytes(ext, 'big')
+                                mask_key = _sock.recv(4) if masked else b''
+                                payload = b''
+                                while len(payload) < payload_len:
+                                    chunk = _sock.recv(payload_len - len(payload))
+                                    if not chunk:
+                                        break
+                                    payload += chunk
+                                if masked and mask_key:
+                                    payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+                                if opcode == 0x8:  # Close
+                                    _sock.sendall(b'\x88\x00')
+                                    break
+                                elif opcode == 0x9:  # Ping → Pong
+                                    pong = bytearray([0x8A, len(payload) if len(payload) < 126 else 0])
+                                    if len(payload) < 126:
+                                        pong[1] = len(payload)
+                                    pong.extend(payload)
+                                    _sock.sendall(bytes(pong))
+                                elif opcode == 0x2:  # Binary — PCM audio data
+                                    _mic_src.push_audio(payload)
+                            except socket.timeout:
+                                continue
+                            except (ConnectionResetError, BrokenPipeError, OSError):
+                                break
+                    finally:
+                        _mic_src.client_connected = False
+                        _mic_src._sub_buffer = b''
+                        # Unkey PTT via CAT !ptt toggle
+                        if _gw:
+                            _gw._webmic_ptt_active = False
+                        if _gw and _gw.cat_client and _cat_ptt_keyed:
+                            try:
+                                _gw.cat_client._send_cmd("!ptt")
+                                _gw.ptt_active = False
+                                print(f"[WS-Mic] PTT unkeyed via CAT !ptt")
+                            except Exception:
+                                pass
+                        print(f"[WS-Mic] Disconnected {_client_ip}")
+                    return
                 elif self.path == '/stream':
                     # MP3 audio stream from shared encoder
                     _client_ip = self.client_address[0]
@@ -7930,10 +8128,21 @@ fetch('/logdata?after=0')
   <!-- PTT -->
   <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
     <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">PTT</div>
-    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
-      <button id="ptt-btn" class="rb" style="width:80px; height:80px; font-size:1.4em; font-weight:bold; border-radius:50%;"
-        onclick="togglePTT()">PTT</button>
-      <span style="color:#888; font-size:0.8em; margin-top:6px;">Click to toggle TX</span>
+    <div style="display:flex; gap:18px; align-items:flex-start; justify-content:center;">
+      <div style="display:flex; flex-direction:column; align-items:center;">
+        <div style="height:10px;"></div>
+        <button id="ptt-btn" class="rb" style="width:80px; height:80px; font-size:1.4em; font-weight:bold; border-radius:50%;"
+          onclick="togglePTT()">PTT</button>
+        <span style="color:#888; font-size:0.75em; margin-top:6px;">Toggle TX</span>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center;">
+        <div id="mic-level" style="width:80px; height:6px; background:#0d1b2a; border-radius:3px; margin-bottom:4px; overflow:hidden;">
+          <div id="mic-level-bar" style="height:100%; width:0%; background:#2ecc71; transition:width 0.1s;"></div>
+        </div>
+        <button id="mic-ptt-btn" class="rb" style="width:80px; height:80px; font-size:1.4em; font-weight:bold; border-radius:50%; background:#1a3a1a; border-color:#2ecc71;"
+          onclick="micPTTToggle()">MIC<br>PTT</button>
+        <span id="mic-status" style="color:#888; font-size:0.75em; margin-top:6px;">Ready</span>
+      </div>
     </div>
   </div>
 </div>
@@ -8045,6 +8254,96 @@ function togglePTT() {
     btn.style.borderColor = '#1b3a5c';
     btn.style.color = '#e0e0e0';
   }
+}
+
+// --- Browser Mic PTT ---
+var _micWs = null;
+var _micStream = null;
+var _micCtx = null;
+var _micWorklet = null;
+var _micActive = false;
+
+function micPTTToggle() {
+  if (_micActive) {
+    micPTTCleanup();
+    return;
+  }
+  _micActive = true;
+  var btn = document.getElementById('mic-ptt-btn');
+  var st = document.getElementById('mic-status');
+  btn.style.background = '#c0392b';
+  btn.style.borderColor = '#e74c3c';
+  btn.style.color = '#fff';
+  st.textContent = 'Connecting...';
+  st.style.color = '#f39c12';
+
+  navigator.mediaDevices.getUserMedia({
+    audio: {sampleRate:48000, channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true}
+  }).then(function(stream) {
+    _micStream = stream;
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _micWs = new WebSocket(proto + '//' + location.host + '/ws_mic');
+    _micWs.binaryType = 'arraybuffer';
+    _micWs.onopen = function() {
+      st.textContent = 'TX — click to stop';
+      st.style.color = '#e74c3c';
+      _micCtx = new AudioContext({sampleRate: 48000});
+      var source = _micCtx.createMediaStreamSource(stream);
+      var proc = _micCtx.createScriptProcessor(2048, 1, 1);
+      proc.onaudioprocess = function(e) {
+        if (!_micWs || _micWs.readyState !== 1) return;
+        var f32 = e.inputBuffer.getChannelData(0);
+        var buf = new ArrayBuffer(f32.length * 2);
+        var i16 = new Int16Array(buf);
+        for (var i = 0; i < f32.length; i++) {
+          var s = Math.max(-1, Math.min(1, f32[i]));
+          i16[i] = s < 0 ? s * 32768 : s * 32767;
+        }
+        _micWs.send(buf);
+        var peak = 0;
+        for (var i = 0; i < f32.length; i++) {
+          var a = Math.abs(f32[i]);
+          if (a > peak) peak = a;
+        }
+        var pct = Math.min(100, Math.round(peak * 100));
+        document.getElementById('mic-level-bar').style.width = pct + '%';
+      };
+      source.connect(proc);
+      proc.connect(_micCtx.destination);
+      _micWorklet = proc;
+    };
+    _micWs.onerror = function() {
+      st.textContent = 'Error';
+      st.style.color = '#e74c3c';
+      micPTTCleanup();
+    };
+    _micWs.onclose = function() {
+      micPTTCleanup();
+    };
+  }).catch(function(e) {
+    st.textContent = 'Mic denied';
+    st.style.color = '#e74c3c';
+    _micActive = false;
+    btn.style.background = '#1a3a1a';
+    btn.style.borderColor = '#2ecc71';
+    btn.style.color = '#e0e0e0';
+  });
+}
+
+function micPTTCleanup() {
+  _micActive = false;
+  if (_micWorklet) { _micWorklet.disconnect(); _micWorklet = null; }
+  if (_micCtx) { _micCtx.close().catch(function(){}); _micCtx = null; }
+  if (_micStream) { _micStream.getTracks().forEach(function(t){t.stop();}); _micStream = null; }
+  if (_micWs) { try { _micWs.close(); } catch(e){} _micWs = null; }
+  var btn = document.getElementById('mic-ptt-btn');
+  btn.style.background = '#1a3a1a';
+  btn.style.borderColor = '#2ecc71';
+  btn.style.color = '#e0e0e0';
+  document.getElementById('mic-level-bar').style.width = '0%';
+  var st = document.getElementById('mic-status');
+  st.textContent = 'Ready';
+  st.style.color = '#888';
 }
 
 function catConnect() {
@@ -9994,12 +10293,14 @@ class RadioGateway:
         self.remote_audio_ducked = False  # Client: ducked state for status bar
         self.announce_input_source = None  # NetworkAnnouncementSource (port 9601)
         self.announce_input_muted = False # Announcement input: mute toggle
+        self.web_mic_source = None        # WebMicSource (browser mic → radio TX)
         self.aioc_available = False  # Track if AIOC is connected
 
         # SDR rebroadcast — route mixed SDR audio to AIOC radio TX
         self.sdr_rebroadcast = False              # Toggle state (press 'b')
         self._rebroadcast_ptt_hold_until = 0      # monotonic deadline for PTT hold
         self._rebroadcast_ptt_active = False       # whether rebroadcast currently has PTT keyed
+        self._webmic_ptt_active = False             # whether browser mic has PTT keyed via CAT
         self._rebroadcast_sending = False           # SDR audio actively being sent (for status bar)
 
         # Relay control — radio power button (momentary pulse with 'j' key)
@@ -11098,6 +11399,17 @@ class RadioGateway:
                 except Exception as e:
                     print(f"⚠ Warning: Could not initialize announcement input: {e}")
                     self.announce_input_source = None
+
+            # Initialize web microphone source (browser mic → radio TX)
+            if getattr(self.config, 'ENABLE_WEB_MIC', True):
+                try:
+                    self.web_mic_source = WebMicSource(self.config, self)
+                    if self.web_mic_source.setup_audio():
+                        self.mixer.add_source(self.web_mic_source)
+                        print("✓ Web microphone source (WEBMIC) added to mixer")
+                except Exception as e:
+                    print(f"⚠ Warning: Could not initialize web mic source: {e}")
+                    self.web_mic_source = None
 
             # Initialize relay controllers
             if getattr(self.config, 'ENABLE_RELAY_RADIO', False):
@@ -13416,7 +13728,7 @@ class RadioGateway:
             current_time = time.time()
 
             # Check PTT timeout or if TX is muted
-            if self.ptt_active and not self.manual_ptt_mode and not self._rebroadcast_ptt_active:
+            if self.ptt_active and not self.manual_ptt_mode and not self._rebroadcast_ptt_active and not self._webmic_ptt_active:
                 # Release PTT if timeout OR if TX is muted
                 # (Don't keep PTT keyed when muted!)
                 # But don't release if in manual PTT mode or rebroadcast mode
