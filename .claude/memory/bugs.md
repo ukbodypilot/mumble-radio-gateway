@@ -1,5 +1,16 @@
 # Bug History — Radio Gateway
 
+## DISPLAY_TEXT VFO Misattribution — Wrong Frequency on Wrong VFO (2026-03-13)
+**Symptom:** Left VFO web display showed the right VFO's frequency (both showed 146400 instead of left=147435, right=146400). Display corruption happened during RTS changes for playback/announcements.
+
+**Root cause:** `DISPLAY_TEXT` (pkt_type 0x01) used `self._channel_vfo` (set by the last `CHANNEL_TEXT` packet) to decide which VFO to assign the frequency text to. But `_channel_vfo` is stale — it reflects whichever CHANNEL_TEXT the drain thread last processed, not the VFO of the current DISPLAY_TEXT packet. During RTS changes, the radio sends a burst of display packets, and the drain thread processes them with the wrong VFO assignment.
+
+**Fix:** DISPLAY_TEXT now reads the VFO directly from its own `vfo_byte` (0x40/0x60=LEFT, 0xC0/0xE0=RIGHT), same mapping as DISPLAY_ICONS. Falls back to `_channel_vfo` only for unknown vfo_byte values.
+
+**Also fixed:** All `set_rts()` calls now pause the drain thread to prevent it from racing for display update packets triggered by the RTS change.
+
+**Lesson:** Never rely on stale cross-packet state (`_channel_vfo`) when the packet itself contains the VFO identifier. This was the root cause of display corruption that appeared related to RTS/serial timing but was actually a packet parsing issue.
+
 ## Browser Mic PTT — No Audio Transmitted (2026-03-12)
 **Symptom:** MIC PTT button keyed radio but no audio was heard over the air. Two separate bugs.
 
@@ -109,23 +120,7 @@ First attempted fix used `cat_client.set_rts(True)` to key PTT. This put the ser
 - Dial STEP response: `_channel_text[vfo]` correctly holds the stepped VFO's channel
 - Background drain thread races with `set_channel` reads if not paused
 
-**What didn't work:**
-- Reading press response from `_channel_text[other_vfo]` (returns other VFO's channel, not pressed)
-- Reading press response from `_channel_text[vfo]` (empty after press — only other key populated)
-- Using `_channel_vfo` (always wrong after DISPLAY_CHANGE 0x03)
-- Using `_capture_vfo` to force all packets under one key (overwrites)
-- Using `self._channel` directly (both VFOs respond; last wins)
-- Swapping CHANNEL_TEXT vfo_byte mapping (fixes press, breaks step)
-- `_drain()` loop (`while self._buf: _recv_line()`) — breaks ALL packet parsing
-
-**Fix:** Don't trust press response at all. Read current channel via step-right + step-left (net zero):
-```python
-self._drain_paused = True  # MUST pause background drain
-# 1. Press dial (activates for editing, response ignored)
-# 2. Step right, step left (net zero movement)
-# 3. Read _channel_text[vfo] from step-left response (always correct)
-# 4. Step toward target using _channel_text[vfo]
-```
+**Fix:** Don't trust press response at all. Read current channel via step-right + step-left (net zero).
 
 **Also fixed:**
 - `_pause_drain()` during entire `set_channel` (prevents background drain race)
@@ -136,7 +131,6 @@ self._drain_paused = True  # MUST pause background drain
 
 ## CAT Socket Contention — Web UI Commands Ignored (2026-03-09)
 **Symptom:** Web UI radio buttons (dial up/down) had no effect. All commands showed "no response".
-Setup commands worked, but subsequent web commands silently failed.
 **Root cause:** Background drain thread and `send_web_command` share one TCP socket.
 Setting `_drain_paused = True` is not enough — the drain thread may already be inside
 `_drain(0.5)` reading from the socket. It consumes the `!data` command response ("data sent")

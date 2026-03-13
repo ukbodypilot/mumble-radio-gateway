@@ -300,6 +300,8 @@ class Config:
             # Web Microphone PTT (browser mic → radio TX via WebSocket)
             'ENABLE_WEB_MIC': True,
             'WEB_MIC_VOLUME': 4.0,              # volume multiplier for browser mic audio
+            # Soundboard — auto-fill empty playback slots with random sound effects
+            'ENABLE_SOUNDBOARD': True,
             # Relay Control — Radio Power
             'ENABLE_RELAY_RADIO': False,
             'RELAY_RADIO_DEVICE': '/dev/relay_radio',
@@ -1088,16 +1090,159 @@ class FilePlaybackSource(AudioSource):
                 # All slots 1-9 are full
                 break
         
-        # Step 3: Update file_status with found files
+        # Step 3: Fill empty slots with random online sound effects
+        if getattr(self.config, 'ENABLE_SOUNDBOARD', True):
+            self._fill_soundboard_slots(file_map)
+
+        # Step 4: Update file_status with found files
         for key in '0123456789':
             if key in file_map:
                 filepath, filename = file_map[key]
                 self.file_status[key]['exists'] = True
                 self.file_status[key]['path'] = filepath
                 self.file_status[key]['filename'] = filename
-        
-        # Step 4: Print file mapping (will be displayed before status bar)
+
+        # Step 5: Print file mapping (will be displayed before status bar)
         self.file_mapping_display = self._generate_file_mapping_display(file_map, station_id_found)
+
+    # Curated pool of 429 free sound effects from Mixkit (royalty-free, no attribution)
+    # URL pattern: https://assets.mixkit.co/active_storage/sfx/{id}/{id}-preview.mp3
+    # Categories: animals, applause, arcade, bells, boing, buzzer, cartoon, crowd,
+    #             drums, explosion, funny, game, horns, impact, sirens, transition,
+    #             whistles, whoosh
+    SOUNDBOARD_POOL = [
+        ('animals', 1), ('animals', 6), ('animals', 7), ('animals', 13), ('animals', 17),
+        ('animals', 20), ('animals', 23), ('animals', 45), ('animals', 51), ('animals', 54),
+        ('animals', 59), ('animals', 60), ('animals', 61), ('animals', 76), ('animals', 83),
+        ('animals', 85), ('animals', 87), ('animals', 91), ('animals', 92), ('animals', 93),
+        ('animals', 96), ('animals', 105), ('animals', 108), ('animals', 309), ('animals', 1212),
+        ('animals', 1744), ('animals', 1751), ('animals', 1770), ('animals', 1775), ('animals', 1776),
+        ('animals', 1780), ('animals', 2458), ('animals', 2462), ('animals', 2466), ('animals', 2467),
+        ('animals', 2485),
+        ('applause', 103), ('applause', 362), ('applause', 439), ('applause', 442), ('applause', 475),
+        ('applause', 476), ('applause', 477), ('applause', 478), ('applause', 482), ('applause', 484),
+        ('applause', 485), ('applause', 500), ('applause', 501), ('applause', 502), ('applause', 504),
+        ('applause', 505), ('applause', 507), ('applause', 508), ('applause', 509), ('applause', 510),
+        ('applause', 512), ('applause', 513), ('applause', 515), ('applause', 516), ('applause', 517),
+        ('applause', 518), ('applause', 519), ('applause', 521), ('applause', 522), ('applause', 523),
+        ('applause', 3035), ('applause', 3036), ('applause', 3039),
+        ('arcade', 210), ('arcade', 211), ('arcade', 212), ('arcade', 213), ('arcade', 216),
+        ('arcade', 217), ('arcade', 220), ('arcade', 221), ('arcade', 223), ('arcade', 234),
+        ('arcade', 235), ('arcade', 236), ('arcade', 237), ('arcade', 240), ('arcade', 253),
+        ('arcade', 254), ('arcade', 257), ('arcade', 272), ('arcade', 277), ('arcade', 278),
+        ('arcade', 470), ('arcade', 767), ('arcade', 866), ('arcade', 1084), ('arcade', 1698),
+        ('arcade', 1699), ('arcade', 1933), ('arcade', 1953), ('arcade', 2027), ('arcade', 2803),
+        ('arcade', 2810), ('arcade', 2811), ('arcade', 2852), ('arcade', 2854), ('arcade', 2859),
+        ('arcade', 2973),
+        ('bells', 109), ('bells', 110), ('bells', 111), ('bells', 113), ('bells', 587),
+        ('bells', 591), ('bells', 592), ('bells', 595), ('bells', 600), ('bells', 601),
+        ('bells', 603), ('bells', 621), ('bells', 765), ('bells', 931), ('bells', 933),
+        ('bells', 937), ('bells', 938), ('bells', 939), ('bells', 1046), ('bells', 1569),
+        ('bells', 1743), ('bells', 1791), ('bells', 2256), ('bells', 3109),
+        ('boing', 2895),
+        ('buzzer', 31), ('buzzer', 932), ('buzzer', 941), ('buzzer', 948), ('buzzer', 950),
+        ('buzzer', 954), ('buzzer', 955), ('buzzer', 992), ('buzzer', 1647), ('buzzer', 2131),
+        ('buzzer', 2132), ('buzzer', 2133), ('buzzer', 2591), ('buzzer', 2961), ('buzzer', 2962),
+        ('buzzer', 2963), ('buzzer', 2964), ('buzzer', 2966), ('buzzer', 2967), ('buzzer', 2968),
+        ('buzzer', 2969), ('buzzer', 3090),
+        ('cartoon', 107), ('cartoon', 741), ('cartoon', 2151), ('cartoon', 2195), ('cartoon', 2257),
+        ('cartoon', 2363),
+        ('crowd', 360), ('crowd', 363), ('crowd', 368), ('crowd', 376), ('crowd', 377),
+        ('crowd', 423), ('crowd', 424), ('crowd', 429), ('crowd', 432), ('crowd', 444),
+        ('crowd', 448), ('crowd', 458), ('crowd', 459), ('crowd', 460), ('crowd', 461),
+        ('crowd', 462), ('crowd', 469), ('crowd', 520), ('crowd', 531), ('crowd', 974),
+        ('crowd', 1573), ('crowd', 1958), ('crowd', 2111), ('crowd', 3022),
+        ('drums', 487), ('drums', 488), ('drums', 492), ('drums', 546), ('drums', 558),
+        ('drums', 559), ('drums', 560), ('drums', 562), ('drums', 563), ('drums', 565),
+        ('drums', 566), ('drums', 567), ('drums', 570), ('drums', 573), ('drums', 576),
+        ('drums', 577), ('drums', 2295), ('drums', 2299), ('drums', 2300), ('drums', 2426),
+        ('drums', 2569), ('drums', 2909),
+        ('explosion', 351), ('explosion', 782), ('explosion', 1278), ('explosion', 1300),
+        ('explosion', 1338), ('explosion', 1343), ('explosion', 1562), ('explosion', 1616),
+        ('explosion', 1687), ('explosion', 1689), ('explosion', 1690), ('explosion', 1693),
+        ('explosion', 1694), ('explosion', 1696), ('explosion', 1700), ('explosion', 1702),
+        ('explosion', 1703), ('explosion', 1704), ('explosion', 1705), ('explosion', 1722),
+        ('explosion', 2599), ('explosion', 2758), ('explosion', 2759), ('explosion', 2772),
+        ('explosion', 2773), ('explosion', 2777), ('explosion', 2780), ('explosion', 2782),
+        ('explosion', 2800), ('explosion', 2801), ('explosion', 2804), ('explosion', 2806),
+        ('explosion', 2809), ('explosion', 2994),
+        ('funny', 343), ('funny', 391), ('funny', 395), ('funny', 414), ('funny', 422),
+        ('funny', 424), ('funny', 429), ('funny', 471), ('funny', 473), ('funny', 527),
+        ('funny', 528), ('funny', 578), ('funny', 579), ('funny', 616), ('funny', 715),
+        ('funny', 744), ('funny', 746), ('funny', 923), ('funny', 959), ('funny', 2194),
+        ('funny', 2209), ('funny', 2358), ('funny', 2364), ('funny', 2813), ('funny', 2873),
+        ('funny', 2880), ('funny', 2881), ('funny', 2882), ('funny', 2885), ('funny', 2886),
+        ('funny', 2889), ('funny', 2890), ('funny', 2891), ('funny', 2894), ('funny', 2955),
+        ('funny', 3050),
+        ('game', 226), ('game', 231), ('game', 265), ('game', 266), ('game', 276),
+        ('game', 689), ('game', 2042), ('game', 2043), ('game', 2045), ('game', 2047),
+        ('game', 2058), ('game', 2059), ('game', 2061), ('game', 2062), ('game', 2063),
+        ('game', 2065), ('game', 2066), ('game', 2067), ('game', 2069), ('game', 2073),
+        ('game', 2324), ('game', 2361), ('game', 2821), ('game', 2837), ('game', 3154),
+        ('horns', 529), ('horns', 530), ('horns', 713), ('horns', 714), ('horns', 716),
+        ('horns', 717), ('horns', 718), ('horns', 719), ('horns', 720), ('horns', 722),
+        ('horns', 724), ('horns', 727), ('horns', 973), ('horns', 1565), ('horns', 1632),
+        ('horns', 1654), ('horns', 2289), ('horns', 2291), ('horns', 2785), ('horns', 3111),
+        ('impact', 263), ('impact', 772), ('impact', 773), ('impact', 774), ('impact', 781),
+        ('impact', 784), ('impact', 788), ('impact', 833), ('impact', 1143), ('impact', 2150),
+        ('impact', 2152), ('impact', 2182), ('impact', 2198), ('impact', 2199), ('impact', 2589),
+        ('impact', 2600), ('impact', 2655), ('impact', 2778), ('impact', 2779), ('impact', 2784),
+        ('impact', 2900), ('impact', 2901), ('impact', 2902), ('impact', 2905), ('impact', 2937),
+        ('impact', 3046),
+        ('sirens', 445), ('sirens', 1008), ('sirens', 1640), ('sirens', 1641), ('sirens', 1642),
+        ('sirens', 1643), ('sirens', 1644), ('sirens', 1645), ('sirens', 1646), ('sirens', 1649),
+        ('sirens', 1650), ('sirens', 1651), ('sirens', 1652), ('sirens', 1653), ('sirens', 1655),
+        ('sirens', 1656), ('sirens', 1657), ('sirens', 1929),
+        ('transition', 166), ('transition', 175), ('transition', 1146), ('transition', 1287),
+        ('transition', 1465), ('transition', 1474), ('transition', 2282), ('transition', 2290),
+        ('transition', 2412), ('transition', 2608), ('transition', 2615), ('transition', 2630),
+        ('transition', 2638), ('transition', 2639), ('transition', 2719), ('transition', 2907),
+        ('transition', 2908), ('transition', 2919), ('transition', 3057), ('transition', 3089),
+        ('transition', 3114), ('transition', 3115), ('transition', 3120), ('transition', 3121),
+        ('transition', 3146), ('transition', 3161),
+        ('whistles', 406), ('whistles', 506), ('whistles', 605), ('whistles', 606), ('whistles', 607),
+        ('whistles', 608), ('whistles', 609), ('whistles', 610), ('whistles', 611), ('whistles', 612),
+        ('whistles', 613), ('whistles', 614), ('whistles', 615), ('whistles', 738), ('whistles', 1631),
+        ('whistles', 2049), ('whistles', 2050), ('whistles', 2587), ('whistles', 2647), ('whistles', 2657),
+        ('whistles', 3103), ('whistles', 3105),
+        ('whoosh', 787), ('whoosh', 1485), ('whoosh', 1486), ('whoosh', 1489), ('whoosh', 1490),
+        ('whoosh', 1491), ('whoosh', 1492), ('whoosh', 1493), ('whoosh', 1714), ('whoosh', 1721),
+        ('whoosh', 2350), ('whoosh', 2408), ('whoosh', 2596), ('whoosh', 2623), ('whoosh', 2650),
+        ('whoosh', 2651), ('whoosh', 2903), ('whoosh', 2918), ('whoosh', 3005), ('whoosh', 3024),
+    ]
+
+    def _fill_soundboard_slots(self, file_map):
+        """Download random sound effects from Mixkit to fill empty playback slots."""
+        import os, random, urllib.request
+
+        empty_slots = [str(k) for k in range(1, 10) if str(k) not in file_map]
+        if not empty_slots:
+            return
+
+        cache_dir = os.path.join(self.announcement_directory, '.cache')
+        os.makedirs(cache_dir, exist_ok=True)
+
+        # Pick random sounds from pool (without replacement)
+        pool = list(self.SOUNDBOARD_POOL)
+        random.shuffle(pool)
+        picks = pool[:len(empty_slots)]
+
+        for slot, (category, sfx_id) in zip(empty_slots, picks):
+            filename = f"{category}_{sfx_id}.mp3"
+            filepath = os.path.join(cache_dir, filename)
+
+            # Download if not already cached
+            if not os.path.exists(filepath):
+                url = f"https://assets.mixkit.co/active_storage/sfx/{sfx_id}/{sfx_id}-preview.mp3"
+                try:
+                    urllib.request.urlretrieve(url, filepath)
+                    print(f"  [Soundboard] Downloaded: {filename}")
+                except Exception as e:
+                    print(f"  [Soundboard] Failed to download {filename}: {e}")
+                    continue
+
+            if os.path.exists(filepath):
+                file_map[slot] = (filepath, filename)
     
     def _generate_file_mapping_display(self, file_map, station_id_found):
         """Generate the file mapping display string"""
@@ -1224,15 +1369,18 @@ class FilePlaybackSource(AudioSource):
                 if info['path'] == self.current_file:
                     self.file_status[key]['playing'] = False
                     break
-        
+
         # Clear current playback
         self.current_file = None
         self.file_data = None
         self.file_position = 0
-        
+
         # Clear queue
         self.playlist.clear()
-        
+
+        # Restore RTS state
+        self._restore_playback_rts()
+
         if self.gateway.config.VERBOSE_LOGGING:
             print("\n[Playback] ✓ Stopped playback and cleared queue")
     
@@ -1441,9 +1589,11 @@ class FilePlaybackSource(AudioSource):
             # Try to load next file
             if self.playlist:
                 if not self.load_next_file():
+                    self._restore_playback_rts()
                     return None, False
                 # Continue with the new file
             else:
+                self._restore_playback_rts()
                 return None, False
         
         # Get chunk from file
@@ -1468,6 +1618,38 @@ class FilePlaybackSource(AudioSource):
         # File playback triggers PTT - ALWAYS
         return chunk, True
     
+    def _restore_playback_rts(self):
+        """Restore RTS to saved state after playback finishes (runs in background thread)."""
+        _saved = getattr(self.gateway, '_playback_rts_saved', None)
+        if _saved is not None:
+            self.gateway._playback_rts_saved = None
+            _cat = getattr(self.gateway, 'cat_client', None)
+            if _cat and (_saved is True or _saved is None):
+                def _do_restore():
+                    try:
+                        _cat.set_rts(True if _saved else False)
+                        print(f"\n[Playback] RTS restored to {'USB' if _saved else 'Radio'} Controlled")
+                        # Refresh display after RTS change to prevent VFO display corruption
+                        time.sleep(0.3)
+                        _cat._pause_drain()
+                        try:
+                            _cat._send_button([0x00, 0x25], 3, 5)  # Left dial press
+                            time.sleep(0.15)
+                            _cat._send_button_release()
+                            time.sleep(0.3)
+                            _cat._drain(0.5)
+                            _cat._send_button([0x00, 0xA5], 3, 5)  # Right dial press
+                            time.sleep(0.15)
+                            _cat._send_button_release()
+                            time.sleep(0.3)
+                            _cat._drain(0.5)
+                        finally:
+                            _cat._drain_paused = False
+                    except Exception:
+                        pass
+                import threading
+                threading.Thread(target=_do_restore, daemon=True, name="RTS-Restore").start()
+
     def is_active(self):
         """Playback is active if file is currently playing"""
         return self.current_file is not None
@@ -4439,11 +4621,18 @@ class RadioCATClient:
             if len(data) >= 9:
                 try:
                     text = data[3:9].decode('ascii', errors='replace').strip()
-                    # Associate with the VFO from the most recent DISPLAY_CHANGE
+                    # Determine VFO from vfo_byte (same mapping as DISPLAY_ICONS)
+                    # Fall back to _channel_vfo only if vfo_byte is unknown
+                    if vfo_byte in (0x40, 0x60):
+                        dt_vfo = self.LEFT
+                    elif vfo_byte in (0xC0, 0xE0):
+                        dt_vfo = self.RIGHT
+                    else:
+                        dt_vfo = self._channel_vfo
                     # Don't overwrite with empty text (radio sends blank packets during refresh)
-                    if self._channel_vfo and text:
-                        self._vfo_text[self._channel_vfo] = text
-                    self._logmsg(f"    [pkt] DISPLAY_TEXT vfo={self._channel_vfo} text='{text}'", console=False)
+                    if dt_vfo and text:
+                        self._vfo_text[dt_vfo] = text
+                    self._logmsg(f"    [pkt] DISPLAY_TEXT vfo_byte=0x{vfo_byte:02X} vfo={dt_vfo} text='{text}'", console=False)
                 except Exception:
                     pass
 
@@ -5514,8 +5703,59 @@ class SmartAnnouncementManager:
 
             # Playback triggers AIOC PTT automatically via the audio loop
             # (set_ptt_state writes HID GPIO to key the radio).
+            # Auto-set RTS to Radio Controlled for TX, restore after.
+            _rts_saved = None
+            _cat = getattr(self.gateway, 'cat_client', None)
+            print(f"[SmartAnnounce] #{eid}: CAT client: {_cat}, RTS: {_cat.get_rts() if _cat else 'N/A'}")
+            if _cat:
+                _rts_saved = _cat.get_rts()
+                if _rts_saved is None or _rts_saved is True:
+                    try:
+                        _cat._pause_drain()
+                        try:
+                            _cat.set_rts(False)  # Radio Controlled
+                            time.sleep(0.3)
+                            _cat._drain(0.5)
+                        finally:
+                            _cat._drain_paused = False
+                        print(f"[SmartAnnounce] #{eid}: RTS changed to Radio Controlled (was {'USB' if _rts_saved else 'unknown'})")
+                    except Exception as _re:
+                        print(f"[SmartAnnounce] #{eid}: RTS set failed: {_re}")
+                else:
+                    print(f"[SmartAnnounce] #{eid}: RTS already Radio Controlled, no change needed")
+
             self._set_activity(eid, f'Speaking ({len(text.split())}w)')
             self.gateway.speak_text(text, voice=entry['voice'])
+
+            # Wait for playback to finish before restoring RTS
+            for _w in range(600):
+                if not (self.gateway.playback_source and self.gateway.playback_source.current_file):
+                    break
+                time.sleep(0.1)
+
+            if _cat and _rts_saved is not None and _rts_saved is not False:
+                try:
+                    _cat.set_rts(_rts_saved)
+                    print(f"[SmartAnnounce] #{eid}: RTS restored to {'USB' if _rts_saved else 'Radio'} Controlled")
+                    # Refresh display after RTS change to prevent VFO display corruption
+                    time.sleep(0.3)
+                    _cat._pause_drain()
+                    try:
+                        _cat._send_button([0x00, 0x25], 3, 5)
+                        time.sleep(0.15)
+                        _cat._send_button_release()
+                        time.sleep(0.3)
+                        _cat._drain(0.5)
+                        _cat._send_button([0x00, 0xA5], 3, 5)
+                        time.sleep(0.15)
+                        _cat._send_button_release()
+                        time.sleep(0.3)
+                        _cat._drain(0.5)
+                    finally:
+                        _cat._drain_paused = False
+                except Exception as _re:
+                    print(f"[SmartAnnounce] #{eid}: RTS restore failed: {_re}")
+
             self._set_activity(eid, 'Done')
 
         except Exception as e:
@@ -7049,6 +7289,19 @@ class WebConfigServer:
                     self.send_header('Content-Type', 'text/html; charset=utf-8')
                     self.end_headers()
                     self.wfile.write(html.encode('utf-8'))
+                elif self.path == '/tracestatus':
+                    _gw = parent.gateway
+                    _ts = {'audio_trace': False, 'watchdog_trace': False}
+                    if _gw:
+                        _ts['audio_trace'] = getattr(_gw, '_trace_recording', False)
+                        _ts['watchdog_trace'] = getattr(_gw, '_watchdog_active', False)
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(_ts).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
                 elif self.path.startswith('/logdata'):
                     # Log data API — returns JSON lines after given sequence number
                     import urllib.parse as _up
@@ -7281,6 +7534,72 @@ class WebConfigServer:
                         self.send_header('Content-Type', 'application/json')
                         self.end_headers()
                         self.wfile.write(json_mod.dumps(result).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                    return
+                elif self.path == '/tracecmd':
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    post_data = self.rfile.read(content_length).decode('utf-8')
+                    import urllib.parse as _up
+                    params = _up.parse_qs(post_data)
+                    trace_type = params.get('type', [''])[0]
+                    _gw = parent.gateway
+                    result = {'ok': False}
+                    if _gw and trace_type == 'audio':
+                        _gw._trace_recording = not _gw._trace_recording
+                        if _gw._trace_recording:
+                            _gw._audio_trace.clear()
+                            _gw._spk_trace.clear()
+                            _gw._trace_events.clear()
+                            _gw._audio_trace_t0 = time.monotonic()
+                            print(f"\n[Trace] Recording STARTED (via web UI)")
+                        else:
+                            print(f"\n[Trace] Recording STOPPED ({len(_gw._audio_trace)} ticks captured)")
+                            _gw._dump_audio_trace()
+                        _gw._trace_events.append((time.monotonic(), 'trace', 'on' if _gw._trace_recording else 'off'))
+                        result = {'ok': True, 'active': _gw._trace_recording}
+                    elif _gw and trace_type == 'watchdog':
+                        _gw._watchdog_active = not _gw._watchdog_active
+                        if _gw._watchdog_active:
+                            _gw._watchdog_t0 = time.monotonic()
+                            _gw._watchdog_thread = threading.Thread(
+                                target=_gw._watchdog_trace_loop, daemon=True)
+                            _gw._watchdog_thread.start()
+                            print(f"\n[Watchdog] Trace STARTED (via web UI)")
+                        else:
+                            print(f"\n[Watchdog] Trace STOPPED (via web UI)")
+                        result = {'ok': True, 'active': _gw._watchdog_active}
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(result).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                    return
+                elif self.path == '/refreshsounds':
+                    # Re-randomize soundboard slots
+                    result = {'ok': False, 'count': 0}
+                    gw = parent.gateway
+                    if gw and gw.playback_source:
+                        try:
+                            # Clear cached soundboard files
+                            _cache_dir = os.path.join(gw.playback_source.announcement_directory, '.cache')
+                            if os.path.isdir(_cache_dir):
+                                import shutil
+                                shutil.rmtree(_cache_dir)
+                            # Re-scan files (local files stay, new random fills)
+                            gw.playback_source.check_file_availability()
+                            _count = sum(1 for k in '123456789' if gw.playback_source.file_status[k]['exists']
+                                         and gw.playback_source.file_status[k].get('path', '').find('.cache') >= 0)
+                            result = {'ok': True, 'count': _count}
+                        except Exception as _e:
+                            result = {'ok': False, 'error': str(_e)}
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    try:
+                        self.wfile.write(json_mod.dumps(result).encode())
                     except BrokenPipeError:
                         pass
                     return
@@ -7834,6 +8153,8 @@ class WebConfigServer:
     Filter: <input type="text" id="log-filter" placeholder="regex..." style="background:#0d1b2a; color:#e0e0e0; border:1px solid #1b3a5c; border-radius:3px; padding:2px 6px; width:200px; font-size:0.85em;">
   </label>
   <button class="rb rb-sm" onclick="clearLog()">Clear</button>
+  <button class="rb rb-sm" id="btn-trace" onclick="toggleTrace('audio')">Audio Trace</button>
+  <button class="rb rb-sm" id="btn-watchdog" onclick="toggleTrace('watchdog')">Watchdog Trace</button>
   <span id="log-status" style="color:#888; font-size:0.8em;"></span>
 </div>
 <div id="log-box" style="background:#0a0a0a; border:1px solid #1b3a5c; border-radius:4px; padding:8px; height:calc(100vh - 160px); overflow-y:auto; font-family:'Courier New',monospace; font-size:0.82em; line-height:1.5; white-space:pre-wrap; word-break:break-all; color:#c0c0c0;">
@@ -7846,6 +8167,33 @@ var _paused = false;
 function clearLog() {
   document.getElementById('log-box').innerHTML = '';
 }
+
+function toggleTrace(type) {
+  fetch('/tracecmd', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'type='+type})
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      var btn = document.getElementById(type==='audio'?'btn-trace':'btn-watchdog');
+      if (d.active) {
+        btn.style.background = '#0f3460';
+        btn.style.borderColor = '#00d4ff';
+        btn.style.color = '#00d4ff';
+      } else {
+        btn.style.background = '';
+        btn.style.borderColor = '';
+        btn.style.color = '';
+      }
+    });
+}
+
+function updateTraceButtons() {
+  fetch('/tracestatus').then(function(r){ return r.json(); }).then(function(d) {
+    var ab = document.getElementById('btn-trace');
+    var wb = document.getElementById('btn-watchdog');
+    if (d.audio_trace) { ab.style.background='#0f3460'; ab.style.borderColor='#00d4ff'; ab.style.color='#00d4ff'; }
+    if (d.watchdog_trace) { wb.style.background='#0f3460'; wb.style.borderColor='#00d4ff'; wb.style.color='#00d4ff'; }
+  }).catch(function(){});
+}
+updateTraceButtons();
 
 function escHtml(s) {
   var d = document.createElement('div'); d.textContent = s; return d.innerHTML;
@@ -9246,6 +9594,28 @@ pollTimer = setInterval(pollStatus, 1000);
 <h1 style="font-size:1.8em">Radio Gateway Dashboard</h1>
 <p style="margin:0 0 14px;font-size:1.1em"><a href="/config">Config Editor</a> | <a href="/radio">Radio Control</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>
 
+<div class="ctrl-group" id="listen-top">
+  <h3>Listen</h3>
+  <div style="display:flex; gap:16px; flex-wrap:nowrap;">
+    <div style="width:140px;">
+      <div style="display:flex; align-items:center; gap:4px;">
+        <button id="play-btn" onclick="toggleStream()" style="width:62px; text-align:center;">&#9654; MP3</button>
+        <input id="vol-slider" type="range" min="0" max="100" value="100" style="width:50px; accent-color:#00d4ff;" oninput="setVolume(this.value)">
+        <span id="stream-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:#2ecc71; box-shadow:0 0 6px #2ecc71;"></span>
+      </div>
+      <div id="stream-status" style="color:#888; font-size:0.75em; margin-top:3px; min-height:1.1em;"></div>
+    </div>
+    <div style="width:140px;">
+      <div style="display:flex; align-items:center; gap:4px;">
+        <button id="ws-btn" onclick="toggleWS()" style="width:62px; text-align:center;">&#9654; PCM</button>
+        <input id="ws-vol" type="range" min="0" max="100" value="100" style="width:50px; accent-color:#00d4ff;" oninput="setWSVol(this.value)">
+        <span id="ws-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:#00d4ff; box-shadow:0 0 6px #00d4ff;"></span>
+      </div>
+      <div id="ws-status" style="color:#888; font-size:0.75em; margin-top:3px; min-height:1.1em;"></div>
+    </div>
+  </div>
+</div>
+
 <div id="status">Loading...</div>
 
 <div id="sysinfo" style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:18px; font-family:monospace; font-size:1.0em; margin-top:10px;">Loading...</div>
@@ -9261,27 +9631,6 @@ pollTimer = setInterval(pollStatus, 1000);
     <button onclick="sendKey('c')" id="btn-c">Remote</button>
     <button onclick="sendKey('a')" id="btn-a">Announce</button>
     <button onclick="sendKey('o')" id="btn-o">Speaker</button>
-  </div>
-  <div class="ctrl-group">
-    <h3>Listen</h3>
-    <div style="display:flex; gap:16px; flex-wrap:nowrap;">
-      <div style="width:140px;">
-        <div style="display:flex; align-items:center; gap:4px;">
-          <button id="play-btn" onclick="toggleStream()" style="width:62px; text-align:center;">&#9654; MP3</button>
-          <input id="vol-slider" type="range" min="0" max="100" value="100" style="width:50px; accent-color:#00d4ff;" oninput="setVolume(this.value)">
-          <span id="stream-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:#2ecc71; box-shadow:0 0 6px #2ecc71;"></span>
-        </div>
-        <div id="stream-status" style="color:#888; font-size:0.75em; margin-top:3px; min-height:1.1em;"></div>
-      </div>
-      <div style="width:140px;">
-        <div style="display:flex; align-items:center; gap:4px;">
-          <button id="ws-btn" onclick="toggleWS()" style="width:62px; text-align:center;">&#9654; PCM</button>
-          <input id="ws-vol" type="range" min="0" max="100" value="100" style="width:50px; accent-color:#00d4ff;" oninput="setWSVol(this.value)">
-          <span id="ws-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:#00d4ff; box-shadow:0 0 6px #00d4ff;"></span>
-        </div>
-        <div id="ws-status" style="color:#888; font-size:0.75em; margin-top:3px; min-height:1.1em;"></div>
-      </div>
-    </div>
   </div>
   <div class="ctrl-group">
     <h3>Radio Processing</h3>
@@ -9323,7 +9672,7 @@ pollTimer = setInterval(pollStatus, 1000);
 
 <div id="playback-section" style="margin-top:18px; display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start;">
   <div class="ctrl-group" style="min-width:0; display:inline-block;">
-    <h3 style="margin:0 0 10px; color:#00d4ff; font-size:1.1em;">Playback &amp; Announcements</h3>
+    <h3 style="margin:0 0 10px; color:#00d4ff; font-size:1.1em;">Playback</h3>
     <div style="display:flex; gap:18px; flex-wrap:nowrap;">
       <div>
         <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:3px;">
@@ -9337,23 +9686,25 @@ pollTimer = setInterval(pollStatus, 1000);
           <button onclick="sendKey('8')" id="btn-f8">8</button>
           <button onclick="sendKey('9')" id="btn-f9">9</button>
           <button onclick="sendKey('0')" id="btn-f0">ID</button>
-          <button onclick="sendKey('-')" style="grid-column:span 2;">Stop</button>
+          <button onclick="sendKey('-')">Stop</button>
+          <button onclick="refreshSounds()" title="Refresh random sounds">&#x21bb;</button>
         </div>
       </div>
-      <div style="margin-left:25px; margin-right:25px;">
+      <div style="margin-left:6px; margin-right:6px;">
         <div id="playback-status" style="font-family:monospace; font-size:0.85em;">Loading...</div>
-      </div>
-      <div>
-        <div style="display:flex; flex-direction:column; gap:3px; margin-bottom:6px;">
-          <button onclick="sendKey('[')">Smart #1</button>
-          <button onclick="sendKey(']')">Smart #2</button>
-          <button onclick="sendKey(String.fromCharCode(92))">Smart #3</button>
-        </div>
-        <div id="smart-status" style="font-family:monospace; font-size:0.85em; color:#888;">Idle</div>
       </div>
     </div>
   </div>
-  <div class="ctrl-group" style="min-width:0;" id="broadcastify-group">
+  <div class="ctrl-group bottom-btns" style="min-width:0;">
+    <h3>Smart Announce</h3>
+    <div style="display:flex; flex-direction:column; gap:3px; margin-bottom:6px;">
+      <button onclick="sendKey('[')">Smart #1</button>
+      <button onclick="sendKey(']')">Smart #2</button>
+      <button onclick="sendKey(String.fromCharCode(92))">Smart #3</button>
+    </div>
+    <div id="smart-status" style="font-family:monospace; font-size:0.85em; color:#888;">Idle</div>
+  </div>
+  <div class="ctrl-group bottom-btns" style="min-width:0;" id="broadcastify-group">
     <h3>Broadcastify</h3>
     <div style="display:flex; flex-direction:column; gap:3px;">
       <button onclick="darkiceCmd('start')" id="btn-bc-start">Start</button>
@@ -9364,7 +9715,7 @@ pollTimer = setInterval(pollStatus, 1000);
       <span id="bc-status" style="font-family:monospace; font-size:0.85em;">...</span>
     </div>
   </div>
-  <div class="ctrl-group" style="min-width:0;">
+  <div class="ctrl-group bottom-btns" style="min-width:0;">
     <h3>PTT &amp; Relay</h3>
     <div style="display:flex; flex-direction:column; gap:3px;">
       <button onclick="sendKey('p')" id="btn-p">Manual PTT</button>
@@ -9372,7 +9723,7 @@ pollTimer = setInterval(pollStatus, 1000);
       <button onclick="sendKey('h')" id="btn-h">Charger Toggle</button>
     </div>
   </div>
-  <div class="ctrl-group" style="min-width:0;">
+  <div class="ctrl-group bottom-btns" style="min-width:0;">
     <h3>System</h3>
     <div style="display:flex; flex-direction:column; gap:3px;">
       <button onclick="sendKey('@')">Send Email</button>
@@ -9395,7 +9746,7 @@ pollTimer = setInterval(pollStatus, 1000);
   #status { background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 18px; font-family: monospace; font-size: 1.0em; }
   .st-row { display: grid; grid-template-columns: repeat(auto-fill, 240px); gap: 10px 16px; margin: 8px 0; }
   .st-item { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
-  .st-label { color: #888; }
+  .st-label { color: #888; display: inline-block; width: 5.5em; text-align: right; margin-right: 16px; flex-shrink: 0; }
   .st-val { font-weight: bold; }
   .bar { display: inline-block; height: 18px; border-radius: 3px; min-width: 4px; vertical-align: middle; }
   .bar-rx { background: #2ecc71; } .bar-tx { background: #e74c3c; }
@@ -9406,6 +9757,8 @@ pollTimer = setInterval(pollStatus, 1000);
   .green { color: #2ecc71; } .red { color: #e74c3c; } .yellow { color: #f39c12; }
   .cyan { color: #00d4ff; } .white { color: #e0e0e0; }
   #playback-section button { margin: 0; }
+  .bottom-btns { min-width: 160px; width: 160px; }
+  .bottom-btns button { width: 100%; box-sizing: border-box; }
   .pb-slot { display: block; margin: 1px 0; white-space: nowrap; }
   .pb-key { font-weight: bold; display: inline-block; width: 1.5em; }
 </style>
@@ -9413,12 +9766,18 @@ pollTimer = setInterval(pollStatus, 1000);
 <script>
 function sendKey(k) {
   fetch('/key', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:k})});
+  if(document.activeElement) document.activeElement.blur();
 }
 function togProc(source, filter) {
   fetch('/proc_toggle', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({source:source, filter:filter})});
 }
 function darkiceCmd(cmd) {
   fetch('/darkicecmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({cmd:cmd})});
+}
+function refreshSounds() {
+  fetch('/refreshsounds', {method:'POST'}).then(function(r){return r.json()}).then(function(d){
+    if(d.ok) { var n=d.count; alert('Refreshed ' + n + ' sound' + (n!=1?'s':'')); }
+  });
 }
 
 function bar(pct, cls) {
@@ -9429,7 +9788,18 @@ function bar(pct, cls) {
 
 function updateStatus() {
   fetch('/status').then(r=>r.json()).then(function(s) {
-    var h = '<div class="st-row info-row">';
+    // Audio levels — same order as console: TX RX SP SDR1 SDR2 SV/CL AN
+    var h = '<div class="st-row audio-row">';
+    h += '<div class="st-item"><span class="st-label">TX:</span>'+bar(s.radio_tx,'bar-tx')+'</div>';
+    h += '<div class="st-item"><span class="st-label">RX:</span>'+bar(s.radio_rx,'bar-rx')+'</div>';
+    if(s.speaker_enabled) h += '<div class="st-item"><span class="st-label">SP:</span>'+bar(s.speaker_level,'bar-sp')+'</div>';
+    if(s.sdr1_enabled) h += '<div class="st-item"><span class="st-label">SDR1:</span>'+bar(s.sdr1_level,'bar-sdr1')+'</div>';
+    if(s.sdr2_enabled) h += '<div class="st-item"><span class="st-label">SDR2:</span>'+bar(s.sdr2_level,'bar-sdr2')+'</div>';
+    if(s.remote_enabled) h += '<div class="st-item"><span class="st-label">'+s.remote_mode+':</span>'+bar(s.remote_level, s.remote_mode==='SV'?'bar-sv':'bar-cl')+'</div>';
+    if(s.announce_enabled) h += '<div class="st-item"><span class="st-label">AN:</span>'+bar(s.an_level,'bar-an')+'</div>';
+    h += '</div>';
+
+    h += '<div class="st-row info-row">';
     h += '<div class="st-item"><span class="st-label">Mumble:</span><span class="st-val '+(s.mumble?'green':'red')+'">'+(s.mumble?'OK':'DOWN')+'</span></div>';
     h += '<div class="st-item"><span class="st-label">PTT:</span><span class="st-val '+(s.ptt_active?'red':'green')+'">'+(s.ptt_active?'ON':'off')+'</span> <span class="st-label">('+s.ptt_method+')</span></div>';
     h += '<div class="st-item"><span class="st-label">VAD:</span><span class="st-val '+(s.vad_enabled?'green':'red')+'">'+(s.vad_enabled?'ON':'off')+'</span> <span class="st-val yellow">'+s.vad_db+'dB</span></div>';
@@ -9482,16 +9852,7 @@ function updateStatus() {
     }
     h += '</div>';
 
-    // Audio levels — same order as console: TX RX SP SDR1 SDR2 SV/CL AN
-    h += '<div class="st-row audio-row">';
-    h += '<div class="st-item"><span class="st-label">TX:</span>'+bar(s.radio_tx,'bar-tx')+'</div>';
-    h += '<div class="st-item"><span class="st-label">RX:</span>'+bar(s.radio_rx,'bar-rx')+'</div>';
-    if(s.speaker_enabled) h += '<div class="st-item"><span class="st-label">SP:</span>'+bar(s.speaker_level,'bar-sp')+'</div>';
-    if(s.sdr1_enabled) h += '<div class="st-item"><span class="st-label">SDR1:</span>'+bar(s.sdr1_level,'bar-sdr1')+'</div>';
-    if(s.sdr2_enabled) h += '<div class="st-item"><span class="st-label">SDR2:</span>'+bar(s.sdr2_level,'bar-sdr2')+'</div>';
-    if(s.remote_enabled) h += '<div class="st-item"><span class="st-label">'+s.remote_mode+':</span>'+bar(s.remote_level, s.remote_mode==='SV'?'bar-sv':'bar-cl')+'</div>';
-    if(s.announce_enabled) h += '<div class="st-item"><span class="st-label">AN:</span>'+bar(s.an_level,'bar-an')+'</div>';
-    h += '</div>';
+
 
     document.getElementById('status').innerHTML = h;
 
@@ -9703,6 +10064,7 @@ var _wsTimer = null;
 var _wsStart = 0;
 var _wsBytes = 0;
 var _wsWorklet = null;
+var _wakeLock = null;
 
 function toggleWS() {
   if (_wsPlaying) { stopWS(); } else { startWS(); }
@@ -9775,6 +10137,7 @@ function startWS() {
       _wsPlaying = true;
       _wsStart = Date.now();
       _wsBytes = 0;
+      if (navigator.wakeLock) { navigator.wakeLock.request('screen').then(function(wl) { _wakeLock = wl; }).catch(function(){}); }
       btn.innerHTML = '&#9724; PCM';
       btn.style.color = '#00d4ff';
       btn.style.borderColor = '#00d4ff';
@@ -9881,6 +10244,7 @@ function stopWS() {
   if (_wsGain) { try { _wsGain.disconnect(); } catch(e){} _wsGain = null; }
   if (_wsCtx) { try { _wsCtx.close(); } catch(e){} _wsCtx = null; }
   _wsPlaying = false;
+  if (_wakeLock) { try { _wakeLock.release(); } catch(e){} _wakeLock = null; }
   document.getElementById('ws-btn').innerHTML = '&#9654; PCM';
   document.getElementById('ws-btn').style.color = '#e0e0e0';
   document.getElementById('ws-btn').style.borderColor = '#1b3a5c';
@@ -13555,6 +13919,22 @@ class RadioGateway:
             if self.playback_source:
                 stored_path = self.playback_source.file_status[char]['path']
                 if stored_path:
+                    # Auto-set RTS to Radio Controlled for TX playback
+                    _cat = self.cat_client
+                    if _cat and not getattr(self, '_playback_rts_saved', None):
+                        self._playback_rts_saved = _cat.get_rts()
+                        if self._playback_rts_saved is None or self._playback_rts_saved is True:
+                            try:
+                                _cat._pause_drain()
+                                try:
+                                    _cat.set_rts(False)  # Radio Controlled
+                                    time.sleep(0.3)
+                                    _cat._drain(0.5)
+                                finally:
+                                    _cat._drain_paused = False
+                                print(f"\n[Playback] RTS → Radio Controlled")
+                            except Exception:
+                                pass
                     self.playback_source.queue_file(stored_path)
         elif char == '-':
             if self.playback_source:

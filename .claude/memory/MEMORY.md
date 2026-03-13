@@ -57,40 +57,42 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 ## Web Configuration UI & Live Dashboard
 - `WebConfigServer` class: built-in HTTP server (Python `http.server`, no Flask)
-- Pages: `/` (config editor), `/dashboard` (live status), `/sdr` (SDR control), `/radio` (CAT control)
+- Pages: `/` (config editor), `/dashboard` (live status), `/sdr` (SDR control), `/radio` (CAT control), `/logs` (live log viewer)
 - Config: `ENABLE_WEB_CONFIG`, `WEB_CONFIG_PORT` (default 8080), `WEB_CONFIG_PASSWORD`
-- Dashboard: 1s JSON polling, audio bars, button grid, auto-reconnect, combined Playback/Smart section
-- **System Status box**: `/sysinfo` endpoint (2s poll), CPU/load/RAM/swap/disk/net/TCP/temps/IPs
-- **MP3 stream**: `/stream` endpoint, shared FFmpeg encoder, sequence-number ring buffer
-- **WebSocket PCM**: low-latency binary audio, AudioWorklet + 50ms pre-buffer, 200ms cap, TCP_NODELAY, per-client send queues
-- **Broadcastify controls**: start/stop/restart DarkIce, live stats
-- **Smart Announce status**: step-by-step progress display
+- Dashboard layout (top to bottom): Listen box, Status (audio bars first, then info, timers), System Status, Controls (Mute, Radio/SDR Processing, Volume/SDR, Playback, Smart Announce, Broadcastify, PTT & Relay, System)
+- **Listen box**: MP3 stream + WebSocket PCM with volume sliders, at top of dashboard
+- **Smart Announce box**: separate box with 3 buttons + status (moved from Playback section)
+- **Wake Lock**: Screen Wake Lock API acquired during PCM playback to prevent device sleep
+- **Status labels**: fixed-width `.st-label` (5.5em, right-aligned, 16px margin) for alignment
+- **Logs page**: Audio Trace + Watchdog Trace toggle buttons (`/tracecmd`, `/tracestatus` endpoints)
+- **Soundboard**: auto-fills empty playback slots 1-9 with random Mixkit sound effects (429 curated pool), refresh button
 - **Responsive layouts**: all pages use `repeat(auto-fit, minmax())` grids for narrow screens
 
 ## TH-9800 CAT Control
 - `RadioCATClient` class: TCP client for TH9800_CAT.py server
 - **CRITICAL: press response unreliable** — step-right + step-left (net zero) to read channel
-- `_drain_paused` during set_channel and web commands (prevents background drain race)
+- **CRITICAL: DISPLAY_TEXT vfo_byte** — must use vfo_byte from packet (0x40/0x60=LEFT, 0xC0/0xE0=RIGHT), NOT stale `_channel_vfo`. Fixed 2026-03-13.
+- `_drain_paused` during set_channel, web commands, and RTS changes (prevents background drain race)
 - `_drain()` must use single `_recv_line(0.1)` — loop version breaks all packet parsing
 - **Web radio control** (`/radio`): full front panel replica, `/catstatus` + `/catcmd` endpoints
 - **Graceful close (2026-03-12):** `close()` sets `_stop=True`, sends `!exit`, `shutdown(SHUT_RDWR)`, waits for drain thread
-- **Auto serial connect (2026-03-12):** On startup, queries `!serial status` — if disconnected, sends `!serial connect`. Refreshes display (VFO dial press) either way. "Already connected" treated as success in web UI.
-- **TH9800_CAT.py SIGTERM (2026-03-12):** Headless mode registers SIGTERM/SIGINT handlers for clean serial shutdown (DTR low, close transport, close TCP server)
+- **Auto serial connect (2026-03-12):** On startup, queries `!serial status` — if disconnected, sends `!serial connect`. Refreshes display (VFO dial press) either way.
+
+## Auto RTS for Playback & Announcements (2026-03-13)
+- **Playback (keys 1-9, 0):** Auto-sets RTS to Radio Controlled before playing, restores after
+- **Smart Announce:** Same RTS auto-switch in `_run_announcement()`
+- **CRITICAL:** Must pause drain thread around ALL `set_rts()` calls — RTS change triggers display packets that drain thread misattributes to wrong VFO
+- Display refresh (VFO dial press+release both sides) after RTS restore, also with drain paused
+- Playback RTS restore runs in background thread to avoid blocking audio loop
 
 ## Systemd Service & Process Management (2026-03-12)
 - **Service:** `radio-gateway.service` — `KillMode=control-group` (kills all children on stop/restart)
-- **CRITICAL:** Was `KillMode=process` which only killed start.sh, orphaning cloudflared/ffmpeg/TH9800_CAT
 - `TimeoutStopSec=15` to allow graceful serial cleanup
 - start.sh: reads config, sudo keepalive, renice -10, optional TH9800_CAT + Claude Code launches
-- TH9800_CAT.py is relaunched by start.sh on each service restart (pgrep check)
 - Gateway restart via `q` key uses `os.execv` (replaces process in-place, same PID)
-- DarkIce/FFmpeg only started if `ENABLE_STREAM_OUTPUT = true`
 
 ## Audio Processing — Per-Source AudioProcessor (2026-03-10)
 - `AudioProcessor` class: independent filter state per source (radio, SDR)
-- Each source gets own HPF/LPF/notch/de-esser/spectral NS/noise gate state
-- **Radio:** uses global config keys synced via `_sync_radio_processor()`
-- **SDR:** uses `SDR_PROC_*` config keys synced via `_sync_sdr_processor()`
 - Filter chain order: HPF → LPF → Notch → De-esser → Spectral NS → Noise Gate
 - **CRITICAL:** Requires `scipy` — all filters silently return unmodified audio if scipy is missing
 
@@ -105,18 +107,17 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Keyboard: `[`=Smart#1, `]`=Smart#2, `\`=Smart#3; Mumble: `!smart`/`!smart N`
 
 ## Other Features
-- **Cloudflare Tunnel**: persists across gateway restarts (adopted if already running), `*.trycloudflare.com` URL cached in `/tmp/cloudflare_tunnel_url`
-- **Email**: Gmail SMTP on startup/demand (`@` key), includes tunnel URL + LAN link; URLs linkified before `<br>` insertion to avoid corruption
+- **Cloudflare Tunnel**: persists across gateway restarts, `*.trycloudflare.com` URL cached in `/tmp/cloudflare_tunnel_url`
+- **Email**: Gmail SMTP on startup/demand (`@` key), includes tunnel URL + LAN link
 - **Relay Control**: `RelayController` class, radio power (`j`), charger (auto), PTT relay
 - **SDR Rebroadcast**: `b` key, routes SDR audio to radio TX
 - **Status Bar**: 3-line display, `[HH:MM:SS]` timestamps, `StatusBarWriter` wraps stdout/stderr
 - **Config page**: unsaved changes warning via `beforeunload` event
 
 ## Known Bugs Fixed (details in bugs.md)
-See bugs.md for full history. Key recent: audio processing silent (scipy missing + PipeWire path missing call),
-WebSocket PCM double-push/latency, pymumble ghost reconnect, SDR control page init bugs,
-CAT serial orphans + no auto-connect on startup (2026-03-12),
-email URL corruption (2026-03-12), ScriptProcessor non-power-of-2 buffer (2026-03-12).
+See bugs.md for full history. Key recent: DISPLAY_TEXT VFO misattribution (2026-03-13),
+RTS change corrupts display (2026-03-13), audio processing silent (scipy missing),
+WebSocket PCM double-push/latency, CAT serial orphans, ScriptProcessor buffer size.
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis
