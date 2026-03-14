@@ -151,7 +151,7 @@ class Config:
             'NOISE_GATE_THRESHOLD': -40,
             'NOISE_GATE_ATTACK': 0.01,  # float (seconds)
             'NOISE_GATE_RELEASE': 0.1,  # float (seconds)
-            'ENABLE_HIGHPASS_FILTER': False,
+            'ENABLE_HIGHPASS_FILTER': True,
             'HIGHPASS_CUTOFF_FREQ': 300,
             'ENABLE_ECHO_CANCELLATION': False,
             'ENABLE_LOWPASS_FILTER': False,
