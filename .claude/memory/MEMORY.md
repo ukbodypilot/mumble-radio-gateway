@@ -59,7 +59,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `WebConfigServer` class: built-in HTTP server (Python `http.server`, no Flask)
 - Pages: `/` (config editor), `/dashboard` (live status), `/sdr` (SDR control), `/radio` (CAT control), `/logs` (live log viewer)
 - Config: `ENABLE_WEB_CONFIG`, `WEB_CONFIG_PORT` (default 8080), `WEB_CONFIG_PASSWORD`
-- Dashboard layout (top to bottom): Controls box (Listen + System buttons), Status (audio bars first, then info, timers), System Status, Controls (Mute, Radio/SDR Processing, Audio, SDR), then bottom row (Playback, Smart Announce, Broadcastify, PTT & Relay, Text to Speech)
+- Dashboard layout (top to bottom): Listen box, Status (audio bars first, then info, timers), System Status, Controls (Mute, Radio/SDR Processing, Audio, SDR), then bottom row (Playback, Smart Announce, Broadcastify, PTT & Relay, Text to Speech, System)
 - **Listen box**: MP3 stream + WebSocket PCM with volume sliders, at top of dashboard
 - **Text to Speech box**: text entry, 9-voice selector (gTTS), send button + status line. Auto-switches RTS to Radio Controlled for TX, restores after. `/tts` POST endpoint runs `speak_text()` in background thread.
 - **Smart Announce box**: separate box with 3 buttons + status
@@ -68,10 +68,6 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **Logs page**: Audio Trace + Watchdog Trace toggle buttons (`/tracecmd`, `/tracestatus` endpoints)
 - **Soundboard**: auto-fills empty playback slots 1-9 with random Mixkit sound effects (~750 curated pool), refresh button
 - **Responsive layouts**: all pages use `repeat(auto-fit, minmax())` grids for narrow screens
-- **Gateway Name**: `GATEWAY_NAME` config — displayed at top of dashboard and in browser tab title
-- **Color Themes**: `WEB_THEME` config — 7 dark themes (blue/red/green/purple/amber/teal/pink) via CSS custom properties + JS `_T` object, applied consistently across all 5 pages
-- **Playback buttons**: pressing a new button stops current file and plays new one immediately (no queuing). Background thread + lock + sequence counter prevents concurrent decode races. PTT released explicitly on stop.
-- **Status bar log filter**: `_append_log()` filters out ANSI status bar lines; `draw_status()` suppressed when no TTY attached
 
 ## TH-9800 CAT Control
 - `RadioCATClient` class: TCP client for TH9800_CAT.py server
