@@ -93,7 +93,7 @@ This shows:
 ## Compatibility with Other Features
 
 VAD works alongside:
-- ✅ Audio processing (noise gate, HPF, suppression) - applied BEFORE VAD
+- ✅ Audio processing (noise gate, HPF, LPF, notch) - applied BEFORE VAD
 - ✅ Buffer management - now rarely needed as backup
 - ✅ VOX for Mumble→Radio - different direction, no conflict
 - ✅ All other gateway features

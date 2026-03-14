@@ -34,7 +34,7 @@ A multi-source radio audio gateway with Mumble VoIP bridging, SDR integration, A
   └─────────────────┘           ║  Audio Processing:   ║            │  Named Pipes     │
                                 ║  VAD · Noise Gate    ║            └──────────────────┘
   ┌─────────────────┐           ║  AGC · HPF           ║
-  │  SDR2 (P2)      │──────────►║  Wiener · Echo Canc  ║  TCP out   ┌──────────────────┐
+  │  SDR2 (P2)      │──────────►║  HPF · LPF · Notch   ║  TCP out   ┌──────────────────┐
   │  ALSA Loopback  │  [DUCK]   ║                      ╠───────────►│  Remote Client   │
   │  ■ magenta bar  │           ╚══════════════════════╝            │  (role=client)   │
   └─────────────────┘                                               │  SV:[yellow bar] │
@@ -89,7 +89,7 @@ A multi-source radio audio gateway with Mumble VoIP bridging, SDR integration, A
 - **Multi-Source Audio Mixing**: Simultaneous mixing of 5 audio sources with priority control
 - **Auto-PTT Control**: Automatic push-to-talk with configurable delays and tail
 - **Voice Activity Detection (VAD)**: Smart audio gate prevents noise transmission (enabled by default)
-- **Real-Time Audio Processing**: Noise gate, AGC, filters, echo cancellation
+- **Real-Time Audio Processing**: Noise gate, HPF, LPF, notch filter
 - **Live Status Display**: Real-time bars showing TX/RX/SDR levels with color coding
 - **Smart Announcements**: AI-powered scheduled broadcasts with pluggable backend (Google AI scrape, DuckDuckGo+Ollama, Claude, or Gemini)
 - **Local Mumble Server**: Run up to 2 managed mumble-server instances on the same machine
@@ -326,9 +326,6 @@ Per-source processing chains — Radio and SDR sources have independent filter i
 - **HPF**: High-pass filter (removes low-frequency rumble)
 - **LPF**: Low-pass filter (removes high-frequency hiss)
 - **Notch Filter**: Narrow-band rejection at configurable frequency and Q
-- **De-esser**: Reduces sibilance at configurable frequency
-- **Spectral Noise Suppression**: FFT-based noise floor subtraction
-- **Echo Cancellation**: Reduces feedback
 
 Dashboard: separate "Radio Processing" and "SDR Processing" button groups toggle each filter independently per source.
 
@@ -519,8 +516,11 @@ WEB_CONFIG_PASSWORD =
   - **MP3 stream** — shared FFmpeg encoder, play/stop button, volume slider, elapsed timer
   - **Low-latency WebSocket PCM** — AudioWorklet-based player with 200ms pre-buffer for smooth playback
 - **Broadcastify controls** — DarkIce process status and start/stop/restart buttons. Live TCP stats: bytes sent, send rate, RTT, connection age, restart counts
-- **Smart Announce status** — live step-by-step progress (Searching, Waiting for radio, Speaking, Done/Error)
+- **Smart Announce status** — separated into its own box with 3 trigger buttons and live step-by-step progress (Searching, Waiting for radio, Speaking, Done/Error)
 - **Playback file status** — shows all loaded audio slots with filenames, highlights currently playing file
+- **System status box** — CPU usage, load average, RAM, swap, disk, network, temperatures, IPs (polled every 2 seconds)
+- **Text to Speech** — text entry field, 9-voice selector, send button with status line (gTTS)
+- **Screen Wake Lock** — prevents device sleep during WebSocket PCM playback
 
 ![Live Dashboard](docs/img/dashboard.png)
 *Live dashboard showing gateway status, audio level bars, mute/processing/playback controls, and the browser audio player.*
@@ -531,6 +531,7 @@ WEB_CONFIG_PASSWORD =
 - All radio buttons: ENC, DEC, TX, PREF, SKIP, DCS, MUTE, LOW, V/M, HM, SCN
 - Menu/SET controls, hyper memories (A-F), mic keypad, mic P1-P4 and UP/DN
 - PTT toggle button, TCP/Serial connect/disconnect, RTS control
+- Browser microphone PTT (MIC PTT button)
 
 ![Radio Control](docs/img/radio-control.png)
 *TH-9800 radio control page with dual VFO, signal meters, and full button panel.*
@@ -555,6 +556,7 @@ WEB_CONFIG_PASSWORD =
 - Live scrolling log viewer with auto-scroll toggle
 - Regex filter for searching log output
 - Clear button and new-line counter
+- Audio Trace and Watchdog Trace buttons
 
 ![Gateway Logs](docs/img/logs.png)
 *Live log viewer showing gateway startup sequence, keyboard controls, and service status.*
@@ -785,7 +787,7 @@ The gateway supports two SDR audio input methods:
 
 ### PipeWire Virtual Sink (recommended)
 
-On PipeWire systems, SDR audio is routed through a virtual null sink. The gateway reads from the sink's monitor via FFmpeg, giving a continuous low-jitter stream with no blob boundaries.
+On PipeWire systems, SDR audio is routed through a virtual null sink. The gateway reads from the sink's monitor via parec (native PipeWire), giving a continuous low-jitter stream with no blob boundaries.
 
 ```ini
 SDR_DEVICE_NAME = pw:sdr_capture       # PipeWire sink for SDR1
@@ -940,9 +942,6 @@ Press keys during operation to control the gateway:
 - `n` = Toggle Noise Gate
 - `f` = Toggle High-Pass Filter
 - `g` = Toggle AGC
-- `y` = Toggle Spectral Noise Suppression
-- `w` = Toggle Wiener Noise Suppression
-- `e` = Toggle Echo Cancellation
 
 ### SDR Controls
 - `d` = Toggle SDR1 Ducking (duck vs. mix mode)
@@ -1059,16 +1058,13 @@ Only shown when `ENABLE_WEB_CONFIG = true`.
 
 ### Line 2 — Processing Flags
 
-Flags appear in yellow brackets: `[N,F,G,W,E,D]`
+Flags appear in yellow brackets: `[N,F,G,D]`
 
 | Flag | Meaning |
 |------|---------|
 | **N** | Noise Gate enabled |
 | **F** | High-Pass Filter enabled |
 | **G** | AGC enabled |
-| **W** | Wiener Filter enabled |
-| **S** | Spectral Suppression enabled |
-| **E** | Echo Cancellation enabled |
 | **D** | SDR Ducking enabled |
 | **X** | Stream Health DISABLED |
 
@@ -1146,10 +1142,10 @@ This creates responsive bars that show peaks immediately but decay smoothly.
 │                      AUDIO PROCESSING                             │
 ├──────────────────────────────────────────────────────────────────┤
 │  • Voice Activity Detection (VAD)                                │
-│  • Noise Gate / Spectral Suppression                             │
+│  • Noise Gate                                                    │
 │  • High-Pass Filter (HPF)                                        │
-│  • Automatic Gain Control (AGC)                                  │
-│  • Echo Cancellation                                              │
+│  • Low-Pass Filter (LPF)                                         │
+│  • Notch Filter                                                  │
 └──────────────────────────────────────────────────────────────────┘
                                                   │
                                                   ↓
@@ -1715,13 +1711,6 @@ HIGHPASS_CUTOFF_FREQ = 300        # Hz (300 = good for voice)
 # AGC
 ENABLE_AGC = false
 
-# Noise Suppression
-ENABLE_NOISE_SUPPRESSION = false
-NOISE_SUPPRESSION_METHOD = spectral   # spectral or wiener
-NOISE_SUPPRESSION_STRENGTH = 0.5      # 0.0 to 1.0
-
-# Echo Cancellation
-ENABLE_ECHO_CANCELLATION = false
 ```
 
 ### Streaming Settings

@@ -144,9 +144,6 @@ class Config:
             'AIOC_INPUT_DEVICE': -1,
             'AIOC_OUTPUT_DEVICE': -1,
             'ENABLE_AGC': False,
-            'ENABLE_NOISE_SUPPRESSION': False,
-            'NOISE_SUPPRESSION_METHOD': 'spectral',
-            'NOISE_SUPPRESSION_STRENGTH': 0.5,
             'ENABLE_NOISE_GATE': False,
             'NOISE_GATE_THRESHOLD': -40,
             'NOISE_GATE_ATTACK': 0.01,  # float (seconds)
@@ -159,9 +156,6 @@ class Config:
             'ENABLE_NOTCH_FILTER': False,
             'NOTCH_FREQ': 1000,
             'NOTCH_Q': 30.0,
-            'ENABLE_DEESSER': False,
-            'DEESSER_FREQ': 5000,
-            'DEESSER_STRENGTH': 0.6,
             # Per-source processing overrides (SDR).
             # When set, SDR sources use these instead of the global settings.
             # When not set (empty string / default), SDR processing is disabled
@@ -177,12 +171,6 @@ class Config:
             'SDR_PROC_ENABLE_NOTCH': False,
             'SDR_PROC_NOTCH_FREQ': 1000,
             'SDR_PROC_NOTCH_Q': 30.0,
-            'SDR_PROC_ENABLE_NS': False,
-            'SDR_PROC_NS_METHOD': 'spectral',
-            'SDR_PROC_NS_STRENGTH': 0.5,
-            'SDR_PROC_ENABLE_DEESSER': False,
-            'SDR_PROC_DEESSER_FREQ': 5000,
-            'SDR_PROC_DEESSER_STRENGTH': 0.6,
             'INPUT_VOLUME': 1.0,
             'OUTPUT_VOLUME': 1.0,
             'MUMBLE_LOOP_RATE': 0.01,
@@ -538,20 +526,12 @@ class AudioProcessor:
         self.gate_threshold = -40     # dB
         self.gate_attack = 0.01       # seconds
         self.gate_release = 0.1       # seconds
-        self.enable_noise_suppression = False
-        self.noise_suppression_method = 'spectral'
-        self.noise_suppression_strength = 0.5
-        self.enable_deesser = False
-        self.deesser_freq = 5000      # Hz — sibilance target
-        self.deesser_strength = 0.6   # reduction amount
 
         # Filter state (persists across audio chunks for continuity)
         self.highpass_state = None
         self.lowpass_state = None
         self.notch_state = None
         self.gate_envelope = 0.0
-        self.noise_profile = None
-        self.deesser_state = None
 
     def reset_state(self):
         """Reset all filter states (e.g. when source restarts)."""
@@ -559,12 +539,10 @@ class AudioProcessor:
         self.lowpass_state = None
         self.notch_state = None
         self.gate_envelope = 0.0
-        self.noise_profile = None
-        self.deesser_state = None
 
     def process(self, pcm_data):
         """Run the full processing chain on PCM data. Order:
-        HPF → LPF → Notch → De-esser → Spectral NS → Noise Gate
+        HPF → LPF → Notch → Noise Gate
         """
         if not pcm_data:
             return pcm_data
@@ -580,13 +558,6 @@ class AudioProcessor:
         if self.enable_notch:
             processed = self._apply_notch(processed)
 
-        if self.enable_deesser:
-            processed = self._apply_deesser(processed)
-
-        if self.enable_noise_suppression:
-            if self.noise_suppression_method == 'spectral':
-                processed = self._apply_spectral_ns(processed)
-
         if self.enable_noise_gate:
             processed = self._apply_noise_gate(processed)
 
@@ -599,8 +570,6 @@ class AudioProcessor:
         if self.enable_hpf: active.append('HPF')
         if self.enable_lpf: active.append('LPF')
         if self.enable_notch: active.append(f'Notch')
-        if self.enable_deesser: active.append('DeEss')
-        if self.enable_noise_suppression: active.append(self.noise_suppression_method.title())
         return active
 
     # --- Filter implementations ---
@@ -687,72 +656,6 @@ class AudioProcessor:
 
             filtered, self.notch_state = lfilter(b, a, samples, zi=self.notch_state)
             return np.clip(filtered, -32768, 32767).astype(np.int16).tobytes()
-        except Exception:
-            return pcm_data
-
-    def _apply_deesser(self, pcm_data):
-        """Simple de-esser — attenuates sibilance around the target frequency.
-        Works by detecting energy in the sibilance band and applying gain reduction.
-        """
-        try:
-            import math
-            from scipy.signal import lfilter, lfilter_zi
-
-            samples = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
-            if len(samples) == 0:
-                return pcm_data
-
-            sample_rate = self.config.AUDIO_RATE
-            # HPF to isolate sibilance band
-            cutoff = self.deesser_freq
-            rc = 1.0 / (2.0 * math.pi * cutoff)
-            dt = 1.0 / sample_rate
-            alpha = rc / (rc + dt)
-
-            b_hpf = np.array([alpha, -alpha], dtype=np.float64)
-            a_hpf = np.array([1.0, -alpha], dtype=np.float64)
-
-            if self.deesser_state is None:
-                self.deesser_state = lfilter_zi(b_hpf, a_hpf) * 0.0
-
-            sibilance, self.deesser_state = lfilter(b_hpf, a_hpf, samples, zi=self.deesser_state)
-
-            # Calculate per-sample gain reduction based on sibilance energy
-            # Use a simple envelope follower on the sibilance band
-            strength = self.deesser_strength
-            sib_abs = np.abs(sibilance)
-            sig_abs = np.maximum(np.abs(samples), 1.0)
-            ratio = sib_abs / sig_abs
-            # Where sibilance dominates, reduce gain
-            gain = np.where(ratio > 0.3, 1.0 - strength * np.minimum(ratio, 1.0), 1.0)
-            processed = samples * gain
-
-            return np.clip(processed, -32768, 32767).astype(np.int16).tobytes()
-        except Exception:
-            return pcm_data
-
-    def _apply_spectral_ns(self, pcm_data):
-        """Spectral subtraction noise suppression."""
-        try:
-            from scipy.ndimage import uniform_filter1d
-
-            samples = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
-            if len(samples) == 0:
-                return pcm_data
-
-            window_size = 32
-            strength = self.noise_suppression_strength
-
-            noise_estimate = uniform_filter1d(np.abs(samples), size=window_size, mode='nearest')
-
-            above_threshold = np.abs(samples) > noise_estimate * (1.0 + strength)
-            reduction = strength * noise_estimate
-            reduced = np.where(samples > 0,
-                               np.maximum(0.0, samples - reduction),
-                               np.minimum(0.0, samples + reduction))
-
-            processed = np.where(above_threshold, samples, reduced)
-            return np.clip(processed, -32768, 32767).astype(np.int16).tobytes()
         except Exception:
             return pcm_data
 
@@ -2676,7 +2579,7 @@ class PipeWireSDRSource(SDRSource):
                 arr = np.clip(farr * audio_boost, -32768, 32767).astype(np.int16)
                 raw = arr.tobytes()
 
-        # Apply SDR audio processing (HPF, LPF, notch, de-esser, spectral NS, gate)
+        # Apply SDR audio processing (HPF, LPF, notch, gate)
         raw = self.gateway.process_audio_for_sdr(raw)
 
         return raw, False
@@ -7460,7 +7363,7 @@ class WebConfigServer:
                     try:
                         data = json_mod.loads(body)
                         source = data.get('source', '')  # "radio" or "sdr"
-                        filt = data.get('filter', '')    # "gate", "hpf", "lpf", "notch", "deesser", "spectral"
+                        filt = data.get('filter', '')    # "gate", "hpf", "lpf", "notch"
                         if source and filt and parent.gateway:
                             parent.gateway.handle_proc_toggle(source, filt)
                     except Exception:
@@ -9739,8 +9642,6 @@ pollTimer = setInterval(pollStatus, 1000);
     <button onclick="togProc('radio','hpf')" id="btn-rp-hpf">HPF</button>
     <button onclick="togProc('radio','lpf')" id="btn-rp-lpf">LPF</button>
     <button onclick="togProc('radio','notch')" id="btn-rp-notch">Notch</button>
-    <button onclick="togProc('radio','deesser')" id="btn-rp-deesser">DeEss</button>
-    <button onclick="togProc('radio','spectral')" id="btn-rp-spectral">Spectral</button>
   </div>
   <div class="ctrl-group">
     <h3>Audio</h3>
@@ -9755,8 +9656,6 @@ pollTimer = setInterval(pollStatus, 1000);
     <button onclick="togProc('sdr','hpf')" id="btn-sp-hpf">HPF</button>
     <button onclick="togProc('sdr','lpf')" id="btn-sp-lpf">LPF</button>
     <button onclick="togProc('sdr','notch')" id="btn-sp-notch">Notch</button>
-    <button onclick="togProc('sdr','deesser')" id="btn-sp-deesser">DeEss</button>
-    <button onclick="togProc('sdr','spectral')" id="btn-sp-spectral">Spectral</button>
   </div>
   <div class="ctrl-group">
     <h3>SDR</h3>
@@ -10034,8 +9933,6 @@ function updateStatus() {
       setBtn('btn-rp-hpf', s.radio_proc.indexOf('HPF')>=0, 'active');
       setBtn('btn-rp-lpf', s.radio_proc.indexOf('LPF')>=0, 'active');
       setBtn('btn-rp-notch', s.radio_proc.indexOf('Notch')>=0, 'active');
-      setBtn('btn-rp-deesser', s.radio_proc.indexOf('DeEss')>=0, 'active');
-      setBtn('btn-rp-spectral', s.radio_proc.indexOf('Spectral')>=0, 'active');
     }
     // SDR processing buttons
     if(s.sdr_proc) {
@@ -10043,8 +9940,6 @@ function updateStatus() {
       setBtn('btn-sp-hpf', s.sdr_proc.indexOf('HPF')>=0, 'active');
       setBtn('btn-sp-lpf', s.sdr_proc.indexOf('LPF')>=0, 'active');
       setBtn('btn-sp-notch', s.sdr_proc.indexOf('Notch')>=0, 'active');
-      setBtn('btn-sp-deesser', s.sdr_proc.indexOf('DeEss')>=0, 'active');
-      setBtn('btn-sp-spectral', s.sdr_proc.indexOf('Spectral')>=0, 'active');
     }
     // Smart announce activity status
     var smSt = document.getElementById('smart-status');
@@ -10772,7 +10667,6 @@ class RadioGateway:
         self._trace_events = _collections_mod.deque(maxlen=500)  # key presses / mode changes
         
         # Audio processing state (legacy — kept for backwards compat)
-        self.noise_profile = None  # For spectral subtraction
         self.gate_envelope = 0.0  # For noise gate smoothing
         self.highpass_state = None  # For high-pass filter state
 
@@ -11036,34 +10930,6 @@ class RadioGateway:
         except Exception:
             return pcm_data
     
-    def apply_spectral_noise_suppression(self, pcm_data):
-        """Apply spectral subtraction to reduce constant background noise"""
-        try:
-            from scipy.ndimage import uniform_filter1d
-
-            samples = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
-            if len(samples) == 0:
-                return pcm_data
-
-            window_size = 32
-            strength = self.config.NOISE_SUPPRESSION_STRENGTH
-
-            # Moving average of absolute values as noise estimate (O(n) vs O(n*w))
-            noise_estimate = uniform_filter1d(np.abs(samples), size=window_size, mode='nearest')
-
-            # Where signal exceeds noise threshold: keep as-is; otherwise reduce
-            above_threshold = np.abs(samples) > noise_estimate * (1.0 + strength)
-            reduction = strength * noise_estimate
-            reduced = np.where(samples > 0,
-                               np.maximum(0.0, samples - reduction),
-                               np.minimum(0.0, samples + reduction))
-
-            processed = np.where(above_threshold, samples, reduced)
-            return np.clip(processed, -32768, 32767).astype(np.int16).tobytes()
-
-        except Exception:
-            return pcm_data
-    
     def _sync_radio_processor(self):
         """Sync global config flags into the radio AudioProcessor instance."""
         p = self.radio_processor
@@ -11078,12 +10944,6 @@ class RadioGateway:
         p.gate_threshold = self.config.NOISE_GATE_THRESHOLD
         p.gate_attack = self.config.NOISE_GATE_ATTACK
         p.gate_release = self.config.NOISE_GATE_RELEASE
-        p.enable_noise_suppression = self.config.ENABLE_NOISE_SUPPRESSION
-        p.noise_suppression_method = self.config.NOISE_SUPPRESSION_METHOD
-        p.noise_suppression_strength = self.config.NOISE_SUPPRESSION_STRENGTH
-        p.enable_deesser = self.config.ENABLE_DEESSER
-        p.deesser_freq = self.config.DEESSER_FREQ
-        p.deesser_strength = self.config.DEESSER_STRENGTH
 
     def _sync_sdr_processor(self):
         """Sync SDR-specific config flags into the SDR AudioProcessor instance."""
@@ -11099,12 +10959,6 @@ class RadioGateway:
         p.enable_notch = self.config.SDR_PROC_ENABLE_NOTCH
         p.notch_freq = self.config.SDR_PROC_NOTCH_FREQ
         p.notch_q = self.config.SDR_PROC_NOTCH_Q
-        p.enable_noise_suppression = self.config.SDR_PROC_ENABLE_NS
-        p.noise_suppression_method = self.config.SDR_PROC_NS_METHOD
-        p.noise_suppression_strength = self.config.SDR_PROC_NS_STRENGTH
-        p.enable_deesser = self.config.SDR_PROC_ENABLE_DEESSER
-        p.deesser_freq = self.config.SDR_PROC_DEESSER_FREQ
-        p.deesser_strength = self.config.SDR_PROC_DEESSER_STRENGTH
 
     def process_audio_for_mumble(self, pcm_data):
         """Apply all enabled audio processing to clean up radio audio before sending to Mumble.
@@ -13918,16 +13772,11 @@ class RadioGateway:
                 'hpf':      'ENABLE_HIGHPASS_FILTER',
                 'lpf':      'ENABLE_LOWPASS_FILTER',
                 'notch':    'ENABLE_NOTCH_FILTER',
-                'deesser':  'ENABLE_DEESSER',
-                'spectral': 'ENABLE_NOISE_SUPPRESSION',
             }
             key = toggle_map.get(filt)
             if key:
                 current = getattr(self.config, key, False)
                 setattr(self.config, key, not current)
-                # For spectral, also set the method
-                if filt == 'spectral' and not current:
-                    self.config.NOISE_SUPPRESSION_METHOD = 'spectral'
                 self._sync_radio_processor()
         elif source == 'sdr':
             toggle_map = {
@@ -13935,15 +13784,11 @@ class RadioGateway:
                 'hpf':      'SDR_PROC_ENABLE_HPF',
                 'lpf':      'SDR_PROC_ENABLE_LPF',
                 'notch':    'SDR_PROC_ENABLE_NOTCH',
-                'deesser':  'SDR_PROC_ENABLE_DEESSER',
-                'spectral': 'SDR_PROC_ENABLE_NS',
             }
             key = toggle_map.get(filt)
             if key:
                 current = getattr(self.config, key, False)
                 setattr(self.config, key, not current)
-                if filt == 'spectral' and not current:
-                    self.config.SDR_PROC_NS_METHOD = 'spectral'
                 self._sync_sdr_processor()
 
     def handle_key(self, char):
@@ -14007,20 +13852,6 @@ class RadioGateway:
                 self.announce_input_source.muted = self.announce_input_muted
         elif char == 'g':
             self.config.ENABLE_AGC = not self.config.ENABLE_AGC
-        elif char == 'y':
-            if self.config.ENABLE_NOISE_SUPPRESSION and self.config.NOISE_SUPPRESSION_METHOD == 'spectral':
-                self.config.ENABLE_NOISE_SUPPRESSION = False
-            else:
-                self.config.ENABLE_NOISE_SUPPRESSION = True
-                self.config.NOISE_SUPPRESSION_METHOD = 'spectral'
-            self._sync_radio_processor()
-        elif char == 'w':
-            if self.config.ENABLE_NOISE_SUPPRESSION and self.config.NOISE_SUPPRESSION_METHOD == 'wiener':
-                self.config.ENABLE_NOISE_SUPPRESSION = False
-            else:
-                self.config.ENABLE_NOISE_SUPPRESSION = True
-                self.config.NOISE_SUPPRESSION_METHOD = 'wiener'
-            self._sync_radio_processor()
         elif char == 'e':
             self.config.ENABLE_ECHO_CANCELLATION = not self.config.ENABLE_ECHO_CANCELLATION
         elif char == 'p':
@@ -14462,9 +14293,6 @@ class RadioGateway:
                 if self.config.ENABLE_NOISE_GATE: proc_flags.append("N")
                 if self.config.ENABLE_HIGHPASS_FILTER: proc_flags.append("F")
                 if self.config.ENABLE_AGC: proc_flags.append("G")
-                if self.config.ENABLE_NOISE_SUPPRESSION:
-                    if self.config.NOISE_SUPPRESSION_METHOD == 'spectral': proc_flags.append("S")
-                    elif self.config.NOISE_SUPPRESSION_METHOD == 'wiener': proc_flags.append("W")
                 if self.config.ENABLE_ECHO_CANCELLATION: proc_flags.append("E")
                 if not self.config.ENABLE_STREAM_HEALTH: proc_flags.append("X")  # X shows stream health is OFF
                 # D flag: SDR ducking enabled (only show if SDR is present)
@@ -14718,8 +14546,6 @@ class RadioGateway:
         processing_enabled = []
         if self.config.ENABLE_HIGHPASS_FILTER:
             processing_enabled.append(f"HPF@{self.config.HIGHPASS_CUTOFF_FREQ}Hz")
-        if self.config.ENABLE_NOISE_SUPPRESSION:
-            processing_enabled.append(f"NS({self.config.NOISE_SUPPRESSION_METHOD})")
         if self.config.ENABLE_NOISE_GATE:
             processing_enabled.append(f"Gate@{self.config.NOISE_GATE_THRESHOLD}dB")
 
@@ -14775,7 +14601,7 @@ class RadioGateway:
         print("Keyboard Controls:")
         print("  Mute:  't'=TX  'r'=RX  'm'=Global  's'=SDR1  'x'=SDR2  'c'=Remote  'a'=Announce  'o'=Speaker")
         print("  Audio: 'v'=VAD toggle  ','=Vol-  '.'=Vol+")
-        print("  Proc:  'n'=Gate  'f'=HPF  'g'=AGC  'y'=Spectral  'w'=Wiener  'e'=Echo")
+        print("  Proc:  'n'=Gate  'f'=HPF  'g'=AGC")
         print("  SDR:   'd'=SDR1 Duck toggle  'b'=SDR Rebroadcast toggle")
         print("  PTT:   'p'=Manual PTT toggle")
         print("  Play:  '1-9'=Announcements  '0'=StationID  '-'=Stop")
@@ -14800,7 +14626,7 @@ class RadioGateway:
             print("  SDR2:[bar] = SDR2 receiver audio level (magenta)")
             print("  Vol:X.Xx = RX volume multiplier (Radio → Mumble gain)")
             print("  1234567890 = File status (green=loaded, red=playing, white=empty)")
-            print("  [N,F,G,W,E,D] = Processing: N=NoiseGate F=HPF G=AGC W=Wiener E=Echo D=SDR1Duck")
+            print("  [N,F,G,D] = Processing: N=NoiseGate F=HPF G=AGC D=SDR1Duck")
             print("  R:n      = Stream restart count (only if >0)")
             print()
 

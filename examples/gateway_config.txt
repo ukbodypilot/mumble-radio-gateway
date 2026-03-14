@@ -12,7 +12,7 @@
 # Keyboard Controls (runtime):
 #   MUTE:  't'=TX  'r'=RX  'm'=Global  's'=SDR1  'x'=SDR2  'c'=Remote  'a'=Announce  'o'=Speaker
 #   AUDIO: 'v'=VAD toggle  ','=Vol-  '.'=Vol+
-#   PROC:  'n'=Gate  'f'=HPF  'g'=AGC  'y'=Spectral  'w'=Wiener  'e'=Echo
+#   PROC:  'n'=Gate  'f'=HPF  'g'=AGC
 #   SDR:   'd'=SDR1 Duck toggle  'b'=SDR Rebroadcast toggle
 #   PTT:   'p'=Manual PTT toggle
 #   PLAY:  '1-9'=Announcements  '0'=Station ID  '-'=Stop
@@ -157,13 +157,6 @@ HIGHPASS_CUTOFF_FREQ = 300    # Hz (300=good for voice)
 # Automatic Gain Control — normalizes audio levels
 ENABLE_AGC = false
 
-# Noise Suppression — advanced noise reduction
-ENABLE_NOISE_SUPPRESSION = false
-NOISE_SUPPRESSION_METHOD = spectral  # spectral or wiener
-NOISE_SUPPRESSION_STRENGTH = 0.5     # 0.0 to 1.0
-
-# Echo Cancellation
-ENABLE_ECHO_CANCELLATION = false
 
 
 [sdr1]
