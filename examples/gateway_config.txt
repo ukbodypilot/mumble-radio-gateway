@@ -395,6 +395,8 @@ RELAY_RADIO_BAUD = 9600
 
 # Charger Relay — automatic schedule (overnight charging)
 ENABLE_RELAY_CHARGER = false
+RELAY_CHARGER_CONTROL = gpio
+CHARGER_RELAY_GPIO = 23
 RELAY_CHARGER_DEVICE = /dev/relay_charger
 RELAY_CHARGER_BAUD = 9600
 RELAY_CHARGER_ON_TIME = 23:00

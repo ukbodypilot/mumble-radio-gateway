@@ -296,6 +296,8 @@ class Config:
             'RELAY_RADIO_BAUD': 9600,
             # Relay Control — Charger Schedule
             'ENABLE_RELAY_CHARGER': False,
+            'RELAY_CHARGER_CONTROL': 'gpio',   # 'gpio' or 'serial'
+            'CHARGER_RELAY_GPIO': 23,           # BCM pin when RELAY_CHARGER_CONTROL = gpio
             'RELAY_CHARGER_DEVICE': '/dev/relay_charger',
             'RELAY_CHARGER_BAUD': 9600,
             'RELAY_CHARGER_ON_TIME': '23:00',
@@ -4027,6 +4029,51 @@ class RelayController:
             return True
         except Exception as e:
             print(f"  [Relay] Write error on {self._device}: {e}")
+            return False
+
+    @property
+    def state(self):
+        return self._state
+
+
+class GPIORelayController:
+    """Controls a relay via Raspberry Pi GPIO pin (BCM numbering)."""
+
+    def __init__(self, gpio_pin):
+        self._pin = gpio_pin
+        self._state = None
+        self._gpio = None
+
+    def open(self):
+        try:
+            import RPi.GPIO as GPIO
+            self._gpio = GPIO
+            GPIO.setwarnings(False)
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self._pin, GPIO.OUT, initial=GPIO.LOW)
+            self._state = False
+            return True
+        except Exception as e:
+            print(f"  [GPIORelay] Failed to setup GPIO {self._pin}: {e}")
+            return False
+
+    def close(self):
+        if self._gpio:
+            try:
+                self._gpio.cleanup(self._pin)
+            except Exception:
+                pass
+
+    def set_state(self, on):
+        """Set relay on (True) or off (False). Returns True on success."""
+        if not self._gpio:
+            return False
+        try:
+            self._gpio.output(self._pin, self._gpio.HIGH if on else self._gpio.LOW)
+            self._state = on
+            return True
+        except Exception as e:
+            print(f"  [GPIORelay] Error setting GPIO {self._pin}: {e}")
             return False
 
     @property
@@ -11788,9 +11835,15 @@ class RadioGateway:
 
             if getattr(self.config, 'ENABLE_RELAY_CHARGER', False):
                 try:
-                    dev = self.config.RELAY_CHARGER_DEVICE
-                    print(f"Initializing charger relay ({dev})...")
-                    self.relay_charger = RelayController(dev, self.config.RELAY_CHARGER_BAUD)
+                    charger_control = str(getattr(self.config, 'RELAY_CHARGER_CONTROL', 'gpio')).lower()
+                    if charger_control == 'gpio':
+                        gpio_pin = int(getattr(self.config, 'CHARGER_RELAY_GPIO', 23))
+                        print(f"Initializing charger relay (GPIO {gpio_pin})...")
+                        self.relay_charger = GPIORelayController(gpio_pin)
+                    else:
+                        dev = self.config.RELAY_CHARGER_DEVICE
+                        print(f"Initializing charger relay ({dev})...")
+                        self.relay_charger = RelayController(dev, self.config.RELAY_CHARGER_BAUD)
                     if self.relay_charger.open():
                         # Parse schedule times
                         on_str = str(self.config.RELAY_CHARGER_ON_TIME)
