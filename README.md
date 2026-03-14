@@ -485,6 +485,8 @@ A built-in web interface for editing gateway config and monitoring live status f
 ENABLE_WEB_CONFIG = true
 WEB_CONFIG_PORT = 8080
 WEB_CONFIG_PASSWORD =
+GATEWAY_NAME = My Gateway
+WEB_THEME = blue
 ```
 
 | Setting | Description |
@@ -492,13 +494,15 @@ WEB_CONFIG_PASSWORD =
 | `ENABLE_WEB_CONFIG` | Enable the web config editor (`true` / `false`) |
 | `WEB_CONFIG_PORT` | HTTP port to listen on (default `8080`) |
 | `WEB_CONFIG_PASSWORD` | Basic auth password (user: `admin`). Blank = no auth |
+| `GATEWAY_NAME` | Display name shown at top of dashboard and in browser tab (blank = none) |
+| `WEB_THEME` | Dashboard color theme: `blue` (default), `red`, `green`, `purple`, `amber`, `teal`, `pink` |
 
 **Config Editor** (`http://<gateway-ip>:8080/`):
 - Settings grouped by INI section with collapsible panels
 - Sensitive fields (passwords, API keys) shown as password inputs
 - **Save** button writes changes to `gateway_config.txt` (preserves comments)
 - **Save & Restart** button saves and restarts the gateway for changes to take effect
-- Dark theme matching the gateway console aesthetic
+- 7 dark color themes with consistent accent colors across all pages
 
 ![Config Editor](docs/img/config-editor.png)
 *Configuration editor with collapsible sections, Save & Restart, and Exit Server controls.*
@@ -512,6 +516,8 @@ WEB_CONFIG_PASSWORD =
 - Remote key control buttons — same keyboard shortcuts available via clickable buttons
 - Auto-reconnects when gateway restarts (no manual refresh needed)
 - Fixed-width grid layout — bars and values don't shift when levels change
+- Gateway name displayed at top of dashboard for multi-gateway setups
+- Configurable color theme applied consistently across all pages (dashboard, config, radio, SDR, logs)
 - **Audio player** — listen to the gateway's mixed audio output live in the browser:
   - **MP3 stream** — shared FFmpeg encoder, play/stop button, volume slider, elapsed timer
   - **Low-latency WebSocket PCM** — AudioWorklet-based player with 200ms pre-buffer for smooth playback
@@ -951,7 +957,7 @@ Press keys during operation to control the gateway:
 - `p` = Manual PTT Toggle (override auto-PTT)
 
 ### File Playback
-- `1-9` = Play announcement files
+- `1-9` = Play announcement files (pressing a new button stops the current file and plays the new one)
 - `0` = Play Station ID
 - `-` = Stop playback
 

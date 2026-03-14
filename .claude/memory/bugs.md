@@ -1,155 +1,65 @@
-# Bug History — Radio Gateway
+# Bug History — Mumble Radio Gateway
 
-## DISPLAY_TEXT VFO Misattribution — Wrong Frequency on Wrong VFO (2026-03-13)
-**Symptom:** Left VFO web display showed the right VFO's frequency (both showed 146400 instead of left=147435, right=146400). Display corruption happened during RTS changes for playback/announcements.
+## Audio Pipeline Bugs
+- **SDR-to-SDR ducking inconsistency / sources switching over each other** (commit 3808066): Rule 2 (higher-priority SDR ducks lower-priority SDR) used `check_signal_instant()` — zero attack, fires on any chunk above -50 dBFS including SDR noise floor. Also checked `sig or hold` for `other_has_signal`, meaning a single noisy 200ms chunk from SDR1 silenced SDR2 for 3s via the hold timer. With intermittent SDR noise both sources flipped rapidly. Fixed: `_sdr_trace['sig']` now stores `has_actual_audio()` result (requires `SIGNAL_ATTACK_TIME=0.15s` continuous signal before firing); Rule 2 reads only `sig` — `hold` is for inclusion/fade-out only, not ducking decisions. Release unchanged at 3s.
+- **SDR burst/choppy audio**: `frames_per_buffer=153600` (16× chunk) caused ALSA DMA to fire every 3.2s. Fixed to `AUDIO_CHUNK_SIZE` (9600 = 200ms).
+- **Pop at SDR onset**: Old 0.1s attack timer dropped first chunk. Fixed: instant-attack (`check_signal_instant`, -50dB) + 10ms fade-in.
+- **Pop at SDR offset (timing-window bug)**: Fade-out triggered by `(hold_until - current_time) < chunk_dur` — missed when AIOC read took >200ms. Fixed: transition-based fade-out when `prev_included` flips False.
+- **SDR gated on AIOC failures**: Mixer was inside AIOC gate. Fixed: mixer runs unconditionally; AIOC errors absorbed in `get_audio()`.
+- **Sequential double-blocking (400ms loop)**: AIOC 200ms + SDR 200ms in same thread. Fixed: SDR background reader thread, `get_audio()` is non-blocking queue pop.
+- **GIL contention causing ALSA overruns**: Reader thread did numpy between reads, competing with main loop. Fixed: reader thread does read+append only; all processing in main thread.
+- **Mumble encoder starvation**: `data is None → continue` skipped `add_sound()`. Opus resets across gaps. Fixed: substitute silence, fall through to `add_sound()`.
+- **duck-out regression (all audio broken)**: `sdr_active_at_transition` used `check_signal_instant` on raw loopback — always True with SDR app running, silencing first 1s of every AIOC transmission. Fixed: use `sdr_prev_included` instead.
+- **SDR audio drops (periodic gaps every ~800ms)**: SDRSource.get_audio() had no cushion-rebuild mechanism — after sub_buffer depleted it served immediately from the next blob, giving zero margin against ALSA jitter. AIOCRadioSource has a `_prebuffering` gate that refuses to serve until 3 full blobs accumulate after any depletion; SDR lacked this entirely. Also: drain only ran when sub_buffer < cb (not every tick), so the cushion never grew. Fixed: always-drain every tick + `_prebuffering` gate identical to AIOC. Also added `_blob_bytes` (chunk_bytes × buffer_multiplier), reader blob timestamp deque (`_blob_times`), SDR2 queue/sub_buffer visibility in trace, and all-ticks trace output. Verified: zero silence gaps in trace, prebuffering fires correctly ~1–2× per trace when ALSA reader stalls >500ms, other SDR covers during rebuild.
+- **SDR2 duck-through on SDR1 buffer gaps**: SDR-to-SDR duck check iterated `sdrs_to_include` (only sources with actual audio data). When SDR1's buffer ran dry between bursty deliveries, SDR1 wasn't in `sdrs_to_include` (get_audio returned None → `continue` at line 1942), so SDR2 didn't see SDR1's active hold timer and played through. Fixed: iterate `sorted_sdrs` (all processed SDRs) instead, checking `_sdr_trace` which is populated even when audio is None.
+- **AIOC audio output stale state**: AIOC USB audio output gets stuck after extended runtime or PipeWire/WirePlumber interaction — PTT keys radio via HID but no audio reaches radio. `speaker-test -D hw:N,0` also produces no audio. Not a software bug — hardware state issue. Fixed: added USB reset (sysfs authorized cycle) to start.sh step 4.
+- **Sub-buffer latency buildup causing stale audio / corruption**: SDRSource and AIOC eager-drain all queue blobs into sub_buffer every tick but had no upper cap. Under CPU contention from competing processes (e.g. SDRconnect at 85%+ CPU), blobs arrive faster than ticks can consume them, causing 1.5–2.2s latency. Audio that old sounds corrupted (you hear radio from 2s ago). Fixed: after eager drain, cap `sub_buffer` at `blob_bytes × 5` (≈4s); keep only the most recent portion. Normal steady-state is ~3–4 blobs so cap only trims abnormal buildup. Also added `nice -n -10` to gateway launch in start.sh and CPU governor set to `performance` at startup.
+- **No-signal SDR polluting mix via sole_source bypass**: When no AIOC audio was present, `sdr_is_sole_source` was True for ALL SDRs regardless of whether they had signal. An SDR with no input (e.g. no app feeding the loopback) would be force-included, adding loopback noise to the output alongside SDRs that had real audio. Fixed: refined sole_source logic — an SDR without signal is only force-included if no OTHER SDR has instant signal this tick. Pre-scan pass checks `check_signal_instant()` for all SDRs before the main inclusion loop.
+- **SDR prebuffer gap too long (400ms silence on depletion)**: SDR prebuffering gate required 3 blobs (600ms) before resuming service after sub_buffer depletion. With SDR2 delivery stalls up to 604ms, this created ~400ms audible gaps where only a no-signal SDR played (RMS=0). Fixed: reduced SDR prebuffer threshold from 3 blobs to 2 blobs (400ms). AIOC keeps 3-blob gate (different USB jitter characteristics). Recovery gap reduced to ~200ms.
+- **SDR-to-SDR rapid switching (duck toggle oscillation)**: When SDR1 has intermittent signal near the VAD threshold, SDR2 rapidly toggles between ducked and unducked. `SIGNAL_RELEASE_TIME` (3s) gives SDR1 a hold after its signal stops — but there was no symmetric protection for SDR2 after it unducks. Once SDR1's 3s hold expired and SDR2 started playing, SDR1 noise could re-trigger `has_sig_hyst` after just 0.15s (attack time), immediately re-ducking SDR2. This created a rapid 3s-ducked → 0.15s-unducked cycle. Fixed: added `SDR_DUCK_COOLDOWN` (default 3.0s). After SDR2 transitions from ducked to unducked (Rule 2), it gets `SDR_DUCK_COOLDOWN` seconds of immunity from SDR-to-SDR re-ducking. AIOC Rule 1 ducking is unaffected (radio RX always wins immediately). State tracked via `_sdr_duck_cooldown_until` and `_sdr_prev_ducked_by_sdr` dicts in AudioMixer.
 
-**Root cause:** `DISPLAY_TEXT` (pkt_type 0x01) used `self._channel_vfo` (set by the last `CHANNEL_TEXT` packet) to decide which VFO to assign the frequency text to. But `_channel_vfo` is stale — it reflects whichever CHANNEL_TEXT the drain thread last processed, not the VFO of the current DISPLAY_TEXT packet. During RTS changes, the radio sends a burst of display packets, and the drain thread processes them with the wrong VFO assignment.
+## SDR Rebroadcast Bugs
+- **AIOC TX feedback ducking SDR during rebroadcast**: When rebroadcast keyed PTT, AIOC input picked up TX feedback, triggering `aioc_ducks_sdrs` and ducking SDR sources — causing choppy audio. Fixed: set `radio_source.enabled = False` when rebroadcast PTT activates, re-enable on release.
+- **PTT release timer killing rebroadcast PTT every tick**: `status_monitor_loop()` PTT timeout checked `last_sound_time` which rebroadcast never updated, resetting `ptt_active=False` every tick. Caused `rebro_ptt on` spam (130+ events). Fixed: (1) guard timer with `not self._rebroadcast_ptt_active`, (2) update `last_sound_time` in rebroadcast block, (3) change PTT key guard from `not self.ptt_active` to `not self._rebroadcast_ptt_active`.
+- **TX bar level too low during rebroadcast**: Was measuring `sdr_only_audio` before `OUTPUT_VOLUME` scaling. Fixed: measure `pcm` after volume applied; also set `last_rx_audio_time` to prevent decay.
+- **Excessive prebuffering gaps during rebroadcast (16.2%)**: SDR 2-blob prebuffer gate caused 400ms silence gaps every ~600ms during rebroadcast. Fixed: reduced to 1 blob when `self.gateway.sdr_rebroadcast` is active. Final trace: 4.1% prebuffering, 88.2% signal.
+- **SDR periodic silence gaps (200-450ms) from ALSA delivery jitter**: Reader thread read one full ALSA period (200ms / 9600 frames) at a time. Loopback delivery jitter (stdev 118ms, max 607ms) meant blobs sometimes arrived 400-600ms apart, depleting the sub-buffer and triggering 200-450ms silence gaps (5 gaps in 33s). Fixed: reader reads 50ms chunks (2400 frames) instead, delivering 4x more frequently. Jitter dropped to stdev ~10ms. Prebuffer simplified to always 1 blob (no rebroadcast conditional). Queue increased 8→32 slots. Result: zero silence gaps in 47s trace.
 
-**Fix:** DISPLAY_TEXT now reads the VFO directly from its own `vfo_byte` (0x40/0x60=LEFT, 0xC0/0xE0=RIGHT), same mapping as DISPLAY_ICONS. Falls back to `_channel_vfo` only for unknown vfo_byte values.
+## Remote Audio Link Bugs
+- **RemoteAudioServer disconnect not detected during silence**: When no audio was passing through VAD (silence on radio), `send_audio()` was never called, so a broken TCP connection was never discovered. The `_connect_loop` inner wait (`while connected: sleep(0.5)`) spun indefinitely on a dead socket. Only manual `k` key reset triggered reconnection. Fixed: replaced `time.sleep(0.5)` with `select()` probe — if the socket becomes readable on a send-only link, `recv(1)` returns empty (clean close) or raises (RST), both breaking the loop and triggering immediate reconnection.
 
-**Also fixed:** All `set_rts()` calls now pause the drain thread to prevent it from racing for display update packets triggered by the RTS change.
+## Status Bar / UI Bugs
+- **Log messages disrupting status bar**: All `print()` calls used `\n` prefix to push past the `\r`-based status bar, causing the bar to jump around and interleave with log text. Fixed: `StatusBarWriter` wraps `sys.stdout` — any `print()` from any thread clears the status bar line first, prints the message (scrolling up), and the next status tick redraws the bar below. Leading `\n` is stripped when the bar is being cleared (was only needed for the old `\r` approach). Zero existing print calls needed modification.
+- **SV status bar stuck / not tracking outbound audio**: SV bar used `tx_audio_level` which measures AIOC radio input level, not the audio actually sent to the remote client. The bar appeared stuck because AIOC input and remote output are different audio paths. Fixed: added `sv_audio_level` field updated at all three `remote_audio_server.send_audio()` call sites with fast-attack/slow-decay smoothing. Status bar now reads `sv_audio_level` instead. Commit 68f90de.
+- **SDR2 failure shown as silent (indistinguishable)**: When SDR2 `setup_audio()` returns False, object kept with `enabled=False` but status bar checked only `if self.sdr2_source:` — showed `SDR2:[----------] 0%` identical to a working-but-silent source. Fixed: gate on `self.sdr2_source.enabled` so failed/disabled SDR2 is omitted from status bar.
+- **SDR2 error message hardcoded `hw:4,1`**: Warning on init failure always printed the default device name regardless of config. Fixed: use `self.config.SDR2_DEVICE_NAME`.
+- **SDR2 init leftover debug prints**: Two unconditional prints dumping `SDR2_DEVICE_NAME from config:` and `SDR2_PRIORITY from config:` were not guarded by VERBOSE_LOGGING. Removed.
+- **Announcement/PTT keys spam errors without AIOC**: Pressing 0-9 or 'p' without AIOC queued file playback → `set_ptt_state()` printed "[PTT] No AIOC device available!" every 50ms tick because it returned without setting `ptt_active`, causing re-trigger. Fixed: keyboard handler rejects keys when `aioc_device` is absent; `set_ptt_state` silently returns.
+- **Status bar width shift on mute/duck**: Muted/ducked bars were 10 visible chars vs normal bars at 11. Fixed: padded M/D suffix to 4 chars (`M   ` / `D   `).
+- **PTT trace always showed RMS=0**: The RMS measurement point in audio_transmit_loop was after the PTT branch `continue`, so it never executed for PTT ticks. Trace showed RMS=0 for all file playback/announcement ticks, making it look like silence was being sent. Fixed: added RMS measurement inside the PTT branch itself.
 
-**Lesson:** Never rely on stale cross-packet state (`_channel_vfo`) when the packet itself contains the VFO identifier. This was the root cause of display corruption that appeared related to RTS/serial timing but was actually a packet parsing issue.
+## TTS / Text Command Bugs
+- **Mumble HTML tags read aloud by gTTS**: Mumble sends text messages as HTML (e.g. `<a href="...">!speak</a> text` with `&amp;` entities). `on_text_message` passed raw HTML to `speak_text()` → gTTS read tags and escape sequences aloud. Fixed: strip HTML tags with `re.sub(r'<[^>]+>', '', msg)` and decode entities with `html.unescape()` before any command parsing.
 
-## Browser Mic PTT — No Audio Transmitted (2026-03-12)
-**Symptom:** MIC PTT button keyed radio but no audio was heard over the air. Two separate bugs.
+## Config / Code Bugs
+- **Config parser crash on decimal**: `int('0.3')` raised ValueError, silently abandoning all config after that line. Fixed: `VAD_RELEASE: 1.0` default (float); parser tries `float()` fallback on ValueError.
+- **global_muted UnboundLocalError**: Set inside `if self.sdr_source:` block, used in `if self.sdr2_source:` block. Fixed: calculated before both blocks.
+- **NetworkAnnouncementSource missing muted check**: `get_audio()` checked `self.enabled` but not `self.muted`, so pressing 'a' to mute wouldn't stop audio flow. Fixed: added `self.muted` check.
 
-**Bug 1: ScriptProcessorNode buffer size not power of 2**
-`createScriptProcessor(2400, 1, 1)` — 2400 is invalid. ScriptProcessorNode requires power-of-2 buffer sizes (256, 512, 1024, 2048, etc.). Browser silently fails and `onaudioprocess` never fires, so no PCM data is sent over WebSocket. Debug log confirmed `push_audio` was never called.
-**Fix:** Changed to `createScriptProcessor(2048, 1, 1)` (~42ms at 48kHz).
+## Installer Bugs
+- **numlids=3 silently ignored on Debian**: RPi kernel param, not standard. Fixed: `enable=1,1,1 index=4,5,6`.
+- **Loopback card count wrong**: `grep -c "Loopback"` counted 2 lines per card. Fixed: count `device 0` lines only.
+- **Installer aborted at step 5**: `set -e` + `sudo tee /etc/security/limits.d/...` failed (dir missing on minimal Debian). Fixed: `set +e` around step 5, `sudo mkdir -p` first.
+- **darkice.cfg never created**: Path pointed to `examples/darkice.cfg.example` but file is in `scripts/`. Fixed.
+- **DarkIce 1.5 parser crash**: Word "password" in comment before first `[section]` header → "no current section" crash. Fixed: removed from comment text.
+- **WirePlumber locks loopback to S32_LE**: DarkIce needs S16_LE. Fixed: WirePlumber rule disabling `alsa_card.platform-snd_aloop.*`.
+- **WirePlumber hides AIOC from PyAudio**: Fixed: WirePlumber rule disabling `alsa_card.usb-AIOC_*`.
+- **AIOC hidraw inaccessible**: udev rule only covered `SUBSYSTEM=="usb"`, not `SUBSYSTEM=="hidraw"`. PTT HID access requires hidraw. Fixed: added hidraw rule.
+- **Wrong Python HID package**: Installer installed `hidapi`; gateway uses `hid.Device` from `hid` package. Fixed.
+- **pymumble-py3 SSL broken on Python 3.12+**: `ssl.wrap_socket` removed, `ssl.PROTOCOL_TLSv1_2` deprecated. Fixed: monkey-patch before import.
 
-**Bug 2: Browser mic levels extremely low**
-`getUserMedia` was called with `autoGainControl:false, noiseSuppression:false`. Raw mic levels were RMS ~4-35 (out of 32767). Even with 25x volume multiplier, output was barely audible.
-**Fix:** Changed to `autoGainControl:true, noiseSuppression:true, echoCancellation:true`. Dramatically boosted input levels.
-
-**Bug 3 (earlier): AIOC GPIO PTT doesn't key radio**
-`PTT_METHOD=aioc` uses AIOC HID GPIO for PTT. But the user's radio PTT is wired through the CAT serial cable (FTDI), not the AIOC data port. `set_ptt_state(True)` wrote to AIOC GPIO which isn't connected to PTT.
-**Fix:** WebMic handler keys PTT via CAT `!ptt` command directly (same as the working regular PTT button). Added `_webmic_ptt_active` flag to prevent PTT release timer interference.
-
-**Bug 4 (earlier, reverted): `set_rts(True/False)` broke all PTT**
-First attempted fix used `cat_client.set_rts(True)` to key PTT. This put the serial RTS into "USB Controlled" mode, which interfered with the normal `!ptt` command. Both PTT buttons stopped working. Reverted to using `!ptt` toggle instead.
-
-**Lesson:** `ScriptProcessorNode` buffer size MUST be power of 2 — browsers silently fail. Browser mic `autoGainControl` should generally be enabled for web-to-radio audio. Don't use `!rts` for PTT control — it changes RTS mode and interferes with `!ptt`.
-
-## CAT Serial Not Cleaned Up on Restart — Orphaned Processes (2026-03-12)
-**Symptom:** After each gateway restart, orphaned `start.sh`, `cloudflared`, `ffmpeg` processes accumulated. After several restarts, 13+ orphaned start.sh, 10+ cloudflared, 15+ ffmpeg lingering.
-
-**Root causes (three issues):**
-1. **`KillMode=process`** in `radio-gateway.service` — systemd only sent SIGTERM to the main PID (start.sh), not its children. Cloudflared, ffmpeg, TH9800_CAT all survived as orphans.
-2. **`RadioCATClient.close()` not graceful** — slammed socket shut without setting `_stop` flag, sending `!exit`, or waiting for drain thread. Left TH9800_CAT server with stale client state.
-3. **TH9800_CAT.py no SIGTERM handler** — headless mode used `while True: await asyncio.sleep(10)` which didn't run the serial cleanup `finally` block on SIGTERM.
-
-**Fix:**
-1. Changed to `KillMode=control-group` — kills entire cgroup (all children) on stop/restart.
-2. `close()` now: sets `_stop=True`, sends `!exit\n`, `shutdown(SHUT_RDWR)`, waits 150ms for drain thread.
-3. TH9800_CAT.py: registered SIGTERM/SIGINT handlers, replaced sleep loop with `asyncio.Event.wait()`, cleanup sets DTR low and closes serial+TCP.
-
-## CAT Serial Shows Disconnected on Startup (2026-03-12)
-**Symptom:** Radio control web page showed serial "Disconnected" after gateway restart, even though TH9800_CAT had serial connected (channels changeable via buttons).
-
-**Root cause:** `_serial_connected` initialized to `False` and only set `True` by the web UI's SERIAL_CONNECT button handler. Gateway startup never queried serial state. Additionally, `SERIAL_CONNECT` handler rejected "already connected" response (`'already' not in resp` check).
-
-**Fix:**
-1. On CAT TCP connect, gateway sends `!serial status` — if disconnected, auto-sends `!serial connect`.
-2. If serial is connected (fresh or already), refreshes display via VFO dial press+release and reads RTS state.
-3. Web UI SERIAL_CONNECT: "already connected" now treated as success (`_serial_connected = True`), but skips display refresh (already populated).
-
-## Email URL Corruption — `%3Cbr%3E` in Cloudflare Links (2026-03-12)
-**Symptom:** Cloudflare tunnel links in emails didn't work. URLs ended with `%3Cbr%3E`.
-
-**Root cause:** `body.replace('\n', '<br>\n')` ran BEFORE the URL regex `re.sub(r'(https?://\S+)', ...)`. The `<br>` was captured as part of the URL.
-
-**Fix:** Swapped order — linkify URLs first, then insert `<br>` tags.
-
-## Audio Processing Has No Audible Effect (2026-03-11)
-**Symptom:** All audio processing buttons (HPF, LPF, notch, de-esser, spectral NS, noise gate) had zero audible effect when toggled via dashboard or keyboard, for both radio and SDR sources.
-
-**Root causes (two bugs):**
-1. **`scipy` not installed** — All filter methods (`_apply_hpf`, `_apply_lpf`, `_apply_notch`, etc.) import `scipy.signal` inside `try/except Exception` blocks. With scipy missing, every filter silently caught the `ImportError` and returned unmodified audio. The broad `except Exception` masked the real error completely.
-2. **`PipeWireSDRSource.get_audio()` missing processing call** — overrides `SDRSource.get_audio()` but omitted the `process_audio_for_sdr(raw)` call. Even with scipy installed, PipeWire SDR audio would bypass all filters.
-
-**Fix:**
-1. Installed `scipy` (`pip install scipy`) and added it to `scripts/install.sh` `CORE_PKGS`.
-2. Added `raw = self.gateway.process_audio_for_sdr(raw)` in `PipeWireSDRSource.get_audio()`.
-
-**Lesson:** Silent `except Exception` on imports can hide missing dependencies for months. Consider logging a warning on first failure, or checking at startup.
-
-## Google AI Scrape Navigation Failure (2026-03-11)
-**Symptom:** Smart Announce `google-scrape` backend always returned "no AI Overview found".
-
-**Root cause:** `_scrape_google_ai_overview()` used Firefox dev console (`Ctrl+Shift+K`) to navigate and execute JS. When Firefox was showing the gateway dashboard, the dashboard's keyboard event handler intercepted `Ctrl+Shift+K` before Firefox could open the console. The JS navigation command never ran, so the clipboard copy returned dashboard text instead of Google results.
-
-**Fix:** Replaced dev console approach with URL bar (`Ctrl+L`) for navigation and `udm=50` Google URL parameter for direct AI Mode access. Eliminates all console JS (AI Mode click heuristic was also broken). Much simpler and more reliable.
-
-## WebSocket PCM Audio — Stuttering, Half-Speed, and High Latency (2026-03-11)
-**Symptom:** Low-latency WebSocket audio had three issues: (1) constant small gaps/stuttering, (2) audio playing at half speed, (3) ~2 second delay.
-
-**Root causes & fixes:**
-1. **Stuttering:** No pre-buffering + Nagle's algorithm buffering small writes. Fix: Added 50ms pre-buffer, TCP_NODELAY, per-client send queues with dedicated sender threads.
-2. **Half-speed playback:** `push_ws_audio()` called twice per audio loop iteration — once early in mixer path (line ~11849) and again at end of common path (line ~12178). Doubled the data rate. Fix: Removed duplicate push at end; keep only early pushes in mixer and direct-AIOC paths.
-3. **High latency (~2s):** Three sources: (a) PipeWire SDR source used FFmpeg which buffers heavily by default. Fix: Replaced FFmpeg with native `parec --latency-msec=20`. (b) AIOC ALSA period was 200ms (4x chunk) with 3-blob pre-buffer (600ms). Fix: Reduced to 100ms period (2x) with 2-blob pre-buffer (200ms). (c) Client-side buffer caps too high (500ms). Fix: Reduced to 150ms.
-
-## /status BrokenPipeError (2026-03-11)
-**Symptom:** Stack trace logged when browser disconnected during `/status` JSON response.
-
-**Root cause:** `/status` endpoint was missing `BrokenPipeError` handling that all other endpoints already had.
-
-**Fix:** Wrapped `/status` write in try/except BrokenPipeError: pass.
-
-## SDR Control Page — Multiple Init Bugs (2026-03-10)
-**Symptom:** Web UI crashed entirely (no pages served), SDR commands returned NameError, settings lost on restart, sample rate dropdown showed blank.
-
-**Root causes & fixes:**
-1. **`shutil` not imported at module level** — `shutil.which('rtl_airband')` in `WebConfigServer.start()` crashed the entire web server. Fix: added `import shutil` to top-level imports.
-2. **`subprocess` not imported at module level** — all `RTLAirbandManager` operations failed with NameError. Fix: added `import subprocess` to top-level imports.
-3. **`json` not imported at module level** — `_save_channels()` silently wrote empty file (0 bytes). Fix: added `import json as json_mod` to top-level imports.
-4. **rtl_airband daemonizes** — `Popen.poll()` always showed exited (parent forks and exits). Fix: always use `pgrep` for status, use `subprocess.run()` instead of `Popen` to start.
-5. **sdrplay_apiService ignores SIGTERM** — `systemctl restart sdrplay.service` hung for 30s+. Fix: `killall -9 sdrplay_apiService` then `systemctl start`.
-6. **rtl_airband ignores SIGTERM** — `killall rtl_airband` didn't kill old instances. Fix: `killall -9`.
-7. **Audio level bar scaling wrong** — divided by 327.68 (raw PCM), but `audio_level` is already 0-100%. Fix: use value directly.
-8. **`squelch_threshold` wrong type** — wrote positive integers, rtl_airband v5 requires negative dBFS. Fix: slider range -60 to 0, 0 = auto.
-9. **Sample rate dropdown blank** — JS `select.value = 2.0` becomes `"2"`, doesn't match option `"2.0"`. Fix: `setSelectByValue()` matches by closest numeric value.
-10. **Settings lost on restart** — no persistence. Fix: save `current` dict alongside channels in `sdr_channels.json`.
-11. **Misleading Bandwidth dropdown** — rtl_airband `sample_rate` IS the bandwidth. Removed separate bandwidth dropdown, expanded sample rate options to all RSPduo-supported values.
-
-## TH9800 CAT CHANNEL_TEXT VFO Mapping (2026-03-09) — MAJOR
-**Symptom:** `set_channel()` set channels on the wrong VFO, detected wrong mode, or failed entirely.
-
-**Root cause:** The TH9800 radio press response is unreliable for reading the pressed VFO's channel:
-- Dial PRESS response: returns the OTHER VFO's channel (not the pressed VFO's)
-- Dial STEP response: `_channel_text[vfo]` correctly holds the stepped VFO's channel
-- Background drain thread races with `set_channel` reads if not paused
-
-**Fix:** Don't trust press response at all. Read current channel via step-right + step-left (net zero).
-
-**Also fixed:**
-- `_pause_drain()` during entire `set_channel` (prevents background drain race)
-- `setup_radio` simplified: RTS set once (no `_with_usb_rts` save/restore)
-- Never presses V/M button (was causing mode toggles)
-- Response tracking: `_cmd_sent`, `_cmd_no_response`, `_last_no_response` counters
-- Web dashboard shows CAT reliability stats (CMD sent/missed)
-
-## CAT Socket Contention — Web UI Commands Ignored (2026-03-09)
-**Symptom:** Web UI radio buttons (dial up/down) had no effect. All commands showed "no response".
-**Root cause:** Background drain thread and `send_web_command` share one TCP socket.
-Setting `_drain_paused = True` is not enough — the drain thread may already be inside
-`_drain(0.5)` reading from the socket. It consumes the `!data` command response ("data sent")
-meant for `_send_cmd`, so the button press appears to have no effect.
-**Fix:** `_pause_drain()` sets the flag AND waits for `_drain_active` to go False (up to 1s),
-ensuring the drain thread has actually stopped reading before any command is sent.
-
-## TH9800_CAT Auth Per-Connection (2026-03-09)
-**Symptom:** Gateway loses auth after any second TCP client connects then disconnects.
-**Root cause:** `tcpserver_loggedin` was a shared instance variable on the TCP class.
-When ANY connection closed, it reset `loggedin = False` for all connections.
-**Fix (TH9800_CAT.py):** Made auth per-connection using `nonlocal conn_loggedin` in
-`handle_tcpserver_stream`. Also added auto-re-auth in gateway's `_send_cmd` on "Unauthorized".
-
-## Audio Streaming Ring Buffer (2026-03-08)
-**Symptom:** "No encoder data" errors, gaps in browser audio playback.
-**Root cause:** `pop(0)` shifted list indices but `pos` was absolute sequence number.
-**Fix:** Sequence-number ring buffer (`_mp3_seq`) immune to index shifting.
-
-## Save & Restart UnboundLocalError (2026-03-08)
-**Symptom:** `UnboundLocalError: cannot access local variable 'port'` on Save & Restart from web UI.
-**Fix:** Use `window.location.port` in JavaScript instead of Python-side `port` variable.
+## Playback & PTT Bugs (2026-03-14)
+- **Playback button queuing instead of replacing**: Pressing a new button (e.g. 8) while another (e.g. 3) was playing queued the new file behind the current one. User expected immediate switch. Fixed: `stop_playback()` called before queuing new file.
+- **PTT stuck after rapid button presses**: Multiple concurrent HTTP threads decoding files caused all files to queue up (stop+queue not atomic). PTT stayed active after all playback finished because `stop_playback()` didn't explicitly release PTT. Fixed: (1) `stop_playback()` now explicitly sets `ptt_active=False` and `_pending_ptt_state=False`, (2) background thread + lock + sequence counter serializes decode and discards stale requests.
+- **Concurrent decode race**: Multiple HTTP threads calling `queue_file()` simultaneously each decoded files concurrently, all appending to playlist despite `stop_playback()` being called. The stop+decode+queue sequence wasn't atomic across threads. Fixed: each button press gets a sequence number; decode runs in a background thread holding a lock; after decode, checks if sequence is still current before queuing.
+- **Status bar text flooding web log page**: `draw_status()` output leaked into `_append_log()` buffer when process had no controlling terminal (TTY=?). Status bar ANSI text appeared in the /logs page. Fixed: (1) `draw_status()` checks `isatty()` and suppresses when no terminal, (2) `_append_log()` filters lines containing ANSI codes with PTT/VAD/UP markers.

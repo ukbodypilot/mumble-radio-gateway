@@ -334,6 +334,8 @@ class Config:
             'WEB_CONFIG_PORT': 8080,
             'WEB_CONFIG_PASSWORD': '',    # Basic auth password (user: admin), blank = no auth
             'WEB_CONFIG_HTTPS': False,    # false, self-signed, or letsencrypt
+            'GATEWAY_NAME': '',           # Display name shown at top of dashboard (blank = none)
+            'WEB_THEME': 'blue',          # Dashboard color theme: blue, red, green, purple, amber, teal, pink
             # Cloudflare Tunnel (free public HTTPS access, no port forwarding needed)
             'SDR_INTERNAL_AUTOSTART': True,    # Auto-start internal SDR (rtl_airband) on gateway startup
             'SDR_INTERNAL_AUTOSTART_CHANNEL': 1,   # Channel slot to recall on autostart (-1 = use last settings)
@@ -908,6 +910,9 @@ class FilePlaybackSource(AudioSource):
         self.file_data = None
         self.file_position = 0
         self.playlist = []  # Queue of files to play
+        self._play_seq = 0  # Sequence counter — each button press gets a unique ID
+        import threading as _th
+        self._play_lock = _th.Lock()  # Serializes stop+decode+queue
         
         # Periodic announcement - auto-detect station_id file
         self.last_announcement_time = 0
@@ -1353,6 +1358,12 @@ class FilePlaybackSource(AudioSource):
 
         # Clear queue
         self.playlist.clear()
+
+        # Release PTT immediately (don't wait for timeout)
+        gw = self.gateway
+        if gw.ptt_active and not gw.manual_ptt_mode and not gw._rebroadcast_ptt_active:
+            gw.ptt_active = False
+            gw._pending_ptt_state = False
 
         # Restore RTS state
         self._restore_playback_rts()
@@ -6866,6 +6877,36 @@ class WebConfigServer:
         self._ws_clients = []         # list of (socket, queue) tuples for WebSocket PCM clients
         self._ws_lock = threading.Lock()
 
+    # Color themes — all dark backgrounds with colored accents
+    THEMES = {
+        'blue':   {'bg': '#1a1a2e', 'panel': '#16213e', 'border': '#0f3460', 'accent': '#00d4ff',
+                   'btn': '#0d1b2a', 'btn_border': '#1b3a5c', 'btn_hover': '#1a2744',
+                   'btn_active_bg': '#0f3460', 'checkbox': '#00d4ff'},
+        'red':    {'bg': '#1a1212', 'panel': '#2e1616', 'border': '#601010', 'accent': '#ff4444',
+                   'btn': '#1e0d0d', 'btn_border': '#5c1b1b', 'btn_hover': '#3a1a1a',
+                   'btn_active_bg': '#601010', 'checkbox': '#ff4444'},
+        'green':  {'bg': '#121a14', 'panel': '#162e1a', 'border': '#0f6020', 'accent': '#2ecc71',
+                   'btn': '#0d1e10', 'btn_border': '#1b5c2a', 'btn_hover': '#1a3a20',
+                   'btn_active_bg': '#0f6020', 'checkbox': '#2ecc71'},
+        'purple': {'bg': '#1a1226', 'panel': '#261638', 'border': '#3d0f60', 'accent': '#b56eff',
+                   'btn': '#160d24', 'btn_border': '#3d1b5c', 'btn_hover': '#2a1a44',
+                   'btn_active_bg': '#3d0f60', 'checkbox': '#b56eff'},
+        'amber':  {'bg': '#1a1710', 'panel': '#2e2616', 'border': '#60480f', 'accent': '#ffb830',
+                   'btn': '#1e1a0d', 'btn_border': '#5c481b', 'btn_hover': '#3a301a',
+                   'btn_active_bg': '#60480f', 'checkbox': '#ffb830'},
+        'teal':   {'bg': '#101a1a', 'panel': '#162e2e', 'border': '#0f6060', 'accent': '#2ed8d8',
+                   'btn': '#0d1e1e', 'btn_border': '#1b5c5c', 'btn_hover': '#1a3a3a',
+                   'btn_active_bg': '#0f6060', 'checkbox': '#2ed8d8'},
+        'pink':   {'bg': '#1a1018', 'panel': '#2e1628', 'border': '#600f50', 'accent': '#ff69b4',
+                   'btn': '#1e0d1a', 'btn_border': '#5c1b4a', 'btn_hover': '#3a1a32',
+                   'btn_active_bg': '#600f50', 'checkbox': '#ff69b4'},
+    }
+
+    def _get_theme(self):
+        """Return the current theme color dict."""
+        name = str(getattr(self.config, 'WEB_THEME', 'blue')).lower().strip()
+        return self.THEMES.get(name, self.THEMES['blue'])
+
     def start(self):
         """Start the HTTP server on a daemon thread."""
         import http.server
@@ -8144,44 +8185,54 @@ class WebConfigServer:
 
     def _wrap_html(self, title, body):
         """Wrap body content in the standard HTML shell."""
+        t = self._get_theme()
+        gw_name = str(getattr(self.config, 'GATEWAY_NAME', '') or '').strip()
+        _title_prefix = f'{gw_name} - ' if gw_name else ''
         return f'''<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Radio Gateway - {title}</title>
+<title>{_title_prefix}Radio Gateway - {title}</title>
 <style>
+  :root {{
+    --t-bg: {t['bg']}; --t-panel: {t['panel']}; --t-border: {t['border']};
+    --t-accent: {t['accent']}; --t-btn: {t['btn']}; --t-btn-border: {t['btn_border']};
+    --t-btn-hover: {t['btn_hover']}; --t-btn-active: {t['btn_active_bg']};
+    --t-checkbox: {t['checkbox']};
+  }}
   * {{ box-sizing: border-box; }}
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
-         background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 20px; }}
-  h1 {{ color: #00d4ff; margin: 0 0 20px; font-size: 1.4em; }}
-  h2 {{ color: #00d4ff; margin: 10px 0; font-size: 1.2em; }}
-  a {{ color: #00d4ff; }}
-  details {{ background: #16213e; border: 1px solid #0f3460; border-radius: 6px;
+         background: var(--t-bg); color: #e0e0e0; margin: 0; padding: 20px; }}
+  h1 {{ color: var(--t-accent); margin: 0 0 20px; font-size: 1.4em; }}
+  h2 {{ color: var(--t-accent); margin: 10px 0; font-size: 1.2em; }}
+  a {{ color: var(--t-accent); }}
+  details {{ background: var(--t-panel); border: 1px solid var(--t-border); border-radius: 6px;
             margin: 8px 0; }}
-  summary {{ cursor: pointer; padding: 10px 14px; font-weight: bold; color: #00d4ff;
+  summary {{ cursor: pointer; padding: 10px 14px; font-weight: bold; color: var(--t-accent);
             font-size: 0.95em; user-select: none; }}
-  summary:hover {{ background: #1a2744; }}
+  summary:hover {{ background: var(--t-btn-hover); }}
   .fields {{ padding: 8px 14px 14px; }}
   .field {{ display: flex; align-items: center; margin: 4px 0; gap: 8px; }}
   .field label {{ min-width: 320px; font-size: 0.85em; color: #b0b0b0; }}
   .field input[type="text"], .field input[type="number"], .field input[type="password"] {{
-    flex: 1; background: #0d1b2a; border: 1px solid #1b3a5c; color: #e0e0e0;
+    flex: 1; background: var(--t-btn); border: 1px solid var(--t-btn-border); color: #e0e0e0;
     padding: 5px 8px; border-radius: 3px; font-family: monospace; font-size: 0.85em;
     max-width: 500px; }}
-  .field input[type="checkbox"] {{ width: 18px; height: 18px; accent-color: #00d4ff; }}
+  .field input[type="checkbox"] {{ width: 18px; height: 18px; accent-color: var(--t-checkbox); }}
   .field .default {{ font-size: 0.75em; color: #666; margin-left: 8px; }}
-  .buttons {{ position: sticky; top: 0; background: #1a1a2e; padding: 10px 0;
-             z-index: 10; border-bottom: 1px solid #0f3460; margin-bottom: 10px;
+  .buttons {{ position: sticky; top: 0; background: var(--t-bg); padding: 10px 0;
+             z-index: 10; border-bottom: 1px solid var(--t-border); margin-bottom: 10px;
              display: flex; gap: 10px; }}
   button {{ padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer;
            font-size: 0.9em; font-weight: bold; }}
-  .btn-save {{ background: #0f3460; color: #e0e0e0; }}
-  .btn-save:hover {{ background: #1a4a7a; }}
+  .btn-save {{ background: var(--t-border); color: #e0e0e0; }}
+  .btn-save:hover {{ background: var(--t-btn-hover); }}
   .btn-restart {{ background: #c0392b; color: #fff; }}
   .btn-restart:hover {{ background: #e74c3c; }}
   .btn-exit {{ background: #7d3c98; color: #fff; margin-left: auto; }}
   .btn-exit:hover {{ background: #9b59b6; }}
 </style>
+<script>var _T={{bg:'{t['bg']}',panel:'{t['panel']}',border:'{t['border']}',accent:'{t['accent']}',btn:'{t['btn']}',btnBorder:'{t['btn_border']}',btnHover:'{t['btn_hover']}',btnActive:'{t['btn_active_bg']}'}}</script>
 </head><body>{body}</body></html>'''
 
     def _generate_logs_page(self):
@@ -8201,14 +8252,14 @@ class WebConfigServer:
     <input type="checkbox" id="auto-scroll" checked> Auto-scroll
   </label>
   <label style="color:#888; font-size:0.85em;">
-    Filter: <input type="text" id="log-filter" placeholder="regex..." style="background:#0d1b2a; color:#e0e0e0; border:1px solid #1b3a5c; border-radius:3px; padding:2px 6px; width:200px; font-size:0.85em;">
+    Filter: <input type="text" id="log-filter" placeholder="regex..." style="background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:3px; padding:2px 6px; width:200px; font-size:0.85em;">
   </label>
   <button class="rb rb-sm" onclick="clearLog()">Clear</button>
   <button class="rb rb-sm" id="btn-trace" onclick="toggleTrace('audio')">Audio Trace</button>
   <button class="rb rb-sm" id="btn-watchdog" onclick="toggleTrace('watchdog')">Watchdog Trace</button>
   <span id="log-status" style="color:#888; font-size:0.8em;"></span>
 </div>
-<div id="log-box" style="background:#0a0a0a; border:1px solid #1b3a5c; border-radius:4px; padding:8px; height:calc(100vh - 160px); overflow-y:auto; font-family:'Courier New',monospace; font-size:0.82em; line-height:1.5; white-space:pre-wrap; word-break:break-all; color:#c0c0c0;">
+<div id="log-box" style="background:#0a0a0a; border:1px solid var(--t-btn-border); border-radius:4px; padding:8px; height:calc(100vh - 160px); overflow-y:auto; font-family:'Courier New',monospace; font-size:0.82em; line-height:1.5; white-space:pre-wrap; word-break:break-all; color:#c0c0c0;">
 </div>
 
 <script>
@@ -8225,9 +8276,9 @@ function toggleTrace(type) {
     .then(function(d) {
       var btn = document.getElementById(type==='audio'?'btn-trace':'btn-watchdog');
       if (d.active) {
-        btn.style.background = '#0f3460';
-        btn.style.borderColor = '#00d4ff';
-        btn.style.color = '#00d4ff';
+        btn.style.background = _T.btnActive;
+        btn.style.borderColor = _T.accent;
+        btn.style.color = _T.accent;
       } else {
         btn.style.background = '';
         btn.style.borderColor = '';
@@ -8240,8 +8291,8 @@ function updateTraceButtons() {
   fetch('/tracestatus').then(function(r){ return r.json(); }).then(function(d) {
     var ab = document.getElementById('btn-trace');
     var wb = document.getElementById('btn-watchdog');
-    if (d.audio_trace) { ab.style.background='#0f3460'; ab.style.borderColor='#00d4ff'; ab.style.color='#00d4ff'; }
-    if (d.watchdog_trace) { wb.style.background='#0f3460'; wb.style.borderColor='#00d4ff'; wb.style.color='#00d4ff'; }
+    if (d.audio_trace) { ab.style.background=_T.btnActive; ab.style.borderColor=_T.accent; ab.style.color=_T.accent; }
+    if (d.watchdog_trace) { wb.style.background=_T.btnActive; wb.style.borderColor=_T.accent; wb.style.color=_T.accent; }
   }).catch(function(){});
 }
 updateTraceButtons();
@@ -8318,7 +8369,7 @@ fetch('/logdata?after=0')
 <h1 style="font-size:1.8em">TH-9800 Radio Control</h1>
 <p><a href="/">Dashboard</a> | <a href="/config">Config Editor</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>
 
-<div id="cat-offline" style="display:none; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px; margin-bottom:14px;">
+<div id="cat-offline" style="display:none; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; margin-bottom:14px;">
   <span id="cat-offline-msg" style="color:#e74c3c; font-weight:bold;">CAT not connected</span>
   <button id="cat-connect-btn" onclick="catConnect()" class="rb" style="margin-left:14px;">Connect</button>
   <span id="cat-connect-status" style="color:#888; margin-left:10px; font-size:0.9em;"></span>
@@ -8327,7 +8378,7 @@ fetch('/logdata?after=0')
 <div id="radio-panel" style="display:none;">
 
 <!-- Connection + RTS Control -->
-<div style="margin-bottom:14px; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+<div style="margin-bottom:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
   <span style="color:#888; font-size:0.85em;">TCP:</span>
   <button onclick="catDisconnect()" class="rb rb-sm" style="background:#c0392b; border-color:#e74c3c;">Disconnect</button>
   <button onclick="catReconnect()" class="rb rb-sm">Reconnect</button>
@@ -8347,9 +8398,9 @@ fetch('/logdata?after=0')
 <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(400px, 1fr)); gap:14px; margin-bottom:14px;">
 
   <!-- LEFT VFO -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <span style="color:#00d4ff; font-weight:bold; font-size:1.1em;">LEFT VFO</span>
+      <span style="color:var(--t-accent); font-weight:bold; font-size:1.1em;">LEFT VFO</span>
       <span id="l-main" class="icon-badge" style="display:none;">MAIN</span>
     </div>
 
@@ -8370,7 +8421,7 @@ fetch('/logdata?after=0')
     </div>
 
     <!-- Channel & Frequency display -->
-    <div id="l-freq-box" style="background:#0d1b2a; border:1px solid #1b3a5c; border-radius:4px; padding:10px; margin-bottom:10px; font-family:monospace; transition:background 0.2s, border-color 0.2s;">
+    <div id="l-freq-box" style="background:var(--t-btn); border:1px solid var(--t-btn-border); border-radius:4px; padding:10px; margin-bottom:10px; font-family:monospace; transition:background 0.2s, border-color 0.2s;">
       <div style="display:flex; justify-content:space-between; align-items:baseline;">
         <span style="color:#888; font-size:0.85em;">CH: <span id="l-ch" style="color:#2ecc71;">—</span></span>
         <span id="l-power" style="color:#f39c12; font-size:0.85em;">—</span>
@@ -8382,7 +8433,7 @@ fetch('/logdata?after=0')
     <div style="margin-bottom:10px;">
       <div style="display:flex; align-items:center; gap:8px;">
         <span style="color:#888; font-size:0.85em;">S:</span>
-        <div style="flex:1; background:#0d1b2a; border:1px solid #1b3a5c; border-radius:3px; height:18px; position:relative; overflow:hidden;">
+        <div style="flex:1; background:var(--t-btn); border:1px solid var(--t-btn-border); border-radius:3px; height:18px; position:relative; overflow:hidden;">
           <div id="l-sig-bar" style="height:100%; background:#2ecc71; width:0%; transition:width 0.3s;"></div>
           <span id="l-sig-text" style="position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); font-size:0.75em; color:#fff; font-weight:bold;">S0</span>
         </div>
@@ -8400,7 +8451,7 @@ fetch('/logdata?after=0')
     <div style="margin-bottom:8px;">
       <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
         <span style="color:#888; font-size:0.85em; min-width:30px;">VOL</span>
-        <input id="l-vol" type="range" min="0" max="100" value="25" style="flex:1; accent-color:#00d4ff;" oninput="catVol('LEFT',this.value)">
+        <input id="l-vol" type="range" min="0" max="100" value="25" style="flex:1; accent-color:var(--t-accent);" oninput="catVol('LEFT',this.value)">
         <span id="l-vol-val" style="color:#ccc; font-family:monospace; font-size:0.85em; min-width:3em;">25</span>
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
@@ -8426,9 +8477,9 @@ fetch('/logdata?after=0')
   </div>
 
   <!-- RIGHT VFO -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <span style="color:#00d4ff; font-weight:bold; font-size:1.1em;">RIGHT VFO</span>
+      <span style="color:var(--t-accent); font-weight:bold; font-size:1.1em;">RIGHT VFO</span>
       <span id="r-main" class="icon-badge" style="display:none;">MAIN</span>
     </div>
 
@@ -8449,7 +8500,7 @@ fetch('/logdata?after=0')
     </div>
 
     <!-- Channel & Frequency display -->
-    <div id="r-freq-box" style="background:#0d1b2a; border:1px solid #1b3a5c; border-radius:4px; padding:10px; margin-bottom:10px; font-family:monospace; transition:background 0.2s, border-color 0.2s;">
+    <div id="r-freq-box" style="background:var(--t-btn); border:1px solid var(--t-btn-border); border-radius:4px; padding:10px; margin-bottom:10px; font-family:monospace; transition:background 0.2s, border-color 0.2s;">
       <div style="display:flex; justify-content:space-between; align-items:baseline;">
         <span style="color:#888; font-size:0.85em;">CH: <span id="r-ch" style="color:#2ecc71;">—</span></span>
         <span id="r-power" style="color:#f39c12; font-size:0.85em;">—</span>
@@ -8461,7 +8512,7 @@ fetch('/logdata?after=0')
     <div style="margin-bottom:10px;">
       <div style="display:flex; align-items:center; gap:8px;">
         <span style="color:#888; font-size:0.85em;">S:</span>
-        <div style="flex:1; background:#0d1b2a; border:1px solid #1b3a5c; border-radius:3px; height:18px; position:relative; overflow:hidden;">
+        <div style="flex:1; background:var(--t-btn); border:1px solid var(--t-btn-border); border-radius:3px; height:18px; position:relative; overflow:hidden;">
           <div id="r-sig-bar" style="height:100%; background:#2ecc71; width:0%; transition:width 0.3s;"></div>
           <span id="r-sig-text" style="position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); font-size:0.75em; color:#fff; font-weight:bold;">S0</span>
         </div>
@@ -8479,7 +8530,7 @@ fetch('/logdata?after=0')
     <div style="margin-bottom:8px;">
       <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
         <span style="color:#888; font-size:0.85em; min-width:30px;">VOL</span>
-        <input id="r-vol" type="range" min="0" max="100" value="25" style="flex:1; accent-color:#00d4ff;" oninput="catVol('RIGHT',this.value)">
+        <input id="r-vol" type="range" min="0" max="100" value="25" style="flex:1; accent-color:var(--t-accent);" oninput="catVol('RIGHT',this.value)">
         <span id="r-vol-val" style="color:#ccc; font-family:monospace; font-size:0.85em; min-width:3em;">25</span>
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
@@ -8507,8 +8558,8 @@ fetch('/logdata?after=0')
 
 <!-- Common controls: Menu/SET + Single VFO | PTT -->
 <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px;">
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
-    <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">Menu / SET</div>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px;">
+    <div style="color:var(--t-accent); font-weight:bold; margin-bottom:8px;">Menu / SET</div>
     <div style="display:flex; gap:6px; justify-content:center; flex-wrap:wrap;">
       <button class="rb" onclick="catCmd('N_SET')">SET</button>
       <button class="rb" onclick="catCmd('N_SET_HOLD')">SET (Hold)</button>
@@ -8525,8 +8576,8 @@ fetch('/logdata?after=0')
   </div>
 
   <!-- PTT -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
-    <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">PTT</div>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px;">
+    <div style="color:var(--t-accent); font-weight:bold; margin-bottom:8px;">PTT</div>
     <div style="display:flex; gap:18px; align-items:flex-start; justify-content:center;">
       <div style="display:flex; flex-direction:column; align-items:center;">
         <div style="height:10px;"></div>
@@ -8535,7 +8586,7 @@ fetch('/logdata?after=0')
         <span style="color:#888; font-size:0.75em; margin-top:6px;">Toggle TX</span>
       </div>
       <div style="display:flex; flex-direction:column; align-items:center;">
-        <div id="mic-level" style="width:80px; height:6px; background:#0d1b2a; border-radius:3px; margin-bottom:4px; overflow:hidden;">
+        <div id="mic-level" style="width:80px; height:6px; background:var(--t-btn); border-radius:3px; margin-bottom:4px; overflow:hidden;">
           <div id="mic-level-bar" style="height:100%; width:0%; background:#2ecc71; transition:width 0.1s;"></div>
         </div>
         <button id="mic-ptt-btn" class="rb" style="width:80px; height:80px; font-size:1.4em; font-weight:bold; border-radius:50%; background:#1a3a1a; border-color:#2ecc71;"
@@ -8550,8 +8601,8 @@ fetch('/logdata?after=0')
 <div style="display:grid; grid-template-columns:auto 1fr auto; gap:14px; margin-bottom:14px;">
 
   <!-- Hyper Memories -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 14px;">
-    <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">Hyper Memories</div>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px;">
+    <div style="color:var(--t-accent); font-weight:bold; margin-bottom:8px;">Hyper Memories</div>
     <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
       <button class="rb" onclick="catCmd('HYPER_A')">A</button>
       <button class="rb" onclick="catCmd('HYPER_B')">B</button>
@@ -8563,8 +8614,8 @@ fetch('/logdata?after=0')
   </div>
 
   <!-- Mic Keypad (number grid only) -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 14px;">
-    <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">Mic Keypad</div>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px;">
+    <div style="color:var(--t-accent); font-weight:bold; margin-bottom:8px;">Mic Keypad</div>
     <div style="display:grid; grid-template-columns:repeat(4, 50px); gap:6px; justify-content:center;">
       <button class="rb" onclick="catCmd('MIC_1')">1</button>
       <button class="rb" onclick="catCmd('MIC_2')">2</button>
@@ -8589,8 +8640,8 @@ fetch('/logdata?after=0')
   </div>
 
   <!-- Mic Controls -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 14px;">
-    <div style="color:#00d4ff; font-weight:bold; margin-bottom:8px;">Mic Controls</div>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px;">
+    <div style="color:var(--t-accent); font-weight:bold; margin-bottom:8px;">Mic Controls</div>
     <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
       <button class="rb" onclick="catCmd('MIC_P1')">P1</button>
       <button class="rb" onclick="catCmd('MIC_P2')">P2</button>
@@ -8606,12 +8657,12 @@ fetch('/logdata?after=0')
 </div><!-- /radio-panel -->
 
 <style>
-  .rb { padding:8px 14px; border:1px solid #1b3a5c; border-radius:4px; background:#0d1b2a;
+  .rb { padding:8px 14px; border:1px solid var(--t-btn-border); border-radius:4px; background:var(--t-btn);
         color:#e0e0e0; cursor:pointer; font-family:monospace; font-size:0.95em; min-width:44px; }
-  .rb:hover { background:#1a2744; border-color:#00d4ff; }
-  .rb:active { background:#0f3460; }
+  .rb:hover { background:var(--t-btn-hover); border-color:var(--t-accent); }
+  .rb:active { background:var(--t-border); }
   .rb-sm { font-size:0.8em; padding:5px 10px; }
-  .icon-off { padding:2px 6px; border-radius:3px; background:#0d1b2a; color:#555; border:1px solid #1b3a5c; }
+  .icon-off { padding:2px 6px; border-radius:3px; background:var(--t-btn); color:#555; border:1px solid var(--t-btn-border); }
   .icon-on { padding:2px 6px; border-radius:3px; background:#c0392b; color:#fff; border:1px solid #e74c3c; }
   .icon-badge { padding:2px 8px; border-radius:3px; background:#c0392b; color:#fff; font-size:0.85em; font-weight:bold; }
 </style>
@@ -8649,8 +8700,8 @@ function togglePTT() {
     btn.style.borderColor = '#e74c3c';
     btn.style.color = '#fff';
   } else {
-    btn.style.background = '#0d1b2a';
-    btn.style.borderColor = '#1b3a5c';
+    btn.style.background = _T.btn;
+    btn.style.borderColor = _T.btnBorder;
     btn.style.color = '#e0e0e0';
   }
 }
@@ -8857,7 +8908,7 @@ function updateRadio() {
     // PTT indication — red background on freq display when TX active
     var lBox = document.getElementById('l-freq-box');
     if (li.TX) { lBox.style.background = '#5c1a1a'; lBox.style.borderColor = '#e74c3c'; }
-    else { lBox.style.background = '#0d1b2a'; lBox.style.borderColor = '#1b3a5c'; }
+    else { lBox.style.background = _T.btn; lBox.style.borderColor = _T.btnBorder; }
 
     // RIGHT VFO
     var R = d.right;
@@ -8876,7 +8927,7 @@ function updateRadio() {
     // PTT indication — red background on freq display when TX active
     var rBox = document.getElementById('r-freq-box');
     if (ri.TX) { rBox.style.background = '#5c1a1a'; rBox.style.borderColor = '#e74c3c'; }
-    else { rBox.style.background = '#0d1b2a'; rBox.style.borderColor = '#1b3a5c'; }
+    else { rBox.style.background = _T.btn; rBox.style.borderColor = _T.btnBorder; }
 
     // Common icons
     var ci = d.common || {};
@@ -8907,19 +8958,19 @@ updateRadio();
 <p><a href="/">Dashboard</a> | <a href="/radio">Radio</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
 
 <!-- Status bar -->
-<div id="sdr-status-bar" style="display:flex; align-items:center; gap:14px; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 16px; margin-bottom:14px;">
+<div id="sdr-status-bar" style="display:flex; align-items:center; gap:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 16px; margin-bottom:14px;">
   <span id="sdr-proc-badge" style="padding:3px 10px; border-radius:4px; font-weight:bold; font-size:0.85em;">--</span>
   <span id="sdr-freq-display" style="font-size:2.2em; font-weight:bold; color:#00ff88; font-family:monospace; letter-spacing:2px;">---.--- MHz</span>
-  <span id="sdr-mod-badge" style="padding:3px 10px; border-radius:4px; background:#0f3460; color:#00d4ff; font-weight:bold; font-size:0.9em;">--</span>
-  <span id="sdr-sr-badge" style="padding:3px 10px; border-radius:4px; background:#0f3460; color:#ccc; font-size:0.85em;">SR: --</span>
-  <span id="sdr-ant-badge" style="padding:3px 10px; border-radius:4px; background:#0f3460; color:#ccc; font-size:0.85em;">ANT: --</span>
+  <span id="sdr-mod-badge" style="padding:3px 10px; border-radius:4px; background:var(--t-border); color:var(--t-accent); font-weight:bold; font-size:0.9em;">--</span>
+  <span id="sdr-sr-badge" style="padding:3px 10px; border-radius:4px; background:var(--t-border); color:#ccc; font-size:0.85em;">SR: --</span>
+  <span id="sdr-ant-badge" style="padding:3px 10px; border-radius:4px; background:var(--t-border); color:#ccc; font-size:0.85em;">ANT: --</span>
 </div>
 
 <!-- Audio level bar -->
-<div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:10px 16px; margin-bottom:14px;">
+<div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 16px; margin-bottom:14px;">
   <div style="display:flex; align-items:center; gap:10px;">
     <span style="color:#b0b0b0; font-size:0.85em; min-width:70px;">Audio Level</span>
-    <div style="flex:1; background:#0d1b2a; border-radius:3px; height:20px; overflow:hidden;">
+    <div style="flex:1; background:var(--t-btn); border-radius:3px; height:20px; overflow:hidden;">
       <div id="sdr-audio-bar" style="height:100%; width:0%; background:linear-gradient(90deg,#00ff88,#ffcc00,#ff4444); transition:width 0.3s;"></div>
     </div>
     <span id="sdr-audio-val" style="color:#b0b0b0; font-size:0.85em; min-width:40px; text-align:right;">0</span>
@@ -8930,11 +8981,11 @@ updateRadio();
 <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:14px; margin-bottom:14px;">
 
   <!-- Frequency -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
-    <h3 style="color:#00d4ff; margin:0 0 10px; font-size:0.95em;">Frequency</h3>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px;">
+    <h3 style="color:var(--t-accent); margin:0 0 10px; font-size:0.95em;">Frequency</h3>
     <div style="display:flex; align-items:center; gap:6px; margin-bottom:8px;">
       <input type="number" id="sdr-freq" step="0.00125" min="0.001" max="2000" value="446.760"
-             style="flex:1; background:#0d1b2a; border:1px solid #1b3a5c; color:#00ff88; padding:8px; border-radius:4px; font-family:monospace; font-size:1.3em; text-align:center;">
+             style="flex:1; background:var(--t-btn); border:1px solid var(--t-btn-border); color:#00ff88; padding:8px; border-radius:4px; font-family:monospace; font-size:1.3em; text-align:center;">
       <span style="color:#b0b0b0;">MHz</span>
     </div>
     <div style="display:flex; gap:4px; flex-wrap:wrap;">
@@ -8948,8 +8999,8 @@ updateRadio();
   </div>
 
   <!-- Modulation & Sample Rate -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
-    <h3 style="color:#00d4ff; margin:0 0 10px; font-size:0.95em;">Modulation & Sampling</h3>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px;">
+    <h3 style="color:var(--t-accent); margin:0 0 10px; font-size:0.95em;">Modulation & Sampling</h3>
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
       <label style="color:#b0b0b0; font-size:0.85em; min-width:80px;">Mode</label>
       <select id="sdr-mod" class="si">
@@ -8990,8 +9041,8 @@ updateRadio();
   </div>
 
   <!-- Gain Control -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
-    <h3 style="color:#00d4ff; margin:0 0 10px; font-size:0.95em;">Gain Control</h3>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px;">
+    <h3 style="color:var(--t-accent); margin:0 0 10px; font-size:0.95em;">Gain Control</h3>
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
       <label style="color:#b0b0b0; font-size:0.85em; min-width:80px;">Mode</label>
       <select id="sdr-gain-mode" class="si" onchange="toggleGainSliders()">
@@ -9024,8 +9075,8 @@ updateRadio();
   </div>
 
   <!-- Squelch & Options -->
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
-    <h3 style="color:#00d4ff; margin:0 0 10px; font-size:0.95em;">Squelch & Device Options</h3>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px;">
+    <h3 style="color:var(--t-accent); margin:0 0 10px; font-size:0.95em;">Squelch & Device Options</h3>
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
       <label style="color:#b0b0b0; font-size:0.85em; min-width:80px;">Squelch</label>
       <input type="range" id="sdr-squelch" min="-60" max="0" value="0" style="flex:1;"
@@ -9045,8 +9096,8 @@ updateRadio();
 
 <!-- Audio Processing -->
 <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:14px; margin-bottom:14px;">
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
-    <h3 style="color:#00d4ff; margin:0 0 10px; font-size:0.95em;">Audio Filters</h3>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px;">
+    <h3 style="color:var(--t-accent); margin:0 0 10px; font-size:0.95em;">Audio Filters</h3>
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
       <label style="color:#b0b0b0; font-size:0.85em; min-width:90px;">Amp Factor</label>
       <input type="number" id="sdr-ampfactor" step="0.1" min="0" max="10" value="1.0" class="si" style="width:80px;">
@@ -9078,8 +9129,8 @@ updateRadio();
       <span style="color:#666; font-size:0.75em;">selectivity (default 10)</span>
     </div>
   </div>
-  <div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px;">
-    <h3 style="color:#00d4ff; margin:0 0 10px; font-size:0.95em;">Device Tuning</h3>
+  <div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px;">
+    <h3 style="color:var(--t-accent); margin:0 0 10px; font-size:0.95em;">Device Tuning</h3>
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
       <label style="color:#b0b0b0; font-size:0.85em; min-width:90px;">Correction</label>
       <input type="number" id="sdr-correction" step="0.1" min="-100" max="100" value="0" class="si" style="width:80px;">
@@ -9111,12 +9162,12 @@ updateRadio();
 <div id="sdr-apply-status" style="color:#888; font-size:0.9em; margin-bottom:14px; min-height:1.2em;"></div>
 
 <!-- Channel Memory -->
-<div style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:14px; margin-bottom:14px;">
-  <h3 style="color:#00d4ff; margin:0 0 10px; font-size:0.95em;">Channel Memory</h3>
+<div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; margin-bottom:14px;">
+  <h3 style="color:var(--t-accent); margin:0 0 10px; font-size:0.95em;">Channel Memory</h3>
   <div id="ch-grid" style="display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin-bottom:10px;">
   </div>
   <div style="display:flex; gap:8px; align-items:center;">
-    <input type="text" id="ch-name" placeholder="Channel name" style="flex:1; background:#0d1b2a; border:1px solid #1b3a5c; color:#e0e0e0; padding:6px 10px; border-radius:4px; font-size:0.9em;">
+    <input type="text" id="ch-name" placeholder="Channel name" style="flex:1; background:var(--t-btn); border:1px solid var(--t-btn-border); color:#e0e0e0; padding:6px 10px; border-radius:4px; font-size:0.9em;">
     <select id="ch-slot" class="si" style="width:70px;">
       <option value="0">CH 0</option><option value="1">CH 1</option><option value="2">CH 2</option>
       <option value="3">CH 3</option><option value="4">CH 4</option><option value="5">CH 5</option>
@@ -9129,16 +9180,16 @@ updateRadio();
 </div>
 
 <style>
-  .sb { padding:6px 12px; background:#0f3460; color:#e0e0e0; border:1px solid #1b3a5c; border-radius:4px; cursor:pointer; font-size:0.85em; }
+  .sb { padding:6px 12px; background:var(--t-border); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; cursor:pointer; font-size:0.85em; }
   .sb:hover { background:#1a4a7a; }
   .sb:active { background:#27ae60; }
-  .si { background:#0d1b2a; border:1px solid #1b3a5c; color:#e0e0e0; padding:6px 8px; border-radius:4px; font-size:0.9em; }
+  .si { background:var(--t-btn); border:1px solid var(--t-btn-border); color:#e0e0e0; padding:6px 8px; border-radius:4px; font-size:0.9em; }
   .tgl { display:flex; align-items:center; gap:6px; color:#b0b0b0; font-size:0.85em; padding:4px 0; cursor:pointer; }
-  .tgl input { width:16px; height:16px; accent-color:#00d4ff; }
-  .ch-btn { width:100%; padding:10px 4px; border:1px solid #1b3a5c; border-radius:6px; cursor:pointer; font-size:0.8em; text-align:center; background:#0d1b2a; color:#888; transition:all 0.2s; }
-  .ch-btn.active { background:#0f3460; color:#00ff88; border-color:#00d4ff; }
+  .tgl input { width:16px; height:16px; accent-color:var(--t-accent); }
+  .ch-btn { width:100%; padding:10px 4px; border:1px solid var(--t-btn-border); border-radius:6px; cursor:pointer; font-size:0.8em; text-align:center; background:var(--t-btn); color:#888; transition:all 0.2s; }
+  .ch-btn.active { background:var(--t-border); color:#00ff88; border-color:var(--t-accent); }
   .ch-btn.current { background:#27ae60; color:#fff; border-color:#27ae60; }
-  .ch-btn:hover { border-color:#00d4ff; }
+  .ch-btn:hover { border-color:var(--t-accent); }
   .ch-btn .ch-freq { font-family:monospace; font-size:0.95em; }
   .ch-btn .ch-name { font-size:0.75em; color:#aaa; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 </style>
@@ -9641,17 +9692,19 @@ pollTimer = setInterval(pollStatus, 1000);
     def _generate_dashboard(self):
         """Build the live status dashboard HTML page."""
         port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
-        body = '''
-<h1 style="font-size:1.8em">Radio Gateway Dashboard</h1>
-<p style="margin:0 0 14px;font-size:1.1em"><a href="/config">Config Editor</a> | <a href="/radio">Radio Control</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>
+        gw_name = str(getattr(self.config, 'GATEWAY_NAME', '') or '').strip()
+        _name_html = '<span style="color:#e0e0e0">' + gw_name + '</span> &mdash; ' if gw_name else ''
+        body = '<h1 style="font-size:1.8em; margin:0 0 10px">' + _name_html + 'Radio Gateway Dashboard</h1>'
+        body += '''
+<p style="margin:0 0 10px;font-size:1.1em"><a href="/config">Config Editor</a> | <a href="/radio">Radio Control</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>
 
-<div class="ctrl-group" id="listen-top">
-  <h3>Listen</h3>
-  <div style="display:flex; gap:16px; flex-wrap:nowrap;">
+<div class="ctrl-group" id="listen-top" style="margin-bottom:10px;">
+  <h3>Controls</h3>
+  <div style="display:flex; gap:16px; flex-wrap:nowrap; align-items:center;">
     <div style="width:140px;">
       <div style="display:flex; align-items:center; gap:4px;">
         <button id="play-btn" onclick="toggleStream()" style="width:62px; text-align:center;">&#9654; MP3</button>
-        <input id="vol-slider" type="range" min="0" max="100" value="100" style="width:50px; accent-color:#00d4ff;" oninput="setVolume(this.value)">
+        <input id="vol-slider" type="range" min="0" max="100" value="100" style="width:50px; accent-color:var(--t-accent);" oninput="setVolume(this.value)">
         <span id="stream-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:#2ecc71; box-shadow:0 0 6px #2ecc71;"></span>
       </div>
       <div id="stream-status" style="color:#888; font-size:0.75em; margin-top:3px; min-height:1.1em;"></div>
@@ -9659,17 +9712,22 @@ pollTimer = setInterval(pollStatus, 1000);
     <div style="width:140px;">
       <div style="display:flex; align-items:center; gap:4px;">
         <button id="ws-btn" onclick="toggleWS()" style="width:62px; text-align:center;">&#9654; PCM</button>
-        <input id="ws-vol" type="range" min="0" max="100" value="100" style="width:50px; accent-color:#00d4ff;" oninput="setWSVol(this.value)">
-        <span id="ws-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:#00d4ff; box-shadow:0 0 6px #00d4ff;"></span>
+        <input id="ws-vol" type="range" min="0" max="100" value="100" style="width:50px; accent-color:var(--t-accent);" oninput="setWSVol(this.value)">
+        <span id="ws-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:var(--t-accent); box-shadow:0 0 6px var(--t-accent);"></span>
       </div>
       <div id="ws-status" style="color:#888; font-size:0.75em; margin-top:3px; min-height:1.1em;"></div>
+    </div>
+    <div style="display:flex; gap:3px; margin-left:auto;">
+      <button onclick="sendKey('@')">Send Email</button>
+      <button onclick="if(confirm('Restart gateway?'))sendKey('q')" class="btn-restart">Restart</button>
+      <button onclick="if(confirm('Exit the gateway server? This will stop all services.')){fetch('/exit',{method:'POST'}).then(()=>{document.body.innerHTML='<h1 style=&quot;color:#e0e0e0;text-align:center;margin-top:40vh&quot;>Gateway stopped.</h1>';});}" class="btn-exit">Exit Server</button>
     </div>
   </div>
 </div>
 
 <div id="status">Loading...</div>
 
-<div id="sysinfo" style="background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:18px; font-family:monospace; font-size:1.0em; margin-top:10px;">Loading...</div>
+<div id="sysinfo" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:1.0em; margin-top:10px;">Loading...</div>
 
 <div class="controls">
   <div class="ctrl-group" id="mute-group">
@@ -9717,9 +9775,9 @@ pollTimer = setInterval(pollStatus, 1000);
   </div>
   </div>
 
-<div id="playback-section" style="margin-top:18px; display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start;">
+<div id="playback-section" style="margin-top:10px; display:flex; flex-wrap:wrap; gap:10px; align-items:flex-start;">
   <div class="ctrl-group" style="min-width:0; display:inline-block;" id="playback-group">
-    <h3 style="margin:0 0 10px; color:#00d4ff; font-size:1.1em;">Playback</h3>
+    <h3 style="margin:0 0 10px; color:var(--t-accent); font-size:1.1em;">Playback</h3>
     <div style="display:flex; gap:18px; flex-wrap:nowrap;">
       <div>
         <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:3px;">
@@ -9773,9 +9831,9 @@ pollTimer = setInterval(pollStatus, 1000);
   <div class="ctrl-group" style="min-width:280px; width:280px;" id="tts-group">
     <h3>Text to Speech</h3>
     <div style="display:flex; flex-direction:column; gap:3px;">
-      <textarea id="tts-text" rows="3" style="width:100%; box-sizing:border-box; background:#0d1b2a; color:#e0e0e0; border:1px solid #1b3a5c; border-radius:4px; padding:6px; font-family:monospace; font-size:0.95em; resize:vertical;" placeholder="Enter text to speak..."></textarea>
+      <textarea id="tts-text" rows="3" style="width:100%; box-sizing:border-box; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:6px; font-family:monospace; font-size:0.95em; resize:vertical;" placeholder="Enter text to speak..."></textarea>
       <div style="display:flex; gap:3px; align-items:center;">
-        <select id="tts-voice" style="flex:1; background:#0d1b2a; color:#e0e0e0; border:1px solid #1b3a5c; border-radius:4px; padding:6px; font-family:monospace; font-size:0.95em;">
+        <select id="tts-voice" style="flex:1; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:6px; font-family:monospace; font-size:0.95em;">
           <option value="1">US English</option>
           <option value="2">British</option>
           <option value="3">Australian</option>
@@ -9791,44 +9849,38 @@ pollTimer = setInterval(pollStatus, 1000);
     </div>
     <div id="tts-status" style="font-family:monospace; font-size:0.85em; color:#888; margin-top:6px;">Ready</div>
   </div>
-  <div class="ctrl-group bottom-btns" style="min-width:0;">
-    <h3>System</h3>
-    <div style="display:flex; flex-direction:column; gap:3px;">
-      <button onclick="sendKey('@')">Send Email</button>
-      <button onclick="if(confirm('Restart gateway?'))sendKey('q')" class="btn-restart">Restart</button>
-      <button onclick="if(confirm('Exit the gateway server? This will stop all services.')){fetch('/exit',{method:'POST'}).then(()=>{document.body.innerHTML='<h1 style=&quot;color:#e0e0e0;text-align:center;margin-top:40vh&quot;>Gateway stopped.</h1>';});}" class="btn-exit">Exit Server</button>
-    </div>
-  </div>
 </div>
 
 <style>
-  .controls { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 18px; }
-  .ctrl-group { background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 14px; min-width: 220px; }
-  .ctrl-group h3 { margin: 0 0 10px; color: #00d4ff; font-size: 1.1em; }
-  .ctrl-group button { padding: 10px 18px; margin: 3px; border: 1px solid #1b3a5c; border-radius: 4px;
-    background: #0d1b2a; color: #e0e0e0; cursor: pointer; font-family: monospace; font-size: 1.05em; }
-  .ctrl-group button:hover { background: #1a2744; }
-  .ctrl-group button:active { background: #0f3460; }
-  .ctrl-group button.active { background: #0f3460; border-color: #00d4ff; color: #00d4ff; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+  .ctrl-group { background: var(--t-panel); border: 1px solid var(--t-border); border-radius: 6px; padding: 10px; min-width: 220px; }
+  .ctrl-group h3 { margin: 0 0 10px; color: var(--t-accent); font-size: 1.1em; }
+  .ctrl-group button { padding: 10px 18px; margin: 3px; border: 1px solid var(--t-btn-border); border-radius: 4px;
+    background: var(--t-btn); color: #e0e0e0; cursor: pointer; font-family: monospace; font-size: 1.05em; }
+  .ctrl-group button:hover { background: var(--t-btn-hover); }
+  .ctrl-group button:active { background: var(--t-btn-active); }
+  .ctrl-group button.active { background: var(--t-btn-active); border-color: var(--t-accent); color: var(--t-accent); }
   .ctrl-group button.muted { background: #5c1a1a; border-color: #c0392b; color: #ff6b6b; }
-  #status { background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 18px; font-family: monospace; font-size: 1.0em; }
+  #status { background: var(--t-panel); border: 1px solid var(--t-border); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 1.0em; }
   .st-row { display: grid; grid-template-columns: repeat(auto-fill, 240px); gap: 10px 16px; margin: 8px 0; }
   .st-item { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
   .st-label { color: #888; display: inline-block; width: 5.5em; text-align: right; margin-right: 16px; flex-shrink: 0; }
   .st-val { font-weight: bold; }
   .bar { display: inline-block; height: 18px; border-radius: 3px; min-width: 4px; vertical-align: middle; }
   .bar-rx { background: #2ecc71; } .bar-tx { background: #e74c3c; }
-  .bar-sdr1 { background: #00d4ff; } .bar-sdr2 { background: #e056a0; }
+  .bar-sdr1 { background: var(--t-accent); } .bar-sdr2 { background: #e056a0; }
   .bar-sv { background: #f1c40f; } .bar-cl { background: #2ecc71; }
-  .bar-sp { background: #00d4ff; } .bar-an { background: #e74c3c; }
+  .bar-sp { background: var(--t-accent); } .bar-an { background: #e74c3c; }
   .bar-pct { display: inline-block; width: 3.5em; text-align: right; color: #ccc; }
   .green { color: #2ecc71; } .red { color: #e74c3c; } .yellow { color: #f39c12; }
-  .cyan { color: #00d4ff; } .white { color: #e0e0e0; }
+  .cyan { color: var(--t-accent); } .white { color: #e0e0e0; }
   #playback-section button { margin: 0; }
   .bottom-btns { min-width: 160px; width: 160px; }
   .bottom-btns button { width: 100%; box-sizing: border-box; }
   .pb-slot { display: block; margin: 1px 0; white-space: nowrap; }
   .pb-key { font-weight: bold; display: inline-block; width: 1.5em; }
+  input[type="range"] { accent-color: var(--t-accent); }
+  .tgl input { accent-color: var(--t-accent); }
 </style>
 
 <script>
@@ -10148,7 +10200,7 @@ function stopStream() {
   _playing = false;
   document.getElementById('play-btn').innerHTML = '&#9654; MP3';
   document.getElementById('play-btn').style.color = '#e0e0e0';
-  document.getElementById('play-btn').style.borderColor = '#1b3a5c';
+  document.getElementById('play-btn').style.borderColor = _T.btnBorder;
   document.getElementById('stream-indicator').style.display = 'none';
   document.getElementById('stream-status').innerHTML = '';
 }
@@ -10241,10 +10293,10 @@ function startWS() {
       _wsBytes = 0;
       if (navigator.wakeLock) { navigator.wakeLock.request('screen').then(function(wl) { _wakeLock = wl; }).catch(function(){}); }
       btn.innerHTML = '&#9724; PCM';
-      btn.style.color = '#00d4ff';
-      btn.style.borderColor = '#00d4ff';
+      btn.style.color = _T.accent;
+      btn.style.borderColor = _T.accent;
       ind.style.display = 'inline-block';
-      st.innerHTML = '<span style="color:#00d4ff">0:00</span>';
+      st.innerHTML = '<span style="color:var(--t-accent)">0:00</span>';
       _wsTimer = setInterval(function() {
         var secs = Math.floor((Date.now() - _wsStart) / 1000);
         var m = Math.floor(secs / 60);
@@ -10254,7 +10306,7 @@ function startWS() {
         var unit = 'KB';
         if (_wsBytes >= 1048576) { kb = (_wsBytes / 1048576).toFixed(1); unit = 'MB'; }
         var kbps = secs > 0 ? ((_wsBytes * 8 / secs / 1000).toFixed(0) + 'kbps') : '';
-        st.innerHTML = '<span style="color:#00d4ff">' + t + '</span> <span style="color:#666">' + kb + unit + (kbps ? ' ' + kbps : '') + '</span>';
+        st.innerHTML = '<span style="color:var(--t-accent)">' + t + '</span> <span style="color:#666">' + kb + unit + (kbps ? ' ' + kbps : '') + '</span>';
       }, 1000);
     };
 
@@ -10349,7 +10401,7 @@ function stopWS() {
   if (_wakeLock) { try { _wakeLock.release(); } catch(e){} _wakeLock = null; }
   document.getElementById('ws-btn').innerHTML = '&#9654; PCM';
   document.getElementById('ws-btn').style.color = '#e0e0e0';
-  document.getElementById('ws-btn').style.borderColor = '#1b3a5c';
+  document.getElementById('ws-btn').style.borderColor = _T.btnBorder;
   document.getElementById('ws-indicator').style.display = 'none';
   document.getElementById('ws-status').innerHTML = '';
   _wsBytes = 0;
@@ -10376,7 +10428,7 @@ function updateSysInfo() {
     var h = '<div class="st-row">';
     h += '<div class="st-item"><span class="st-label">CPU:</span>'+sysBar(s.cpu_pct)+'</div>';
     h += '<div class="st-item"><span class="st-label">Load:</span><span class="st-val cyan">'+s.load[0]+' '+s.load[1]+' '+s.load[2]+'</span></div>';
-    h += '<div class="st-item"><span class="st-label">RAM:</span>'+sysBar(s.mem_pct, '#00d4ff')+'<span class="st-label">'+s.mem_used_mb+'/'+s.mem_total_mb+'MB</span></div>';
+    h += '<div class="st-item"><span class="st-label">RAM:</span>'+sysBar(s.mem_pct, _T.accent)+'<span class="st-label">'+s.mem_used_mb+'/'+s.mem_total_mb+'MB</span></div>';
     if (s.swap_total_mb > 0) {
       var swPct = Math.round(100*s.swap_used_mb/s.swap_total_mb);
       h += '<div class="st-item"><span class="st-label">Swap:</span>'+sysBar(swPct, '#e056a0')+'<span class="st-label">'+s.swap_used_mb+'/'+s.swap_total_mb+'MB</span></div>';
@@ -10555,6 +10607,11 @@ class StatusBarWriter:
 
     def _append_log(self, timestamped_line):
         """Add a line to the ring buffer and log file."""
+        # Filter out status bar lines that leak into the log buffer.
+        # Status bar contains dense ANSI color sequences with PTT/VAD/TX/RX markers.
+        _t = timestamped_line
+        if '\033[' in _t and ('PTT:' in _t or 'VAD:' in _t or 'UP:' in _t or '\033[A' in _t):
+            return
         self._log_seq += 1
         self._log_buffer.append((self._log_seq, timestamped_line))
         if self._log_file:
@@ -10633,11 +10690,19 @@ class StatusBarWriter:
 
         Supports up to 3 lines.  The cursor is left on line 1 so that
         the next draw_status or write() can overwrite cleanly.
-        In headless mode, status bar is suppressed (web dashboard shows status).
+        In headless mode or when there is no terminal, the status bar is
+        suppressed (web dashboard shows status instead).
         """
         if self._headless:
             self._last_status = status_line
             return
+        # No terminal attached — suppress status bar to avoid polluting logs
+        try:
+            if not self._orig.isatty():
+                self._last_status = status_line
+                return
+        except Exception:
+            pass
         with self._lock:
             if line3 and line2:
                 self._orig.write(f"\r{status_line}\n\r{line2}\n\r{line3}\033[2A\r")
@@ -13993,7 +14058,23 @@ class RadioGateway:
                                 print(f"\n[Playback] RTS → Radio Controlled")
                             except Exception:
                                 pass
-                    self.playback_source.queue_file(stored_path)
+                    # Stop current playback immediately, then decode+queue
+                    # in a background thread so the HTTP handler returns fast.
+                    # The lock serializes concurrent decodes; the sequence
+                    # counter lets later presses discard earlier in-flight decodes.
+                    pb = self.playback_source
+                    pb._play_seq += 1
+                    my_seq = pb._play_seq
+                    pb.stop_playback()
+                    def _bg_play(_pb=pb, _path=stored_path, _seq=my_seq):
+                        try:
+                            with _pb._play_lock:
+                                if _pb._play_seq != _seq:
+                                    return  # A newer button press superseded this one
+                                _pb.queue_file(_path)
+                        except Exception as e:
+                            print(f"\n[Playback] Error in background decode: {e}")
+                    threading.Thread(target=_bg_play, daemon=True, name="Playback-Queue").start()
         elif char == '-':
             if self.playback_source:
                 self.playback_source.stop_playback()
