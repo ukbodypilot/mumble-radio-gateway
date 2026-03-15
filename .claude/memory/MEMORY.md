@@ -118,10 +118,17 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ## PTT Methods
 - `PTT_METHOD`: `aioc` (default), `relay`, or `software`
 - AIOC: HID GPIO, Relay: CH340 USB relay, Software: CAT TCP `!ptt` toggle
-- **Note:** On this machine, AIOC GPIO PTT doesn't key the radio; use `software` mode (CAT `!ptt`)
 - Software PTT tracks state via `_software_ptt_on` (independent of `ptt_active` which is set in multiple places)
 - Software PTT checks `_last_radio_rx` — refuses to key if radio hasn't sent data in >5 seconds (radio powered off)
 - RTS save/restore and VFO dial-press refresh are skipped in software PTT mode (they cause VFO switching artifacts)
+
+## AIOC PTT — RTS Relay Coordination (CRITICAL, 2026-03-15)
+- **Hardware:** RTS line controls a relay switching radio's TX serial between USB dongle and radio front panel
+- **RTS=USB Controlled:** serial connected to USB dongle (CAT commands work)
+- **RTS=Radio Controlled:** serial connected to front panel (CAT commands blocked, but mic wiring correct for AIOC PTT)
+- **AIOC PTT REQUIRES Radio Controlled** — PTT fails without it due to mic wiring
+- **Sequence:** pause drain → set RTS Radio Controlled → key AIOC → [transmit] → unkey AIOC → set RTS USB Controlled → resume drain
+- **CRITICAL:** No CAT send/receive allowed while Radio Controlled — serial is physically disconnected from USB
 
 ## Smart Announcements (Modular AI Backend)
 - `SmartAnnouncementManager`: scheduled AI-powered spoken announcements

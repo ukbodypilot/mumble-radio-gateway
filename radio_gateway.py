@@ -1638,7 +1638,9 @@ class FilePlaybackSource(AudioSource):
     
     def _restore_playback_rts(self):
         """Restore RTS to saved state after playback finishes (runs in background thread).
-        Only applies to AIOC PTT mode — software PTT uses !ptt directly."""
+        Only applies to AIOC PTT mode — software PTT uses !ptt directly.
+        RTS must be Radio Controlled during AIOC PTT (relay routes mic wiring
+        through front panel). Restored to USB Controlled after so CAT resumes."""
         _ptt_method = str(getattr(self.gateway.config, 'PTT_METHOD', 'aioc')).lower()
         if _ptt_method == 'software':
             return
@@ -5773,6 +5775,8 @@ class SmartAnnouncementManager:
             # Playback triggers AIOC PTT automatically via the audio loop
             # (set_ptt_state writes HID GPIO to key the radio).
             # Auto-set RTS to Radio Controlled for TX, restore after.
+            # RTS relay must route mic wiring through front panel for AIOC PTT.
+            # No CAT commands while Radio Controlled (serial disconnected from USB).
             _rts_saved = None
             _cat = getattr(self.gateway, 'cat_client', None)
             print(f"[SmartAnnounce] #{eid}: CAT client: {_cat}, RTS: {_cat.get_rts() if _cat else 'N/A'}")
@@ -11646,12 +11650,28 @@ class RadioGateway:
         self.ptt_active = state_on
 
     def _ptt_aioc(self, state_on):
-        """PTT via AIOC HID GPIO."""
+        """PTT via AIOC HID GPIO.
+
+        RTS controls a relay that connects the radio's TX serial line to either
+        the USB dongle (USB Controlled) or the radio front panel (Radio Controlled).
+        AIOC PTT requires Radio Controlled mode or PTT fails due to mic wiring.
+        While Radio Controlled, CAT commands cannot be sent/received.
+        """
         if not self.aioc_device:
             if state_on:
                 self.notify("PTT failed: AIOC device not found")
             return
+        _cat = getattr(self, 'cat_client', None)
         try:
+            if state_on:
+                # Switch RTS to Radio Controlled and pause CAT drain before keying
+                if _cat:
+                    _cat._pause_drain()
+                    try:
+                        _cat.set_rts(False)  # Radio Controlled
+                    except Exception as e:
+                        print(f"\n[PTT] RTS switch failed: {e}")
+                        # drain stays paused — will be resumed on unkey
             state = 1 if state_on else 0
             iomask = 1 << (self.config.AIOC_PTT_CHANNEL - 1)
             iodata = state << (self.config.AIOC_PTT_CHANNEL - 1)
@@ -11659,9 +11679,21 @@ class RadioGateway:
             if self.config.VERBOSE_LOGGING:
                 print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (AIOC GPIO{self.config.AIOC_PTT_CHANNEL})")
             self.aioc_device.write(bytes(data))
+            if not state_on:
+                # Unkeyed — restore RTS to USB Controlled and resume CAT drain
+                if _cat:
+                    try:
+                        _cat.set_rts(True)  # USB Controlled
+                    except Exception as e:
+                        print(f"\n[PTT] RTS restore failed: {e}")
+                    finally:
+                        _cat._drain_paused = False
         except Exception as e:
             print(f"\n[PTT] AIOC error: {e}")
             self.notify(f"PTT error: {e}")
+            # Ensure drain is resumed on any error
+            if _cat and _cat._drain_paused:
+                _cat._drain_paused = False
 
     def _ptt_relay(self, state_on):
         """PTT via CH340 USB relay."""
@@ -13004,8 +13036,10 @@ class RadioGateway:
             if self.config.VERBOSE_LOGGING:
                 print(f"[TTS] Queueing for playback...")
             
-            # Auto-switch RTS to Radio Controlled for TX (same as playback keys)
-            # (only needed for AIOC PTT — software PTT uses !ptt directly)
+            # Auto-switch RTS to Radio Controlled for TX — RTS relay must route
+            # mic wiring through front panel for AIOC PTT to work.
+            # No CAT commands while Radio Controlled (serial disconnected from USB).
+            # Software PTT uses !ptt directly and doesn't need RTS switching.
             _ptt_method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
             if _ptt_method != 'software':
                 _cat = getattr(self, 'cat_client', None)
@@ -14468,8 +14502,10 @@ class RadioGateway:
             if self.playback_source:
                 stored_path = self.playback_source.file_status[char]['path']
                 if stored_path:
-                    # Auto-set RTS to Radio Controlled for TX playback
-                    # (only needed for AIOC PTT — software PTT uses !ptt directly)
+                    # Auto-set RTS to Radio Controlled for TX playback — RTS relay
+                    # must route mic wiring through front panel for AIOC PTT.
+                    # No CAT commands while Radio Controlled (serial disconnected).
+                    # Software PTT uses !ptt directly and doesn't need this.
                     _ptt_method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
                     if _ptt_method != 'software':
                         _cat = self.cat_client
