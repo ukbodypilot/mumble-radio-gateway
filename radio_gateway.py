@@ -1190,6 +1190,37 @@ class FilePlaybackSource(AudioSource):
         ('whoosh', 2651), ('whoosh', 2903), ('whoosh', 2918), ('whoosh', 3005), ('whoosh', 3024),
         ('whoosh', 1487), ('whoosh', 1488), ('whoosh', 1494), ('whoosh', 1715), ('whoosh', 1716),
         ('whoosh', 1717), ('whoosh', 1718), ('whoosh', 1719), ('whoosh', 1720), ('whoosh', 2351),
+        # Fart (8)
+        ('fart', 3041), ('fart', 3043), ('fart', 3051), ('fart', 3052),
+        ('fart', 3053), ('fart', 3054), ('fart', 3055), ('fart', 3056),
+        # Laugh (19)
+        ('laugh', 409), ('laugh', 410), ('laugh', 411), ('laugh', 416), ('laugh', 417),
+        ('laugh', 418), ('laugh', 420), ('laugh', 421), ('laugh', 426), ('laugh', 427),
+        ('laugh', 428), ('laugh', 431), ('laugh', 2254), ('laugh', 2261), ('laugh', 2262),
+        ('laugh', 2263), ('laugh', 2264), ('laugh', 2265), ('laugh', 2993),
+        # Scream (7)
+        ('scream', 349), ('scream', 440), ('scream', 1010), ('scream', 1963),
+        ('scream', 1966), ('scream', 1972), ('scream', 2097),
+        # Monster (27)
+        ('monster', 8), ('monster', 12), ('monster', 16), ('monster', 90), ('monster', 306),
+        ('monster', 1737), ('monster', 1777), ('monster', 1956), ('monster', 1957),
+        ('monster', 1960), ('monster', 1970), ('monster', 1973), ('monster', 1974),
+        ('monster', 1975), ('monster', 1976), ('monster', 1977), ('monster', 1978),
+        ('monster', 2207), ('monster', 2208), ('monster', 2231), ('monster', 2233),
+        ('monster', 2234), ('monster', 2240), ('monster', 2241), ('monster', 3092),
+        ('monster', 3127), ('monster', 3168),
+        # Horror (14)
+        ('horror', 561), ('horror', 634), ('horror', 894), ('horror', 963),
+        ('horror', 1157), ('horror', 1162), ('horror', 1495), ('horror', 1583),
+        ('horror', 1729), ('horror', 2482), ('horror', 2484), ('horror', 2563),
+        ('horror', 2566), ('horror', 3058),
+        # Squeak (11)
+        ('squeak', 10), ('squeak', 1009), ('squeak', 1011), ('squeak', 1012),
+        ('squeak', 1013), ('squeak', 1014), ('squeak', 1016), ('squeak', 1017),
+        ('squeak', 1018), ('squeak', 1019), ('squeak', 1020),
+        # Wrong (9)
+        ('wrong', 946), ('wrong', 1540), ('wrong', 2876), ('wrong', 2939),
+        ('wrong', 2941), ('wrong', 2947), ('wrong', 2960), ('wrong', 3159), ('wrong', 3219),
     ]
 
     def _fill_soundboard_slots(self, file_map):
