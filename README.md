@@ -527,6 +527,8 @@ WEB_THEME = blue
 - **System status box** — CPU usage, load average, RAM, swap, disk, network, temperatures, IPs (polled every 2 seconds)
 - **Text to Speech** — text entry field, 9-voice selector, send button with status line (gTTS)
 - **Screen Wake Lock** — prevents device sleep during WebSocket PCM playback
+- **Toast notifications** — real-time error/warning popups (top-right, auto-dismiss) for PTT failures, playback errors, CAT disconnection, and radio non-response
+- **Responsive layout** — control buttons wrap on narrow/mobile screens instead of overflowing off-screen
 
 ![Live Dashboard](docs/img/dashboard.png)
 *Live dashboard showing gateway status, audio level bars, mute/processing/playback controls, and the browser audio player.*
@@ -613,7 +615,7 @@ EMAIL_ON_STARTUP = true
 
 ### TH-9800 CAT Control
 
-Connects to the [TH9800_CAT.py](https://github.com/your-repo/th9800) TCP server to configure a TYT TH-9800 radio on gateway startup. Sets channel, volume, and power level for both VFOs independently.
+Connects to the [TH9800_CAT.py](https://github.com/ukbodypilot/TH9800_CAT) TCP server to configure a TYT TH-9800 radio on gateway startup. Sets channel, volume, and power level for both VFOs independently.
 
 **How it works:**
 1. TH9800_CAT.py runs on the same machine, connected to the radio via USB serial (FT232R)
@@ -630,7 +632,13 @@ Connects to the [TH9800_CAT.py](https://github.com/your-repo/th9800) TCP server 
 
 **TH9800_CAT.py setup:**
 
-Set `auto_start_server=true` in the TH9800_CAT.py `config.txt` to have the TCP server start automatically when the GUI launches:
+The TH9800_CAT installer (`install.sh`) creates a systemd service (`th9800-cat.service`) that runs the CAT server in headless mode. The gateway's `start.sh` automatically starts/stops this service based on `ENABLE_CAT_CONTROL`. To install:
+```bash
+cd ~/Downloads/TH9800_CAT
+./install.sh   # installs venv, deps, and th9800-cat.service
+```
+
+Set `auto_start_server=true` in the TH9800_CAT.py `config.txt`:
 ```ini
 host=0.0.0.0
 port=9800

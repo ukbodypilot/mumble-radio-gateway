@@ -1606,7 +1606,11 @@ class FilePlaybackSource(AudioSource):
         return chunk, True
     
     def _restore_playback_rts(self):
-        """Restore RTS to saved state after playback finishes (runs in background thread)."""
+        """Restore RTS to saved state after playback finishes (runs in background thread).
+        Only applies to AIOC PTT mode — software PTT uses !ptt directly."""
+        _ptt_method = str(getattr(self.gateway.config, 'PTT_METHOD', 'aioc')).lower()
+        if _ptt_method == 'software':
+            return
         _saved = getattr(self.gateway, '_playback_rts_saved', None)
         if _saved is not None:
             self.gateway._playback_rts_saved = None
@@ -4174,6 +4178,7 @@ class RadioCATClient:
         self._cmd_sent = 0       # total commands sent
         self._cmd_no_response = 0  # commands with no radio response
         self._last_no_response = ''  # description of last no-response event
+        self._last_radio_rx = 0  # monotonic time of last radio packet received
 
     def _logmsg(self, msg, console=False):
         """Write debug message to cat_debug.log. Only prints to console if verbose or console=True."""
@@ -4618,6 +4623,7 @@ class RadioCATClient:
 
     def _parse_radio_packet(self, data):
         """Parse forwarded binary radio packets to update internal state."""
+        self._last_radio_rx = time.monotonic()
         if len(data) < 2:
             return
         pkt_type = data[0]  # First byte is packet type
@@ -8687,6 +8693,7 @@ fetch('/logdata?after=0')
   <button onclick="serialDisconnect()" class="rb rb-sm" style="background:#c0392b; border-color:#e74c3c;">Disconnect</button>
   <button onclick="serialConnect()" class="rb rb-sm">Connect</button>
   <button onclick="setupRadio()" class="rb rb-sm" style="background:#2c3e50; border-color:#34495e;">Setup</button>
+  <button id="radio-power-btn" onclick="radioPower()" class="rb rb-sm" style="background:#8e44ad; border-color:#9b59b6; display:''' + ('inline-block' if self.gateway and self.gateway.relay_radio else 'none') + ''';">Radio Power</button>
   <span style="color:#333;">|</span>
   <span style="color:#888; font-size:0.85em;">RTS TX:</span>
   <span id="rts-state" style="font-weight:bold;">—</span>
@@ -8979,6 +8986,10 @@ function showError(msg) {
     document.body.appendChild(el); }
   el.textContent = msg; el.style.display = 'block';
   setTimeout(function(){ el.style.display='none'; }, 5000);
+}
+
+function radioPower() {
+  fetch('/key', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:'j'})});
 }
 
 function catCmd(cmd) {
@@ -10005,7 +10016,7 @@ pollTimer = setInterval(pollStatus, 1000);
 
 <div class="ctrl-group" id="listen-top" style="margin-bottom:10px;">
   <h3>Controls</h3>
-  <div style="display:flex; gap:16px; flex-wrap:nowrap; align-items:center;">
+  <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
     <div style="width:140px;">
       <div style="display:flex; align-items:center; gap:4px;">
         <button id="play-btn" onclick="toggleStream()" style="width:62px; text-align:center;">&#9654; MP3</button>
@@ -10031,6 +10042,7 @@ pollTimer = setInterval(pollStatus, 1000);
 </div>
 
 <div id="status">Loading...</div>
+<div id="toast-container" style="position:fixed;top:10px;right:10px;z-index:9999;max-width:400px;"></div>
 
 <div id="sysinfo" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:1.0em; margin-top:10px;">Loading...</div>
 
@@ -10231,6 +10243,19 @@ function bar(pct, cls) {
   return '<span class="bar-pct">'+p+'%</span><span class="bar '+cls+'" style="width:'+w+'px"></span>';
 }
 
+var _lastNotifSeq = 0;
+function showToast(msg, level) {
+  var c = document.getElementById('toast-container');
+  if (!c) return;
+  var colors = {error:'#e74c3c',warning:'#f39c12',info:'#3498db'};
+  var d = document.createElement('div');
+  d.style.cssText = 'background:'+(colors[level]||colors.error)+';color:#fff;padding:10px 16px;margin-bottom:6px;border-radius:6px;font-size:0.9em;font-family:monospace;opacity:1;transition:opacity 0.5s;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+  d.textContent = msg;
+  d.onclick = function(){ d.style.opacity='0'; setTimeout(function(){ d.remove(); }, 500); };
+  c.appendChild(d);
+  setTimeout(function(){ d.style.opacity='0'; setTimeout(function(){ d.remove(); }, 500); }, 8000);
+}
+
 var _statusBusy = false;
 function updateStatus() {
   if (_statusBusy) return;
@@ -10417,6 +10442,16 @@ function updateStatus() {
       var lvt=document.getElementById('l-vol-val'), rvt=document.getElementById('r-vol-val');
       if(lv && !lv.matches(':active')) { lv.value=s.cat_vol.left; if(lvt) lvt.textContent=s.cat_vol.left; }
       if(rv && !rv.matches(':active')) { rv.value=s.cat_vol.right; if(rvt) rvt.textContent=s.cat_vol.right; }
+    }
+    // Show new notifications as toasts
+    if (s.notifications && s.notifications.length) {
+      for (var i=0; i<s.notifications.length; i++) {
+        var n = s.notifications[i];
+        if (n.seq > _lastNotifSeq) {
+          _lastNotifSeq = n.seq;
+          showToast(n.msg, n.level);
+        }
+      }
     }
   }).catch(function(){ _lost=true; document.getElementById('status').innerHTML='<span class="red">Gateway offline — waiting for restart...</span>'; }).finally(function(){ _statusBusy=false; });
 }
@@ -11099,6 +11134,11 @@ class RadioGateway:
         # Restart flag (set by !restart command, checked in main() after run() exits)
         self.restart_requested = False
 
+        # Web UI notification queue — recent warnings/errors shown as toasts
+        import collections as _coll
+        self._notifications = _coll.deque(maxlen=20)
+        self._notif_seq = 0
+
         # Audio trace instrumentation — lightweight per-tick records written on shutdown.
         # Press 'i' to start/stop recording.  Data is dumped to tools/audio_trace.txt
         # on Ctrl+C shutdown.
@@ -11202,6 +11242,16 @@ class RadioGateway:
         # Status bar writer — wraps stdout so print() clears the bar first
         self._status_writer = None
     
+    def notify(self, message, level='error'):
+        """Push a notification to the web UI. level: 'error', 'warning', 'info'."""
+        self._notif_seq += 1
+        self._notifications.append({
+            'seq': self._notif_seq,
+            'msg': message,
+            'level': level,
+            'ts': time.time(),
+        })
+
     def _charger_should_be_on(self):
         """Check if charger should be on based on current time and schedule.
         Handles overnight wrap (e.g. 23:00 → 06:00)."""
@@ -11567,6 +11617,8 @@ class RadioGateway:
     def _ptt_aioc(self, state_on):
         """PTT via AIOC HID GPIO."""
         if not self.aioc_device:
+            if state_on:
+                self.notify("PTT failed: AIOC device not found")
             return
         try:
             state = 1 if state_on else 0
@@ -11578,6 +11630,7 @@ class RadioGateway:
             self.aioc_device.write(bytes(data))
         except Exception as e:
             print(f"\n[PTT] AIOC error: {e}")
+            self.notify(f"PTT error: {e}")
 
     def _ptt_relay(self, state_on):
         """PTT via CH340 USB relay."""
@@ -11587,13 +11640,41 @@ class RadioGateway:
         if self.config.VERBOSE_LOGGING:
             print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (relay)")
 
+    _software_ptt_on = False  # Track actual CAT PTT state independently
+
     def _ptt_software(self, state_on):
-        """PTT via CAT TCP RTS command."""
+        """PTT via CAT TCP !ptt toggle command."""
         if not self.cat_client:
+            if state_on:
+                self.notify("PTT failed: CAT not connected")
             return
-        self.cat_client.set_rts(state_on)
-        if self.config.VERBOSE_LOGGING:
-            print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (software/CAT)")
+        # !ptt is a toggle — only send when state actually changes
+        if state_on == self._software_ptt_on:
+            return
+        # Check if radio is actually responding (last packet within 5 seconds)
+        if state_on and self.cat_client._last_radio_rx > 0:
+            radio_silence = time.monotonic() - self.cat_client._last_radio_rx
+            if radio_silence > 5.0:
+                self.notify(f"PTT failed: radio not responding ({radio_silence:.0f}s since last data)")
+                return
+        try:
+            self.cat_client._pause_drain()
+            try:
+                resp = self.cat_client._send_cmd("!ptt")
+            finally:
+                self.cat_client._drain_paused = False
+            if resp and 'serial not connected' in resp.lower():
+                self.notify("PTT failed: radio serial not connected")
+                return
+            if resp is None:
+                self.notify("PTT failed: no response from CAT server")
+                return
+            self._software_ptt_on = state_on
+            if self.config.VERBOSE_LOGGING:
+                print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (software/CAT)")
+        except Exception as e:
+            print(f"\n[PTT] CAT !ptt error: {e}")
+            self.notify(f"PTT failed: {e}")
     
     def sound_received_handler(self, user, soundchunk):
         """Called when audio is received from Mumble server"""
@@ -12749,13 +12830,11 @@ class RadioGateway:
             bool: True if successful, False otherwise
         """
         if not self.tts_engine:
-            if self.config.VERBOSE_LOGGING:
-                print("\n[TTS] Text-to-speech not available")
+            self.notify("TTS not available (gTTS not installed)")
             return False
-        
+
         if not self.playback_source:
-            if self.config.VERBOSE_LOGGING:
-                print("\n[TTS] Playback source not available")
+            self.notify("TTS failed: playback source not available")
             return False
         
         try:
@@ -12895,18 +12974,21 @@ class RadioGateway:
                 print(f"[TTS] Queueing for playback...")
             
             # Auto-switch RTS to Radio Controlled for TX (same as playback keys)
-            _cat = getattr(self, 'cat_client', None)
-            if _cat and not getattr(self, '_playback_rts_saved', None):
-                self._playback_rts_saved = _cat.get_rts()
-                if self._playback_rts_saved is None or self._playback_rts_saved is True:
-                    _cat._pause_drain()
-                    try:
-                        _cat.set_rts(False)  # Radio Controlled
-                        import time as _time
-                        _time.sleep(0.3)
-                        _cat._drain(0.5)
-                    finally:
-                        _cat._drain_paused = False
+            # (only needed for AIOC PTT — software PTT uses !ptt directly)
+            _ptt_method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
+            if _ptt_method != 'software':
+                _cat = getattr(self, 'cat_client', None)
+                if _cat and not getattr(self, '_playback_rts_saved', None):
+                    self._playback_rts_saved = _cat.get_rts()
+                    if self._playback_rts_saved is None or self._playback_rts_saved is True:
+                        _cat._pause_drain()
+                        try:
+                            _cat.set_rts(False)  # Radio Controlled
+                            import time as _time
+                            _time.sleep(0.3)
+                            _cat._drain(0.5)
+                        finally:
+                            _cat._drain_paused = False
 
             # Queue for playback (will go to radio TX)
             if self.playback_source:
@@ -14356,21 +14438,24 @@ class RadioGateway:
                 stored_path = self.playback_source.file_status[char]['path']
                 if stored_path:
                     # Auto-set RTS to Radio Controlled for TX playback
-                    _cat = self.cat_client
-                    if _cat and not getattr(self, '_playback_rts_saved', None):
-                        self._playback_rts_saved = _cat.get_rts()
-                        if self._playback_rts_saved is None or self._playback_rts_saved is True:
-                            try:
-                                _cat._pause_drain()
+                    # (only needed for AIOC PTT — software PTT uses !ptt directly)
+                    _ptt_method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
+                    if _ptt_method != 'software':
+                        _cat = self.cat_client
+                        if _cat and not getattr(self, '_playback_rts_saved', None):
+                            self._playback_rts_saved = _cat.get_rts()
+                            if self._playback_rts_saved is None or self._playback_rts_saved is True:
                                 try:
-                                    _cat.set_rts(False)  # Radio Controlled
-                                    time.sleep(0.3)
-                                    _cat._drain(0.5)
-                                finally:
-                                    _cat._drain_paused = False
-                                print(f"\n[Playback] RTS → Radio Controlled")
-                            except Exception:
-                                pass
+                                    _cat._pause_drain()
+                                    try:
+                                        _cat.set_rts(False)  # Radio Controlled
+                                        time.sleep(0.3)
+                                        _cat._drain(0.5)
+                                    finally:
+                                        _cat._drain_paused = False
+                                    print(f"\n[Playback] RTS → Radio Controlled")
+                                except Exception:
+                                    pass
                     # Stop current playback immediately, then decode+queue
                     # in a background thread so the HTTP handler returns fast.
                     # The lock serializes concurrent decodes; the sequence
@@ -14379,14 +14464,16 @@ class RadioGateway:
                     pb._play_seq += 1
                     my_seq = pb._play_seq
                     pb.stop_playback()
-                    def _bg_play(_pb=pb, _path=stored_path, _seq=my_seq):
+                    def _bg_play(_pb=pb, _path=stored_path, _seq=my_seq, _gw=self):
                         try:
                             with _pb._play_lock:
                                 if _pb._play_seq != _seq:
                                     return  # A newer button press superseded this one
-                                _pb.queue_file(_path)
+                                if not _pb.queue_file(_path):
+                                    _gw.notify(f"Playback failed: {os.path.basename(_path)}")
                         except Exception as e:
                             print(f"\n[Playback] Error in background decode: {e}")
+                            _gw.notify(f"Playback error: {e}")
                     threading.Thread(target=_bg_play, daemon=True, name="Playback-Queue").start()
         elif char == '-':
             if self.playback_source:
@@ -14549,6 +14636,7 @@ class RadioGateway:
             'stream_restarts': self.stream_restart_count,
             'stream_health': bool(getattr(self.config, 'ENABLE_STREAM_HEALTH', False)),
             'darkice_stats': self._get_darkice_stats_cached(),
+            'notifications': list(self._notifications),
         }
 
     def status_monitor_loop(self):

@@ -145,6 +145,34 @@ When ANY connection closed, it reset `loggedin = False` for all connections.
 **Fix (TH9800_CAT.py):** Made auth per-connection using `nonlocal conn_loggedin` in
 `handle_tcpserver_stream`. Also added auto-re-auth in gateway's `_send_cmd` on "Unauthorized".
 
+## Web UI Freeze — Fetch Pileup Exhausts Browser Connection Pool (2026-03-14)
+**Symptom:** Dashboard stops updating, buttons become unresponsive. Closing and reopening the browser fixes it.
+
+**Root cause:** `setInterval` fires `fetch('/status')` every 1s and `fetch('/sysinfo')` every 2s with no guard against overlapping requests. If any fetch takes >1s (server busy, network latency), requests pile up. Browsers limit concurrent connections per origin to ~6. With MP3 stream and/or WebSocket also holding connections, the remaining slots fill with queued fetches, blocking all further requests.
+
+**Fix:** Added in-flight guards (`_statusBusy`, `_sysinfoBusy`, `_radioBusy`, `_sdrBusy`) to all four polling functions across all pages. `.finally()` clears the flag regardless of success/failure.
+
+## Software PTT — `_ptt_software()` Called `set_rts()` Instead of `!ptt` (2026-03-14)
+**Symptom:** PTT_METHOD=software caused VFO selection to flip back and forth instead of keying the radio.
+
+**Root cause:** `_ptt_software()` called `self.cat_client.set_rts(state_on)` which sends `!rts True/False` — toggling between USB-controlled and radio-controlled mode. That's not PTT. The VFO display switching was a side effect of RTS mode changes.
+
+**Fix:** Changed to send `!ptt` toggle command. Added `_software_ptt_on` state tracker (independent of `ptt_active` which is set in multiple places before `set_ptt_state()` runs). Also gated RTS save/restore and VFO dial-press refresh to skip in software PTT mode.
+
+## Software PTT — Stuck Keyed After Playback (2026-03-14)
+**Symptom:** PTT keyed successfully for file playback but never unkeyed. Radio stayed transmitting.
+
+**Root cause:** PTT release timer (line 14593) and `stop_playback()` (line 1365) both set `self.ptt_active = False` *before* `set_ptt_state(False)` runs via `_pending_ptt_state`. When `_ptt_software()` checked `if state_on == self.ptt_active`, both were False, so it returned early without sending `!ptt` to unkey.
+
+**Fix:** Track actual CAT PTT state in `_software_ptt_on` (class variable), independent of `self.ptt_active`. Only send `!ptt` toggle when `state_on != _software_ptt_on`.
+
+## Software PTT — No Feedback When Radio Powered Off (2026-03-14)
+**Symptom:** Pressing playback button with radio powered off showed TX activity (audio bars) but no PTT and no error message to user.
+
+**Root cause:** When radio is off but USB-serial adapter is still connected, the CAT server's serial transport is "open" — `!ptt` returns `"True"/"False"` (toggled state) without knowing the radio ignored the command. The gateway never checked the response.
+
+**Fix:** (1) Check `_send_cmd("!ptt")` response for `"serial not connected"`. (2) Track `_last_radio_rx` timestamp (set when binary radio packets arrive via `_parse_radio_packet`). If no radio data received for >5 seconds, refuse to key and push notification: "PTT failed: radio not responding". (3) Added web UI toast notification system for all error feedback.
+
 ## Audio Streaming Ring Buffer (2026-03-08)
 **Symptom:** "No encoder data" errors, gaps in browser audio playback.
 **Root cause:** `pop(0)` shifted list indices but `pos` was absolute sequence number.

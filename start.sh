@@ -30,8 +30,7 @@ read_config() {
 
 # Read startup options from config
 ENABLE_STREAM_OUTPUT="$(read_config ENABLE_STREAM_OUTPUT false)"
-START_TH9800_CAT="$(read_config START_TH9800_CAT false)"
-TH9800_CAT_HEADLESS="$(read_config TH9800_CAT_HEADLESS false)"
+ENABLE_CAT_CONTROL="$(read_config ENABLE_CAT_CONTROL false)"
 START_CLAUDE_CODE="$(read_config START_CLAUDE_CODE false)"
 HEADLESS_MODE="$(read_config HEADLESS_MODE false)"
 
@@ -44,9 +43,9 @@ echo ""
 cleanup() {
     echo ""
     ts "Cleaning up..."
-    if [ ! -z "$TH9800_PID" ]; then
-        kill $TH9800_PID 2>/dev/null
-        ts "  Stopped TH-9800 CAT"
+    if systemctl is-active --quiet th9800-cat.service 2>/dev/null; then
+        try_sudo systemctl stop th9800-cat.service 2>/dev/null
+        ts "  Stopped TH-9800 CAT service"
     fi
     if [ ! -z "$DARKICE_PID" ]; then
         kill $DARKICE_PID 2>/dev/null
@@ -131,99 +130,35 @@ else
     fi
 fi
 
-# 3. Start TH-9800 CAT control if not already running
+# 3. Start TH-9800 CAT control service if CAT is enabled
 ts "[3/11] Checking TH-9800 CAT control..."
-if [ "$START_TH9800_CAT" != "true" ]; then
-    ts "  Disabled in config (START_TH9800_CAT = false)"
-elif pgrep -f "TH9800_CAT.py" > /dev/null 2>&1; then
-    TH9800_PID=$(pgrep -f TH9800_CAT.py | head -1)
-    ts "  TH-9800 CAT already running (PID: $TH9800_PID)"
-else
-    # Search for any folder with "th9800" in its name (case-insensitive)
-    TH9800_DIR=""
-    for d in "$HOME/Downloads"/*/; do
-        base="$(basename "$d")"
-        if echo "$base" | grep -qi "th9800"; then
-            TH9800_DIR="$d"
+if [ "$ENABLE_CAT_CONTROL" != "true" ]; then
+    ts "  Disabled in config (ENABLE_CAT_CONTROL = false)"
+    # Stop the service if it's running but CAT is disabled
+    if systemctl is-active --quiet th9800-cat.service 2>/dev/null; then
+        try_sudo systemctl stop th9800-cat.service 2>/dev/null
+        ts "  Stopped th9800-cat service (CAT disabled)"
+    fi
+elif systemctl is-active --quiet th9800-cat.service 2>/dev/null; then
+    ts "  TH-9800 CAT service already running"
+elif systemctl list-unit-files th9800-cat.service &>/dev/null; then
+    try_sudo systemctl start th9800-cat.service 2>/dev/null
+    # Wait for TCP port to be ready (up to 10s)
+    CAT_PORT="$(read_config CAT_PORT 9800)"
+    for i in $(seq 1 20); do
+        if ss -tlnp 2>/dev/null | grep -q ":${CAT_PORT} "; then
             break
         fi
+        sleep 0.5
     done
-
-    if [ -n "$TH9800_DIR" ] && [ -f "$TH9800_DIR/TH9800_CAT.py" ]; then
-        ts "  Found TH-9800 at: $TH9800_DIR"
-
-        if [ "$TH9800_CAT_HEADLESS" = "true" ]; then
-            # Headless mode: no GUI, no dearpygui dependency
-            # Read serial device and baud rate from TH9800_CAT config.txt
-            TH9800_CFG="$TH9800_DIR/config.txt"
-            TH9800_BAUD="19200"
-            TH9800_DEVICE=""
-            if [ -f "$TH9800_CFG" ]; then
-                TH9800_BAUD="$(grep -m1 '^baud_rate=' "$TH9800_CFG" | cut -d= -f2 | tr -d ' ')"
-                TH9800_DEVICE_NAME="$(grep -m1 '^device=' "$TH9800_CFG" | cut -d= -f2 | sed 's/^[[:space:]]*//')"
-                [ -z "$TH9800_BAUD" ] && TH9800_BAUD="19200"
-            fi
-            # Find COM port matching device name from config
-            if [ -n "$TH9800_DEVICE_NAME" ]; then
-                TH9800_DEVICE="$(python3 -c "
-import serial.tools.list_ports
-for p in serial.tools.list_ports.comports():
-    if '$TH9800_DEVICE_NAME' in p.description:
-        print(p.device)
-        break
-" 2>/dev/null)"
-            fi
-            if [ -z "$TH9800_DEVICE" ]; then
-                ts "  No serial device matching '$TH9800_DEVICE_NAME' found"
-                ts "  Available ports:"
-                python3 -c "import serial.tools.list_ports; [print(f'    {p.device}: {p.description}') for p in serial.tools.list_ports.comports() if 'ttyUSB' in p.device or 'ttyACM' in p.device]" 2>/dev/null
-            else
-                CAT_PORT="$(read_config CAT_PORT 9800)"
-                CAT_PASSWORD="$(read_config CAT_PASSWORD "")"
-                ts "  Starting headless: $TH9800_DEVICE @ $TH9800_BAUD, port $CAT_PORT"
-                python3 -u "$TH9800_DIR/TH9800_CAT.py" \
-                    -s -c "$TH9800_DEVICE" -b "$TH9800_BAUD" \
-                    -p "$CAT_PASSWORD" -sH 0.0.0.0 -sP "$CAT_PORT" \
-                    > /tmp/th9800_cat.log 2>&1 &
-                TH9800_PID=$!
-                # Wait for TCP port to be ready (up to 10s)
-                for i in $(seq 1 20); do
-                    if ss -tlnp 2>/dev/null | grep -q ":${CAT_PORT} " ; then
-                        break
-                    fi
-                    sleep 0.5
-                done
-                if ps -p $TH9800_PID > /dev/null 2>&1 && ss -tlnp 2>/dev/null | grep -q ":${CAT_PORT} "; then
-                    ts "  TH-9800 CAT headless started (PID: $TH9800_PID, port $CAT_PORT)"
-                else
-                    ts "  TH-9800 CAT headless failed to start"
-                    [ -f /tmp/th9800_cat.log ] && cat /tmp/th9800_cat.log
-                    TH9800_PID=""
-                fi
-            fi
-        else
-            # GUI mode: prefer run.sh (uses venv), fall back to direct
-            if [ -f "$TH9800_DIR/run.sh" ]; then
-                TH9800_CMD="$TH9800_DIR/run.sh"
-            else
-                TH9800_CMD="python3 $TH9800_DIR/TH9800_CAT.py"
-            fi
-            ts "  Starting GUI mode..."
-            $TH9800_CMD > /tmp/th9800_cat.log 2>&1 &
-            TH9800_PID=$!
-            sleep 2
-            if ps -p $TH9800_PID > /dev/null 2>&1; then
-                ts "  TH-9800 CAT started (PID: $TH9800_PID)"
-            else
-                ts "  TH-9800 CAT failed to start (continuing anyway)"
-                TH9800_PID=""
-            fi
-        fi
-    elif [ -n "$TH9800_DIR" ]; then
-        ts "  TH-9800 folder found ($TH9800_DIR) but no TH9800_CAT.py inside"
+    if systemctl is-active --quiet th9800-cat.service 2>/dev/null && ss -tlnp 2>/dev/null | grep -q ":${CAT_PORT} "; then
+        ts "  TH-9800 CAT service started (port $CAT_PORT)"
     else
-        ts "  No TH-9800 folder found in ~/Downloads (skipping)"
+        ts "  TH-9800 CAT service failed to start"
+        journalctl -u th9800-cat.service --no-pager -n 5 2>/dev/null
     fi
+else
+    ts "  th9800-cat.service not installed — run TH9800_CAT/install.sh"
 fi
 
 # 4. Start Claude Code in the gateway folder if not already running

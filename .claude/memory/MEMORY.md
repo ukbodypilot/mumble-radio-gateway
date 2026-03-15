@@ -83,15 +83,30 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **Playback (keys 1-9, 0):** Auto-sets RTS to Radio Controlled before playing, restores after
 - **TTS (web dashboard):** Same RTS auto-switch in `speak_text()` before queueing file
 - **Smart Announce:** Same RTS auto-switch in `_run_announcement()`
-- **CRITICAL:** Must pause drain thread around ALL `set_rts()` calls — RTS change triggers display packets that drain thread misattributes to wrong VFO
+- **CRITICAL:** RTS save/restore is SKIPPED when `PTT_METHOD=software` — causes VFO switching artifacts
+- For non-software PTT: must pause drain thread around ALL `set_rts()` calls
 - Display refresh (VFO dial press+release both sides) after RTS restore, also with drain paused
 - Playback RTS restore runs in background thread to avoid blocking audio loop
 
-## Systemd Service & Process Management (2026-03-12)
+## Systemd Service & Process Management (2026-03-12, updated 2026-03-14)
 - **Service:** `radio-gateway.service` — `KillMode=control-group` (kills all children on stop/restart)
+- **Service:** `th9800-cat.service` — headless CAT server, started/stopped by start.sh based on `ENABLE_CAT_CONTROL`
 - `TimeoutStopSec=15` to allow graceful serial cleanup
-- start.sh: reads config, sudo keepalive, renice -10, optional TH9800_CAT + Claude Code launches
+- start.sh: reads config, sudo keepalive, renice -10, manages th9800-cat.service + Claude Code launches
+- start.sh uses `ENABLE_CAT_CONTROL` (not old `START_TH9800_CAT`) to decide whether to start CAT service
 - Gateway restart via `q` key uses `os.execv` (replaces process in-place, same PID)
+- **CRITICAL:** Always restart gateway via start.sh, never `python3 radio_gateway.py` directly (ALSA loopback, AIOC reset, etc. are needed)
+
+## Web UI Toast Notifications (2026-03-14)
+- `gateway.notify(message, level)` pushes to 20-entry ring buffer (`_notifications`)
+- Included in `/status` JSON response, polled every 1s by dashboard
+- Client-side: `showToast()` renders color-coded popups (red=error, orange=warning, blue=info), auto-dismiss 8s
+- Wired to: PTT failures (CAT not connected, radio not responding, serial disconnected), playback failures (file not found, decode error), TTS failures
+
+## Web UI Fetch Pileup Fix (2026-03-14)
+- All polling functions (updateStatus, updateSysInfo, updateRadio, pollStatus) have in-flight guards
+- Prevents fetch requests from piling up and exhausting browser's 6-connection limit
+- Without this, the web UI freezes (buttons unresponsive, status stops updating)
 
 ## Audio Processing — Per-Source AudioProcessor (2026-03-10, updated 2026-03-13)
 - `AudioProcessor` class: independent filter state per source (radio, SDR)
@@ -102,8 +117,11 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 ## PTT Methods
 - `PTT_METHOD`: `aioc` (default), `relay`, or `software`
-- AIOC: HID GPIO, Relay: CH340 USB relay, Software: CAT TCP `!rts`
-- **Note:** On this machine, AIOC GPIO PTT doesn't key the radio; CAT serial RTS does
+- AIOC: HID GPIO, Relay: CH340 USB relay, Software: CAT TCP `!ptt` toggle
+- **Note:** On this machine, AIOC GPIO PTT doesn't key the radio; use `software` mode (CAT `!ptt`)
+- Software PTT tracks state via `_software_ptt_on` (independent of `ptt_active` which is set in multiple places)
+- Software PTT checks `_last_radio_rx` — refuses to key if radio hasn't sent data in >5 seconds (radio powered off)
+- RTS save/restore and VFO dial-press refresh are skipped in software PTT mode (they cause VFO switching artifacts)
 
 ## Smart Announcements (Modular AI Backend)
 - `SmartAnnouncementManager`: scheduled AI-powered spoken announcements
