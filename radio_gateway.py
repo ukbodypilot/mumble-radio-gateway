@@ -340,6 +340,7 @@ class Config:
             'SMART_ANNOUNCE_3_TOP_TEXT': '',
             'SMART_ANNOUNCE_3_TAIL_TEXT': '',
             # TH-9800 CAT Control
+            'ENABLE_TH9800': False,       # Alias for ENABLE_CAT_CONTROL
             'ENABLE_CAT_CONTROL': False,
             'CAT_STARTUP_COMMANDS': True,
             'CAT_HOST': '127.0.0.1',
@@ -495,10 +496,16 @@ class Config:
                             setattr(self, key, value)
             
             print(f"✓ Configuration loaded from '{self.config_file}'")
-            
+
         except Exception as e:
             print(f"WARNING: Error loading config file: {e}")
             print("Using default values")
+
+        # Sync ENABLE_TH9800 / ENABLE_CAT_CONTROL aliases (either one enables TH-9800)
+        if getattr(self, 'ENABLE_TH9800', False) and not getattr(self, 'ENABLE_CAT_CONTROL', False):
+            self.ENABLE_CAT_CONTROL = True
+        elif getattr(self, 'ENABLE_CAT_CONTROL', False) and not getattr(self, 'ENABLE_TH9800', False):
+            self.ENABLE_TH9800 = True
 
 # ============================================================================
 # AUDIO SOURCE SYSTEM - Multi-Source Support
@@ -8118,7 +8125,7 @@ class WebConfigServer:
             'SMART_ANNOUNCE_3_MODE', 'SMART_ANNOUNCE_3_TOP_TEXT', 'SMART_ANNOUNCE_3_TAIL_TEXT',
         ]),
         ('cat', 'TH-9800 CAT Control', [
-            'ENABLE_CAT_CONTROL', 'CAT_STARTUP_COMMANDS',
+            'ENABLE_TH9800', 'CAT_STARTUP_COMMANDS',
             'CAT_HOST', 'CAT_PORT', 'CAT_PASSWORD',
             'CAT_LEFT_CHANNEL', 'CAT_RIGHT_CHANNEL',
             'CAT_LEFT_VOLUME', 'CAT_RIGHT_VOLUME',
