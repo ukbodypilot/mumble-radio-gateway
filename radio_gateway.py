@@ -313,8 +313,8 @@ class Config:
             'SMART_ANNOUNCE_OLLAMA_NUM_THREAD': 2,     # CPU threads (0 = all cores)
             'SMART_ANNOUNCE_API_KEY': '',            # Claude API key
             'SMART_ANNOUNCE_GEMINI_API_KEY': '',     # Gemini API key
-            'SMART_ANNOUNCE_TOP_TEXT': '',           # Text spoken before announcement (empty = none)
-            'SMART_ANNOUNCE_TAIL_TEXT': '',          # Text spoken after announcement (empty = none)
+            'SMART_ANNOUNCE_TOP_TEXT': '',           # Global top text (used if slot has none)
+            'SMART_ANNOUNCE_TAIL_TEXT': '',          # Global tail text (used if slot has none)
             'SMART_ANNOUNCE_START_TIME': '08:00',   # HH:MM — empty = no restriction
             'SMART_ANNOUNCE_END_TIME': '22:00',     # HH:MM — empty = no restriction
             # Smart Announcement Slots (1-3, match dashboard buttons)
@@ -322,14 +322,20 @@ class Config:
             'SMART_ANNOUNCE_1_INTERVAL': 3600,       # seconds between announcements
             'SMART_ANNOUNCE_1_VOICE': 1,             # TTS voice (1-9)
             'SMART_ANNOUNCE_1_TARGET_SECS': 15,      # max speech length in seconds
+            'SMART_ANNOUNCE_1_TOP_TEXT': '',          # text spoken before (blank = use global)
+            'SMART_ANNOUNCE_1_TAIL_TEXT': '',         # text spoken after (blank = use global)
             'SMART_ANNOUNCE_2_PROMPT': '',
             'SMART_ANNOUNCE_2_INTERVAL': 3600,
             'SMART_ANNOUNCE_2_VOICE': 1,
             'SMART_ANNOUNCE_2_TARGET_SECS': 15,
+            'SMART_ANNOUNCE_2_TOP_TEXT': '',
+            'SMART_ANNOUNCE_2_TAIL_TEXT': '',
             'SMART_ANNOUNCE_3_PROMPT': '',
             'SMART_ANNOUNCE_3_INTERVAL': 3600,
             'SMART_ANNOUNCE_3_VOICE': 1,
             'SMART_ANNOUNCE_3_TARGET_SECS': 15,
+            'SMART_ANNOUNCE_3_TOP_TEXT': '',
+            'SMART_ANNOUNCE_3_TAIL_TEXT': '',
             # TH-9800 CAT Control
             'ENABLE_CAT_CONTROL': False,
             'CAT_STARTUP_COMMANDS': True,
@@ -5874,9 +5880,13 @@ class SmartAnnouncementManager:
 
             # No truncation — let the LLM/backend control length naturally
 
-            # Add optional top/tail text with pauses
-            top_text = str(getattr(self.config, 'SMART_ANNOUNCE_TOP_TEXT', '') or '').strip()
-            tail_text = str(getattr(self.config, 'SMART_ANNOUNCE_TAIL_TEXT', '') or '').strip()
+            # Add optional top/tail text with pauses (per-slot, falls back to global)
+            top_text = str(getattr(self.config, f'SMART_ANNOUNCE_{eid}_TOP_TEXT', '') or '').strip()
+            if not top_text:
+                top_text = str(getattr(self.config, 'SMART_ANNOUNCE_TOP_TEXT', '') or '').strip()
+            tail_text = str(getattr(self.config, f'SMART_ANNOUNCE_{eid}_TAIL_TEXT', '') or '').strip()
+            if not tail_text:
+                tail_text = str(getattr(self.config, 'SMART_ANNOUNCE_TAIL_TEXT', '') or '').strip()
             if top_text:
                 text = f"{top_text} ... {text}"
             if tail_text:
@@ -7422,12 +7432,18 @@ class WebConfigServer:
         'SMART_ANNOUNCE_1_PROMPT': 'search/prompt text (blank = disabled)',
         'SMART_ANNOUNCE_1_INTERVAL': 'seconds between announcements',
         'SMART_ANNOUNCE_1_TARGET_SECS': 'max speech length (seconds, max 60)',
+        'SMART_ANNOUNCE_1_TOP_TEXT': 'spoken before (blank = use global)',
+        'SMART_ANNOUNCE_1_TAIL_TEXT': 'spoken after (blank = use global)',
         'SMART_ANNOUNCE_2_PROMPT': 'search/prompt text (blank = disabled)',
         'SMART_ANNOUNCE_2_INTERVAL': 'seconds between announcements',
         'SMART_ANNOUNCE_2_TARGET_SECS': 'max speech length (seconds, max 60)',
+        'SMART_ANNOUNCE_2_TOP_TEXT': 'spoken before (blank = use global)',
+        'SMART_ANNOUNCE_2_TAIL_TEXT': 'spoken after (blank = use global)',
         'SMART_ANNOUNCE_3_PROMPT': 'search/prompt text (blank = disabled)',
         'SMART_ANNOUNCE_3_INTERVAL': 'seconds between announcements',
         'SMART_ANNOUNCE_3_TARGET_SECS': 'max speech length (seconds, max 60)',
+        'SMART_ANNOUNCE_3_TOP_TEXT': 'spoken before (blank = use global)',
+        'SMART_ANNOUNCE_3_TAIL_TEXT': 'spoken after (blank = use global)',
         # CAT
         'CAT_HOST': 'IP address',
         'CAT_PORT': 'port (1–65535)',
@@ -7614,10 +7630,13 @@ class WebConfigServer:
             'SMART_ANNOUNCE_START_TIME', 'SMART_ANNOUNCE_END_TIME',
             'SMART_ANNOUNCE_1_PROMPT', 'SMART_ANNOUNCE_1_INTERVAL',
             'SMART_ANNOUNCE_1_VOICE', 'SMART_ANNOUNCE_1_TARGET_SECS',
+            'SMART_ANNOUNCE_1_TOP_TEXT', 'SMART_ANNOUNCE_1_TAIL_TEXT',
             'SMART_ANNOUNCE_2_PROMPT', 'SMART_ANNOUNCE_2_INTERVAL',
             'SMART_ANNOUNCE_2_VOICE', 'SMART_ANNOUNCE_2_TARGET_SECS',
+            'SMART_ANNOUNCE_2_TOP_TEXT', 'SMART_ANNOUNCE_2_TAIL_TEXT',
             'SMART_ANNOUNCE_3_PROMPT', 'SMART_ANNOUNCE_3_INTERVAL',
             'SMART_ANNOUNCE_3_VOICE', 'SMART_ANNOUNCE_3_TARGET_SECS',
+            'SMART_ANNOUNCE_3_TOP_TEXT', 'SMART_ANNOUNCE_3_TAIL_TEXT',
         ]),
         ('cat', 'TH-9800 CAT Control', [
             'ENABLE_CAT_CONTROL', 'CAT_STARTUP_COMMANDS',
