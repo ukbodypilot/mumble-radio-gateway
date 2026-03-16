@@ -5479,27 +5479,17 @@ class D75CATClient:
             return None
         with self._sock_lock:
             try:
-                # Flush any stale data in buffer
-                self._buf = b''
-                self._sock.settimeout(0.05)
-                try:
-                    while True:
-                        d = self._sock.recv(4096)
-                        if not d:
-                            break
-                except (socket.timeout, BlockingIOError):
-                    pass
-
+                self._buf = b''  # Clear any partial line in buffer
                 self._sock.sendall(f"{cmd}\n".encode())
                 self._last_activity = time.monotonic()
-                resp = self._recv_line(timeout=2.0)
+                resp = self._recv_line(timeout=3.0)
                 if resp and 'Unauthorized' in resp:
                     self._sock.sendall(f"!pass {self._password}\n".encode())
                     auth_resp = self._recv_line(timeout=2.0)
                     if auth_resp and 'Login Successful' in auth_resp:
                         self._sock.sendall(f"{cmd}\n".encode())
                         self._last_activity = time.monotonic()
-                        resp = self._recv_line(timeout=2.0)
+                        resp = self._recv_line(timeout=3.0)
                 return resp
             except Exception as e:
                 if self._verbose:
@@ -5509,7 +5499,18 @@ class D75CATClient:
     def send_command(self, cmd):
         """Send command with poll pausing. Use this for user/web commands."""
         self._poll_paused = True
-        time.sleep(0.15)  # Let current poll finish
+        time.sleep(0.3)  # Wait for current poll to finish
+        # Drain any stale poll response from socket
+        with self._sock_lock:
+            self._buf = b''
+            self._sock.settimeout(0.1)
+            try:
+                while True:
+                    d = self._sock.recv(4096)
+                    if not d:
+                        break
+            except (socket.timeout, BlockingIOError, OSError):
+                pass
         try:
             return self._send_cmd(cmd)
         finally:
