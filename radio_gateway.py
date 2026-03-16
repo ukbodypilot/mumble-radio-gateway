@@ -11556,6 +11556,7 @@ pollTimer = setInterval(pollStatus, 1000);
   .bar-sdr1 { background: var(--t-accent); } .bar-sdr2 { background: #e056a0; }
   .bar-sv { background: #f1c40f; } .bar-cl { background: #2ecc71; }
   .bar-sp { background: var(--t-accent); } .bar-an { background: #e74c3c; }
+  .bar-d75 { background: #f39c12; }
   .bar-pct { display: inline-block; width: 3.5em; text-align: right; color: #ccc; }
   .green { color: #2ecc71; } .red { color: #e74c3c; } .yellow { color: #f39c12; }
   .cyan { color: var(--t-accent); } .white { color: #e0e0e0; }
@@ -11639,6 +11640,7 @@ function updateStatus() {
     if(s.sdr2_enabled) h += '<div class="st-item"><span class="st-label">SDR2:</span>'+bar(s.sdr2_level,'bar-sdr2')+'</div>';
     if(s.remote_enabled) h += '<div class="st-item"><span class="st-label">'+s.remote_mode+':</span>'+bar(s.remote_level, s.remote_mode==='SV'?'bar-sv':'bar-cl')+'</div>';
     if(s.announce_enabled) h += '<div class="st-item"><span class="st-label">AN:</span>'+bar(s.an_level,'bar-an')+'</div>';
+    if(s.d75_enabled) h += '<div class="st-item"><span class="st-label">D75:</span>'+bar(s.d75_level,'bar-d75')+(s.d75_muted?' <span class="st-val red">M</span>':'')+'</div>';
     h += '</div>';
 
     h += '<div class="st-row info-row">';
@@ -11656,6 +11658,7 @@ function updateStatus() {
     if(s.remote_muted) mutes.push('Remote');
     if(s.announce_muted) mutes.push('Announce');
     if(s.speaker_muted && s.speaker_enabled) mutes.push('Speaker');
+    if(s.d75_muted) mutes.push('D75');
     h += '<div class="st-item"><span class="st-label">Muted:</span><span class="st-val '+(mutes.length?'red':'green')+'">'+(mutes.length?mutes.join(', '):'None')+'</span></div>';
     if(s.sdr1_enabled && s.sdr1_duck) h += '<div class="st-item"><span class="st-label">Duck:</span><span class="st-val green">ON</span></div>';
     if(s.sdr1_enabled && s.sdr_rebroadcast) h += '<div class="st-item"><span class="st-label">Rebroadcast:</span><span class="st-val yellow">ON</span></div>';
@@ -11663,6 +11666,7 @@ function updateStatus() {
     if(s.ms1_state) h += '<div class="st-item"><span class="st-label">MS1:</span><span class="st-val '+(s.ms1_state==='running'?'green':s.ms1_state==='error'?'red':'white')+'">'+(s.ms1_state==='running'?'ON':'OFF')+'</span></div>';
     if(s.ms2_state) h += '<div class="st-item"><span class="st-label">MS2:</span><span class="st-val '+(s.ms2_state==='running'?'green':s.ms2_state==='error'?'red':'white')+'">'+(s.ms2_state==='running'?'ON':'OFF')+'</span></div>';
     if(s.cat_enabled) h += '<div class="st-item"><span class="st-label">CAT:</span><span class="st-val '+(s.cat==='active'?'red':s.cat==='idle'?'green':'white')+'">'+(s.cat==='active'||s.cat==='idle'?'ON':'OFF')+'</span></div>';
+    if(s.d75_enabled) h += '<div class="st-item"><span class="st-label">D75:</span><span class="st-val '+(s.d75_connected?'green':'red')+'">'+(s.d75_connected?'ON':'OFF')+'</span>'+(s.d75_audio_connected?' <span class="st-val green">Audio</span>':' <span class="st-val red">No Audio</span>')+'</div>';
     if(s.relay_radio_enabled) h += '<div class="st-item"><span class="st-label">PWRB:</span><span class="st-val '+(s.relay_pressing?'red':'green')+'">'+(s.relay_pressing?'ON':'off')+'</span></div>';
     h += '</div>';
 
@@ -16117,6 +16121,11 @@ class RadioGateway:
             'ms1_state': self.mumble_server_1.state if self.mumble_server_1 else None,
             'ms2_state': self.mumble_server_2.state if self.mumble_server_2 else None,
             'cat_enabled': bool(self.cat_client) or getattr(self.config, 'ENABLE_CAT_CONTROL', False),
+            'd75_enabled': bool(self.d75_cat) or getattr(self.config, 'ENABLE_D75', False),
+            'd75_connected': bool(self.d75_cat),
+            'd75_audio_connected': bool(self.d75_audio_source and self.d75_audio_source.server_connected),
+            'd75_level': self.d75_audio_source.audio_level if self.d75_audio_source else 0,
+            'd75_muted': getattr(self, 'd75_muted', False),
             'files': file_slots,
             'playback_enabled': bool(self.playback_source),
             'tts_enabled': bool(getattr(self, 'tts_engine', None)),
