@@ -5375,6 +5375,7 @@ class D75CATClient:
         self._last_activity = 0
         self._stop = False
         self._poll_thread = None
+        self._poll_paused = False
 
         # Radio state (populated by !status JSON response)
         self._connected = False
@@ -5457,11 +5458,23 @@ class D75CATClient:
         return None
 
     def _send_cmd(self, cmd):
-        """Send command, return response. Auto-re-auths on Unauthorized."""
+        """Send command, return response. Auto-re-auths on Unauthorized.
+        Internal use — callers should use send_command() which pauses polling."""
         if not self._sock:
             return None
         with self._sock_lock:
             try:
+                # Flush any stale data in buffer
+                self._buf = b''
+                self._sock.settimeout(0.05)
+                try:
+                    while True:
+                        d = self._sock.recv(4096)
+                        if not d:
+                            break
+                except (socket.timeout, BlockingIOError):
+                    pass
+
                 self._sock.sendall(f"{cmd}\n".encode())
                 self._last_activity = time.monotonic()
                 resp = self._recv_line(timeout=2.0)
@@ -5477,6 +5490,15 @@ class D75CATClient:
                 if self._verbose:
                     print(f"  D75 CAT send error: {e}")
                 return None
+
+    def send_command(self, cmd):
+        """Send command with poll pausing. Use this for user/web commands."""
+        self._poll_paused = True
+        time.sleep(0.15)  # Let current poll finish
+        try:
+            return self._send_cmd(cmd)
+        finally:
+            self._poll_paused = False
 
     def poll_state(self):
         """Send !status and parse JSON response to update local state.
@@ -5519,10 +5541,11 @@ class D75CATClient:
     def _poll_thread_func(self):
         """Poll !status every 2 seconds."""
         while not self._stop:
-            try:
-                self.poll_state()
-            except Exception:
-                pass
+            if not self._poll_paused:
+                try:
+                    self.poll_state()
+                except Exception:
+                    pass
             for _ in range(20):  # 2 seconds in 0.1s increments
                 if self._stop:
                     return
@@ -8783,20 +8806,20 @@ class WebConfigServer:
                         gw = parent.gateway
                         if gw and gw.d75_cat:
                             if cmd == 'cat':
-                                resp = gw.d75_cat._send_cmd(f"!cat {args}")
+                                resp = gw.d75_cat.send_command(f"!cat {args}")
                                 result = {'ok': True, 'response': resp or ''}
                             elif cmd == 'btstart':
-                                resp = gw.d75_cat._send_cmd("!btstart")
+                                resp = gw.d75_cat.send_command("!btstart")
                                 result = {'ok': True, 'response': resp or ''}
                             elif cmd == 'ptt':
-                                resp = gw.d75_cat._send_cmd("!ptt on" if not getattr(gw, '_d75_ptt', False) else "!ptt off")
+                                resp = gw.d75_cat.send_command("!ptt on" if not getattr(gw, '_d75_ptt', False) else "!ptt off")
                                 gw._d75_ptt = not getattr(gw, '_d75_ptt', False)
                                 result = {'ok': True, 'response': resp or ''}
                             elif cmd == 'vol':
-                                resp = gw.d75_cat._send_cmd(f"!vol {args}")
+                                resp = gw.d75_cat.send_command(f"!vol {args}")
                                 result = {'ok': True, 'response': resp or ''}
                             else:
-                                resp = gw.d75_cat._send_cmd(f"!{cmd} {args}".strip())
+                                resp = gw.d75_cat.send_command(f"!{cmd} {args}".strip())
                                 result = {'ok': True, 'response': resp or ''}
                         else:
                             result = {'ok': False, 'error': 'D75 not connected'}
