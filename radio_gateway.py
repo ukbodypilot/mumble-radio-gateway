@@ -3111,18 +3111,24 @@ class D75AudioSource(AudioSource):
         return True
 
     def _reader_thread_func(self):
-        """Connect to D75 audio port, read raw 8kHz PCM, resample to 48kHz."""
-        import socket as _sock_mod
-        try:
-            import resampy as _resampy
-        except ImportError:
-            _resampy = None
-            print("[D75] Warning: resampy not installed, using linear interpolation")
+        """Connect to D75 audio port, read raw 8kHz PCM, upsample to 48kHz.
 
-        # How many 8kHz samples to accumulate before resampling.
-        # 400 samples at 8kHz = 50ms = one gateway chunk (2400 samples at 48kHz).
+        Uses linear interpolation (6x upsample) which is clean for the exact
+        integer ratio 8kHz→48kHz and avoids boundary artifacts that batch
+        resamplers (resampy) cause on small streaming chunks.
+        """
+        import socket as _sock_mod
+
+        # Accumulate 400 samples at 8kHz = 50ms = produces 2400 samples at 48kHz
         samples_8k = self.config.AUDIO_CHUNK_SIZE // 6  # 2400 // 6 = 400
         bytes_8k = samples_8k * 2  # 800 bytes
+        # Pre-compute interpolation indices (constant for all chunks)
+        _ratio = 6
+        _out_len = samples_8k * _ratio
+        _interp_idx = np.linspace(0, samples_8k - 1, _out_len).astype(np.float32)
+        _interp_src = np.arange(samples_8k, dtype=np.float32)
+        # Keep last sample from previous chunk for seamless interpolation
+        _prev_last = np.float32(0)
 
         while self._reader_running:
             sock = None
@@ -3134,6 +3140,7 @@ class D75AudioSource(AudioSource):
                 sock.settimeout(2.0)
                 self._sock = sock
                 self.server_connected = True
+                _prev_last = np.float32(0)
                 print(f"\n[D75] Audio connected to {self._host}:{self._port}")
 
                 raw_buf = b''
@@ -3151,14 +3158,14 @@ class D75AudioSource(AudioSource):
                         chunk_8k = raw_buf[:bytes_8k]
                         raw_buf = raw_buf[bytes_8k:]
 
-                        # Convert to float, resample 8k→48k, back to int16
+                        # 6x linear interpolation (streaming-safe)
                         arr_8k = np.frombuffer(chunk_8k, dtype=np.int16).astype(np.float32)
-                        if _resampy is not None:
-                            arr_48k = _resampy.resample(arr_8k, 8000, 48000)
-                        else:
-                            # Basic linear interpolation fallback
-                            indices = np.linspace(0, len(arr_8k) - 1, len(arr_8k) * 6)
-                            arr_48k = np.interp(indices, np.arange(len(arr_8k)), arr_8k)
+                        # Prepend previous chunk's last sample for seamless boundary
+                        extended = np.concatenate(([_prev_last], arr_8k))
+                        _prev_last = arr_8k[-1]
+                        # Interpolate: map 0..samples_8k in output to 0..samples_8k in extended
+                        idx_ext = np.linspace(0, len(extended) - 1, _out_len).astype(np.float32)
+                        arr_48k = np.interp(idx_ext, np.arange(len(extended), dtype=np.float32), extended)
                         pcm_48k = np.clip(arr_48k, -32768, 32767).astype(np.int16).tobytes()
 
                         try:
