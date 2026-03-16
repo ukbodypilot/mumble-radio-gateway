@@ -9560,6 +9560,24 @@ class WebConfigServer:
             f.writelines(lines)
         os.replace(tmp_path, config_path)
 
+    def _radio_nav_links(self, style='inline'):
+        """Build conditional radio nav links based on enabled radios."""
+        links = []
+        if getattr(self.config, 'ENABLE_CAT_CONTROL', False) or getattr(self.config, 'ENABLE_TH9800', False):
+            links.append('<a href="/radio">TH-9800</a>')
+        if getattr(self.config, 'ENABLE_D75', False):
+            links.append('<a href="/d75">TH-D75</a>')
+        return ' | '.join(links)
+
+    def _radio_nav_buttons(self):
+        """Build conditional radio nav buttons for logs page."""
+        html = ''
+        if getattr(self.config, 'ENABLE_CAT_CONTROL', False) or getattr(self.config, 'ENABLE_TH9800', False):
+            html += '    <a href="/radio" class="rb rb-sm" style="text-decoration:none;">TH-9800</a>\n'
+        if getattr(self.config, 'ENABLE_D75', False):
+            html += '    <a href="/d75" class="rb rb-sm" style="text-decoration:none;">D75</a>\n'
+        return html
+
     def _wrap_html(self, title, body):
         """Wrap body content in the standard HTML shell."""
         t = self._get_theme()
@@ -9620,9 +9638,7 @@ class WebConfigServer:
   <div>
     <a href="/" class="rb rb-sm" style="text-decoration:none;">Config</a>
     <a href="/" class="rb rb-sm" style="text-decoration:none;">Dashboard</a>
-    <a href="/radio" class="rb rb-sm" style="text-decoration:none;">TH-9800</a>
-    <a href="/d75" class="rb rb-sm" style="text-decoration:none;">D75</a>
-    <a href="/sdr" class="rb rb-sm" style="text-decoration:none;">SDR</a>
+''' + self._radio_nav_buttons() + '''    <a href="/sdr" class="rb rb-sm" style="text-decoration:none;">SDR</a>
   </div>
 </div>
 <div style="margin-bottom:8px; display:flex; gap:10px; align-items:center;">
@@ -9745,7 +9761,7 @@ fetch('/logdata?after=0')
         """Build the TH-9800 radio control HTML page."""
         body = '''
 <h1 style="font-size:1.8em">TH-9800 Control</h1>
-<p><a href="/">Dashboard</a> | <a href="/d75">TH-D75</a> | <a href="/sdr">SDR</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
+<p><a href="/">Dashboard</a> | ''' + self._radio_nav_links() + ''' | <a href="/sdr">SDR</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
 
 <div id="cat-offline" style="display:none; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; margin-bottom:14px;">
   <span id="cat-offline-msg" style="color:#e74c3c; font-weight:bold;">CAT not connected</span>
@@ -10343,7 +10359,7 @@ updateRadio();
         powers = {0: 'XL', 1: 'Low', 2: 'Med', 3: 'High'}
         body = '''
 <h1 style="font-size:1.8em">TH-D75 Control</h1>
-<p><a href="/">Dashboard</a> | <a href="/radio">TH-9800</a> | <a href="/sdr">SDR</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
+<p><a href="/">Dashboard</a> | ''' + self._radio_nav_links() + ''' | <a href="/sdr">SDR</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
 
 <style>
 .rb { padding:8px 14px; border:1px solid var(--t-btn-border); border-radius:4px; background:var(--t-btn);
@@ -10643,7 +10659,7 @@ updateD75();
         """Build the SDR control HTML page."""
         body = '''
 <h1 style="font-size:1.8em">SDR Control</h1>
-<p><a href="/">Dashboard</a> | <a href="/radio">TH-9800</a> | <a href="/d75">D75</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
+<p><a href="/">Dashboard</a> | ''' + self._radio_nav_links() + ''' | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
 
 <!-- Status bar -->
 <div id="sdr-status-bar" style="display:flex; align-items:center; gap:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 16px; margin-bottom:14px;">
@@ -11387,7 +11403,7 @@ pollTimer = setInterval(pollStatus, 1000);
         _name_html = '<span style="color:#e0e0e0">' + gw_name + '</span> &mdash; ' if gw_name else ''
         body = '<h1 style="font-size:1.8em; margin:0 0 10px">' + _name_html + 'Radio Gateway Dashboard</h1>'
         body += '''
-<p style="margin:0 0 10px;font-size:1.1em"><a href="/config">Config Editor</a> | <a href="/radio">TH-9800</a> | <a href="/d75">TH-D75</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>
+''' + f'<p style="margin:0 0 10px;font-size:1.1em"><a href="/config">Config Editor</a> | {self._radio_nav_links()} | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>' + '''
 
 <div class="ctrl-group" id="listen-top" style="margin-bottom:10px;">
   <h3>Controls</h3>
