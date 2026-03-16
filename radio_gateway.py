@@ -351,6 +351,17 @@ class Config:
             'CAT_RIGHT_VOLUME': -1,     # 0-100, -1 = don't change
             'CAT_LEFT_POWER': '',       # L/M/H or blank = don't change
             'CAT_RIGHT_POWER': '',      # L/M/H or blank = don't change
+            # D75 CAT Control + Audio (via D75_CAT.py TCP server)
+            'ENABLE_D75': False,
+            'D75_HOST': '127.0.0.1',          # D75_CAT.py server IP
+            'D75_PORT': 9750,                  # CAT TCP port
+            'D75_AUDIO_PORT': 9751,            # Raw PCM audio TCP port
+            'D75_PASSWORD': '',                # !pass auth password
+            'D75_AUDIO_DUCK': True,            # Duck D75 when higher priority source active
+            'D75_AUDIO_PRIORITY': 2,           # sdr_priority for ducking
+            'D75_AUDIO_DISPLAY_GAIN': 1.0,     # Display level sensitivity
+            'D75_AUDIO_BOOST': 1.0,            # Volume multiplier
+            'D75_RECONNECT_INTERVAL': 5.0,     # Seconds between reconnect attempts
             # Dynamic DNS (No-IP compatible)
             # Web Configuration UI
             'ENABLE_WEB_CONFIG': True,
@@ -3054,6 +3065,219 @@ class RemoteAudioSource(AudioSource):
         self._sub_buffer = b''
 
 
+class D75AudioSource(AudioSource):
+    """TCP client that connects to D75_CAT.py's audio streaming port (9751)
+    and receives raw 8kHz 16-bit mono PCM, resamples to 48kHz for the mixer.
+
+    The D75 audio stream has no length prefix — just continuous raw PCM bytes.
+    Reconnects automatically if the connection drops.
+    """
+    def __init__(self, config, gateway):
+        super().__init__("D75", config)
+        self.gateway = gateway
+        self.priority = 2
+        self.sdr_priority = int(getattr(config, 'D75_AUDIO_PRIORITY', 2))
+        self.ptt_control = False
+        self.volume = 1.0
+        self.mix_ratio = 1.0
+        self.duck = getattr(config, 'D75_AUDIO_DUCK', True)
+        self.enabled = True
+        self.muted = False
+
+        self.audio_level = 0
+        self.server_connected = False
+
+        self._host = config.D75_HOST
+        self._port = int(config.D75_AUDIO_PORT)
+        self._reconnect_interval = float(getattr(config, 'D75_RECONNECT_INTERVAL', 5.0))
+
+        self._chunk_queue = _queue_mod.Queue(maxsize=16)
+        self._sub_buffer = b''
+        self._chunk_bytes = config.AUDIO_CHUNK_SIZE * 2  # 16-bit mono at 48kHz
+        self._reader_running = False
+        self._reader_thread = None
+        self._sock = None
+
+    def setup_audio(self):
+        """Start the reader thread that connects out to D75 audio port."""
+        self._reader_running = True
+        self._reader_thread = threading.Thread(
+            target=self._reader_thread_func,
+            name="D75-audio-reader",
+            daemon=True
+        )
+        self._reader_thread.start()
+        print(f"✓ D75 audio source connecting to {self._host}:{self._port}")
+        return True
+
+    def _reader_thread_func(self):
+        """Connect to D75 audio port, read raw 8kHz PCM, resample to 48kHz."""
+        import socket as _sock_mod
+        try:
+            import resampy as _resampy
+        except ImportError:
+            _resampy = None
+            print("[D75] Warning: resampy not installed, using linear interpolation")
+
+        # How many 8kHz samples to accumulate before resampling.
+        # 400 samples at 8kHz = 50ms = one gateway chunk (2400 samples at 48kHz).
+        samples_8k = self.config.AUDIO_CHUNK_SIZE // 6  # 2400 // 6 = 400
+        bytes_8k = samples_8k * 2  # 800 bytes
+
+        while self._reader_running:
+            sock = None
+            try:
+                sock = _sock_mod.socket(_sock_mod.AF_INET, _sock_mod.SOCK_STREAM)
+                sock.settimeout(self._reconnect_interval)
+                sock.connect((self._host, self._port))
+                sock.setsockopt(_sock_mod.IPPROTO_TCP, _sock_mod.TCP_NODELAY, 1)
+                sock.settimeout(2.0)
+                self._sock = sock
+                self.server_connected = True
+                print(f"\n[D75] Audio connected to {self._host}:{self._port}")
+
+                raw_buf = b''
+                while self._reader_running:
+                    try:
+                        data = sock.recv(4096)
+                    except _sock_mod.timeout:
+                        continue
+                    if not data:
+                        break
+                    raw_buf += data
+
+                    # Process complete chunks
+                    while len(raw_buf) >= bytes_8k:
+                        chunk_8k = raw_buf[:bytes_8k]
+                        raw_buf = raw_buf[bytes_8k:]
+
+                        # Convert to float, resample 8k→48k, back to int16
+                        arr_8k = np.frombuffer(chunk_8k, dtype=np.int16).astype(np.float32)
+                        if _resampy is not None:
+                            arr_48k = _resampy.resample(arr_8k, 8000, 48000)
+                        else:
+                            # Basic linear interpolation fallback
+                            indices = np.linspace(0, len(arr_8k) - 1, len(arr_8k) * 6)
+                            arr_48k = np.interp(indices, np.arange(len(arr_8k)), arr_8k)
+                        pcm_48k = np.clip(arr_48k, -32768, 32767).astype(np.int16).tobytes()
+
+                        try:
+                            self._chunk_queue.put_nowait(pcm_48k)
+                        except _queue_mod.Full:
+                            try:
+                                self._chunk_queue.get_nowait()
+                            except _queue_mod.Empty:
+                                pass
+                            try:
+                                self._chunk_queue.put_nowait(pcm_48k)
+                            except _queue_mod.Full:
+                                pass
+
+            except _sock_mod.timeout:
+                pass
+            except Exception as e:
+                if self._reader_running and getattr(self.config, 'VERBOSE_LOGGING', False):
+                    print(f"\n[D75] Audio connection error: {e}")
+            finally:
+                self.server_connected = False
+                self._sock = None
+                if sock:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                if self._reader_running:
+                    time.sleep(self._reconnect_interval)
+
+    def get_audio(self, chunk_size):
+        """Drain queue, slice sub-buffer, level metering, audio boost."""
+        if not self.enabled:
+            return None, False
+        if not self.server_connected and not self._sub_buffer:
+            return None, False
+
+        cb = self._chunk_bytes
+        while len(self._sub_buffer) < cb:
+            try:
+                blob = self._chunk_queue.get_nowait()
+                self._sub_buffer += blob
+            except _queue_mod.Empty:
+                return None, False
+
+        raw = self._sub_buffer[:cb]
+        self._sub_buffer = self._sub_buffer[cb:]
+
+        should_discard = self.muted or (self.gateway.tx_muted and self.gateway.rx_muted)
+        if should_discard:
+            self.audio_level = max(0, int(self.audio_level * 0.7))
+            return None, False
+
+        arr = np.frombuffer(raw, dtype=np.int16)
+        if len(arr) > 0:
+            farr = arr.astype(np.float32)
+            rms = float(np.sqrt(np.mean(farr * farr)))
+            if rms > 0:
+                db = 20 * _math_mod.log10(rms / 32767.0)
+                raw_level = max(0, min(100, (db + 60) * (100 / 60)))
+            else:
+                raw_level = 0
+            display_gain = float(getattr(self.config, 'D75_AUDIO_DISPLAY_GAIN', 1.0))
+            display_level = min(100, int(raw_level * display_gain))
+            if display_level > self.audio_level:
+                self.audio_level = display_level
+            else:
+                self.audio_level = int(self.audio_level * 0.7 + display_level * 0.3)
+
+            audio_boost = float(getattr(self.config, 'D75_AUDIO_BOOST', 1.0))
+            if audio_boost != 1.0:
+                arr = np.clip(farr * audio_boost, -32768, 32767).astype(np.int16)
+                raw = arr.tobytes()
+
+        return raw, False
+
+    def is_active(self):
+        return self.enabled and not self.muted and self.server_connected
+
+    def get_status(self):
+        if not self.enabled:
+            return "D75: Disabled"
+        elif self.muted:
+            return "D75: Muted"
+        elif self.server_connected:
+            return f"D75: Connected ({self.audio_level}%)"
+        else:
+            return "D75: Disconnected"
+
+    def reset(self):
+        """Force-close connection to trigger reconnect."""
+        sock = self._sock
+        self._sock = None
+        self.server_connected = False
+        self._sub_buffer = b''
+        while not self._chunk_queue.empty():
+            try:
+                self._chunk_queue.get_nowait()
+            except _queue_mod.Empty:
+                break
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def cleanup(self):
+        """Stop reader thread."""
+        self._reader_running = False
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2.0)
+        self._sub_buffer = b''
+
+
 class NetworkAnnouncementSource(AudioSource):
     """Listens for an inbound TCP connection on port 9601 and receives PCM
     audio to transmit over the radio.
@@ -5130,6 +5354,201 @@ class RadioCATClient:
             print(f"  CAT: Setup complete ({ok_count}/{len(tasks)} ok)")
         else:
             print(f"  CAT: Setup done ({ok_count}/{len(tasks)} ok) — {', '.join(summary_parts)}")
+
+
+class D75CATClient:
+    """TCP client for Kenwood TH-D75 CAT control via D75_CAT.py server.
+
+    Text-based protocol: commands are "!command args\\n", responses are text lines.
+    Much simpler than TH-9800's binary protocol — no drain thread, no binary
+    packet parsing. Uses periodic !status polling to keep state fresh.
+    """
+
+    def __init__(self, host, port, password='', verbose=False):
+        self._host = host
+        self._port = port
+        self._password = password
+        self._verbose = verbose
+        self._sock = None
+        self._buf = b''
+        self._sock_lock = threading.Lock()
+        self._last_activity = 0
+        self._stop = False
+        self._poll_thread = None
+
+        # Radio state (populated by !status JSON response)
+        self._connected = False
+        self._serial_connected = False
+        self._frequency = {}      # {0: '445.975000', 1: '146.520000'}
+        self._mode = {}           # {0: 'FM', 1: 'FM'}
+        self._squelch = {}        # {0: 2, 1: 2}
+        self._power = {}          # {0: 'H', 1: 'L'}
+        self._signal = {}         # {0: 0, 1: 0}
+        self._model = ''
+        self._serial_number = ''
+        self._firmware = ''
+
+    def connect(self):
+        """Connect to D75 CAT TCP server and authenticate."""
+        try:
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._sock.settimeout(5.0)
+            self._sock.connect((self._host, self._port))
+            self._sock.sendall(f"!pass {self._password}\n".encode())
+            resp = self._recv_line(timeout=5.0)
+            if resp and 'Login Successful' in resp:
+                self._connected = True
+                self._last_activity = time.monotonic()
+                return True
+            else:
+                print(f"  D75 CAT auth failed: {resp}")
+                self.close()
+                return False
+        except Exception as e:
+            print(f"  D75 CAT connect error: {e}")
+            self.close()
+            return False
+
+    def close(self):
+        """Close TCP connection."""
+        self._stop = True
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=2.0)
+        if self._sock:
+            try:
+                self._sock.sendall(b'!exit\n')
+            except Exception:
+                pass
+            time.sleep(0.1)
+            try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+        self._connected = False
+
+    def _recv_line(self, timeout=2.0):
+        """Read one line from socket."""
+        if not self._sock:
+            return None
+        self._sock.settimeout(timeout)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if b'\n' in self._buf:
+                idx = self._buf.index(b'\n')
+                line = self._buf[:idx].decode('utf-8', errors='ignore').strip()
+                self._buf = self._buf[idx + 1:]
+                self._last_activity = time.monotonic()
+                return line
+            try:
+                data = self._sock.recv(4096)
+                if not data:
+                    return None
+                self._buf += data
+            except socket.timeout:
+                continue
+            except Exception:
+                return None
+        return None
+
+    def _send_cmd(self, cmd):
+        """Send command, return response. Auto-re-auths on Unauthorized."""
+        if not self._sock:
+            return None
+        with self._sock_lock:
+            try:
+                self._sock.sendall(f"{cmd}\n".encode())
+                self._last_activity = time.monotonic()
+                resp = self._recv_line(timeout=2.0)
+                if resp and 'Unauthorized' in resp:
+                    self._sock.sendall(f"!pass {self._password}\n".encode())
+                    auth_resp = self._recv_line(timeout=2.0)
+                    if auth_resp and 'Login Successful' in auth_resp:
+                        self._sock.sendall(f"{cmd}\n".encode())
+                        self._last_activity = time.monotonic()
+                        resp = self._recv_line(timeout=2.0)
+                return resp
+            except Exception as e:
+                if self._verbose:
+                    print(f"  D75 CAT send error: {e}")
+                return None
+
+    def poll_state(self):
+        """Send !status and parse JSON response to update local state.
+
+        D75 RadioState.to_dict() returns: model_id, fw_version, serial_number,
+        active_band, band_0/band_1 with frequency, mode, squelch, power, s_meter.
+        """
+        resp = self._send_cmd("!status")
+        if not resp:
+            return
+        try:
+            data = json_mod.loads(resp)
+            self._serial_connected = bool(data.get('model_id'))
+            self._model = data.get('model_id', '')
+            self._serial_number = data.get('serial_number', '')
+            self._firmware = data.get('fw_version', '')
+            for band in [0, 1]:
+                key = f'band_{band}'
+                if key in data:
+                    b = data[key]
+                    self._frequency[band] = b.get('frequency', '')
+                    self._mode[band] = b.get('mode', 0)
+                    self._squelch[band] = b.get('squelch', 0)
+                    self._power[band] = b.get('power', 0)
+                    self._signal[band] = b.get('s_meter', 0)
+        except (json_mod.JSONDecodeError, Exception):
+            pass
+
+    def start_polling(self):
+        """Start background polling thread."""
+        self._stop = False
+        self._poll_thread = threading.Thread(
+            target=self._poll_thread_func,
+            name="D75-CAT-poll",
+            daemon=True
+        )
+        self._poll_thread.start()
+
+    def _poll_thread_func(self):
+        """Poll !status every 2 seconds."""
+        while not self._stop:
+            try:
+                self.poll_state()
+            except Exception:
+                pass
+            for _ in range(20):  # 2 seconds in 0.1s increments
+                if self._stop:
+                    return
+                time.sleep(0.1)
+
+    def get_radio_state(self):
+        """Return state dict for web dashboard."""
+        return {
+            'connected': self._connected,
+            'serial_connected': self._serial_connected,
+            'model': self._model,
+            'serial_number': self._serial_number,
+            'firmware': self._firmware,
+            'band_0': {
+                'frequency': self._frequency.get(0, ''),
+                'mode': self._mode.get(0, ''),
+                'squelch': self._squelch.get(0, 0),
+                'power': self._power.get(0, ''),
+                'signal': self._signal.get(0, 0),
+            },
+            'band_1': {
+                'frequency': self._frequency.get(1, ''),
+                'mode': self._mode.get(1, ''),
+                'squelch': self._squelch.get(1, 0),
+                'power': self._power.get(1, ''),
+                'signal': self._signal.get(1, 0),
+            },
+        }
 
 
 class DDNSUpdater:
@@ -7672,6 +8091,11 @@ class WebConfigServer:
             'CAT_LEFT_CHANNEL', 'CAT_RIGHT_CHANNEL',
             'CAT_LEFT_VOLUME', 'CAT_RIGHT_VOLUME',
             'CAT_LEFT_POWER', 'CAT_RIGHT_POWER',
+        ]),
+        ('d75', 'D75 CAT Control + Audio', [
+            'ENABLE_D75', 'D75_HOST', 'D75_PORT', 'D75_AUDIO_PORT',
+            'D75_PASSWORD', 'D75_AUDIO_DUCK', 'D75_AUDIO_PRIORITY',
+            'D75_AUDIO_DISPLAY_GAIN', 'D75_AUDIO_BOOST', 'D75_RECONNECT_INTERVAL',
         ]),
         ('web', 'Web Configuration', [
             'ENABLE_WEB_CONFIG', 'WEB_CONFIG_PORT', 'WEB_CONFIG_PASSWORD',
@@ -11756,6 +12180,11 @@ class RadioGateway:
         # TH-9800 CAT control
         self.cat_client = None  # RadioCATClient instance
 
+        # D75 CAT Control + Audio
+        self.d75_cat = None           # D75CATClient instance
+        self.d75_audio_source = None  # D75AudioSource instance
+        self.d75_muted = False        # D75 audio mute toggle
+
         # Mumble Server instances (local mumble-server/murmurd)
         self.mumble_server_1 = None  # MumbleServerManager instance
         self.mumble_server_2 = None  # MumbleServerManager instance
@@ -12999,6 +13428,46 @@ class RadioGateway:
                 except Exception as e:
                     print(f"  CAT control error: {e}")
                     self.cat_client = None
+
+            # Initialize D75 CAT control + audio
+            if getattr(self.config, 'ENABLE_D75', False):
+                try:
+                    d75_host = str(self.config.D75_HOST)
+                    d75_port = int(self.config.D75_PORT)
+                    d75_pass = str(self.config.D75_PASSWORD)
+                    verbose = getattr(self.config, 'VERBOSE_LOGGING', False)
+                    print(f"Connecting to D75 CAT server ({d75_host}:{d75_port})...")
+                    self.d75_cat = D75CATClient(d75_host, d75_port, d75_pass, verbose=verbose)
+                    if self.d75_cat.connect():
+                        print("  Connected to D75 CAT server")
+                        # Send !btstart to connect BT audio + serial
+                        resp = self.d75_cat._send_cmd("!btstart")
+                        if resp:
+                            print(f"  btstart: {resp}")
+                        self.d75_cat.start_polling()
+                        # Initialize audio source
+                        try:
+                            audio_port = int(self.config.D75_AUDIO_PORT)
+                            print(f"Initializing D75 audio source ({d75_host}:{audio_port})...")
+                            self.d75_audio_source = D75AudioSource(self.config, self)
+                            if self.d75_audio_source.setup_audio():
+                                self.d75_audio_source.enabled = True
+                                self.d75_audio_source.duck = self.config.D75_AUDIO_DUCK
+                                self.d75_audio_source.sdr_priority = int(self.config.D75_AUDIO_PRIORITY)
+                                self.mixer.add_source(self.d75_audio_source)
+                                print(f"✓ D75 audio source added to mixer")
+                            else:
+                                print("⚠ D75 audio init failed")
+                                self.d75_audio_source = None
+                        except Exception as e:
+                            print(f"⚠ D75 audio error: {e}")
+                            self.d75_audio_source = None
+                    else:
+                        print("  Failed to connect to D75 CAT server")
+                        self.d75_cat = None
+                except Exception as e:
+                    print(f"  D75 CAT error: {e}")
+                    self.d75_cat = None
 
             # Initialize Mumble Server instances (local mumble-server/murmurd)
             if getattr(self.config, 'ENABLE_MUMBLE_SERVER_1', False):
@@ -15031,6 +15500,11 @@ class RadioGateway:
             if self.speaker_stream:
                 self.speaker_muted = not self.speaker_muted
                 self._trace_events.append((time.monotonic(), 'spk_mute', 'on' if self.speaker_muted else 'off'))
+        elif char == 'w':
+            if self.d75_audio_source:
+                self.d75_muted = not self.d75_muted
+                self.d75_audio_source.muted = self.d75_muted
+                self._trace_events.append((time.monotonic(), 'd75_mute', 'on' if self.d75_muted else 'off'))
         elif char == 'l':
             if self.cat_client:
                 def _send_cat_config():
@@ -15429,6 +15903,13 @@ class RadioGateway:
                     cl_ducked = self.remote_audio_ducked if not cl_muted and current_cl_level > 0 else False
                     remote_bar = f" {WHITE}CL:{RESET}" + self.format_level_bar(current_cl_level, muted=cl_muted, ducked=cl_ducked, color='green')
 
+                # D75 audio bar
+                d75_bar = ""
+                if self.d75_audio_source:
+                    d75_level = getattr(self.d75_audio_source, 'audio_level', 0)
+                    d75_m = self.d75_muted or global_muted
+                    d75_bar = f" {WHITE}D75:{RESET}" + self.format_level_bar(d75_level, muted=d75_m, color='yellow')
+
                 # Announcement input bar (AN: — red like TX, shown when enabled)
                 annin_bar = ""
                 if self.announce_input_source:
@@ -15517,7 +15998,7 @@ class RadioGateway:
                 _file_bar = ""
                 if self.playback_source:
                     _file_bar = f" {self.playback_source.get_file_status_string()}"
-                status_line = f"{status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}{_ptt_label}:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{annin_bar}{_file_bar}     "
+                status_line = f"{status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}{_ptt_label}:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{d75_bar}{annin_bar}{_file_bar}     "
 
                 # Line 2: uptime, files, relays, CAT, servers, vol, proc, diag, smart countdowns
                 def _fmt_hms(secs):
@@ -16742,6 +17223,22 @@ class RadioGateway:
                 self.cat_client.close()
                 if self.config.VERBOSE_LOGGING:
                     print("  CAT client closed")
+            except Exception:
+                pass
+
+        if self.d75_cat:
+            try:
+                self.d75_cat.close()
+                if self.config.VERBOSE_LOGGING:
+                    print("  D75 CAT client closed")
+            except Exception:
+                pass
+
+        if self.d75_audio_source:
+            try:
+                self.d75_audio_source.cleanup()
+                if self.config.VERBOSE_LOGGING:
+                    print("  D75 audio source closed")
             except Exception:
                 pass
 
