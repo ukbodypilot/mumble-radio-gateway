@@ -14134,9 +14134,21 @@ class RadioGateway:
                         print("  Connected to D75 CAT server")
                         if d75_mode == 'bluetooth':
                             # BT mode: btstart connects BT audio + serial
-                            resp = self.d75_cat._send_cmd("!btstart")
-                            if resp:
-                                print(f"  btstart: {resp}")
+                            # btstart may retry up to 3 times (30s total) so
+                            # we send it and poll for completion
+                            self.d75_cat._send_cmd("!btstart")
+                            # Wait for btstart to complete (up to 35s)
+                            for _btwait in range(35):
+                                time.sleep(1)
+                                try:
+                                    _st = self.d75_cat._send_cmd("!audio status")
+                                    if _st and '"connected": true' in _st:
+                                        print(f"  btstart: OK (took {_btwait+1}s)")
+                                        break
+                                except Exception:
+                                    pass
+                            else:
+                                print(f"  btstart: may still be connecting (timeout)")
                         else:
                             # USB mode: just connect serial (audio via AIOC)
                             resp = self.d75_cat._send_cmd("!serial connect")
