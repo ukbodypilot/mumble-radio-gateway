@@ -322,18 +322,21 @@ class Config:
             'SMART_ANNOUNCE_1_INTERVAL': 3600,       # seconds between announcements
             'SMART_ANNOUNCE_1_VOICE': 1,             # TTS voice (1-9)
             'SMART_ANNOUNCE_1_TARGET_SECS': 15,      # max speech length in seconds
+            'SMART_ANNOUNCE_1_MODE': 'auto',         # auto = scheduled, manual = web UI only
             'SMART_ANNOUNCE_1_TOP_TEXT': '',          # text spoken before (blank = use global)
             'SMART_ANNOUNCE_1_TAIL_TEXT': '',         # text spoken after (blank = use global)
             'SMART_ANNOUNCE_2_PROMPT': '',
             'SMART_ANNOUNCE_2_INTERVAL': 3600,
             'SMART_ANNOUNCE_2_VOICE': 1,
             'SMART_ANNOUNCE_2_TARGET_SECS': 15,
+            'SMART_ANNOUNCE_2_MODE': 'auto',
             'SMART_ANNOUNCE_2_TOP_TEXT': '',
             'SMART_ANNOUNCE_2_TAIL_TEXT': '',
             'SMART_ANNOUNCE_3_PROMPT': '',
             'SMART_ANNOUNCE_3_INTERVAL': 3600,
             'SMART_ANNOUNCE_3_VOICE': 1,
             'SMART_ANNOUNCE_3_TARGET_SECS': 15,
+            'SMART_ANNOUNCE_3_MODE': 'auto',
             'SMART_ANNOUNCE_3_TOP_TEXT': '',
             'SMART_ANNOUNCE_3_TAIL_TEXT': '',
             # TH-9800 CAT Control
@@ -5467,11 +5470,15 @@ class SmartAnnouncementManager:
                     interval = int(getattr(self.config, f'SMART_ANNOUNCE_{i}_INTERVAL', 3600))
                     voice = int(getattr(self.config, f'SMART_ANNOUNCE_{i}_VOICE', 1))
                     target_secs = min(int(getattr(self.config, f'SMART_ANNOUNCE_{i}_TARGET_SECS', 15)), 60)
+                    mode = str(getattr(self.config, f'SMART_ANNOUNCE_{i}_MODE', 'auto') or 'auto').strip().lower()
+                    if mode not in ('auto', 'manual'):
+                        mode = 'auto'
                     self._entries.append({
                         'id': i,
                         'interval': interval,
                         'voice': voice,
                         'target_secs': target_secs,
+                        'mode': mode,
                         'prompt': prompt,
                         'last_run': 0,
                     })
@@ -5506,6 +5513,7 @@ class SmartAnnouncementManager:
             'interval': int(parts[0]),
             'voice': int(parts[1]),
             'target_secs': min(int(parts[2]), 60),
+            'mode': 'auto',
             'prompt': prompt,
             'last_run': 0,
         }
@@ -5739,7 +5747,8 @@ class SmartAnnouncementManager:
                 print(f"  [SmartAnnounce] Time window: unrestricted")
             print(f"  [SmartAnnounce] Initialized with {len(self._entries)} scheduled announcement(s)")
             for e in self._entries:
-                print(f"    #{e['id']}: every {e['interval']}s, voice {e['voice']}, "
+                mode_str = 'manual' if e['mode'] == 'manual' else f"every {e['interval']}s"
+                print(f"    #{e['id']}: {mode_str}, voice {e['voice']}, "
                       f"~{e['target_secs']}s, prompt: {e['prompt'][:60]}...")
         except Exception as e:
             print(f"  [SmartAnnounce] Init error: {e}")
@@ -5751,13 +5760,13 @@ class SmartAnnouncementManager:
         self._thread.start()
 
     def get_countdowns(self):
-        """Return list of (id, seconds_remaining) for each entry."""
+        """Return list of (id, seconds_remaining, mode) for each entry."""
         now = time.time()
         result = []
         with self._lock:
             for e in self._entries:
                 remaining = max(0, e['interval'] - (now - e['last_run']))
-                result.append((e['id'], int(remaining)))
+                result.append((e['id'], int(remaining), e['mode']))
         return result
 
     def stop(self):
@@ -5814,7 +5823,7 @@ class SmartAnnouncementManager:
                 continue
             now = time.time()
             with self._lock:
-                due = [(e, now) for e in self._entries if now - e['last_run'] >= e['interval']]
+                due = [(e, now) for e in self._entries if e['mode'] == 'auto' and now - e['last_run'] >= e['interval']]
                 for e, t in due:
                     e['last_run'] = t
             for e, _ in due:
@@ -7445,16 +7454,19 @@ class WebConfigServer:
         'SMART_ANNOUNCE_1_PROMPT': 'search/prompt text (blank = disabled)',
         'SMART_ANNOUNCE_1_INTERVAL': 'seconds between announcements',
         'SMART_ANNOUNCE_1_TARGET_SECS': 'max speech length (seconds, max 60)',
+        'SMART_ANNOUNCE_1_MODE': 'auto = on schedule, manual = web UI trigger only',
         'SMART_ANNOUNCE_1_TOP_TEXT': 'spoken before (blank = use global)',
         'SMART_ANNOUNCE_1_TAIL_TEXT': 'spoken after (blank = use global)',
         'SMART_ANNOUNCE_2_PROMPT': 'search/prompt text (blank = disabled)',
         'SMART_ANNOUNCE_2_INTERVAL': 'seconds between announcements',
         'SMART_ANNOUNCE_2_TARGET_SECS': 'max speech length (seconds, max 60)',
+        'SMART_ANNOUNCE_2_MODE': 'auto = on schedule, manual = web UI trigger only',
         'SMART_ANNOUNCE_2_TOP_TEXT': 'spoken before (blank = use global)',
         'SMART_ANNOUNCE_2_TAIL_TEXT': 'spoken after (blank = use global)',
         'SMART_ANNOUNCE_3_PROMPT': 'search/prompt text (blank = disabled)',
         'SMART_ANNOUNCE_3_INTERVAL': 'seconds between announcements',
         'SMART_ANNOUNCE_3_TARGET_SECS': 'max speech length (seconds, max 60)',
+        'SMART_ANNOUNCE_3_MODE': 'auto = on schedule, manual = web UI trigger only',
         'SMART_ANNOUNCE_3_TOP_TEXT': 'spoken before (blank = use global)',
         'SMART_ANNOUNCE_3_TAIL_TEXT': 'spoken after (blank = use global)',
         # CAT
@@ -7508,16 +7520,19 @@ class WebConfigServer:
             ('4', '4 — Indian'), ('5', '5 — South African'), ('6', '6 — Canadian'),
             ('7', '7 — Irish'), ('8', '8 — French'), ('9', '9 — German'),
         ],
+        'SMART_ANNOUNCE_1_MODE': [('auto', 'auto — scheduled'), ('manual', 'manual — web UI only')],
         'SMART_ANNOUNCE_1_VOICE': [
             ('1', '1 — US'), ('2', '2 — British'), ('3', '3 — Australian'),
             ('4', '4 — Indian'), ('5', '5 — South African'), ('6', '6 — Canadian'),
             ('7', '7 — Irish'), ('8', '8 — French'), ('9', '9 — German'),
         ],
+        'SMART_ANNOUNCE_2_MODE': [('auto', 'auto — scheduled'), ('manual', 'manual — web UI only')],
         'SMART_ANNOUNCE_2_VOICE': [
             ('1', '1 — US'), ('2', '2 — British'), ('3', '3 — Australian'),
             ('4', '4 — Indian'), ('5', '5 — South African'), ('6', '6 — Canadian'),
             ('7', '7 — Irish'), ('8', '8 — French'), ('9', '9 — German'),
         ],
+        'SMART_ANNOUNCE_3_MODE': [('auto', 'auto — scheduled'), ('manual', 'manual — web UI only')],
         'SMART_ANNOUNCE_3_VOICE': [
             ('1', '1 — US'), ('2', '2 — British'), ('3', '3 — Australian'),
             ('4', '4 — Indian'), ('5', '5 — South African'), ('6', '6 — Canadian'),
@@ -7643,13 +7658,13 @@ class WebConfigServer:
             'SMART_ANNOUNCE_START_TIME', 'SMART_ANNOUNCE_END_TIME',
             'SMART_ANNOUNCE_1_PROMPT', 'SMART_ANNOUNCE_1_INTERVAL',
             'SMART_ANNOUNCE_1_VOICE', 'SMART_ANNOUNCE_1_TARGET_SECS',
-            'SMART_ANNOUNCE_1_TOP_TEXT', 'SMART_ANNOUNCE_1_TAIL_TEXT',
+            'SMART_ANNOUNCE_1_MODE', 'SMART_ANNOUNCE_1_TOP_TEXT', 'SMART_ANNOUNCE_1_TAIL_TEXT',
             'SMART_ANNOUNCE_2_PROMPT', 'SMART_ANNOUNCE_2_INTERVAL',
             'SMART_ANNOUNCE_2_VOICE', 'SMART_ANNOUNCE_2_TARGET_SECS',
-            'SMART_ANNOUNCE_2_TOP_TEXT', 'SMART_ANNOUNCE_2_TAIL_TEXT',
+            'SMART_ANNOUNCE_2_MODE', 'SMART_ANNOUNCE_2_TOP_TEXT', 'SMART_ANNOUNCE_2_TAIL_TEXT',
             'SMART_ANNOUNCE_3_PROMPT', 'SMART_ANNOUNCE_3_INTERVAL',
             'SMART_ANNOUNCE_3_VOICE', 'SMART_ANNOUNCE_3_TARGET_SECS',
-            'SMART_ANNOUNCE_3_TOP_TEXT', 'SMART_ANNOUNCE_3_TAIL_TEXT',
+            'SMART_ANNOUNCE_3_MODE', 'SMART_ANNOUNCE_3_TOP_TEXT', 'SMART_ANNOUNCE_3_TAIL_TEXT',
         ]),
         ('cat', 'TH-9800 CAT Control', [
             'ENABLE_CAT_CONTROL', 'CAT_STARTUP_COMMANDS',
@@ -8612,6 +8627,8 @@ class WebConfigServer:
                         values[key] = 'false'
 
                 parent._save_config(values)
+                # Reload config from file so the config page reflects saved values
+                parent.config.load_config()
                 if action == 'restart' and parent.gateway:
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -10821,7 +10838,9 @@ function updateStatus() {
     h += '<div class="st-row timer-row">';
     h += '<div class="st-item"><span class="st-label">Uptime:</span><span class="st-val cyan">'+s.uptime+'</span></div>';
     for(var i=0;i<s.smart_countdowns.length;i++) {
-      h += '<div class="st-item"><span class="st-label">Smart#'+s.smart_countdowns[i].id+':</span><span class="st-val yellow">'+s.smart_countdowns[i].remaining+'</span></div>';
+      var sc=s.smart_countdowns[i];
+      var scClr=sc.mode==='manual'?'cyan':'yellow';
+      h += '<div class="st-item"><span class="st-label">Smart#'+sc.id+':</span><span class="st-val '+scClr+'">'+sc.remaining+'</span></div>';
     }
     if(s.ddns) h += '<div class="st-item"><span class="st-label">DNS:</span><span class="st-val green">'+s.ddns+'</span></div>';
     if(s.charger) h += '<div class="st-item"><span class="st-label">Charger:</span><span class="st-val '+(s.charger.startsWith("CHARGING")?'green':'red')+'">'+s.charger+'</span></div>';
@@ -15120,11 +15139,14 @@ class RadioGateway:
         # Smart announce countdowns
         sa_countdowns = []
         if self.smart_announce and hasattr(self.smart_announce, 'get_countdowns'):
-            for sa_id, sa_secs in self.smart_announce.get_countdowns():
-                sd, sr = divmod(int(sa_secs), 86400)
-                sh, sr2 = divmod(sr, 3600)
-                sm, ss = divmod(sr2, 60)
-                sa_countdowns.append({'id': sa_id, 'remaining': f"{sd}d {sh:02d}:{sm:02d}:{ss:02d}"})
+            for sa_id, sa_secs, sa_mode in self.smart_announce.get_countdowns():
+                if sa_mode == 'manual':
+                    sa_countdowns.append({'id': sa_id, 'remaining': 'Manual', 'mode': 'manual'})
+                else:
+                    sd, sr = divmod(int(sa_secs), 86400)
+                    sh, sr2 = divmod(sr, 3600)
+                    sm, ss = divmod(sr2, 60)
+                    sa_countdowns.append({'id': sa_id, 'remaining': f"{sd}d {sh:02d}:{sm:02d}:{ss:02d}", 'mode': 'auto'})
 
         # DDNS
         ddns_status = ''
@@ -15508,8 +15530,11 @@ class RadioGateway:
                 line2_parts = [f"{WHITE}UP:{CYAN}{_fmt_hms(uptime_s)}{RESET}"]
 
                 if self.smart_announce:
-                    for sa_id, sa_rem in self.smart_announce.get_countdowns():
-                        line2_parts.append(f"{WHITE}S{sa_id}:{MAGENTA}{_fmt_hms(sa_rem)}{RESET}")
+                    for sa_id, sa_rem, sa_mode in self.smart_announce.get_countdowns():
+                        if sa_mode == 'manual':
+                            line2_parts.append(f"{WHITE}S{sa_id}:{MAGENTA}Manual{RESET}")
+                        else:
+                            line2_parts.append(f"{WHITE}S{sa_id}:{MAGENTA}{_fmt_hms(sa_rem)}{RESET}")
 
                 if self.web_config_server:
                     _web_port = getattr(self.config, 'WEB_CONFIG_PORT', 8080)
