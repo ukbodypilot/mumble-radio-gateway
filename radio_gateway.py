@@ -6427,9 +6427,22 @@ class SmartAnnouncementManager:
             xdo('key', 'ctrl+v')
             time.sleep(0.1)
             xdo('key', 'Return')
-            # Wait for page to load — claude.ai is a JS SPA, needs extra time
+
+            # Wait for claude.ai to load — verify by checking window title
             print(f"[SmartAnnounce] claude-scrape: waiting for page load...")
-            time.sleep(5)
+            for _load_wait in range(15):
+                time.sleep(1)
+                r = xdo('getactivewindow')
+                if r.returncode == 0:
+                    wid = r.stdout.strip()
+                    name_r = subprocess.run(['xdotool', 'getwindowname', wid],
+                                            capture_output=True, text=True, timeout=3, env=display_env)
+                    title = name_r.stdout.strip() if name_r.returncode == 0 else ''
+                    if 'Claude' in title or 'claude' in title:
+                        print(f"[SmartAnnounce] claude-scrape: page loaded after {_load_wait + 1}s")
+                        break
+            else:
+                print(f"[SmartAnnounce] claude-scrape: page may not have loaded (proceeding anyway)")
 
             # Re-find and re-activate Firefox
             best_wid2, _ = _find_firefox_window()
