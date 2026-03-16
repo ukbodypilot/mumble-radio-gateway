@@ -354,9 +354,10 @@ class Config:
             'CAT_RIGHT_POWER': '',      # L/M/H or blank = don't change
             # D75 CAT Control + Audio (via D75_CAT.py TCP server)
             'ENABLE_D75': False,
+            'D75_CONNECTION': 'bluetooth',     # 'bluetooth' or 'usb' (usb = CAT only, no audio)
             'D75_HOST': '127.0.0.1',          # D75_CAT.py server IP
             'D75_PORT': 9750,                  # CAT TCP port
-            'D75_AUDIO_PORT': 9751,            # Raw PCM audio TCP port
+            'D75_AUDIO_PORT': 9751,            # Raw PCM audio TCP port (bluetooth only)
             'D75_PASSWORD': '',                # !pass auth password
             'D75_AUDIO_DUCK': True,            # Duck D75 when higher priority source active
             'D75_AUDIO_PRIORITY': 2,           # sdr_priority for ducking
@@ -8131,8 +8132,8 @@ class WebConfigServer:
             'CAT_LEFT_VOLUME', 'CAT_RIGHT_VOLUME',
             'CAT_LEFT_POWER', 'CAT_RIGHT_POWER',
         ]),
-        ('d75', 'D75 CAT Control + Audio', [
-            'ENABLE_D75', 'D75_HOST', 'D75_PORT', 'D75_AUDIO_PORT',
+        ('d75', 'TH-D75 Control', [
+            'ENABLE_D75', 'D75_CONNECTION', 'D75_HOST', 'D75_PORT', 'D75_AUDIO_PORT',
             'D75_PASSWORD', 'D75_AUDIO_DUCK', 'D75_AUDIO_PRIORITY',
             'D75_AUDIO_DISPLAY_GAIN', 'D75_AUDIO_BOOST', 'D75_RECONNECT_INTERVAL',
         ]),
@@ -8364,6 +8365,7 @@ class WebConfigServer:
                             cat = parent.gateway.d75_cat
                             # af_gain is in the full status response
                             data['af_gain'] = getattr(cat, '_af_gain', -1)
+                        data['d75_mode'] = str(getattr(parent.gateway.config, 'D75_CONNECTION', 'bluetooth')).lower().strip()
                     try:
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
@@ -10397,9 +10399,11 @@ updateRadio();
   <span style="color:#333;">|</span>
   <span class="d75-label">FW:</span> <span id="d75-fw" class="d75-val">—</span>
   <span style="color:#333;">|</span>
-  <span class="d75-label">Audio:</span> <span id="d75-audio-status" class="d75-val">—</span>
+  <span class="d75-label">Mode:</span> <span id="d75-mode" class="d75-val">—</span>
+  <span id="d75-audio-row"><span style="color:#333;">|</span>
+  <span class="d75-label">Audio:</span> <span id="d75-audio-status" class="d75-val">—</span></span>
   <span style="flex:1;"></span>
-  <button class="rb rb-sm" onclick="d75cmd('btstart')">BT Start</button>
+  <button id="d75-btstart-btn" class="rb rb-sm" onclick="d75cmd('btstart')" style="display:none;">BT Start</button>
   <button class="rb rb-sm" onclick="d75cmd('ptt')" id="d75-ptt-btn">PTT</button>
 </div>
 
@@ -10597,14 +10601,23 @@ function updateD75() {
     document.getElementById('d75-sn').textContent = d.serial_number || '—';
     document.getElementById('d75-fw').textContent = d.firmware || '—';
 
-    // Audio status
-    var audioEl = document.getElementById('d75-audio-status');
-    if (d.audio_connected) {
-      audioEl.textContent = 'Connected';
-      audioEl.style.color = '#2ecc71';
-    } else {
-      audioEl.textContent = 'Disconnected';
-      audioEl.style.color = '#e74c3c';
+    // Connection mode
+    var isBT = (d.d75_mode || 'bluetooth') === 'bluetooth';
+    document.getElementById('d75-mode').textContent = isBT ? 'Bluetooth' : 'USB';
+    document.getElementById('d75-mode').style.color = '#2ecc71';
+    document.getElementById('d75-audio-row').style.display = isBT ? '' : 'none';
+    document.getElementById('d75-btstart-btn').style.display = isBT ? '' : 'none';
+
+    // Audio status (bluetooth only)
+    if (isBT) {
+      var audioEl = document.getElementById('d75-audio-status');
+      if (d.audio_connected) {
+        audioEl.textContent = 'Connected';
+        audioEl.style.color = '#2ecc71';
+      } else {
+        audioEl.textContent = 'Disconnected';
+        audioEl.style.color = '#e74c3c';
+      }
     }
 
     // Volume (only update if not being dragged)
@@ -11689,7 +11702,7 @@ function updateStatus() {
     if(s.ms1_state) h += '<div class="st-item"><span class="st-label">MS1:</span><span class="st-val '+(s.ms1_state==='running'?'green':s.ms1_state==='error'?'red':'white')+'">'+(s.ms1_state==='running'?'ON':'OFF')+'</span></div>';
     if(s.ms2_state) h += '<div class="st-item"><span class="st-label">MS2:</span><span class="st-val '+(s.ms2_state==='running'?'green':s.ms2_state==='error'?'red':'white')+'">'+(s.ms2_state==='running'?'ON':'OFF')+'</span></div>';
     if(s.cat_enabled) h += '<div class="st-item"><span class="st-label">CAT:</span><span class="st-val '+(s.cat==='active'?'red':s.cat==='idle'?'green':'white')+'">'+(s.cat==='active'||s.cat==='idle'?'ON':'OFF')+'</span></div>';
-    if(s.d75_enabled) h += '<div class="st-item"><span class="st-label">D75:</span><span class="st-val '+(s.d75_connected?'green':'red')+'">'+(s.d75_connected?'ON':'OFF')+'</span>'+(s.d75_audio_connected?' <span class="st-val green">Audio</span>':' <span class="st-val red">No Audio</span>')+'</div>';
+    if(s.d75_enabled) { var _d75a = s.d75_mode==='bluetooth' ? (s.d75_audio_connected?' <span class="st-val green">BT Audio</span>':' <span class="st-val red">No BT Audio</span>') : ' <span class="st-val yellow">USB/AIOC</span>'; h += '<div class="st-item"><span class="st-label">D75:</span><span class="st-val '+(s.d75_connected?'green':'red')+'">'+(s.d75_connected?'ON':'OFF')+'</span>'+_d75a+'</div>'; }
     if(s.relay_radio_enabled) h += '<div class="st-item"><span class="st-label">PWRB:</span><span class="st-val '+(s.relay_pressing?'red':'green')+'">'+(s.relay_pressing?'ON':'off')+'</span></div>';
     h += '</div>';
 
@@ -13866,37 +13879,47 @@ class RadioGateway:
 
             # Initialize D75 CAT control + audio
             if getattr(self.config, 'ENABLE_D75', False):
+                d75_mode = str(getattr(self.config, 'D75_CONNECTION', 'bluetooth')).lower().strip()
                 try:
                     d75_host = str(self.config.D75_HOST)
                     d75_port = int(self.config.D75_PORT)
                     d75_pass = str(self.config.D75_PASSWORD)
                     verbose = getattr(self.config, 'VERBOSE_LOGGING', False)
-                    print(f"Connecting to D75 CAT server ({d75_host}:{d75_port})...")
+                    print(f"Connecting to D75 CAT server ({d75_host}:{d75_port}, mode={d75_mode})...")
                     self.d75_cat = D75CATClient(d75_host, d75_port, d75_pass, verbose=verbose)
                     if self.d75_cat.connect():
                         print("  Connected to D75 CAT server")
-                        # Send !btstart to connect BT audio + serial
-                        resp = self.d75_cat._send_cmd("!btstart")
-                        if resp:
-                            print(f"  btstart: {resp}")
+                        if d75_mode == 'bluetooth':
+                            # BT mode: btstart connects BT audio + serial
+                            resp = self.d75_cat._send_cmd("!btstart")
+                            if resp:
+                                print(f"  btstart: {resp}")
+                        else:
+                            # USB mode: just connect serial (audio via AIOC)
+                            resp = self.d75_cat._send_cmd("!serial connect")
+                            if resp:
+                                print(f"  serial: {resp}")
                         self.d75_cat.start_polling()
-                        # Initialize audio source
-                        try:
-                            audio_port = int(self.config.D75_AUDIO_PORT)
-                            print(f"Initializing D75 audio source ({d75_host}:{audio_port})...")
-                            self.d75_audio_source = D75AudioSource(self.config, self)
-                            if self.d75_audio_source.setup_audio():
-                                self.d75_audio_source.enabled = True
-                                self.d75_audio_source.duck = self.config.D75_AUDIO_DUCK
-                                self.d75_audio_source.sdr_priority = int(self.config.D75_AUDIO_PRIORITY)
-                                self.mixer.add_source(self.d75_audio_source)
-                                print(f"✓ D75 audio source added to mixer")
-                            else:
-                                print("⚠ D75 audio init failed")
+                        # BT audio source (bluetooth mode only)
+                        if d75_mode == 'bluetooth':
+                            try:
+                                audio_port = int(self.config.D75_AUDIO_PORT)
+                                print(f"Initializing D75 audio source ({d75_host}:{audio_port})...")
+                                self.d75_audio_source = D75AudioSource(self.config, self)
+                                if self.d75_audio_source.setup_audio():
+                                    self.d75_audio_source.enabled = True
+                                    self.d75_audio_source.duck = self.config.D75_AUDIO_DUCK
+                                    self.d75_audio_source.sdr_priority = int(self.config.D75_AUDIO_PRIORITY)
+                                    self.mixer.add_source(self.d75_audio_source)
+                                    print(f"✓ D75 audio source added to mixer")
+                                else:
+                                    print("⚠ D75 audio init failed")
+                                    self.d75_audio_source = None
+                            except Exception as e:
+                                print(f"⚠ D75 audio error: {e}")
                                 self.d75_audio_source = None
-                        except Exception as e:
-                            print(f"⚠ D75 audio error: {e}")
-                            self.d75_audio_source = None
+                        else:
+                            print("  USB mode: audio via AIOC (no BT audio source)")
                     else:
                         print("  Failed to connect to D75 CAT server")
                         self.d75_cat = None
@@ -16147,6 +16170,7 @@ class RadioGateway:
             'd75_enabled': bool(self.d75_cat) or getattr(self.config, 'ENABLE_D75', False),
             'd75_connected': bool(self.d75_cat),
             'd75_audio_connected': bool(self.d75_audio_source and self.d75_audio_source.server_connected),
+            'd75_mode': str(getattr(self.config, 'D75_CONNECTION', 'bluetooth')).lower().strip(),
             'd75_level': self.d75_audio_source.audio_level if self.d75_audio_source else 0,
             'd75_muted': getattr(self, 'd75_muted', False),
             'files': file_slots,
