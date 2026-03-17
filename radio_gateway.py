@@ -133,6 +133,7 @@ class Config:
             'MUMBLE_BITRATE': 72000,
             'MUMBLE_VBR': True,
             'MUMBLE_JITTER_BUFFER': 10,
+            'TX_RADIO': 'th9800',              # 'th9800' or 'd75' — which radio for playback/TTS/announce TX
             'PTT_METHOD': 'aioc',              # 'aioc', 'relay', or 'software'
             'PTT_RELAY_DEVICE': '/dev/relay_ptt',
             'PTT_RELAY_BAUD': 9600,
@@ -1694,7 +1695,8 @@ class FilePlaybackSource(AudioSource):
         RTS must be Radio Controlled during AIOC PTT (relay routes mic wiring
         through front panel). Restored to USB Controlled after so CAT resumes."""
         _ptt_method = str(getattr(self.gateway.config, 'PTT_METHOD', 'aioc')).lower()
-        if _ptt_method == 'software':
+        _tx_radio = str(getattr(self.gateway.config, 'TX_RADIO', 'th9800')).lower()
+        if _ptt_method == 'software' or _tx_radio == 'd75':
             return
         _saved = getattr(self.gateway, '_playback_rts_saved', None)
         if _saved is not None:
@@ -3213,6 +3215,24 @@ class D75AudioSource(AudioSource):
                         pass
                 if self._reader_running:
                     time.sleep(self._reconnect_interval)
+
+    def write_tx_audio(self, pcm_48k):
+        """Downsample 48kHz PCM to 8kHz and send to D75 via audio TCP for BT TX.
+
+        The D75_CAT.py AudioTCPServer reads incoming data from connected clients
+        and writes it to SCO for radio transmission.
+        """
+        if not self._sock or not self.server_connected:
+            return False
+        try:
+            # Downsample 48kHz → 8kHz (take every 6th sample)
+            arr = np.frombuffer(pcm_48k, dtype=np.int16)
+            arr_8k = arr[::6]
+            data_8k = arr_8k.tobytes()
+            self._sock.sendall(data_8k)
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
 
     def get_audio(self, chunk_size):
         """Drain queue, slice sub-buffer, level metering, audio boost."""
@@ -5512,6 +5532,10 @@ class D75CATClient:
                         self._last_activity = time.monotonic()
                         resp = self._recv_line(timeout=3.0)
                 return resp
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                print(f"  [D75 CAT] Connection error: {e}")
+                self._connected = False
+                return None
             except Exception as e:
                 if self._verbose:
                     print(f"  D75 CAT send error: {e}")
@@ -5587,11 +5611,30 @@ class D75CATClient:
         self._poll_thread.start()
 
     def _poll_thread_func(self):
-        """Poll !status every 2 seconds."""
+        """Poll !status every 2 seconds. Auto-reconnect on connection loss."""
+        _reconnect_interval = 5.0
         while not self._stop:
+            # Check connection health and reconnect if needed
+            if not self._connected or not self._sock:
+                print(f"\n[D75 CAT] Connection lost — reconnecting to {self._host}:{self._port}...")
+                self.close()
+                self._stop = False  # close() sets _stop=True
+                if self.connect():
+                    print(f"[D75 CAT] Reconnected successfully")
+                else:
+                    # Wait before retry
+                    for _ in range(int(_reconnect_interval * 10)):
+                        if self._stop:
+                            return
+                        time.sleep(0.1)
+                    continue
+
             if not self._poll_paused:
                 try:
                     self.poll_state()
+                except OSError:
+                    # Connection dead — will reconnect on next iteration
+                    self._connected = False
                 except Exception:
                     pass
             for _ in range(20):  # 2 seconds in 0.1s increments
@@ -6435,9 +6478,10 @@ class SmartAnnouncementManager:
             # wiring through front panel. Software PTT uses !ptt via serial which
             # requires USB Controlled (serial connected), so RTS must NOT be changed.
             _ptt_method = str(getattr(self.gateway.config, 'PTT_METHOD', 'aioc')).lower()
+            _tx_radio = str(getattr(self.gateway.config, 'TX_RADIO', 'th9800')).lower()
             _rts_saved = None
             _cat = getattr(self.gateway, 'cat_client', None)
-            if _ptt_method != 'software' and _cat:
+            if _ptt_method != 'software' and _tx_radio != 'd75' and _cat:
                 _rts_saved = _cat.get_rts()
                 if _rts_saved is None or _rts_saved is True:
                     try:
@@ -6457,7 +6501,7 @@ class SmartAnnouncementManager:
             # Reset radio activity timestamp before PTT — the scrape + Ollama
             # process takes 60-120s during which no drain reads happen, making
             # _last_radio_rx stale. Without this, software PTT refuses to key.
-            if self.gateway.cat_client and self.gateway.cat_client._last_radio_rx > 0:
+            if _tx_radio != 'd75' and self.gateway.cat_client and self.gateway.cat_client._last_radio_rx > 0:
                 self.gateway.cat_client._last_radio_rx = time.monotonic()
             self.gateway.speak_text(text, voice=entry['voice'])
 
@@ -6467,7 +6511,7 @@ class SmartAnnouncementManager:
                     break
                 time.sleep(0.1)
 
-            if _ptt_method != 'software' and _cat and _rts_saved is not None and _rts_saved is not False:
+            if _ptt_method != 'software' and _tx_radio != 'd75' and _cat and _rts_saved is not None and _rts_saved is not False:
                 try:
                     self._set_activity(eid, 'Restoring RTS')
                     _cat.set_rts(_rts_saved)
@@ -8015,6 +8059,7 @@ class WebConfigServer:
 
     # Keys with a fixed set of valid values — rendered as dropdowns
     _SELECT_OPTIONS = {
+        'TX_RADIO': ['th9800', 'd75'],
         'PTT_METHOD': ['aioc', 'relay', 'software'],
         'REMOTE_AUDIO_ROLE': ['disabled', 'server', 'client'],
         'RELAY_CHARGER_CONTROL': ['gpio', 'serial'],
@@ -8073,7 +8118,7 @@ class WebConfigServer:
             'INPUT_VOLUME', 'OUTPUT_VOLUME',
         ]),
         ('ptt', 'PTT (Push-to-Talk)', [
-            'PTT_METHOD', 'PTT_RELAY_DEVICE', 'PTT_RELAY_BAUD',
+            'TX_RADIO', 'PTT_METHOD', 'PTT_RELAY_DEVICE', 'PTT_RELAY_BAUD',
             'PTT_RELEASE_DELAY', 'PTT_ACTIVATION_DELAY',
             'PTT_TTS_DELAY', 'PTT_ANNOUNCEMENT_DELAY',
         ]),
@@ -8227,7 +8272,6 @@ class WebConfigServer:
             'HEADLESS_MODE', 'LOG_BUFFER_LINES', 'LOG_FILE_DAYS',
             'VERBOSE_LOGGING', 'STATUS_UPDATE_INTERVAL',
             'NETWORK_TIMEOUT', 'TCP_NODELAY', 'BUFFER_MANAGEMENT_VERBOSE',
-            'ENABLE_AUTOMATION',
         ]),
     ]
 
@@ -8820,6 +8864,90 @@ class WebConfigServer:
                         self.wfile.write(json_mod.dumps({'seq': last_seq, 'lines': lines}).encode('utf-8'))
                     except BrokenPipeError:
                         pass
+                elif self.path == '/recordings':
+                    # Recording manager page
+                    html = parent._generate_recordings_page()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    self.wfile.write(html.encode('utf-8'))
+                elif self.path == '/recordingslist':
+                    # JSON list of recording files
+                    import json as json_mod
+                    rec_dir = ''
+                    if parent.gateway and parent.gateway.automation_engine:
+                        rec_dir = parent.gateway.automation_engine.recorder._dir
+                    files = []
+                    if rec_dir and os.path.isdir(rec_dir):
+                        for fname in sorted(os.listdir(rec_dir), reverse=True):
+                            fpath = os.path.join(rec_dir, fname)
+                            if not os.path.isfile(fpath):
+                                continue
+                            stat = os.stat(fpath)
+                            # Parse metadata from filename: RADIO_FREQ_DATE_TIME_LABEL.ext
+                            parts = fname.rsplit('.', 1)
+                            ext = parts[1] if len(parts) > 1 else ''
+                            name_parts = parts[0].split('_')
+                            radio = name_parts[0] if name_parts else ''
+                            freq = name_parts[1].replace('MHz', '') if len(name_parts) > 1 else ''
+                            # Date is YYYY-MM-DD format
+                            date_str = name_parts[2] if len(name_parts) > 2 else ''
+                            time_str = name_parts[3] if len(name_parts) > 3 else ''
+                            label = '_'.join(name_parts[4:]) if len(name_parts) > 4 else ''
+                            files.append({
+                                'name': fname,
+                                'size': stat.st_size,
+                                'radio': radio,
+                                'freq': freq,
+                                'date': date_str,
+                                'time': time_str,
+                                'label': label,
+                                'ext': ext,
+                            })
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-cache')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(files).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                elif self.path.startswith('/recordingsdownload'):
+                    # Download a recording file
+                    import urllib.parse
+                    qs = urllib.parse.urlparse(self.path).query
+                    params = urllib.parse.parse_qs(qs)
+                    fname = params.get('file', [''])[0]
+                    rec_dir = ''
+                    if parent.gateway and parent.gateway.automation_engine:
+                        rec_dir = parent.gateway.automation_engine.recorder._dir
+                    if not fname or not rec_dir:
+                        self.send_response(400)
+                        self.end_headers()
+                        return
+                    # Sanitize filename — no path traversal
+                    fname = os.path.basename(fname)
+                    fpath = os.path.join(rec_dir, fname)
+                    if not os.path.isfile(fpath):
+                        self.send_response(404)
+                        self.end_headers()
+                        return
+                    try:
+                        ext = fname.rsplit('.', 1)[-1].lower()
+                        ctype = {'mp3': 'audio/mpeg', 'wav': 'audio/wav'}.get(ext, 'application/octet-stream')
+                        self.send_response(200)
+                        self.send_header('Content-Type', ctype)
+                        self.send_header('Content-Disposition', f'attachment; filename="{fname}"')
+                        self.send_header('Content-Length', str(os.path.getsize(fpath)))
+                        self.end_headers()
+                        with open(fpath, 'rb') as f:
+                            while True:
+                                chunk = f.read(65536)
+                                if not chunk:
+                                    break
+                                self.wfile.write(chunk)
+                    except BrokenPipeError:
+                        pass
                 elif self.path == '/config':
                     # Config editor
                     html = parent._generate_html()
@@ -9258,6 +9386,43 @@ class WebConfigServer:
                     self.end_headers()
                     self.wfile.write(json_mod.dumps(result).encode('utf-8'))
                     return
+                elif self.path == '/recordingsdelete':
+                    # Delete selected recording files
+                    length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(length).decode('utf-8')
+                    data = json_mod.loads(body)
+                    filenames = data.get('files', [])
+                    delete_all = data.get('delete_all', False)
+                    rec_dir = ''
+                    if parent.gateway and parent.gateway.automation_engine:
+                        rec_dir = parent.gateway.automation_engine.recorder._dir
+                    deleted = 0
+                    if rec_dir and os.path.isdir(rec_dir):
+                        if delete_all:
+                            for fname in os.listdir(rec_dir):
+                                fpath = os.path.join(rec_dir, fname)
+                                if os.path.isfile(fpath):
+                                    try:
+                                        os.remove(fpath)
+                                        deleted += 1
+                                    except OSError:
+                                        pass
+                        else:
+                            for fname in filenames:
+                                fname = os.path.basename(fname)  # no path traversal
+                                fpath = os.path.join(rec_dir, fname)
+                                if os.path.isfile(fpath):
+                                    try:
+                                        os.remove(fpath)
+                                        deleted += 1
+                                    except OSError:
+                                        pass
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json_mod.dumps({'deleted': deleted}).encode('utf-8'))
+                    return
+
                 elif self.path == '/exit':
                     # Graceful full shutdown (no restart)
                     self.send_response(200)
@@ -11737,7 +11902,7 @@ pollTimer = setInterval(pollStatus, 1000);
         _name_html = '<span style="color:#e0e0e0">' + gw_name + '</span> &mdash; ' if gw_name else ''
         body = '<h1 style="font-size:1.8em; margin:0 0 10px">' + _name_html + 'Radio Gateway Dashboard</h1>'
         body += '''
-''' + f'<p style="margin:0 0 10px;font-size:1.1em"><a href="/config">Config Editor</a> | {self._radio_nav_links()} | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>' + '''
+''' + f'<p style="margin:0 0 10px;font-size:1.1em"><a href="/config">Config Editor</a> | {self._radio_nav_links()} | <a href="/sdr">SDR</a> | <a href="/recordings">Recordings</a> | <a href="/logs">Logs</a></p>' + '''
 
 <div class="ctrl-group" id="listen-top" style="margin-bottom:10px;">
   <h3>Controls</h3>
@@ -11770,6 +11935,22 @@ pollTimer = setInterval(pollStatus, 1000);
 <div id="toast-container" style="position:fixed;top:10px;right:10px;z-index:9999;max-width:400px;"></div>
 
 <div id="sysinfo" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:1.0em; margin-top:10px;">Loading...</div>
+
+<div id="automation-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+    <h3 style="margin:0; color:var(--t-accent); font-size:1.1em;">Automation Engine</h3>
+    <div id="auto-header-status" style="font-size:0.85em;"></div>
+  </div>
+  <div id="auto-current" style="margin-bottom:8px; padding:8px; background:rgba(0,0,0,0.2); border-radius:4px; display:none;">
+    <div style="color:var(--t-accent); font-weight:bold; margin-bottom:4px;">Now Running</div>
+    <div id="auto-current-detail"></div>
+  </div>
+  <div id="auto-tasks" style="margin-bottom:8px;"></div>
+  <details id="auto-history-details" style="background:transparent; border:none; margin:0;">
+    <summary style="padding:4px 0; color:var(--t-accent); font-size:0.95em;">Recent History</summary>
+    <div id="auto-history" style="max-height:300px; overflow-y:auto; font-size:0.85em; margin-top:4px;"></div>
+  </details>
+</div>
 
 <div class="controls">
   <div class="ctrl-group" id="mute-group">
@@ -11916,6 +12097,7 @@ pollTimer = setInterval(pollStatus, 1000);
   .bar-d75 { background: #f39c12; }
   .bar-pct { display: inline-block; width: 3.5em; text-align: right; color: #ccc; }
   .green { color: #2ecc71; } .red { color: #e74c3c; } .yellow { color: #f39c12; }
+  @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
   .cyan { color: var(--t-accent); } .white { color: #e0e0e0; }
   #playback-section button { margin: 0; }
   .bottom-btns { min-width: 160px; width: 160px; }
@@ -12539,9 +12721,422 @@ function updateSysInfo() {
 }
 setInterval(updateSysInfo, 2000);
 updateSysInfo();
+
+// --- Automation Engine ---
+var _autoBusy = false, _autoHistBusy = false;
+function updateAutomation() {
+  if (_autoBusy) return;
+  _autoBusy = true;
+  var _ac = new AbortController(); setTimeout(function(){_ac.abort();}, 5000);
+  fetch('/automationstatus', {signal:_ac.signal}).then(r=>r.json()).then(function(a) {
+    var panel = document.getElementById('automation-panel');
+    if (!a.enabled) { panel.style.display='none'; return; }
+    panel.style.display='';
+
+    // Header status
+    var hdr = '<span class="'+(a.running?'green':'red')+'">'+(a.running?'Running':'Stopped')+'</span>';
+    hdr += ' &mdash; '+a.tasks.length+' tasks, '+a.repeater_count+' repeaters';
+    if (a.radios.length) hdr += ', radios: '+a.radios.join(', ');
+    else hdr += ', <span class="red">no radios</span>';
+    if (a.recording) hdr += ' &mdash; <span class="red" style="animation:blink 1s infinite">REC</span>';
+    document.getElementById('auto-header-status').innerHTML = hdr;
+
+    // Current task
+    var curDiv = document.getElementById('auto-current');
+    var curDetail = document.getElementById('auto-current-detail');
+    if (a.current_task) {
+      curDiv.style.display = '';
+      var ct = null;
+      for (var i=0; i<a.tasks.length; i++) { if (a.tasks[i].name===a.current_task) { ct=a.tasks[i]; break; } }
+      var d = '<span style="color:#fff">'+a.current_task+'</span>';
+      if (ct) d += ' &mdash; <span class="yellow">'+ct.action+'</span> on <span class="cyan">'+ct.radio+'</span>';
+      if (a.recording) d += ' <span class="red">[RECORDING]</span>';
+      curDetail.innerHTML = d;
+    } else {
+      curDiv.style.display = 'none';
+    }
+
+    // Task queue
+    var t = '<table style="width:100%; border-collapse:collapse; font-size:0.9em;">';
+    t += '<tr style="color:#888; text-align:left;"><th style="padding:2px 8px;">Task</th><th style="padding:2px 8px;">Action</th><th style="padding:2px 8px;">Radio</th><th style="padding:2px 8px;">Next</th><th style="padding:2px 8px;">Last</th></tr>';
+    for (var i=0; i<a.tasks.length; i++) {
+      var tk = a.tasks[i];
+      var active = (tk.name === a.current_task);
+      var row_style = active ? 'background:rgba(46,204,113,0.15);' : '';
+      var next = tk.schedule_type==='interval' ? fmtSecs(tk.next_run_secs) : ('at '+tk.at+(tk.last_run_date?' (done)':''));
+      var last = tk.last_run_ago !== null ? fmtSecs(tk.last_run_ago)+' ago' : '--';
+      t += '<tr style="'+row_style+'">';
+      t += '<td style="padding:2px 8px; color:#fff;">'+(active?'&#9654; ':'')+tk.name+'</td>';
+      t += '<td style="padding:2px 8px; color:#f39c12;">'+tk.action+'</td>';
+      t += '<td style="padding:2px 8px; color:var(--t-accent);">'+tk.radio+'</td>';
+      t += '<td style="padding:2px 8px;">'+next+'</td>';
+      t += '<td style="padding:2px 8px; color:#888;">'+last+'</td>';
+      t += '</tr>';
+    }
+    t += '</table>';
+    document.getElementById('auto-tasks').innerHTML = t;
+  }).catch(function(){}).finally(function(){ _autoBusy=false; });
+}
+function updateAutoHistory() {
+  if (_autoHistBusy) return;
+  _autoHistBusy = true;
+  var _ac = new AbortController(); setTimeout(function(){_ac.abort();}, 5000);
+  fetch('/automationhistory', {signal:_ac.signal}).then(r=>r.json()).then(function(hist) {
+    if (!hist.length) { document.getElementById('auto-history').innerHTML='<span style="color:#888;">No completed tasks yet</span>'; return; }
+    var h = '<table style="width:100%; border-collapse:collapse;">';
+    h += '<tr style="color:#888; text-align:left;"><th style="padding:2px 6px;">Time</th><th style="padding:2px 6px;">Task</th><th style="padding:2px 6px;">Radio</th><th style="padding:2px 6px;">Duration</th><th style="padding:2px 6px;">Result</th></tr>';
+    for (var i=0; i<Math.min(hist.length,20); i++) {
+      var e = hist[i];
+      var res = '';
+      if (e.result) {
+        if (e.result.error) res = '<span class="red">ERR: '+e.result.error+'</span>';
+        else if (e.result.frequency) {
+          res = e.result.frequency+' MHz';
+          if (e.result.recording) res += ' <span class="green">recorded</span>';
+          if (e.result.signal && e.result.signal.has_signal) res += ' <span class="green">signal</span>';
+        }
+        else if (e.result.scanned) res = e.result.scanned+' scanned, '+e.result.active+' active';
+        else if (e.result.text) res = 'TTS: '+e.result.text.substring(0,30)+'...';
+      }
+      h += '<tr><td style="padding:2px 6px; color:#888;">'+e.time+'</td>';
+      h += '<td style="padding:2px 6px; color:#fff;">'+e.task+'</td>';
+      h += '<td style="padding:2px 6px; color:var(--t-accent);">'+e.radio+'</td>';
+      h += '<td style="padding:2px 6px;">'+e.elapsed+'s</td>';
+      h += '<td style="padding:2px 6px;">'+res+'</td></tr>';
+    }
+    h += '</table>';
+    document.getElementById('auto-history').innerHTML = h;
+  }).catch(function(){}).finally(function(){ _autoHistBusy=false; });
+}
+function fmtSecs(s) {
+  if (s===null||s===undefined) return '--';
+  if (s<60) return s+'s';
+  if (s<3600) return Math.floor(s/60)+'m '+Math.floor(s%60)+'s';
+  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
+}
+setInterval(updateAutomation, 2000);
+setInterval(updateAutoHistory, 5000);
+updateAutomation();
+updateAutoHistory();
 </script>
 '''
         return self._wrap_html('Dashboard', body)
+
+    def _generate_recordings_page(self):
+        """Build the recordings manager HTML page."""
+        body = '''
+<h1 style="font-size:1.6em; margin:0 0 10px;">Recording Manager</h1>
+<p style="margin:0 0 10px;font-size:1.1em"><a href="/dashboard">Dashboard</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
+
+<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
+  <div>
+    <label style="color:#888; font-size:0.85em;">Radio</label><br>
+    <select id="f-radio" onchange="applyFilter()" style="background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:6px; font-family:monospace;">
+      <option value="">All</option>
+    </select>
+  </div>
+  <div>
+    <label style="color:#888; font-size:0.85em;">Date</label><br>
+    <select id="f-date" onchange="applyFilter()" style="background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:6px; font-family:monospace;">
+      <option value="">All</option>
+    </select>
+  </div>
+  <div>
+    <label style="color:#888; font-size:0.85em;">Frequency</label><br>
+    <select id="f-freq" onchange="applyFilter()" style="background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:6px; font-family:monospace;">
+      <option value="">All</option>
+    </select>
+  </div>
+  <div style="margin-left:auto; display:flex; gap:6px;">
+    <button onclick="selectAll()" class="rb">Select All</button>
+    <button onclick="selectNone()" class="rb">Select None</button>
+    <button onclick="downloadSelected()" class="rb" style="background:#1a5c3a;">Download Selected</button>
+    <button onclick="deleteSelected()" class="rb" style="background:#5c1a1a;">Delete Selected</button>
+    <button onclick="if(confirm('Delete ALL recordings?'))deleteAll()" class="rb" style="background:#8b0000;">Delete All</button>
+  </div>
+</div>
+
+<div id="rec-summary" style="color:#888; font-size:0.9em; margin-bottom:8px;"></div>
+
+<div style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; overflow:hidden;">
+  <table id="rec-table" style="width:100%; border-collapse:collapse; font-family:monospace; font-size:0.9em;">
+    <thead>
+      <tr style="background:rgba(0,0,0,0.3); text-align:left;">
+        <th style="padding:8px 10px; width:30px;"><input type="checkbox" id="check-all" onchange="toggleAll(this.checked)" style="accent-color:var(--t-accent);"></th>
+        <th style="padding:8px 10px; cursor:pointer;" onclick="sortBy('name')">Filename</th>
+        <th style="padding:8px 10px; cursor:pointer;" onclick="sortBy('radio')">Radio</th>
+        <th style="padding:8px 10px; cursor:pointer;" onclick="sortBy('freq')">Freq</th>
+        <th style="padding:8px 10px; cursor:pointer;" onclick="sortBy('date')">Date</th>
+        <th style="padding:8px 10px; cursor:pointer;" onclick="sortBy('time')">Time</th>
+        <th style="padding:8px 10px; cursor:pointer;" onclick="sortBy('size')">Size</th>
+        <th style="padding:8px 10px;">Play</th>
+      </tr>
+    </thead>
+    <tbody id="rec-body"></tbody>
+  </table>
+</div>
+<div id="rec-empty" style="display:none; text-align:center; color:#888; padding:40px; font-size:1.1em;">No recordings found</div>
+
+<div id="player-bar" style="display:none; position:fixed; bottom:0; left:0; right:0; background:var(--t-panel); border-top:2px solid var(--t-accent); padding:10px 16px; z-index:999; font-family:monospace;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <button onclick="playerPause()" id="pp-btn" class="rb" style="padding:6px 12px; min-width:50px;">Pause</button>
+    <button onclick="playerStop()" class="rb" style="padding:6px 12px; background:#5c1a1a;">Stop</button>
+    <span id="player-time" style="color:#e0e0e0; min-width:100px;">0:00 / 0:00</span>
+    <input type="range" id="player-seek" min="0" max="1000" value="0" step="1" style="flex:1; accent-color:var(--t-accent); cursor:pointer;">
+    <span style="color:#888; font-size:0.85em;">Vol</span>
+    <input type="range" id="player-vol" min="0" max="100" value="100" style="width:80px; accent-color:var(--t-accent);" oninput="playerVol(this.value)">
+    <span id="player-name" style="color:var(--t-accent); font-size:0.85em; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+  </div>
+  <audio id="audio-player"></audio>
+</div>
+
+<style>
+  .rb { padding:8px 14px; border:1px solid var(--t-btn-border); border-radius:4px;
+    background:var(--t-btn); color:#e0e0e0; cursor:pointer; font-family:monospace; font-size:0.9em; }
+  .rb:hover { background:var(--t-btn-hover); }
+  #rec-table tbody tr:hover { background:rgba(255,255,255,0.05); }
+  #rec-table tbody tr.playing { background:rgba(46,204,113,0.15); }
+  #rec-table td { padding:6px 10px; border-top:1px solid var(--t-border); }
+</style>
+
+<script>
+var _allFiles = [], _filtered = [], _sortKey = 'name', _sortAsc = false, _playingFile = '';
+
+function loadFiles() {
+  fetch('/recordingslist').then(r=>r.json()).then(function(files) {
+    _allFiles = files;
+    buildFilters();
+    applyFilter();
+  });
+}
+
+function buildFilters() {
+  var radios = {}, dates = {}, freqs = {};
+  _allFiles.forEach(function(f) {
+    if (f.radio) radios[f.radio] = 1;
+    if (f.date) dates[f.date] = 1;
+    if (f.freq) freqs[f.freq] = 1;
+  });
+  fillSelect('f-radio', Object.keys(radios).sort());
+  fillSelect('f-date', Object.keys(dates).sort().reverse());
+  fillSelect('f-freq', Object.keys(freqs).sort());
+}
+
+function fillSelect(id, vals) {
+  var sel = document.getElementById(id);
+  var cur = sel.value;
+  while (sel.options.length > 1) sel.remove(1);
+  vals.forEach(function(v) {
+    var o = document.createElement('option');
+    o.value = v; o.textContent = v;
+    sel.appendChild(o);
+  });
+  sel.value = cur;
+}
+
+function applyFilter() {
+  var r = document.getElementById('f-radio').value;
+  var d = document.getElementById('f-date').value;
+  var q = document.getElementById('f-freq').value;
+  _filtered = _allFiles.filter(function(f) {
+    if (r && f.radio !== r) return false;
+    if (d && f.date !== d) return false;
+    if (q && f.freq !== q) return false;
+    return true;
+  });
+  doSort();
+  render();
+}
+
+function sortBy(key) {
+  if (_sortKey === key) _sortAsc = !_sortAsc;
+  else { _sortKey = key; _sortAsc = true; }
+  doSort();
+  render();
+}
+
+function doSort() {
+  _filtered.sort(function(a, b) {
+    var va = a[_sortKey] || '', vb = b[_sortKey] || '';
+    if (_sortKey === 'size') { va = a.size; vb = b.size; }
+    if (va < vb) return _sortAsc ? -1 : 1;
+    if (va > vb) return _sortAsc ? 1 : -1;
+    return 0;
+  });
+}
+
+function render() {
+  var tbody = document.getElementById('rec-body');
+  var empty = document.getElementById('rec-empty');
+  var summary = document.getElementById('rec-summary');
+  if (!_filtered.length) {
+    tbody.innerHTML = '';
+    empty.style.display = '';
+    summary.textContent = _allFiles.length ? 'No files match filter' : 'No recordings';
+    return;
+  }
+  empty.style.display = 'none';
+  var totalSize = 0;
+  _filtered.forEach(function(f) { totalSize += f.size; });
+  summary.textContent = _filtered.length + ' file' + (_filtered.length !== 1 ? 's' : '') +
+    ' (' + fmtSize(totalSize) + ')' +
+    (_filtered.length < _allFiles.length ? ' of ' + _allFiles.length + ' total' : '');
+
+  var h = '';
+  _filtered.forEach(function(f) {
+    var isPlaying = (_playingFile === f.name);
+    h += '<tr class="' + (isPlaying ? 'playing' : '') + '">';
+    h += '<td><input type="checkbox" class="f-check" data-name="' + f.name + '" style="accent-color:var(--t-accent);"></td>';
+    h += '<td style="color:#e0e0e0;">' + f.name + '</td>';
+    h += '<td style="color:var(--t-accent);">' + f.radio + '</td>';
+    h += '<td style="color:#f39c12;">' + f.freq + '</td>';
+    h += '<td>' + f.date + '</td>';
+    h += '<td>' + f.time + '</td>';
+    h += '<td style="text-align:right;">' + fmtSize(f.size) + '</td>';
+    h += '<td>';
+    if (f.ext === 'mp3' || f.ext === 'wav') {
+      if (isPlaying) {
+        h += '<button onclick="stopPlay()" class="rb" style="padding:4px 8px; background:#5c1a1a;">Stop</button>';
+      } else {
+        h += '<button onclick="playFile(\\'' + f.name + '\\')" class="rb" style="padding:4px 8px;">Play</button>';
+      }
+    }
+    h += '</td></tr>';
+  });
+  tbody.innerHTML = h;
+}
+
+function fmtSize(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+  return (b / 1048576).toFixed(1) + ' MB';
+}
+
+function toggleAll(checked) {
+  document.querySelectorAll('.f-check').forEach(function(c) { c.checked = checked; });
+}
+function selectAll() { toggleAll(true); document.getElementById('check-all').checked = true; }
+function selectNone() { toggleAll(false); document.getElementById('check-all').checked = false; }
+
+function getSelected() {
+  var sel = [];
+  document.querySelectorAll('.f-check:checked').forEach(function(c) { sel.push(c.dataset.name); });
+  return sel;
+}
+
+function downloadSelected() {
+  var sel = getSelected();
+  if (!sel.length) { alert('No files selected'); return; }
+  sel.forEach(function(fname) {
+    var a = document.createElement('a');
+    a.href = '/recordingsdownload?file=' + encodeURIComponent(fname);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
+}
+
+function deleteSelected() {
+  var sel = getSelected();
+  if (!sel.length) { alert('No files selected'); return; }
+  if (!confirm('Delete ' + sel.length + ' file(s)?')) return;
+  fetch('/recordingsdelete', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({files:sel})}).then(r=>r.json()).then(function(d) {
+    loadFiles();
+  });
+}
+
+function deleteAll() {
+  fetch('/recordingsdelete', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({delete_all:true})}).then(r=>r.json()).then(function(d) {
+    loadFiles();
+  });
+}
+
+function playFile(fname) {
+  var player = document.getElementById('audio-player');
+  var bar = document.getElementById('player-bar');
+  player.src = '/recordingsdownload?file=' + encodeURIComponent(fname);
+  player.play();
+  _playingFile = fname;
+  bar.style.display = '';
+  document.getElementById('player-name').textContent = fname;
+  document.getElementById('pp-btn').textContent = 'Pause';
+  render();
+  player.onended = function() { playerStop(); };
+}
+
+function playerPause() {
+  var player = document.getElementById('audio-player');
+  if (player.paused) {
+    player.play();
+    document.getElementById('pp-btn').textContent = 'Pause';
+  } else {
+    player.pause();
+    document.getElementById('pp-btn').textContent = 'Play';
+  }
+}
+
+function playerStop() {
+  var player = document.getElementById('audio-player');
+  player.pause();
+  player.src = '';
+  _playingFile = '';
+  document.getElementById('player-bar').style.display = 'none';
+  render();
+}
+
+function playerVol(val) {
+  document.getElementById('audio-player').volume = val / 100;
+}
+
+function fmtTime(s) {
+  if (!s || isNaN(s)) return '0:00';
+  var m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+(function() {
+  var player = document.getElementById('audio-player');
+  var seek = document.getElementById('player-seek');
+  var dragging = false;
+
+  // Update slider and time display from audio position (only when not dragging)
+  player.addEventListener('timeupdate', function() {
+    if (dragging) return;
+    if (player.duration) {
+      seek.value = (player.currentTime / player.duration) * 1000;
+    }
+    document.getElementById('player-time').textContent = fmtTime(player.currentTime) + ' / ' + fmtTime(player.duration);
+  });
+
+  // User starts dragging — stop updating slider from audio
+  seek.addEventListener('mousedown', function() { dragging = true; });
+  seek.addEventListener('touchstart', function() { dragging = true; });
+
+  // User releases — apply the new position
+  seek.addEventListener('mouseup', function() {
+    if (player.duration) player.currentTime = player.duration * seek.value / 1000;
+    dragging = false;
+  });
+  seek.addEventListener('touchend', function() {
+    if (player.duration) player.currentTime = player.duration * seek.value / 1000;
+    dragging = false;
+  });
+
+  // Also handle click (no drag, just a single click on the track)
+  seek.addEventListener('change', function() {
+    if (player.duration) player.currentTime = player.duration * seek.value / 1000;
+    dragging = false;
+  });
+})();
+
+loadFiles();
+setInterval(loadFiles, 10000);
+</script>
+'''
+        return self._wrap_html('Recordings', body)
 
     def _generate_html(self):
         """Build the full HTML page with form inputs grouped by section.
@@ -13347,14 +13942,23 @@ class RadioGateway:
             return True  # On error, allow transmission
         
     def set_ptt_state(self, state_on):
-        """Control PTT via configured method (aioc, relay, or software)."""
-        method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
-        if method == 'relay':
-            self._ptt_relay(state_on)
-        elif method == 'software':
-            self._ptt_software(state_on)
+        """Control PTT via configured method (aioc, relay, or software).
+
+        TX_RADIO selects which radio to key:
+          - 'th9800' (default): uses PTT_METHOD (aioc/relay/software via TH-9800 CAT)
+          - 'd75': uses D75 CAT !ptt (software PTT via D75 CAT client)
+        """
+        tx_radio = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
+        if tx_radio == 'd75':
+            self._ptt_d75(state_on)
         else:
-            self._ptt_aioc(state_on)
+            method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
+            if method == 'relay':
+                self._ptt_relay(state_on)
+            elif method == 'software':
+                self._ptt_software(state_on)
+            else:
+                self._ptt_aioc(state_on)
         self.ptt_active = state_on
 
     def _ptt_aioc(self, state_on):
@@ -13441,6 +14045,37 @@ class RadioGateway:
             print(f"\n[PTT] CAT !ptt error: {e}")
             self.notify(f"PTT failed: {e}")
     
+    _d75_ptt_on = False  # Track D75 PTT state
+
+    def _ptt_d75(self, state_on):
+        """PTT via D75 CAT TCP !ptt on/off command.
+
+        D75 uses explicit on/off (not toggle like TH-9800).
+        No RTS switching needed — D75 doesn't use the RTS relay.
+        """
+        d75 = getattr(self, 'd75_cat', None)
+        if not d75:
+            if state_on:
+                self.notify("PTT failed: D75 not connected")
+            return
+        if state_on == self._d75_ptt_on:
+            return
+        try:
+            cmd = "!ptt on" if state_on else "!ptt off"
+            resp = d75.send_command(cmd)
+            if resp and 'serial not connected' in str(resp).lower():
+                self.notify("PTT failed: D75 serial not connected")
+                return
+            if resp is None:
+                self.notify("PTT failed: no response from D75")
+                return
+            self._d75_ptt_on = state_on
+            if self.config.VERBOSE_LOGGING:
+                print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (D75 CAT)")
+        except Exception as e:
+            print(f"\n[PTT] D75 !ptt error: {e}")
+            self.notify(f"PTT failed: {e}")
+
     def sound_received_handler(self, user, soundchunk):
         """Called when audio is received from Mumble server"""
         # Track when we last received audio
@@ -15494,7 +16129,9 @@ class RadioGateway:
 
                         # Send audio to radio output
                         _ptt_wrote = False
-                        if self.output_stream and not self.tx_muted:
+                        _tx_radio_cfg = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
+                        _use_d75_tx = (_tx_radio_cfg == 'd75' and self.d75_audio_source)
+                        if (_use_d75_tx or self.output_stream) and not self.tx_muted:
                             try:
                                 # Suppress audio while the PTT relay is settling.
                                 # announcement_delay_active is set in the same iteration
@@ -15504,10 +16141,13 @@ class RadioGateway:
                                 if self.config.OUTPUT_VOLUME != 1.0:
                                     arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
                                     pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
-                                try:
-                                    self.output_stream.write(pcm, exception_on_overflow=False)
-                                except TypeError:
-                                    self.output_stream.write(pcm)
+                                if _use_d75_tx:
+                                    self.d75_audio_source.write_tx_audio(pcm)
+                                else:
+                                    try:
+                                        self.output_stream.write(pcm, exception_on_overflow=False)
+                                    except TypeError:
+                                        self.output_stream.write(pcm)
                                 _ptt_wrote = True
                             except IOError as io_err:
                                 if self.config.VERBOSE_LOGGING:
@@ -16321,9 +16961,10 @@ class RadioGateway:
                     # Auto-set RTS to Radio Controlled for TX playback — RTS relay
                     # must route mic wiring through front panel for AIOC PTT.
                     # No CAT commands while Radio Controlled (serial disconnected).
-                    # Software PTT uses !ptt directly and doesn't need this.
+                    # Software PTT and D75 TX don't need RTS switching.
                     _ptt_method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
-                    if _ptt_method != 'software':
+                    _tx_radio = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
+                    if _ptt_method != 'software' and _tx_radio != 'd75':
                         _cat = self.cat_client
                         if _cat and not getattr(self, '_playback_rts_saved', None):
                             self._playback_rts_saved = _cat.get_rts()

@@ -12,9 +12,9 @@ import os
 import random
 import re
 import struct
+import subprocess
 import threading
 import time
-import wave
 from datetime import datetime, timedelta
 
 
@@ -273,39 +273,117 @@ class RadioController:
         print(f"[Automation] TH-9800: frequency {frequency} MHz requested (channel-based radio)")
         return {'ok': True, 'note': 'TH-9800 is channel-based; set up channels manually'}
 
+    # D75 step size index: 0=5k, 1=6.25k, 2=8.33k, 3=10k, 4=12.5k, 5=15k,
+    #                      6=20k, 7=25k, 8=30k, 9=50k, 10=100k
+    _D75_STEP_5KHZ = '0'
+
+    # CTCSS tone table (index 0-38) — must match D75 firmware order
+    _CTCSS_TONES = [
+        67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5,
+        91.5, 94.8, 97.4, 100.0, 103.5, 107.2, 110.9, 114.8,
+        118.8, 123.0, 127.3, 131.8, 136.5, 141.3, 146.2, 151.4,
+        156.7, 162.2, 167.9, 173.8, 179.9, 186.2, 192.8, 203.5,
+        210.7, 218.1, 225.7, 233.6, 241.8, 250.3,
+    ]
+
+    def _find_ctcss_index(self, tone_hz):
+        """Find CTCSS tone index closest to the given frequency."""
+        tone = float(tone_hz)
+        best_idx, best_diff = 0, 9999
+        for i, t in enumerate(self._CTCSS_TONES):
+            diff = abs(t - tone)
+            if diff < best_diff:
+                best_idx, best_diff = i, diff
+        return best_idx
+
     def _tune_d75(self, frequency, mode, pl_tone):
-        """Tune D75 via CAT commands."""
+        """Tune D75 via FO command — sets freq, step, mode, and PL tone atomically."""
         d75 = getattr(self._gw, 'd75_cat', None)
         if not d75:
             return {'ok': False, 'error': 'D75 not connected'}
         band = d75._active_band
-        # FQ command: band,10-digit Hz
+
+        # Read current FO to use as template
+        fo_resp = d75.send_command(f"!cat FO {band}")
+        if not fo_resp or ',' not in str(fo_resp):
+            return {'ok': False, 'error': f'FO read failed: {fo_resp}'}
+
+        # Response may contain multiple lines and FO prefix — find the FO data line
+        fo_line = ''
+        for line in str(fo_resp).strip().split('\n'):
+            line = line.strip()
+            if line.startswith('FO '):
+                fo_line = line[3:]
+                break
+            elif ',' in line and len(line.split(',')) >= 21:
+                fo_line = line
+                break
+        if not fo_line:
+            fo_line = str(fo_resp).strip()
+
+        fields = fo_line.split(',')
+        if len(fields) < 21:
+            return {'ok': False, 'error': f'FO parse error: got {len(fields)} fields'}
+
+        # Set frequency (10-digit Hz)
         hz = int(round(frequency * 1_000_000))
-        hz_str = str(hz).zfill(10)
-        resp = d75.send_command(f"!cat FQ {band},{hz_str}")
-        # Set mode if specified
+        fields[1] = str(hz).zfill(10)
+
+        # Set step to 5 kHz so the target frequency is reachable
+        fields[3] = self._D75_STEP_5KHZ
+        fields[4] = self._D75_STEP_5KHZ  # TX step too
+
+        # Set mode
         if mode:
             mode_map = {'FM': '0', 'NFM': '0', 'AM': '1', 'LSB': '2', 'USB': '3', 'CW': '4', 'DR': '5', 'DV': '5'}
             m = mode_map.get(mode.upper())
             if m:
-                d75.send_command(f"!cat MD {band},{m}")
+                fields[5] = m
+
         # Set PL tone if specified
         if pl_tone:
-            try:
-                # TN command sets CTCSS tone — format: band,tone_index
-                # For simplicity, just set tone type to CTCSS and log
-                print(f"[Automation] D75: PL tone {pl_tone} Hz requested on band {band}")
-            except Exception:
-                pass
+            tone_idx = self._find_ctcss_index(pl_tone)
+            fields[8] = '1'   # tone_status ON (encode PL on TX)
+            fields[9] = '1'   # ctcss_status ON (decode PL on RX)
+            fields[14] = str(tone_idx)  # tone freq index
+            fields[15] = str(tone_idx)  # ctcss freq index
+        else:
+            # No tone — clear tone/ctcss
+            fields[8] = '0'
+            fields[9] = '0'
+
+        # Calculate offset for standard repeater splits
+        if frequency >= 144.0 and frequency < 148.0:
+            fields[2] = '0000600000'  # 600 kHz offset
+            # Standard 2m: input below 147.0 = positive, above = negative
+            # But this varies; use positive shift for >= 147.0, negative for < 147.0
+            # Actually standard is: 145.1-145.5 +, 146.6-147.0 -, 147.0-147.4 +
+            # Simplify: set shift based on input_freq from repeater DB if available
+            if frequency >= 147.0:
+                fields[13] = '1'  # shift up
+            else:
+                fields[13] = '2'  # shift down
+        elif frequency >= 420.0 and frequency < 450.0:
+            fields[2] = '0005000000'  # 5 MHz offset
+            fields[13] = '2'  # UHF standard: negative offset
+        else:
+            fields[13] = '0'  # simplex
+
+        # Write FO
+        fo_cmd = ','.join(fields)
+        resp = d75.send_command(f"!cat FO {fo_cmd}")
+        print(f"[Automation] D75: FO set {frequency} MHz step=5k"
+              f"{' PL=' + str(pl_tone) if pl_tone else ''}"
+              f" shift={'+-s'[int(fields[13])]} — {resp}")
         return {'ok': True, 'frequency': frequency, 'response': resp or ''}
 
 
 # ============================================================================
-#  AudioRecorder — records RX audio to timestamped WAV files
+#  AudioRecorder — records RX audio to MP3 via lame (streaming)
 # ============================================================================
 
 class AudioRecorder:
-    """Records PCM audio to timestamped WAV files."""
+    """Records PCM audio to MP3 files by piping to lame in real time."""
 
     def __init__(self, gateway, recordings_dir='recordings'):
         self._gw = gateway
@@ -313,22 +391,43 @@ class AudioRecorder:
         os.makedirs(self._dir, exist_ok=True)
         self._lock = threading.Lock()
         self._recording = False
-        self._frames = []
         self._start_time = 0
         self._duration = 0
         self._label = ''
         self._file_path = None
+        self._encoder = None  # lame subprocess
 
-    def start(self, duration_seconds, label=''):
-        """Start recording. Returns the planned file path."""
+    def start(self, duration_seconds, label='', radio='', frequency=None):
+        """Start recording. Launches lame encoder subprocess."""
         with self._lock:
             if self._recording:
                 return self._file_path
             ts = datetime.now().strftime('%Y-%m-%d_%H%M%S')
-            safe_label = re.sub(r'[^\w\-.]', '_', label) if label else 'rec'
-            fname = f"{ts}_{safe_label}.wav"
+            parts = []
+            if radio:
+                parts.append(radio.upper())
+            if frequency is not None:
+                parts.append(f"{float(frequency):.4f}MHz")
+            parts.append(ts)
+            if label:
+                parts.append(re.sub(r'[^\w\-.]', '_', label))
+            fname = '_'.join(parts) + '.mp3'
             self._file_path = os.path.join(self._dir, fname)
-            self._frames = []
+            # Launch lame: read raw PCM from stdin, write MP3 to file
+            # Input: 48kHz, 16-bit signed LE, mono
+            try:
+                self._encoder = subprocess.Popen(
+                    ['lame', '-r', '-s', '48', '--bitwidth', '16', '-m', 'm',
+                     '-b', '128', '--signed', '--little-endian',
+                     '-', self._file_path],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception as e:
+                print(f"[Automation] Failed to start lame encoder: {e}")
+                self._encoder = None
+                return None
             self._duration = duration_seconds
             self._start_time = time.monotonic()
             self._recording = True
@@ -343,13 +442,18 @@ class AudioRecorder:
         with self._lock:
             if not self._recording:
                 return
-            self._frames.append(pcm_data)
+            # Pipe PCM to lame
+            if self._encoder and self._encoder.stdin:
+                try:
+                    self._encoder.stdin.write(pcm_data)
+                except (BrokenPipeError, OSError):
+                    pass
             # Check duration
             if self._duration > 0 and (time.monotonic() - self._start_time) >= self._duration:
                 self._finish()
 
     def stop(self):
-        """Stop recording and save file. Returns file path or None."""
+        """Stop recording and finalize MP3. Returns file path or None."""
         with self._lock:
             if not self._recording:
                 return None
@@ -359,26 +463,27 @@ class AudioRecorder:
         return self._recording
 
     def _finish(self):
-        """Write accumulated PCM to WAV file. Must be called with lock held."""
+        """Close lame encoder and finalize MP3. Must be called with lock held."""
         self._recording = False
-        if not self._frames:
-            print("[Automation] Recording stopped: no audio captured")
-            return None
         path = self._file_path
-        try:
-            audio_data = b''.join(self._frames)
-            with wave.open(path, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)  # 16-bit
-                wf.setframerate(48000)
-                wf.writeframes(audio_data)
-            duration = len(audio_data) / (48000 * 2)
-            print(f"[Automation] Recording saved: {os.path.basename(path)} ({duration:.1f}s)")
-        except Exception as e:
-            print(f"[Automation] Failed to save recording: {e}")
-            path = None
-        self._frames = []
-        return path
+        if self._encoder:
+            try:
+                self._encoder.stdin.close()
+                self._encoder.wait(timeout=10)
+            except Exception:
+                try:
+                    self._encoder.kill()
+                except Exception:
+                    pass
+            self._encoder = None
+        if path and os.path.exists(path):
+            size = os.path.getsize(path)
+            duration = time.monotonic() - self._start_time
+            print(f"[Automation] Recording saved: {os.path.basename(path)} ({duration:.1f}s, {size // 1024}KB)")
+            return path
+        else:
+            print("[Automation] Recording stopped: no file produced")
+            return None
 
 
 # ============================================================================
@@ -595,15 +700,21 @@ class AutomationEngine:
                 old = self._task_state.get(t.name, {})
                 if t.schedule.type == 'interval':
                     # If task existed before, keep its next_run; otherwise schedule first run
-                    next_run = old.get('next_run', now + t.schedule.next_interval())
+                    # start_now option: fire immediately on first load
+                    if t.options.get('start_now', False) and not old:
+                        next_run = now
+                    else:
+                        next_run = old.get('next_run', now + t.schedule.next_interval())
                     new_state[t.name] = {
                         'next_run': next_run,
                         'last_run': old.get('last_run', 0),
+                        'run_count': old.get('run_count', 0),
                     }
                 else:  # daily
                     new_state[t.name] = {
                         'last_run_date': old.get('last_run_date', ''),
                         'last_run': old.get('last_run', 0),
+                        'run_count': old.get('run_count', 0),
                     }
             self._task_state = new_state
         if self._tasks:
@@ -686,6 +797,11 @@ class AutomationEngine:
         for t in self._tasks:
             state = self._task_state.get(t.name)
             if not state:
+                continue
+
+            # Skip if max_runs reached
+            max_runs = t.options.get('max_runs')
+            if max_runs is not None and state.get('run_count', 0) >= int(max_runs):
                 continue
 
             due = False
@@ -778,6 +894,7 @@ class AutomationEngine:
             # Log to history
             with self._lock:
                 self._task_state[task.name]['last_run'] = time.monotonic()
+                self._task_state[task.name]['run_count'] = self._task_state[task.name].get('run_count', 0) + 1
                 self._history.append({
                     'task': task.name,
                     'action': task.action,
@@ -842,8 +959,7 @@ class AutomationEngine:
         # Record if requested
         rec_path = None
         if record:
-            label = f"{task.name}_{freq}"
-            rec_path = self.recorder.start(listen, label=label)
+            rec_path = self.recorder.start(listen, label=task.name, radio=task.radio, frequency=freq)
 
         # Listen
         time.sleep(listen)
@@ -914,8 +1030,7 @@ class AutomationEngine:
             # Record active repeaters if requested
             if has_signal and record:
                 remaining = max(5, listen - (check_interval * (i + 1)))
-                label = f"scan_{callsign}_{freq}"
-                rec_path = self.recorder.start(remaining, label=label)
+                rec_path = self.recorder.start(remaining, label=f"scan_{callsign}", radio=task.radio, frequency=freq)
                 time.sleep(remaining)
                 if self.recorder.is_recording():
                     rec_path = self.recorder.stop()

@@ -16,6 +16,13 @@
 # Options are key=value pairs. Unknown options are ignored.
 # Strings with spaces must be quoted: text="hello world"
 
+# ── Active tasks ──
+
+# Test: cycle 3 frequencies, record 1 min each, loop twice (6 clips total)
+# test_2m_147435 | every 5m | d75 | tune_and_listen | freq=147.435 listen=60s record=true max_runs=2 start_now=true
+# test_uhf_446640 | every 5m | d75 | tune_and_listen | freq=446.640 listen=60s record=true max_runs=2 start_now=true
+# test_uhf_446760 | every 5m | d75 | tune_and_listen | freq=446.760 listen=60s record=true max_runs=2 start_now=true
+
 # ── Example tasks (edit to match your setup) ──
 
 # Scan 5 random 2m repeaters on SDR every 2-4 hours

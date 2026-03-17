@@ -115,12 +115,14 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - HPF defaults to ON for AIOC radio audio (`ENABLE_HIGHPASS_FILTER = true` in config)
 - **CRITICAL:** Requires `scipy` — all filters silently return unmodified audio if scipy is missing
 
-## PTT Methods
-- `PTT_METHOD`: `aioc` (default), `relay`, or `software`
-- AIOC: HID GPIO, Relay: CH340 USB relay, Software: CAT TCP `!ptt` toggle
-- Software PTT tracks state via `_software_ptt_on` (independent of `ptt_active` which is set in multiple places)
-- Software PTT checks `_last_radio_rx` — refuses to key if radio hasn't sent data in >5 seconds (radio powered off)
-- RTS save/restore and VFO dial-press refresh are skipped in software PTT mode (they cause VFO switching artifacts)
+## PTT Methods & TX_RADIO (updated 2026-03-17)
+- `TX_RADIO`: `th9800` (default) or `d75` — selects which radio for playback/TTS/announce TX
+- `PTT_METHOD`: `aioc` (default), `relay`, or `software` — applies when TX_RADIO=th9800
+- When TX_RADIO=d75: PTT via `_ptt_d75()` which sends `!ptt on`/`!ptt off` (explicit, NOT toggle)
+- D75 PTT tracks state via `_d75_ptt_on` (independent of TH-9800 `_software_ptt_on`)
+- Audio TX via D75: `D75AudioSource.write_tx_audio(pcm_48k)` → downsample 48k→8k → TCP → D75_CAT.py → SCO
+- RTS save/restore and VFO dial-press refresh are skipped when TX_RADIO=d75 or PTT_METHOD=software
+- D75CATClient has auto-reconnect in poll thread (detects OSError, reconnects with 5s interval)
 
 ## AIOC PTT — RTS Relay Coordination (CRITICAL, 2026-03-15)
 - **Hardware:** RTS line controls a relay switching radio's TX serial between USB dongle and radio front panel
@@ -159,10 +161,27 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **Status Bar**: 3-line display, `[HH:MM:SS]` timestamps, `StatusBarWriter` wraps stdout/stderr
 - **Config page**: unsaved changes warning via `beforeunload` event
 
+## Automation Engine (2026-03-17)
+- `radio_automation.py`: RepeaterDatabase, RadioController, AudioRecorder (MP3 via lame), SchemeParser, AutomationEngine
+- Scheme file format: `TASK_NAME | SCHEDULE | RADIO | ACTION | OPTIONS`
+- D75 FO tuning: atomic freq/step(5kHz)/mode/tone/offset via single FO command
+- MP3 recording: streams PCM to lame subprocess, no WAV intermediate
+- Filenames: `RADIO_FREQ_DATE_TIME_LABEL.mp3`
+- Options: `max_runs`, `start_now`, `record`, `freq`, `pl`, `listen`, `mode`
+- Dashboard panel: live task status, recording indicator, task queue, history
+- **ENABLE_AUTOMATION duplicate bug fixed**: was in both `automation` and `advanced` CONFIG_LAYOUT sections
+
+## Recordings Manager Web Page (2026-03-17)
+- `/recordings` page: filter by radio/date/freq, sortable columns, select/download/delete
+- `/recordingslist` JSON, `/recordingsdownload?file=X`, `/recordingsdelete` POST
+- In-browser MP3 playback with player bar (play/pause/stop/volume — seek bar TODO)
+- Auto-refreshes every 10s
+
 ## Known Bugs Fixed (details in bugs.md)
 See bugs.md for full history. Key recent: DISPLAY_TEXT VFO misattribution (2026-03-13),
 RTS change corrupts display (2026-03-13), audio processing silent (scipy missing),
 WebSocket PCM double-push/latency, CAT serial orphans, ScriptProcessor buffer size.
+ENABLE_AUTOMATION duplicate in CONFIG_LAYOUT (2026-03-17).
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis
