@@ -5620,7 +5620,20 @@ class D75CATClient:
                 self.close()
                 self._stop = False  # close() sets _stop=True
                 if self.connect():
-                    print(f"[D75 CAT] Reconnected successfully")
+                    print(f"[D75 CAT] Reconnected TCP")
+                    # Check if D75 serial is up; if not, trigger btstart
+                    time.sleep(1)
+                    try:
+                        self.poll_state()
+                    except Exception:
+                        pass
+                    if not self._serial_connected:
+                        print(f"[D75 CAT] Serial not connected — requesting btstart...")
+                        try:
+                            resp = self.send_command("!btstart")
+                            print(f"[D75 CAT] btstart: {resp}")
+                        except Exception as e:
+                            print(f"[D75 CAT] btstart error: {e}")
                 else:
                     # Wait before retry
                     for _ in range(int(_reconnect_interval * 10)):

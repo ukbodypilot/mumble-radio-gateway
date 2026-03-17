@@ -97,8 +97,8 @@ pkill -9 darkice 2>/dev/null && ts "  Killed existing Darkice"
 pkill -9 ffmpeg 2>/dev/null && ts "  Killed existing FFmpeg"
 sleep 1
 
-# Also kill any Python gateway processes (just in case)
-pkill -9 -f "radio_gateway" 2>/dev/null && ts "  Killed existing gateway"
+# Kill gateway process only (not D75_CAT or other Python services)
+pkill -9 -f "radio_gateway.py" 2>/dev/null && ts "  Killed existing gateway"
 
 # Stop leftover mumble-server instances from prior gateway runs so they don't
 # linger on stale ports (the gateway will start fresh ones with current config)
