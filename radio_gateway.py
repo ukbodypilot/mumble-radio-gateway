@@ -411,6 +411,16 @@ class Config:
             'MUMBLE_SERVER_2_ALLOW_HTML': True,
             'MUMBLE_SERVER_2_OPUS_THRESHOLD': 0,
             'MUMBLE_SERVER_2_AUTOSTART': False,
+            # Automation Engine
+            'ENABLE_AUTOMATION': False,
+            'AUTOMATION_SCHEME_FILE': 'automation_scheme.txt',
+            'AUTOMATION_REPEATER_FILE': '',       # RepeaterBook CSV path
+            'AUTOMATION_REPEATER_LAT': 0.0,       # Home latitude for distance calc
+            'AUTOMATION_REPEATER_LON': 0.0,       # Home longitude for distance calc
+            'AUTOMATION_RECORDINGS_DIR': 'recordings',
+            'AUTOMATION_START_TIME': '06:00',      # Daily start time (HH:MM)
+            'AUTOMATION_END_TIME': '23:00',        # Daily end time (HH:MM)
+            'AUTOMATION_MAX_TASK_DURATION': 600,   # Max seconds per task
         }
         
         # Store defaults for type inference (used by WebConfigServer)
@@ -8206,10 +8216,18 @@ class WebConfigServer:
             'MUMBLE_SERVER_2_REGISTER_NAME', 'MUMBLE_SERVER_2_ALLOW_HTML',
             'MUMBLE_SERVER_2_OPUS_THRESHOLD', 'MUMBLE_SERVER_2_AUTOSTART',
         ]),
+        ('automation', 'Automation Engine', [
+            'ENABLE_AUTOMATION', 'AUTOMATION_SCHEME_FILE',
+            'AUTOMATION_REPEATER_FILE', 'AUTOMATION_REPEATER_LAT', 'AUTOMATION_REPEATER_LON',
+            'AUTOMATION_RECORDINGS_DIR',
+            'AUTOMATION_START_TIME', 'AUTOMATION_END_TIME',
+            'AUTOMATION_MAX_TASK_DURATION',
+        ]),
         ('advanced', 'Advanced / Diagnostics', [
             'HEADLESS_MODE', 'LOG_BUFFER_LINES', 'LOG_FILE_DAYS',
             'VERBOSE_LOGGING', 'STATUS_UPDATE_INTERVAL',
             'NETWORK_TIMEOUT', 'TCP_NODELAY', 'BUFFER_MANAGEMENT_VERBOSE',
+            'ENABLE_AUTOMATION',
         ]),
     ]
 
@@ -8443,6 +8461,34 @@ class WebConfigServer:
                             data['audio_level'] = src.audio_level if src and hasattr(src, 'audio_level') else 0
                         except Exception:
                             data['audio_level'] = 0
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-cache')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(data).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                elif self.path == '/automationstatus':
+                    # Automation engine status JSON
+                    data = {}
+                    if parent.gateway and parent.gateway.automation_engine:
+                        data = parent.gateway.automation_engine.get_status()
+                    else:
+                        data = {'enabled': False}
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-cache')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(data).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                elif self.path == '/automationhistory':
+                    # Automation task history JSON
+                    data = []
+                    if parent.gateway and parent.gateway.automation_engine:
+                        data = parent.gateway.automation_engine.get_history()
                     try:
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
@@ -8833,6 +8879,38 @@ class WebConfigServer:
                     self.end_headers()
                     resp = '{"ok":true}' if ok else '{"ok":false,"error":' + json_mod.dumps(error) + '}'
                     self.wfile.write(resp.encode())
+                    return
+                elif self.path == '/automationcmd':
+                    # Automation engine command endpoint
+                    length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(length).decode('utf-8')
+                    result = {'ok': False}
+                    try:
+                        data = json_mod.loads(body)
+                        cmd = data.get('cmd', '')
+                        engine = parent.gateway.automation_engine if parent.gateway else None
+                        if not engine:
+                            result = {'ok': False, 'error': 'Automation not enabled'}
+                        elif cmd == 'trigger':
+                            task_name = data.get('task', '')
+                            if engine.trigger(task_name):
+                                result = {'ok': True, 'triggered': task_name}
+                            else:
+                                result = {'ok': False, 'error': f'Task not found: {task_name}'}
+                        elif cmd == 'reload':
+                            engine.reload_scheme()
+                            result = {'ok': True, 'tasks': len(engine._tasks)}
+                        elif cmd == 'stop_recording':
+                            path = engine.recorder.stop()
+                            result = {'ok': True, 'path': path}
+                        else:
+                            result = {'ok': False, 'error': f'Unknown command: {cmd}'}
+                    except Exception as e:
+                        result = {'ok': False, 'error': str(e)}
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json_mod.dumps(result).encode())
                     return
                 elif self.path == '/proc_toggle':
                     # Per-source audio processing toggle endpoint
@@ -11957,7 +12035,7 @@ function updateStatus() {
       var scClr=sc.mode==='manual'?'cyan':'yellow';
       h += '<div class="st-item"><span class="st-label">Smart#'+sc.id+':</span><span class="st-val '+scClr+'">'+sc.remaining+'</span></div>';
     }
-    if(s.ddns) h += '<div class="st-item"><span class="st-label">DNS:</span><span class="st-val green">'+s.ddns+'</span></div>';
+    if(s.ddns) h += '<div class="st-item"><span class="st-label">DDNS:</span><span class="st-val green">'+s.ddns+'</span></div>';
     if(s.charger) h += '<div class="st-item"><span class="st-label">Charger:</span><span class="st-val '+(s.charger.startsWith("CHARGING")?'green':'red')+'">'+s.charger+'</span></div>';
     if(s.cat_reliability && s.cat_reliability.sent) { var r=s.cat_reliability; var missClr=r.missed>0?'red':'green'; h += '<div class="st-item"><span class="st-label">CMD:</span><span class="st-val green">'+r.sent+'</span>/<span class="st-val '+missClr+'">'+r.missed+' miss</span></div>'; }
     if(s.cat_reliability && s.cat_reliability.last_miss) { h += '<div class="st-item"><span class="st-val red" style="font-size:11px">'+s.cat_reliability.last_miss+'</span></div>'; }
@@ -12859,6 +12937,9 @@ class RadioGateway:
 
         # Smart Announcements (AI-powered, Claude or Gemini)
         self.smart_announce = None  # SmartAnnouncementManager instance
+
+        # Automation Engine
+        self.automation_engine = None  # AutomationEngine instance
 
         # Web configuration UI
         self.web_config_server = None
@@ -15294,6 +15375,10 @@ class RadioGateway:
                         self.last_audio_capture_time = time.time()
                         self.audio_capture_active = True
 
+                        # Feed audio to automation recorder if active
+                        if self.automation_engine and self.automation_engine.recorder.is_recording():
+                            self.automation_engine.recorder.feed(data)
+
                         # Push to WebSocket clients before any VAD/PTT routing
                         if self.web_config_server and self.web_config_server._ws_clients:
                             self.web_config_server.push_ws_audio(data)
@@ -16444,6 +16529,9 @@ class RadioGateway:
             'stream_health': bool(getattr(self.config, 'ENABLE_STREAM_HEALTH', False)),
             'darkice_stats': self._get_darkice_stats_cached(),
             'notifications': list(self._notifications),
+            'automation_enabled': bool(self.automation_engine),
+            'automation_task': self.automation_engine._current_task if self.automation_engine else None,
+            'automation_recording': self.automation_engine.recorder.is_recording() if self.automation_engine else False,
         }
 
     def status_monitor_loop(self):
@@ -16743,6 +16831,16 @@ class RadioGateway:
                     _https_val = str(getattr(self.config, 'WEB_CONFIG_HTTPS', 'false')).lower().strip()
                     _web_s = 'S' if _https_val not in ('false', '0', 'no', '') else ''
                     line2_parts.append(f"{WHITE}WEB{_web_s}:{GREEN}{_web_port}{RESET}")
+
+                if self.automation_engine:
+                    _ae = self.automation_engine
+                    _ae_task = _ae._current_task
+                    if _ae_task:
+                        line2_parts.append(f"{WHITE}AUTO:{YELLOW}{_ae_task}{RESET}")
+                    elif _ae.recorder.is_recording():
+                        line2_parts.append(f"{WHITE}AUTO:{RED}REC{RESET}")
+                    else:
+                        line2_parts.append(f"{WHITE}AUTO:{GREEN}OK{RESET}")
 
                 # Line 3: network info (DNS IP + Cloudflare tunnel URL)
                 line3_parts = []
@@ -17128,7 +17226,17 @@ class RadioGateway:
         # Start keyboard listener thread
         self._keyboard_thread = threading.Thread(target=self.keyboard_listener_loop, daemon=True)
         self._keyboard_thread.start()
-        
+
+        # Start Automation Engine if enabled
+        if getattr(self.config, 'ENABLE_AUTOMATION', False):
+            try:
+                from radio_automation import AutomationEngine
+                self.automation_engine = AutomationEngine(self)
+                self.automation_engine.start()
+            except Exception as e:
+                print(f"[Automation] Failed to start: {e}")
+                self.automation_engine = None
+
         # Main loop
         try:
             while self.running:
@@ -17905,6 +18013,12 @@ class RadioGateway:
                 self.relay_charger.close()
                 if self.config.VERBOSE_LOGGING:
                     print("  Charger relay port closed")
+            except Exception:
+                pass
+
+        if self.automation_engine:
+            try:
+                self.automation_engine.stop()
             except Exception:
                 pass
 

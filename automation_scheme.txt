@@ -1,0 +1,34 @@
+# Automation Scheme
+# Format: TASK_NAME | SCHEDULE | RADIO | ACTION | OPTIONS
+#
+# Schedules:
+#   every Xh / every Xm / every Xs     — fixed interval
+#   every X-Yh / every X-Ym            — random interval between X and Y
+#   at HH:MM                           — specific time daily
+#   at HH:MM jitter=Xm                 — specific time ± random jitter
+#
+# Actions:
+#   tune_and_listen  — tune to freq, wait, optionally record
+#   scan_repeaters   — pick repeaters from DB, check each for signal
+#   announce         — play TTS on current frequency
+#   tune_only        — just tune, no listen/record
+#
+# Options are key=value pairs. Unknown options are ignored.
+# Strings with spaces must be quoted: text="hello world"
+
+# ── Example tasks (edit to match your setup) ──
+
+# Scan 5 random 2m repeaters on SDR every 2-4 hours
+# scan_2m | every 2-4h | sdr | scan_repeaters | band=2m count=5 listen=30s
+
+# Monitor 146.520 simplex on D75 every hour
+# monitor_simplex | every 1h | d75 | tune_and_listen | freq=146.520 listen=120s record=true
+
+# Morning net check — tune to specific repeater, record 5 minutes
+# morning_net | at 07:30 jitter=15m | th9800 | tune_and_listen | freq=147.435 pl=100.0 listen=300s record=true
+
+# Play station ID on current frequency every 30 minutes
+# station_id | every 30m | th9800 | announce | text="This is {callsign} radio gateway" voice=3
+
+# Scan UHF repeaters, announce findings
+# uhf_scan | every 6h | sdr | scan_repeaters | band=70cm count=10 listen=20s announce_summary=true

@@ -30,7 +30,7 @@ read_config() {
 
 # Read startup options from config
 ENABLE_STREAM_OUTPUT="$(read_config ENABLE_STREAM_OUTPUT false)"
-ENABLE_CAT_CONTROL="$(read_config ENABLE_CAT_CONTROL false)"
+ENABLE_CAT_CONTROL="$(read_config ENABLE_TH9800 false)"
 START_CLAUDE_CODE="$(read_config START_CLAUDE_CODE false)"
 HEADLESS_MODE="$(read_config HEADLESS_MODE false)"
 
