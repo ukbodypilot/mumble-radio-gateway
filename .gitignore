@@ -63,3 +63,4 @@ node-*.tar.xz
 pymumble-pymumble_py3/
 serial_prog/
 audio/.cache/
+recordings/

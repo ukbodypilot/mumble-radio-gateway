@@ -10642,7 +10642,7 @@ updateRadio();
     def _generate_d75_page(self):
         """Build the D75 radio control HTML page."""
         modes = {0: 'FM', 1: 'DV', 2: 'AM', 3: 'LSB', 4: 'USB', 5: 'CW', 6: 'NFM', 7: 'DR', 8: 'WFM', 9: 'R-CW'}
-        powers = {0: 'XL', 1: 'Low', 2: 'Med', 3: 'High'}
+        powers = {0: 'High', 1: 'Med', 2: 'Low', 3: 'EL'}
         ctcss_tones = ["67.0","69.3","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
             "91.5","94.8","97.4","100.0","103.5","107.2","110.9","114.8","118.8","123.0",
             "127.3","131.8","136.5","141.3","146.2","151.4","156.7","162.2","167.9",
@@ -10703,6 +10703,7 @@ updateRadio();
   <span style="flex:1;"></span>
   <span id="d75-tx-badge" style="display:none; background:#c0392b; color:#fff; padding:2px 8px; border-radius:3px; font-weight:bold;">TX</span>
   <span style="flex:1;"></span>
+  <span id="d75-feedback" style="font-family:monospace; font-size:0.85em; min-width:120px;"></span>
   <button id="d75-btstart-btn" class="rb rb-sm" onclick="d75cmd('btstart')" style="display:none;">BT Start</button>
   <button class="rb rb-sm" onclick="d75cmd('ptt')" id="d75-ptt-btn">PTT</button>
 </div>
@@ -10710,12 +10711,12 @@ updateRadio();
 <!-- Radio Controls Row -->
 <div style="margin-bottom:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
   <span class="d75-label">Band:</span>
-  <select id="d75-active-band" class="d75-select" onchange="d75cmd('band',this.value)">
+  <select id="d75-active-band" class="d75-select" onfocus="_ctrlEditUntil=Date.now()+5000" onchange="_ctrlEditUntil=Date.now()+3000;d75cmd('band',this.value)">
     <option value="0">A</option><option value="1">B</option>
   </select>
   <span class="d75-label">Dual:</span>
-  <select id="d75-dual" class="d75-select" onchange="d75cmd('dual',this.value)">
-    <option value="0">Single</option><option value="1">Dual</option>
+  <select id="d75-dual" class="d75-select" onfocus="_ctrlEditUntil=Date.now()+5000" onchange="_ctrlEditUntil=Date.now()+3000;d75cmd('dual',this.value)">
+    <option value="0">Dual</option><option value="1">Single</option>
   </select>
   <span style="color:#333;">|</span>
   <button class="rb rb-sm" onclick="d75cmd('up')">Up</button>
@@ -10762,6 +10763,8 @@ updateRadio();
     <div style="background:var(--t-btn); border:1px solid var(--t-btn-border); border-radius:4px; padding:10px; margin-bottom:10px;">
       <div style="display:flex; justify-content:space-between; align-items:baseline;">
         <span id="d75-a-power" style="color:#f39c12; font-size:0.85em;">—</span>
+        <span id="d75-a-tone-info" style="color:#888; font-size:0.8em;"></span>
+        <span id="d75-a-shift-info" style="color:#888; font-size:0.8em;"></span>
       </div>
       <div id="d75-a-freq" class="d75-freq">———.———</div>
     </div>
@@ -10805,11 +10808,11 @@ updateRadio();
     <!-- Mode & Power -->
     <div class="d75-row" style="margin-top:6px;">
       <span class="d75-label">Mode:</span>
-      <select id="d75-a-mode-sel" class="d75-select" onchange="d75setMode(0,this.value)">
+      <select id="d75-a-mode-sel" class="d75-select" onfocus="_toneEditUntil[0]=Date.now()+5000" onchange="_toneEditUntil[0]=Date.now()+3000;d75setMode(0,this.value)">
         ''' + ''.join(f'<option value="{k}">{v}</option>' for k, v in modes.items()) + '''
       </select>
       <span class="d75-label" style="margin-left:10px;">Power:</span>
-      <select id="d75-a-pwr-sel" class="d75-select" onchange="d75setPower(0,this.value)">
+      <select id="d75-a-pwr-sel" class="d75-select" onfocus="_toneEditUntil[0]=Date.now()+5000" onchange="_toneEditUntil[0]=Date.now()+3000;d75setPower(0,this.value)">
         ''' + ''.join(f'<option value="{k}">{v}</option>' for k, v in powers.items()) + '''
       </select>
     </div>
@@ -10817,14 +10820,14 @@ updateRadio();
     <!-- Tone -->
     <div class="d75-row" style="margin-top:6px;">
       <span class="d75-label">Tone:</span>
-      <select id="d75-a-tone-type" class="d75-select" onchange="d75setTone(0)">
+      <select id="d75-a-tone-type" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setTone(0)">
         <option value="off">Off</option><option value="tone">Tone</option>
         <option value="ctcss">CTCSS</option><option value="dcs">DCS</option>
       </select>
-      <select id="d75-a-tone-freq" class="d75-select" onchange="d75setTone(0)" style="display:none;">
+      <select id="d75-a-tone-freq" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setTone(0)" style="display:none;">
         ''' + ctcss_opts + '''
       </select>
-      <select id="d75-a-dcs-code" class="d75-select" onchange="d75setTone(0)" style="display:none;">
+      <select id="d75-a-dcs-code" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setTone(0)" style="display:none;">
         ''' + dcs_opts + '''
       </select>
     </div>
@@ -10832,12 +10835,12 @@ updateRadio();
     <!-- Offset & Shift -->
     <div class="d75-row" style="margin-top:6px;">
       <span class="d75-label">Shift:</span>
-      <select id="d75-a-shift" class="d75-select" onchange="d75setShift(0,this.value)">
+      <select id="d75-a-shift" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setShift(0,this.value)">
         <option value="0">Off</option><option value="1">+</option><option value="2">-</option>
       </select>
       <span class="d75-label" style="margin-left:10px;">Offset:</span>
       <input id="d75-a-offset" class="d75-input" style="width:80px;" placeholder="0.600"
-        onkeydown="if(event.key==='Enter')d75setOffset(0,this.value)">
+        onfocus="_toneTouched(0)" onkeydown="if(event.key==='Enter')d75setOffset(0,this.value)">
       <button class="rb rb-sm" onclick="d75setOffset(0,document.getElementById('d75-a-offset').value)">Set</button>
     </div>
   </div>
@@ -10853,6 +10856,8 @@ updateRadio();
     <div style="background:var(--t-btn); border:1px solid var(--t-btn-border); border-radius:4px; padding:10px; margin-bottom:10px;">
       <div style="display:flex; justify-content:space-between; align-items:baseline;">
         <span id="d75-b-power" style="color:#f39c12; font-size:0.85em;">—</span>
+        <span id="d75-b-tone-info" style="color:#888; font-size:0.8em;"></span>
+        <span id="d75-b-shift-info" style="color:#888; font-size:0.8em;"></span>
       </div>
       <div id="d75-b-freq" class="d75-freq">———.———</div>
     </div>
@@ -10896,11 +10901,11 @@ updateRadio();
     <!-- Mode & Power -->
     <div class="d75-row" style="margin-top:6px;">
       <span class="d75-label">Mode:</span>
-      <select id="d75-b-mode-sel" class="d75-select" onchange="d75setMode(1,this.value)">
+      <select id="d75-b-mode-sel" class="d75-select" onfocus="_toneEditUntil[1]=Date.now()+5000" onchange="_toneEditUntil[1]=Date.now()+3000;d75setMode(1,this.value)">
         ''' + ''.join(f'<option value="{k}">{v}</option>' for k, v in modes.items()) + '''
       </select>
       <span class="d75-label" style="margin-left:10px;">Power:</span>
-      <select id="d75-b-pwr-sel" class="d75-select" onchange="d75setPower(1,this.value)">
+      <select id="d75-b-pwr-sel" class="d75-select" onfocus="_toneEditUntil[1]=Date.now()+5000" onchange="_toneEditUntil[1]=Date.now()+3000;d75setPower(1,this.value)">
         ''' + ''.join(f'<option value="{k}">{v}</option>' for k, v in powers.items()) + '''
       </select>
     </div>
@@ -10908,14 +10913,14 @@ updateRadio();
     <!-- Tone -->
     <div class="d75-row" style="margin-top:6px;">
       <span class="d75-label">Tone:</span>
-      <select id="d75-b-tone-type" class="d75-select" onchange="d75setTone(1)">
+      <select id="d75-b-tone-type" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setTone(1)">
         <option value="off">Off</option><option value="tone">Tone</option>
         <option value="ctcss">CTCSS</option><option value="dcs">DCS</option>
       </select>
-      <select id="d75-b-tone-freq" class="d75-select" onchange="d75setTone(1)" style="display:none;">
+      <select id="d75-b-tone-freq" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setTone(1)" style="display:none;">
         ''' + ctcss_opts + '''
       </select>
-      <select id="d75-b-dcs-code" class="d75-select" onchange="d75setTone(1)" style="display:none;">
+      <select id="d75-b-dcs-code" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setTone(1)" style="display:none;">
         ''' + dcs_opts + '''
       </select>
     </div>
@@ -10923,12 +10928,12 @@ updateRadio();
     <!-- Offset & Shift -->
     <div class="d75-row" style="margin-top:6px;">
       <span class="d75-label">Shift:</span>
-      <select id="d75-b-shift" class="d75-select" onchange="d75setShift(1,this.value)">
+      <select id="d75-b-shift" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setShift(1,this.value)">
         <option value="0">Off</option><option value="1">+</option><option value="2">-</option>
       </select>
       <span class="d75-label" style="margin-left:10px;">Offset:</span>
       <input id="d75-b-offset" class="d75-input" style="width:80px;" placeholder="0.600"
-        onkeydown="if(event.key==='Enter')d75setOffset(1,this.value)">
+        onfocus="_toneTouched(1)" onkeydown="if(event.key==='Enter')d75setOffset(1,this.value)">
       <button class="rb rb-sm" onclick="d75setOffset(1,document.getElementById('d75-b-offset').value)">Set</button>
     </div>
   </div>
@@ -10952,13 +10957,27 @@ function fmtFreq(f) {
   return n.toFixed(3);
 }
 
-function d75cmd(cmd, args) {
+function d75cmd(cmd, args, feedbackEl) {
   var body = {cmd: cmd};
   if (args) body.args = args;
   fetch('/d75cmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
     .then(function(r){return r.json()}).then(function(d) {
-      if (d.error) console.error('D75 cmd error:', d.error);
-    }).catch(function(e){ console.error('D75 fetch error:', e); });
+      if (d.error) {
+        _d75flash('Error: ' + d.error, '#e74c3c');
+      } else {
+        _d75flash(cmd + ': OK', '#2ecc71');
+      }
+    }).catch(function(e){
+      _d75flash('Send failed', '#e74c3c');
+    });
+}
+function _d75flash(msg, color) {
+  var el = document.getElementById('d75-feedback');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = color || '#2ecc71';
+  clearTimeout(el._timer);
+  el._timer = setTimeout(function(){ el.textContent = ''; }, 3000);
 }
 
 function d75setFreq(band, freq) {
@@ -10982,7 +11001,14 @@ function d75setPower(band, pwr) {
   d75cmd('cat', 'PC ' + band + ',' + pwr);
 }
 
+// Edit locks: pause poll updates after user changes to prevent snap-back
+var _toneEditUntil = [0, 0];  // per-band timestamps for tone/offset/shift
+var _ctrlEditUntil = 0;       // timestamp for band/dual controls
+var _volEditUntil = 0;        // timestamp for volume slider
+function _toneTouched(band) { _toneEditUntil[band] = Date.now() + 5000; }
+
 function d75setTone(band) {
+  _toneTouched(band);
   var p = band ? 'b' : 'a';
   var type = document.getElementById('d75-' + p + '-tone-type').value;
   var freqSel = document.getElementById('d75-' + p + '-tone-freq');
@@ -10998,15 +11024,19 @@ function d75setTone(band) {
 }
 
 function d75setShift(band, val) {
+  _toneTouched(band);
   d75cmd('shift', band + ' ' + val);
 }
 
 function d75setOffset(band, val) {
+  _toneTouched(band);
   if (!val) return;
   d75cmd('offset', band + ' ' + val);
 }
 
 function _updateToneUI(band, fi) {
+  // Skip poll updates while user is editing (5s grace period)
+  if (Date.now() < _toneEditUntil[band]) return;
   // Update tone/offset/shift controls from freq_info
   var p = band ? 'b' : 'a';
   if (!fi) return;
@@ -11015,27 +11045,56 @@ function _updateToneUI(band, fi) {
   var dcsSel = document.getElementById('d75-' + p + '-dcs-code');
   var shiftSel = document.getElementById('d75-' + p + '-shift');
   var offsetIn = document.getElementById('d75-' + p + '-offset');
-  if (typeSel !== document.activeElement) {
-    if (fi.ctcss_status) typeSel.value = 'ctcss';
-    else if (fi.dcs_status) typeSel.value = 'dcs';
-    else if (fi.tone_status) typeSel.value = 'tone';
-    else typeSel.value = 'off';
-  }
+  if (fi.ctcss_status) typeSel.value = 'ctcss';
+  else if (fi.dcs_status) typeSel.value = 'dcs';
+  else if (fi.tone_status) typeSel.value = 'tone';
+  else typeSel.value = 'off';
   freqSel.style.display = (fi.tone_status || fi.ctcss_status) ? '' : 'none';
   dcsSel.style.display = fi.dcs_status ? '' : 'none';
-  if (freqSel !== document.activeElement) {
-    if (fi.ctcss_status && fi.ctcss_hz) freqSel.value = fi.ctcss_hz;
-    else if (fi.tone_status && fi.tone_hz) freqSel.value = fi.tone_hz;
+  if (fi.ctcss_status && fi.ctcss_hz) freqSel.value = fi.ctcss_hz;
+  else if (fi.tone_status && fi.tone_hz) freqSel.value = fi.tone_hz;
+  if (fi.dcs_code) dcsSel.value = fi.dcs_code;
+  shiftSel.value = fi.shift_direction || '0';
+  if (fi.offset) offsetIn.value = fi.offset;
+}
+
+function _updateToneDisplay(band, fi) {
+  // Update read-only tone/shift info on the frequency display row
+  var p = band ? 'b' : 'a';
+  var toneEl = document.getElementById('d75-' + p + '-tone-info');
+  var shiftEl = document.getElementById('d75-' + p + '-shift-info');
+  if (!fi) { toneEl.textContent = ''; shiftEl.textContent = ''; return; }
+  // Tone info
+  var t = '';
+  if (fi.ctcss_status) {
+    t = 'CTCSS ' + (fi.ctcss_hz || '?') + ' Hz';
+    toneEl.style.color = '#2ecc71';
+  } else if (fi.dcs_status) {
+    t = 'DCS ' + (fi.dcs_code || '?');
+    toneEl.style.color = '#2ecc71';
+  } else if (fi.tone_status) {
+    t = 'Tone ' + (fi.tone_hz || '?') + ' Hz';
+    toneEl.style.color = '#2ecc71';
+  } else {
+    t = 'No Tone';
+    toneEl.style.color = '#888';
   }
-  if (dcsSel !== document.activeElement && fi.dcs_code) dcsSel.value = fi.dcs_code;
-  if (shiftSel !== document.activeElement) shiftSel.value = fi.shift_direction || '0';
-  if (offsetIn !== document.activeElement && fi.offset) offsetIn.value = fi.offset;
+  toneEl.textContent = t;
+  // Shift info
+  var s = '';
+  var sd = fi.shift_direction || '0';
+  if (sd === '1' || sd === 1) { s = '+' + (fi.offset || ''); shiftEl.style.color = '#f39c12'; }
+  else if (sd === '2' || sd === 2) { s = '-' + (fi.offset || ''); shiftEl.style.color = '#f39c12'; }
+  else { s = 'Simplex'; shiftEl.style.color = '#888'; }
+  shiftEl.textContent = s;
 }
 
 function d75VolDebounce(val) {
+  _volEditUntil = Date.now() + 2000;
   document.getElementById('d75-vol-val').textContent = ('000' + val).slice(-3);
   clearTimeout(_volTimer);
   _volTimer = setTimeout(function() {
+    _volEditUntil = Date.now() + 2000;
     d75cmd('cat', 'AG ' + ('000' + val).slice(-3));
   }, 150);
 }
@@ -11079,10 +11138,20 @@ function updateD75() {
 
     // Radio-wide state
     document.getElementById('d75-tx-badge').style.display = d.transmitting ? '' : 'none';
-    var abSel = document.getElementById('d75-active-band');
-    if (abSel !== document.activeElement) abSel.value = d.active_band || 0;
-    var dlSel = document.getElementById('d75-dual');
-    if (dlSel !== document.activeElement) dlSel.value = d.dual_band || 0;
+    // Flash active band frequency display red during TX
+    var ab = d.active_band || 0;
+    var aDisp = document.getElementById('d75-a-freq').parentElement;
+    var bDisp = document.getElementById('d75-b-freq').parentElement;
+    aDisp.style.background = (d.transmitting && ab === 0) ? '#5c1a1a' : '';
+    aDisp.style.borderColor = (d.transmitting && ab === 0) ? '#c0392b' : '';
+    bDisp.style.background = (d.transmitting && ab === 1) ? '#5c1a1a' : '';
+    bDisp.style.borderColor = (d.transmitting && ab === 1) ? '#c0392b' : '';
+    if (Date.now() > _ctrlEditUntil) {
+      var abSel = document.getElementById('d75-active-band');
+      abSel.value = d.active_band || 0;
+      var dlSel = document.getElementById('d75-dual');
+      dlSel.value = d.dual_band || 0;
+    }
     document.getElementById('d75-bt-state').textContent = d.bluetooth ? 'On' : 'Off';
     document.getElementById('d75-bt-state').style.color = d.bluetooth ? '#2ecc71' : '#888';
     document.getElementById('d75-tnc').textContent = d.tnc || 'Off';
@@ -11096,9 +11165,9 @@ function updateD75() {
     document.getElementById('d75-gps-spd').textContent = gps.speed || '—';
     document.getElementById('d75-gps-sat').textContent = gps.sat_num || '—';
 
-    // Volume (only update if not being dragged)
+    // Volume (skip update while user is adjusting)
     var volSlider = document.getElementById('d75-vol');
-    if (d.af_gain >= 0 && !volSlider.matches(':active')) {
+    if (d.af_gain >= 0 && Date.now() > _volEditUntil) {
       volSlider.value = d.af_gain;
       document.getElementById('d75-vol-val').textContent = ('000' + d.af_gain).slice(-3);
     }
@@ -11111,14 +11180,15 @@ function updateD75() {
     var aSig = a.signal || 0;
     document.getElementById('d75-a-sig-bar').style.width = (aSig / 5 * 100) + '%';
     document.getElementById('d75-a-sig-text').textContent = 'S' + aSig;
-    // Update selects (only if not focused)
-    var ams = document.getElementById('d75-a-mode-sel');
-    if (ams !== document.activeElement) ams.value = a.mode || 0;
-    var aps = document.getElementById('d75-a-pwr-sel');
-    if (aps !== document.activeElement) aps.value = a.power || 0;
+    // Update selects (skip while user is editing)
+    if (Date.now() > _toneEditUntil[0]) {
+      document.getElementById('d75-a-mode-sel').value = a.mode || 0;
+      document.getElementById('d75-a-pwr-sel').value = a.power || 0;
+    }
     var asq = document.getElementById('d75-a-sq');
     if (!asq.matches(':active')) { asq.value = a.squelch || 0; document.getElementById('d75-a-sq-val').textContent = a.squelch || 0; }
     if (a.freq_info) _updateToneUI(0, a.freq_info);
+    _updateToneDisplay(0, a.freq_info);
     var avfm = document.getElementById('d75-a-vfomode');
     if (avfm !== document.activeElement) avfm.value = (a.memory_mode||'VFO').toLowerCase().replace('memory','mem');
     var ach = document.getElementById('d75-a-ch');
@@ -11132,13 +11202,14 @@ function updateD75() {
     var bSig = b.signal || 0;
     document.getElementById('d75-b-sig-bar').style.width = (bSig / 5 * 100) + '%';
     document.getElementById('d75-b-sig-text').textContent = 'S' + bSig;
-    var bms = document.getElementById('d75-b-mode-sel');
-    if (bms !== document.activeElement) bms.value = b.mode || 0;
-    var bps = document.getElementById('d75-b-pwr-sel');
-    if (bps !== document.activeElement) bps.value = b.power || 0;
+    if (Date.now() > _toneEditUntil[1]) {
+      document.getElementById('d75-b-mode-sel').value = b.mode || 0;
+      document.getElementById('d75-b-pwr-sel').value = b.power || 0;
+    }
     var bsq = document.getElementById('d75-b-sq');
     if (!bsq.matches(':active')) { bsq.value = b.squelch || 0; document.getElementById('d75-b-sq-val').textContent = b.squelch || 0; }
     if (b.freq_info) _updateToneUI(1, b.freq_info);
+    _updateToneDisplay(1, b.freq_info);
     var bvfm = document.getElementById('d75-b-vfomode');
     if (bvfm !== document.activeElement) bvfm.value = (b.memory_mode||'VFO').toLowerCase().replace('memory','mem');
     var bch = document.getElementById('d75-b-ch');
