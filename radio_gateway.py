@@ -8466,24 +8466,43 @@ class WebConfigServer:
                     self.wfile.write(html.encode('utf-8'))
                 elif self.path == '/d75status':
                     # D75 CAT state endpoint
-                    data = {'connected': False, 'd75_enabled': False}
+                    data = {'connected': False, 'd75_enabled': False, 'tcp_connected': False,
+                            'serial_connected': False, 'service_running': False, 'status_detail': ''}
                     if parent.gateway:
                         data['d75_enabled'] = getattr(parent.gateway.config, 'ENABLE_D75', False)
+                        data['d75_mode'] = str(getattr(parent.gateway.config, 'D75_CONNECTION', 'bluetooth')).lower().strip()
+                        # Check if d75-cat systemd service is running
+                        try:
+                            _svc = subprocess.run(['systemctl', 'is-active', 'd75-cat'],
+                                                  capture_output=True, text=True, timeout=2)
+                            data['service_running'] = _svc.stdout.strip() == 'active'
+                        except Exception:
+                            data['service_running'] = False
                         if parent.gateway.d75_cat:
-                            data = parent.gateway.d75_cat.get_radio_state()
+                            cat = parent.gateway.d75_cat
+                            data.update(cat.get_radio_state())
                             data['d75_enabled'] = True
+                            data['tcp_connected'] = cat._connected
+                            # If TCP is down, serial status is unknown — show as disconnected
+                            data['serial_connected'] = getattr(cat, '_serial_connected', False) if cat._connected else False
+                            data['af_gain'] = getattr(cat, '_af_gain', -1)
+                        # Build status detail message
+                        if not data['d75_enabled']:
+                            data['status_detail'] = 'D75 disabled in config (ENABLE_D75)'
+                        elif not data['service_running']:
+                            data['status_detail'] = 'D75 CAT service not running'
+                        elif not data.get('tcp_connected', False):
+                            data['status_detail'] = 'Gateway cannot reach D75 CAT server (TCP)'
+                        elif not data.get('serial_connected', False):
+                            data['status_detail'] = 'D75 CAT running but radio not responding (BT/serial down)'
+                        else:
+                            data['status_detail'] = ''
                         # Include audio status
                         if parent.gateway.d75_audio_source:
                             data['audio_connected'] = parent.gateway.d75_audio_source.server_connected
                             data['audio_level'] = parent.gateway.d75_audio_source.audio_level
                         else:
                             data['audio_connected'] = False
-                        # Include volume from last status poll
-                        if parent.gateway.d75_cat:
-                            cat = parent.gateway.d75_cat
-                            # af_gain is in the full status response
-                            data['af_gain'] = getattr(cat, '_af_gain', -1)
-                        data['d75_mode'] = str(getattr(parent.gateway.config, 'D75_CONNECTION', 'bluetooth')).lower().strip()
                     try:
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
@@ -9188,7 +9207,53 @@ class WebConfigServer:
                         cmd = data.get('cmd', '')
                         args = data.get('args', '')
                         gw = parent.gateway
-                        if gw and gw.d75_cat:
+                        if cmd == 'start_service':
+                            # Start d75-cat systemd service
+                            try:
+                                _r = subprocess.run(['sudo', 'systemctl', 'start', 'd75-cat'],
+                                                    capture_output=True, text=True, timeout=10)
+                                if _r.returncode == 0:
+                                    result = {'ok': True, 'response': 'D75 CAT service started'}
+                                else:
+                                    result = {'ok': False, 'error': f'Service start failed: {_r.stderr.strip()}'}
+                            except Exception as e:
+                                result = {'ok': False, 'error': f'Service start error: {e}'}
+                        elif cmd == 'reconnect':
+                            # Try to (re)connect gateway to D75 CAT server
+                            if gw:
+                                try:
+                                    d75_host = str(gw.config.D75_HOST)
+                                    d75_port = int(gw.config.D75_PORT)
+                                    d75_pass = str(gw.config.D75_PASSWORD)
+                                    verbose = getattr(gw.config, 'VERBOSE_LOGGING', False)
+                                    if gw.d75_cat:
+                                        gw.d75_cat.close()
+                                    gw.d75_cat = D75CATClient(d75_host, d75_port, d75_pass, verbose=verbose)
+                                    if gw.d75_cat.connect():
+                                        gw.d75_cat.start_polling()
+                                        d75_mode = str(getattr(gw.config, 'D75_CONNECTION', 'bluetooth')).lower().strip()
+                                        if d75_mode == 'bluetooth' and not gw.d75_audio_source:
+                                            try:
+                                                gw.d75_audio_source = D75AudioSource(gw.config, gw)
+                                                if gw.d75_audio_source.setup_audio():
+                                                    gw.d75_audio_source.enabled = True
+                                                    gw.d75_audio_source.duck = gw.config.D75_AUDIO_DUCK
+                                                    gw.d75_audio_source.sdr_priority = int(gw.config.D75_AUDIO_PRIORITY)
+                                                    gw.mixer.add_source(gw.d75_audio_source)
+                                                else:
+                                                    gw.d75_audio_source = None
+                                            except Exception:
+                                                gw.d75_audio_source = None
+                                        result = {'ok': True, 'response': 'Connected to D75 CAT server'}
+                                    else:
+                                        gw.d75_cat = None
+                                        result = {'ok': False, 'error': 'Could not connect to D75 CAT server — is the service running?'}
+                                except Exception as e:
+                                    gw.d75_cat = None
+                                    result = {'ok': False, 'error': f'Reconnect failed: {e}'}
+                            else:
+                                result = {'ok': False, 'error': 'Gateway not initialized'}
+                        elif gw and gw.d75_cat:
                             if cmd == 'cat':
                                 resp = gw.d75_cat.send_command(f"!cat {args}")
                                 result = {'ok': True, 'response': resp or ''}
@@ -9206,7 +9271,7 @@ class WebConfigServer:
                                 resp = gw.d75_cat.send_command(f"!{cmd} {args}".strip())
                                 result = {'ok': True, 'response': resp or ''}
                         else:
-                            result = {'ok': False, 'error': 'D75 not connected'}
+                            result = {'ok': False, 'error': 'D75 not connected — try Start Service then Reconnect'}
                     except Exception as e:
                         result = {'ok': False, 'error': str(e)}
                     try:
@@ -10806,8 +10871,18 @@ updateRadio();
 </style>
 
 <div id="d75-offline" style="display:none; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; margin-bottom:14px;">
-  <span style="color:#e74c3c; font-weight:bold;">D75 not connected</span>
-  <span style="color:#888; font-size:0.85em; margin-left:10px;">Check ENABLE_D75 in config and D75_CAT.py server</span>
+  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+    <span style="color:#e74c3c; font-weight:bold;">D75 Not Connected</span>
+    <span id="d75-status-detail" style="color:#f39c12; font-size:0.9em;"></span>
+  </div>
+  <div id="d75-status-steps" style="margin-top:10px; font-size:0.85em; font-family:monospace;">
+    <div><span id="d75-chk-svc" style="color:#888;">&#x25cf;</span> D75 CAT Service: <span id="d75-chk-svc-text">checking...</span>
+      <button id="d75-start-svc-btn" class="rb rb-sm" onclick="d75svcAction('start_service')" style="display:none; margin-left:8px;">Start Service</button></div>
+    <div><span id="d75-chk-tcp" style="color:#888;">&#x25cf;</span> Gateway TCP Link: <span id="d75-chk-tcp-text">checking...</span>
+      <button id="d75-reconnect-btn" class="rb rb-sm" onclick="d75svcAction('reconnect')" style="display:none; margin-left:8px;">Reconnect</button></div>
+    <div><span id="d75-chk-serial" style="color:#888;">&#x25cf;</span> Radio Serial/BT: <span id="d75-chk-serial-text">checking...</span>
+      <button id="d75-offline-btstart-btn" class="rb rb-sm" onclick="d75svcAction('btstart_via_reconnect')" style="display:none; margin-left:8px;">BT Start</button></div>
+  </div>
 </div>
 
 <div id="d75-panel" style="display:none;">
@@ -11116,6 +11191,50 @@ function _d75flash(msg, color) {
   clearTimeout(el._timer);
   el._timer = setTimeout(function(){ el.textContent = ''; }, 3000);
 }
+function d75svcAction(action) {
+  var detail = document.getElementById('d75-status-detail');
+  if (action === 'btstart_via_reconnect') {
+    // First reconnect, then btstart
+    detail.textContent = 'Reconnecting...';
+    fetch('/d75cmd', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({cmd:'reconnect'})})
+      .then(function(r){return r.json()}).then(function(d) {
+        if (d.ok) {
+          detail.textContent = 'Connected — starting BT...';
+          setTimeout(function() {
+            fetch('/d75cmd', {method:'POST', headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({cmd:'btstart'})})
+              .then(function(r){return r.json()}).then(function(d2) {
+                detail.textContent = d2.ok ? 'BT start sent — waiting for connection...' : ('Error: ' + (d2.error||''));
+                detail.style.color = d2.ok ? '#2ecc71' : '#e74c3c';
+              });
+          }, 1000);
+        } else {
+          detail.textContent = d.error || 'Reconnect failed';
+          detail.style.color = '#e74c3c';
+        }
+      }).catch(function(e) { detail.textContent = 'Request failed'; detail.style.color = '#e74c3c'; });
+    return;
+  }
+  var labels = {start_service: 'Starting service...', reconnect: 'Reconnecting...'};
+  detail.textContent = labels[action] || 'Working...';
+  detail.style.color = '#f39c12';
+  fetch('/d75cmd', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cmd: action})})
+    .then(function(r){return r.json()}).then(function(d) {
+      if (d.ok) {
+        detail.textContent = d.response || 'OK';
+        detail.style.color = '#2ecc71';
+        // After starting service, auto-attempt reconnect after a short delay
+        if (action === 'start_service') {
+          setTimeout(function() { d75svcAction('reconnect'); }, 2000);
+        }
+      } else {
+        detail.textContent = d.error || 'Failed';
+        detail.style.color = '#e74c3c';
+      }
+    }).catch(function(e) { detail.textContent = 'Request failed'; detail.style.color = '#e74c3c'; });
+}
 
 function d75setFreq(band, freq) {
   if (!freq) return;
@@ -11308,14 +11427,42 @@ function updateD75() {
   if (_d75Busy) return;
   _d75Busy = true;
   fetch('/d75status').then(function(r){return r.json()}).then(function(d) {
-    if (!d.connected && !d.d75_enabled) {
+    var isFullyUp = d.connected && d.serial_connected;
+    // Update status checklist in offline panel
+    var _green = '#2ecc71', _red = '#e74c3c', _grey = '#888';
+    function _chk(id, ok) {
+      var el = document.getElementById(id);
+      if (el) { el.style.color = ok ? _green : _red; }
+    }
+    _chk('d75-chk-svc', d.service_running);
+    document.getElementById('d75-chk-svc-text').textContent = d.service_running ? 'Running' : 'Stopped';
+    document.getElementById('d75-chk-svc-text').style.color = d.service_running ? _green : _red;
+    document.getElementById('d75-start-svc-btn').style.display = d.service_running ? 'none' : '';
+
+    _chk('d75-chk-tcp', d.tcp_connected);
+    document.getElementById('d75-chk-tcp-text').textContent = d.tcp_connected ? 'Connected' : 'Disconnected';
+    document.getElementById('d75-chk-tcp-text').style.color = d.tcp_connected ? _green : _red;
+    document.getElementById('d75-reconnect-btn').style.display = (d.service_running && !d.tcp_connected) ? '' : 'none';
+
+    _chk('d75-chk-serial', d.serial_connected);
+    var isBTMode = (d.d75_mode || 'bluetooth') === 'bluetooth';
+    document.getElementById('d75-chk-serial-text').textContent = d.serial_connected ? 'Connected' : 'Not responding';
+    document.getElementById('d75-chk-serial-text').style.color = d.serial_connected ? _green : _red;
+    document.getElementById('d75-offline-btstart-btn').style.display = (d.tcp_connected && !d.serial_connected && isBTMode) ? '' : 'none';
+
+    if (d.status_detail) {
+      document.getElementById('d75-status-detail').textContent = d.status_detail;
+      document.getElementById('d75-status-detail').style.color = '#f39c12';
+    }
+
+    if (!d.d75_enabled) {
       document.getElementById('d75-offline').style.display = 'block';
       document.getElementById('d75-panel').style.display = 'none';
       _d75Busy = false;
       return;
     }
-    document.getElementById('d75-offline').style.display = d.connected ? 'none' : 'block';
-    document.getElementById('d75-panel').style.display = 'block';
+    document.getElementById('d75-offline').style.display = isFullyUp ? 'none' : 'block';
+    document.getElementById('d75-panel').style.display = (d.tcp_connected || isFullyUp) ? 'block' : 'none';
 
     // Info bar
     document.getElementById('d75-model').textContent = d.model || '—';
@@ -11323,11 +11470,11 @@ function updateD75() {
     document.getElementById('d75-fw').textContent = d.firmware || '—';
 
     // Connection mode
-    var isBT = (d.d75_mode || 'bluetooth') === 'bluetooth';
+    var isBT = isBTMode;
     document.getElementById('d75-mode').textContent = isBT ? 'Bluetooth' : 'USB';
-    document.getElementById('d75-mode').style.color = '#2ecc71';
+    document.getElementById('d75-mode').style.color = d.serial_connected ? '#2ecc71' : '#e74c3c';
     document.getElementById('d75-audio-row').style.display = isBT ? '' : 'none';
-    document.getElementById('d75-btstart-btn').style.display = isBT ? '' : 'none';
+    document.getElementById('d75-btstart-btn').style.display = (isBT && d.tcp_connected) ? '' : 'none';
 
     // Audio status (bluetooth only)
     if (isBT) {
