@@ -5584,6 +5584,7 @@ class D75CATClient:
             self._transmitting = data.get('transmitting', False)
             self._tnc = data.get('tnc', [0, 0])
             self._beacon_type = data.get('beacon_type', 0)
+            self._battery_level = data.get('battery_level', -1)
             self._gps_data = data.get('gps_data')
             for band in [0, 1]:
                 key = f'band_{band}'
@@ -5674,6 +5675,7 @@ class D75CATClient:
             'tnc': tnc_names.get(self._tnc[0] if self._tnc else 0, '?'),
             'tnc_band': self._tnc[1] if len(self._tnc) > 1 else 0,
             'beacon_type': beacon_names.get(self._beacon_type, '?'),
+            'battery_level': getattr(self, '_battery_level', -1),
             'gps_data': self._gps_data,
             'band_0': {
                 'frequency': self._frequency.get(0, ''),
@@ -8497,6 +8499,112 @@ class WebConfigServer:
                     self.send_header('Content-Type', 'text/html; charset=utf-8')
                     self.end_headers()
                     self.wfile.write(html.encode('utf-8'))
+                elif self.path == '/d75memlist':
+                    # D75 memory channel list — scans channels one at a time via !cat ME
+                    import json as json_mod
+                    channels = []
+                    cat = parent.gateway.d75_cat if parent.gateway else None
+                    _modes = {0: 'FM', 1: 'AM', 2: 'LSB', 3: 'USB', 4: 'CW', 5: 'DV'}
+                    _shifts = {0: 'S', 1: '+', 2: '-'}
+                    _ctcss = ["67.0","69.3","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
+                        "91.5","94.8","97.4","100.0","103.5","107.2","110.9","114.8","118.8","123.0",
+                        "127.3","131.8","136.5","141.3","146.2","151.4","156.7","162.2","167.9",
+                        "173.8","179.9","186.2","192.8","203.5","210.7","218.1","225.7","233.6","241.8","250.3"]
+                    _dcs = ["023","025","026","031","032","036","043","047","051","053","054",
+                        "065","071","072","073","074","114","115","116","122","125","131",
+                        "132","134","143","145","152","155","156","162","165","172","174",
+                        "205","212","223","225","226","243","244","245","246","251","252",
+                        "255","261","263","265","266","271","274","306","311","315","325",
+                        "331","332","343","346","351","356","364","365","371","411","412",
+                        "413","423","431","432","445","446","452","454","455","462","464",
+                        "465","466","503","506","516","523","526","532","546","565","606",
+                        "612","624","627","631","632","654","662","664","703","712","723",
+                        "731","732","734","743","754"]
+                    if cat:
+                        _empty_streak = 0
+                        for ch_num in range(1000):
+                            ch_str = str(ch_num).zfill(3)
+                            resp = cat.send_command(f"!cat ME {ch_str}")
+                            if not resp or ',' not in str(resp):
+                                _empty_streak += 1
+                                if _empty_streak >= 5:
+                                    break  # Stop after 5 consecutive empty channels
+
+                                continue
+                            # Find ME data line in response
+                            me_line = ''
+                            for line in str(resp).split('\n'):
+                                line = line.strip()
+                                if line.startswith('ME ') and ',' in line:
+                                    me_line = line[3:]
+                                    break
+                            if not me_line:
+                                continue
+                            fields = me_line.split(',')
+                            if len(fields) < 14:
+                                continue
+                            try:
+                                freq_hz = int(fields[1])
+                                if freq_hz < 1000000:
+                                    continue
+                                freq = freq_hz / 1_000_000
+                                tx_hz = int(fields[2])
+                                tx_freq = tx_hz / 1_000_000
+                                mode = int(fields[5])
+                                tone_on = fields[8] == '1'
+                                ctcss_on = fields[9] == '1'
+                                dcs_on = fields[10] == '1'
+                                shift = int(fields[13])
+                                # Determine shift display from actual TX freq
+                                if tx_freq == freq or tx_freq == 0:
+                                    shift_str = 'S'
+                                    offset_str = ''
+                                else:
+                                    diff = tx_freq - freq
+                                    if abs(diff) < 0.001:
+                                        shift_str = 'S'
+                                        offset_str = ''
+                                    elif diff > 0:
+                                        shift_str = '+'
+                                        offset_str = f'{diff:.4f}'
+                                    else:
+                                        shift_str = '-'
+                                        offset_str = f'{abs(diff):.4f}'
+                                    # If TX is a completely different band, show TX freq directly
+                                    if abs(diff) > 10:
+                                        shift_str = 'X'
+                                        offset_str = f'{tx_freq:.4f}'
+                                tone_str = ''
+                                tone_idx = int(fields[14])
+                                ctcss_idx = int(fields[15])
+                                if ctcss_on:
+                                    if ctcss_idx < len(_ctcss): tone_str = _ctcss[ctcss_idx]
+                                elif tone_on:
+                                    idx = ctcss_idx if tone_idx == 0 and ctcss_idx > 0 else tone_idx
+                                    if idx < len(_ctcss): tone_str = _ctcss[idx]
+                                elif dcs_on:
+                                    idx = int(fields[16])
+                                    if idx < len(_dcs): tone_str = 'D' + _dcs[idx]
+                                name = fields[20].strip() if len(fields) > 20 else ''
+                                channels.append({
+                                    'ch': ch_str, 'freq': round(freq, 4),
+                                    'offset': offset_str,
+                                    'mode': _modes.get(mode, '?'),
+                                    'shift': shift_str,
+                                    'tone': tone_str, 'name': name,
+                                })
+                                _empty_streak = 0
+                            except (ValueError, IndexError):
+                                continue
+                    data = channels
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-cache')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(data).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
                 elif self.path == '/sdr':
                     # SDR control page
                     html = parent._generate_sdr_page()
@@ -10683,6 +10791,8 @@ updateRadio();
 .rb-active { background:var(--t-accent) !important; color:#fff !important; border-color:var(--t-accent) !important; }
 .d75-band { background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; }
 .d75-freq { color:#2ecc71; font-size:2.2em; text-align:center; letter-spacing:2px; margin:8px 0; font-family:monospace; }
+.mem-row { cursor:pointer; }
+.mem-row:hover { background:rgba(255,255,255,0.05); }
 .d75-label { color:#888; font-size:0.85em; }
 .d75-val { color:#e0e0e0; font-family:monospace; }
 .d75-row { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
@@ -10735,8 +10845,8 @@ updateRadio();
   <button class="rb rb-sm" onclick="d75cmd('up')">Up</button>
   <button class="rb rb-sm" onclick="d75cmd('down')">Down</button>
   <span style="color:#333;">|</span>
-  <span class="d75-label">BT:</span> <span id="d75-bt-state" class="d75-val">—</span>
   <span class="d75-label">Battery:</span> <span id="d75-battery" class="d75-val">—</span>
+  <span class="d75-label">BT:</span> <span id="d75-bt-state" class="d75-val">—</span>
   <span style="color:#333;">|</span>
   <span class="d75-label">TNC:</span> <span id="d75-tnc" class="d75-val">—</span>
   <span class="d75-label">Beacon:</span> <span id="d75-beacon" class="d75-val">—</span>
@@ -10750,6 +10860,20 @@ updateRadio();
   <span class="d75-label">Alt:</span> <span id="d75-gps-alt" class="d75-val">—</span>
   <span class="d75-label">Speed:</span> <span id="d75-gps-spd" class="d75-val">—</span>
   <span class="d75-label">Sats:</span> <span id="d75-gps-sat" class="d75-val">—</span>
+</div>
+
+<!-- Memory Channels -->
+<div style="margin-bottom:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+    <span style="color:var(--t-accent); font-weight:bold;">Memory Channels</span>
+    <div style="display:flex; gap:6px; align-items:center;">
+      <span id="d75-mem-count" style="color:#888; font-size:0.85em;"></span>
+      <button class="rb rb-sm" onclick="d75LoadMemories()" id="d75-mem-scan-btn">Scan</button>
+    </div>
+  </div>
+  <div id="d75-mem-list" style="max-height:300px; overflow-y:auto; font-family:monospace; font-size:0.85em;">
+    <span style="color:#888;">Press Scan to read memory channels from radio</span>
+  </div>
 </div>
 
 <!-- Volume control (full width) -->
@@ -11102,6 +11226,74 @@ function _updateToneDisplay(band, fi) {
   shiftEl.textContent = s;
 }
 
+var _d75Channels = [];  // cached channel list for re-rendering
+
+function d75LoadMemories() {
+  var btn = document.getElementById('d75-mem-scan-btn');
+  var list = document.getElementById('d75-mem-list');
+  var count = document.getElementById('d75-mem-count');
+  btn.disabled = true;
+  btn.textContent = 'Scanning...';
+  list.innerHTML = '<span style="color:#888;">Scanning channels...</span>';
+  fetch('/d75memlist').then(function(r){return r.json()}).then(function(channels) {
+    _d75Channels = channels;
+    if (!channels.length) {
+      list.innerHTML = '<span style="color:#888;">No programmed channels found</span>';
+      count.textContent = '';
+      return;
+    }
+    count.textContent = channels.length + ' channels';
+    _d75RenderMemList();
+  }).catch(function(e) {
+    list.innerHTML = '<span style="color:#e74c3c;">Scan failed: ' + e + '</span>';
+  }).finally(function() {
+    btn.disabled = false;
+    btn.textContent = 'Scan';
+  });
+}
+
+function _d75RenderMemList() {
+  var list = document.getElementById('d75-mem-list');
+  if (!_d75Channels.length) return;
+  var ab = parseInt(document.getElementById('d75-active-band').value) || 0;
+  var dual = parseInt(document.getElementById('d75-dual').value) || 0;
+  // DL 0=dual (both bands active), DL 1=single (only active band)
+  var aOk = (dual === 0 || ab === 0);
+  var bOk = (dual === 0 || ab === 1);
+  var h = '<table style="width:100%; border-collapse:collapse;">';
+  h += '<tr style="color:#888; text-align:left;">';
+  h += '<th style="padding:2px 6px;">CH</th><th style="padding:2px 6px;">Freq</th>';
+  h += '<th style="padding:2px 6px;">Name</th><th style="padding:2px 6px;">Mode</th>';
+  h += '<th style="padding:2px 6px;">Tone</th><th style="padding:2px 6px;">Shift</th>';
+  h += '<th style="padding:2px 6px;">Offset</th><th style="padding:2px 6px; text-align:center;">Load</th></tr>';
+  _d75Channels.forEach(function(c) {
+    h += '<tr class="mem-row">';
+    h += '<td style="padding:3px 6px; color:var(--t-accent);">' + c.ch + '</td>';
+    h += '<td style="padding:3px 6px; color:#fff; font-weight:bold;">' + c.freq.toFixed(4) + '</td>';
+    h += '<td style="padding:3px 6px; color:#e0e0e0;">' + (c.name || '') + '</td>';
+    h += '<td style="padding:3px 6px; color:#f39c12;">' + c.mode + '</td>';
+    h += '<td style="padding:3px 6px; color:' + (c.tone ? '#2ecc71' : '#888') + ';">' + (c.tone || '—') + '</td>';
+    var _sc = c.shift==='X'?'#e74c3c':c.shift==='S'?'#888':'#f39c12';
+    h += '<td style="padding:3px 6px; color:'+_sc+';">' + (c.shift==='X'?'Xband':c.shift) + '</td>';
+    h += '<td style="padding:3px 6px;">' + (c.offset || '') + '</td>';
+    h += '<td style="padding:3px 6px; white-space:nowrap;">';
+    h += '<button class="rb rb-sm" style="padding:2px 6px;' + (aOk ? '' : 'opacity:0.3;cursor:default;') + '" onclick="' + (aOk ? "d75GoChannel(0," + "'" + c.ch + "'" + ")" : '') + '"' + (aOk ? '' : ' disabled') + '>A</button> ';
+    h += '<button class="rb rb-sm" style="padding:2px 6px;' + (bOk ? '' : 'opacity:0.3;cursor:default;') + '" onclick="' + (bOk ? "d75GoChannel(1," + "'" + c.ch + "'" + ")" : '') + '"' + (bOk ? '' : ' disabled') + '>B</button>';
+    h += '</td></tr>';
+  });
+  h += '</table>';
+  list.innerHTML = h;
+}
+
+function d75GoChannel(band, ch) {
+  // Switch to memory mode on specified band, then set channel
+  d75cmd('cat', 'VM ' + band + ',1');  // Memory mode
+  setTimeout(function() {
+    d75cmd('channel', band + ' ' + ch);
+  }, 300);
+  _d75flash('Band ' + (band ? 'B' : 'A') + ' → CH ' + ch, '#2ecc71');
+}
+
 function d75VolDebounce(val) {
   _volEditUntil = Date.now() + 2000;
   document.getElementById('d75-vol-val').textContent = ('000' + val).slice(-3);
@@ -11164,6 +11356,20 @@ function updateD75() {
       abSel.value = d.active_band || 0;
       var dlSel = document.getElementById('d75-dual');
       dlSel.value = d.dual_band || 0;
+    }
+    // Always re-render channel list buttons based on current band/dual state
+    if (_d75Channels.length) _d75RenderMemList();
+    // Battery
+    var _batLvl = d.battery_level;
+    var _batEl = document.getElementById('d75-battery');
+    if (_batLvl >= 0) {
+      var _batNames = ['Empty','Low','Med','Full'];
+      var _batColors = ['#e74c3c','#f39c12','#f1c40f','#2ecc71'];
+      _batEl.textContent = _batNames[_batLvl] || _batLvl;
+      _batEl.style.color = _batColors[_batLvl] || '#888';
+    } else {
+      _batEl.textContent = '—';
+      _batEl.style.color = '#888';
     }
     document.getElementById('d75-bt-state').textContent = d.bluetooth ? 'On' : 'Off';
     document.getElementById('d75-bt-state').style.color = d.bluetooth ? '#2ecc71' : '#888';

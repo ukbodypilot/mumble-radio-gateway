@@ -177,6 +177,26 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - In-browser MP3 playback with player bar (play/pause/stop/volume — seek bar TODO)
 - Auto-refreshes every 10s
 
+## D75 Web UI Enhancements (2026-03-17)
+- Edit lock on all controls (tone/offset/shift/band/dual/mode/power/volume): poll pauses 3-5s after user interaction to prevent snap-back
+- Command feedback bar: green OK / red error for 3s on every d75cmd
+- Tone/shift status display on frequency row: type+freq (green), shift+offset (orange), Xband (red)
+- TX red display: active band frequency box turns dark red during PTT
+- Power labels fixed: 0=High, 1=Med, 2=Low, 3=EL (was backwards)
+- Dual/Single fixed: DL 0=Dual, DL 1=Single (was swapped)
+- Battery level: queried via BL command, color-coded (Full/Med/Low/Empty)
+- Memory channel scanner: scans ME 000-999, stops after 5 consecutive empty
+  - Shows freq, name, mode, tone, shift (computed from RX/TX), cross-band detection
+  - A/B load buttons greyed out based on active band + single/dual mode
+  - `/d75memlist` endpoint with gateway-side parsing
+
+## D75 Connection Robustness (2026-03-17)
+- D75_CAT.py watchdog: monitors serial+audio every 10s, auto-btstart on drop with backoff
+- Graceful shutdown: watchdog cancelled, audio/serial disconnect with 3s timeouts
+- start.sh: targeted pkill `radio_gateway.py` (not broad `radio_gateway`)
+- Gateway D75CATClient: auto-reconnect + btstart trigger on TCP reconnect
+- D75 systemd service: Restart=always, RestartSec=10
+
 ## Known Bugs Fixed (details in bugs.md)
 See bugs.md for full history. Key recent: DISPLAY_TEXT VFO misattribution (2026-03-13),
 RTS change corrupts display (2026-03-13), audio processing silent (scipy missing),
