@@ -5421,6 +5421,7 @@ class D75CATClient:
         self._stop = False
         self._poll_thread = None
         self._poll_paused = False
+        self._bt_stopped = False  # Set by btstop, cleared by btstart — suppresses auto-reconnect
 
         # Radio state (populated by !status JSON response)
         self._connected = False
@@ -5623,18 +5624,21 @@ class D75CATClient:
                 if self.connect():
                     print(f"[D75 CAT] Reconnected TCP")
                     # Check if D75 serial is up; if not, trigger btstart
+                    # But NOT if user intentionally stopped BT via btstop
                     time.sleep(1)
                     try:
                         self.poll_state()
                     except Exception:
                         pass
-                    if not self._serial_connected:
+                    if not self._serial_connected and not self._bt_stopped:
                         print(f"[D75 CAT] Serial not connected — requesting btstart...")
                         try:
                             resp = self.send_command("!btstart")
                             print(f"[D75 CAT] btstart: {resp}")
                         except Exception as e:
                             print(f"[D75 CAT] btstart error: {e}")
+                    elif self._bt_stopped:
+                        print(f"[D75 CAT] Reconnected TCP (BT intentionally stopped — skipping btstart)")
                 else:
                     # Wait before retry
                     for _ in range(int(_reconnect_interval * 10)):
@@ -9258,16 +9262,19 @@ class WebConfigServer:
                                 resp = gw.d75_cat.send_command(f"!cat {args}")
                                 result = {'ok': True, 'response': resp or ''}
                             elif cmd == 'btstart':
+                                gw.d75_cat._bt_stopped = False
                                 resp = gw.d75_cat.send_command("!btstart")
                                 result = {'ok': True, 'response': resp or ''}
                             elif cmd == 'btstop':
                                 # btstop takes several seconds — use longer recv timeout
                                 gw.d75_cat._poll_paused = True
+                                gw.d75_cat._bt_stopped = True
                                 time.sleep(0.3)
                                 with gw.d75_cat._sock_lock:
                                     gw.d75_cat._buf = b''
                                     gw.d75_cat._sock.sendall(b"!btstop\n")
                                     resp = gw.d75_cat._recv_line(timeout=15.0)
+                                gw.d75_cat._serial_connected = False
                                 gw.d75_cat._poll_paused = False
                                 result = {'ok': True, 'response': resp or ''}
                             elif cmd == 'ptt':
