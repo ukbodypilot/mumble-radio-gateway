@@ -57,8 +57,12 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 ## Web Configuration UI & Live Dashboard
 - `WebConfigServer` class: built-in HTTP server (Python `http.server`, no Flask)
-- Pages: `/` (config editor), `/dashboard` (live status), `/sdr` (SDR control), `/radio` (CAT control), `/logs` (live log viewer)
+- Pages: `/` (config editor), `/dashboard` (live status), `/sdr` (SDR control), `/radio` (TH-9800 CAT control), `/d75` (TH-D75), `/recordings`, `/logs`
 - Config: `ENABLE_WEB_CONFIG`, `WEB_CONFIG_PORT` (default 8080), `WEB_CONFIG_PASSWORD`
+- **Shell/iframe structure (2026-03-18):** `/` serves a persistent shell page with nav bar + iframe (`name="content"`). All page links use `target="content"` to load inside the iframe. Shell page caches across page loads (audio player, WebSocket PCM stay alive).
+- **Shell nav bar**: always shows all 7 links: Dashboard | TH-9800 | TH-D75 | SDR | Recordings | Config | Logs. TH-9800 and TH-D75 greyed out (`nav-disabled` class) when disabled in config — never hidden. Nav links use CSS `border-left` separators and `flex-wrap` so they wrap on mobile.
+- **Action bar (bottom)**: Email Status / Restart / Exit buttons in a centered fixed bar at bottom of shell page. Moved from top bar 2026-03-18.
+- **In-page nav strips removed (2026-03-18):** All per-page nav `<p>` link strips removed — shell navbar is sole navigation.
 - Dashboard layout (top to bottom): Listen box, Status (audio bars first, then info, timers), System Status, Controls (Mute, Radio/SDR Processing, Audio, SDR), then bottom row (Playback, Smart Announce, Broadcastify, PTT & Relay, Text to Speech, System)
 - **Listen box**: MP3 stream + WebSocket PCM with volume sliders, at top of dashboard
 - **Text to Speech box**: text entry, 9-voice selector (gTTS), send button + status line. Auto-switches RTS to Radio Controlled for TX, restores after. `/tts` POST endpoint runs `speak_text()` in background thread.
@@ -67,7 +71,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **System Status box**: `/sysinfo` endpoint (2s poll), CPU/load/RAM/swap/disk/net/TCP/temps/IPs
 - **Logs page**: Audio Trace + Watchdog Trace toggle buttons (`/tracecmd`, `/tracestatus` endpoints)
 - **Soundboard**: auto-fills empty playback slots 1-9 with random Mixkit sound effects (~750 curated pool), refresh button
-- **Responsive layouts**: all pages use `repeat(auto-fit, minmax())` grids for narrow screens
+- **Responsive layouts**: all pages use `repeat(auto-fit, minmax())` grids for narrow screens; shell nav and action bar also wrap on mobile
 
 ## TH-9800 CAT Control
 - `RadioCATClient` class: TCP client for TH9800_CAT.py server
@@ -93,7 +97,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **Service:** `th9800-cat.service` — headless CAT server, started/stopped by start.sh based on `ENABLE_CAT_CONTROL`
 - `TimeoutStopSec=15` to allow graceful serial cleanup
 - start.sh: reads config, sudo keepalive, renice -10, manages th9800-cat.service + Claude Code launches
-- start.sh reads `ENABLE_TH9800` from config to decide whether to start CAT service (fixed 2026-03-16, was reading wrong key `ENABLE_CAT_CONTROL`)
+- start.sh uses `ENABLE_CAT_CONTROL` (not old `START_TH9800_CAT`) to decide whether to start CAT service
 - Gateway restart via `q` key uses `os.execv` (replaces process in-place, same PID)
 - **CRITICAL:** Always restart gateway via start.sh, never `python3 radio_gateway.py` directly (ALSA loopback, AIOC reset, etc. are needed)
 
@@ -115,14 +119,12 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - HPF defaults to ON for AIOC radio audio (`ENABLE_HIGHPASS_FILTER = true` in config)
 - **CRITICAL:** Requires `scipy` — all filters silently return unmodified audio if scipy is missing
 
-## PTT Methods & TX_RADIO (updated 2026-03-17)
-- `TX_RADIO`: `th9800` (default) or `d75` — selects which radio for playback/TTS/announce TX
-- `PTT_METHOD`: `aioc` (default), `relay`, or `software` — applies when TX_RADIO=th9800
-- When TX_RADIO=d75: PTT via `_ptt_d75()` which sends `!ptt on`/`!ptt off` (explicit, NOT toggle)
-- D75 PTT tracks state via `_d75_ptt_on` (independent of TH-9800 `_software_ptt_on`)
-- Audio TX via D75: `D75AudioSource.write_tx_audio(pcm_48k)` → downsample 48k→8k → TCP → D75_CAT.py → SCO
-- RTS save/restore and VFO dial-press refresh are skipped when TX_RADIO=d75 or PTT_METHOD=software
-- D75CATClient has auto-reconnect in poll thread (detects OSError, reconnects with 5s interval)
+## PTT Methods
+- `PTT_METHOD`: `aioc` (default), `relay`, or `software`
+- AIOC: HID GPIO, Relay: CH340 USB relay, Software: CAT TCP `!ptt` toggle
+- Software PTT tracks state via `_software_ptt_on` (independent of `ptt_active` which is set in multiple places)
+- Software PTT checks `_last_radio_rx` — refuses to key if radio hasn't sent data in >5 seconds (radio powered off)
+- RTS save/restore and VFO dial-press refresh are skipped in software PTT mode (they cause VFO switching artifacts)
 
 ## AIOC PTT — RTS Relay Coordination (CRITICAL, 2026-03-15)
 - **Hardware:** RTS line controls a relay switching radio's TX serial between USB dongle and radio front panel
@@ -154,58 +156,17 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - Requires `edge-tts` pip package (added to installer)
 
 ## Other Features
-- **Cloudflare Tunnel**: persists across gateway restarts, `*.trycloudflare.com` URL cached in `/tmp/cloudflare_tunnel_url`
-- **Email**: Gmail SMTP on startup/demand (`@` key), includes tunnel URL + LAN link
+- **Cloudflare Tunnel**: `*.trycloudflare.com` URL cached in `/tmp/cloudflare_tunnel_url`. `get_url()` retries file on every call until URL found (handles adoption race). Email waits up to 60s for URL before sending startup email.
+- **Email**: Gmail SMTP on startup/demand (`@` key), includes tunnel base URL + `/config` URL + LAN link. URLs do NOT include `/dashboard` suffix (removed 2026-03-18).
 - **Relay Control**: `RelayController` class, radio power (`j`), charger (auto), PTT relay
 - **SDR Rebroadcast**: `b` key, routes SDR audio to radio TX
 - **Status Bar**: 3-line display, `[HH:MM:SS]` timestamps, `StatusBarWriter` wraps stdout/stderr
 - **Config page**: unsaved changes warning via `beforeunload` event
 
-## Automation Engine (2026-03-17)
-- `radio_automation.py`: RepeaterDatabase, RadioController, AudioRecorder (MP3 via lame), SchemeParser, AutomationEngine
-- Scheme file format: `TASK_NAME | SCHEDULE | RADIO | ACTION | OPTIONS`
-- D75 FO tuning: atomic freq/step(5kHz)/mode/tone/offset via single FO command
-- MP3 recording: streams PCM to lame subprocess, no WAV intermediate
-- Filenames: `RADIO_FREQ_DATE_TIME_LABEL.mp3`
-- Options: `max_runs`, `start_now`, `record`, `freq`, `pl`, `listen`, `mode`
-- Dashboard panel: live task status, recording indicator, task queue, history
-- **ENABLE_AUTOMATION duplicate bug fixed**: was in both `automation` and `advanced` CONFIG_LAYOUT sections
-
-## Recordings Manager Web Page (2026-03-17)
-- `/recordings` page: filter by radio/date/freq, sortable columns, select/download/delete
-- `/recordingslist` JSON, `/recordingsdownload?file=X`, `/recordingsdelete` POST
-- In-browser MP3 playback with player bar (play/pause/stop/volume — seek bar TODO)
-- Auto-refreshes every 10s
-
-## D75 Web UI Enhancements (2026-03-17)
-- Edit lock on all controls (tone/offset/shift/band/dual/mode/power/volume): poll pauses 3-5s after user interaction to prevent snap-back
-- Command feedback bar: green OK / red error for 3s on every d75cmd
-- Tone/shift status display on frequency row: type+freq (green), shift+offset (orange), Xband (red)
-- TX red display: active band frequency box turns dark red during PTT
-- Power labels fixed: 0=High, 1=Med, 2=Low, 3=EL (was backwards)
-- Dual/Single fixed: DL 0=Dual, DL 1=Single (was swapped)
-- Battery level: queried via BL command, color-coded (Full/Med/Low/Empty)
-- Memory channel scanner: scans ME 000-999, stops after 5 consecutive empty
-  - Shows freq, name, mode, tone, shift (computed from RX/TX), cross-band detection
-  - A/B load buttons greyed out based on active band + single/dual mode
-  - `/d75memlist` endpoint with gateway-side parsing
-
-## D75 Connection Robustness (2026-03-17)
-- D75_CAT.py watchdog: monitors serial+audio every 10s, auto-btstart on drop with backoff
-- Graceful shutdown: watchdog cancelled, audio/serial disconnect with 3s timeouts
-- start.sh: targeted pkill `radio_gateway.py` (not broad `radio_gateway`)
-- Gateway D75CATClient: auto-reconnect + btstart trigger on TCP reconnect
-- D75 systemd service: Restart=always, RestartSec=10, enabled on boot
-- Diagnostic status panel: 3-step checklist (service/TCP/serial) with Start Service, Reconnect, BT Start buttons
-- BT Stop: graceful disconnect (serial→audio→rfcomm→HCI), pauses watchdog to prevent auto-reconnect
-- BT Start resumes watchdog after intentional stop
-- Single/dual band display: single mode greys out inactive band, dual mode shows red MAIN badge on active band
-
 ## Known Bugs Fixed (details in bugs.md)
 See bugs.md for full history. Key recent: DISPLAY_TEXT VFO misattribution (2026-03-13),
 RTS change corrupts display (2026-03-13), audio processing silent (scipy missing),
 WebSocket PCM double-push/latency, CAT serial orphans, ScriptProcessor buffer size.
-ENABLE_AUTOMATION duplicate in CONFIG_LAYOUT (2026-03-17).
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis

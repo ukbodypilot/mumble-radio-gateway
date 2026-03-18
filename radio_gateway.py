@@ -5864,8 +5864,8 @@ class EmailNotifier:
         if self.gateway and self.gateway.cloudflare_tunnel:
             url = self.gateway.cloudflare_tunnel.get_url()
             if url:
-                lines.append(f"Dashboard: {url}/dashboard")
-                lines.append(f"Config:    {url}")
+                lines.append(f"Gateway:   {url}")
+                lines.append(f"Config:    {url}/config")
                 lines.append("")
 
         # LAN link
@@ -5876,10 +5876,10 @@ class EmailNotifier:
             s.connect(('8.8.8.8', 80))
             lan_ip = s.getsockname()[0]
             s.close()
-            lines.append(f"LAN:       http://{lan_ip}:{port}/dashboard")
+            lines.append(f"LAN:       http://{lan_ip}:{port}")
         except Exception:
             pass
-        lines.append(f"Local:     http://localhost:{port}/dashboard")
+        lines.append(f"Local:     http://localhost:{port}")
         lines.append("")
 
         # Mumble server
@@ -5907,11 +5907,11 @@ class EmailNotifier:
         self.send(subject, '\n'.join(lines))
 
     def send_startup_delayed(self):
-        """Wait for tunnel URL (up to 15s) then send startup email."""
+        """Wait for tunnel URL (up to 60s) then send startup email."""
         def _delayed():
             # Wait for tunnel URL if tunnel is enabled
             if self.gateway and self.gateway.cloudflare_tunnel:
-                for _ in range(15):
+                for _ in range(60):
                     if self.gateway.cloudflare_tunnel.get_url():
                         break
                     time.sleep(1)
@@ -5991,6 +5991,17 @@ class CloudflareTunnel:
         pass
 
     def get_url(self):
+        if self._url:
+            return self._url
+        # Fallback: re-check URL file (handles adopted cloudflared where URL
+        # arrived after adoption, or was flushed to disk by _read_output thread)
+        try:
+            with open(self.URL_FILE, 'r') as f:
+                url = f.read().strip()
+            if url:
+                self._url = url
+        except FileNotFoundError:
+            pass
         return self._url
 
     def _read_output(self):
@@ -10116,7 +10127,10 @@ class WebConfigServer:
         t = self._get_theme()
         gw_name = str(getattr(self.config, 'GATEWAY_NAME', '') or '').strip()
         _title_prefix = f'{gw_name} - ' if gw_name else ''
-        nav = self._radio_nav_links()
+        has_radio = getattr(self.config, 'ENABLE_CAT_CONTROL', False) or getattr(self.config, 'ENABLE_TH9800', False)
+        has_d75 = getattr(self.config, 'ENABLE_D75', False)
+        _radio_link = '<a href="/radio" target="content" onclick="setActive(this)">TH-9800</a>' if has_radio else '<a class="nav-disabled">TH-9800</a>'
+        _d75_link = '<a href="/d75" target="content" onclick="setActive(this)">TH-D75</a>' if has_d75 else '<a class="nav-disabled">TH-D75</a>'
         return f'''<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
@@ -10140,8 +10154,11 @@ class WebConfigServer:
   #shell-bar a {{ color: var(--t-accent); text-decoration: none; font-size: 0.9em; }}
   #shell-bar a:hover {{ text-decoration: underline; }}
   #shell-bar a.active {{ font-weight: bold; border-bottom: 2px solid var(--t-accent); }}
-  .shell-nav {{ display: flex; gap: 10px; align-items: center; }}
-  .shell-pcm {{ display: flex; gap: 6px; align-items: center; margin-left: auto; }}
+  #shell-bar a.nav-disabled {{ color: #555; cursor: default; pointer-events: none; text-decoration: none; }}
+  .shell-nav {{ display: flex; flex-wrap: wrap; gap: 0; align-items: center; }}
+  .shell-nav a {{ padding: 3px 10px; }}
+  .shell-nav a + a {{ border-left: 1px solid #444; }}
+  .shell-pcm {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-left: auto; }}
   .shell-pcm button {{
     background: var(--t-btn); border: 1px solid var(--t-btn-border); color: #e0e0e0;
     border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 0.85em;
@@ -10149,16 +10166,21 @@ class WebConfigServer:
   .shell-pcm button:hover {{ background: var(--t-btn-hover); }}
   #shell-frame {{ flex: 1; border: none; width: 100%; }}
   #shell-status {{ color: #888; font-size: 0.75em; white-space: nowrap; }}
+  #action-bar {{
+    background: var(--t-panel); border-top: 1px solid var(--t-border);
+    padding: 8px 14px; display: flex; align-items: center; justify-content: center;
+    gap: 10px; flex-shrink: 0; flex-wrap: wrap;
+  }}
+  #action-bar button {{
+    background: var(--t-btn); border: 1px solid var(--t-btn-border); color: #e0e0e0;
+    border-radius: 4px; padding: 6px 20px; cursor: pointer; font-size: 0.9em; font-family: inherit;
+  }}
+  #action-bar button:hover {{ background: var(--t-btn-hover); }}
 </style>
 </head><body>
 <div id="shell-bar">
   <div class="shell-nav">
-    <a href="/dashboard" target="content" onclick="setActive(this)">Dashboard</a>
-    {(' | <a href="/radio" target="content" onclick="setActive(this)">Radio</a>' if nav else '')}
-    {(' | <a href="/d75" target="content" onclick="setActive(this)">TH-D75</a>' if getattr(self.config, 'ENABLE_D75', False) else '')}
-    | <a href="/sdr" target="content" onclick="setActive(this)">SDR</a>
-    | <a href="/config" target="content" onclick="setActive(this)">Config</a>
-    | <a href="/logs" target="content" onclick="setActive(this)">Logs</a>
+    <a href="/dashboard" target="content" onclick="setActive(this)">Dashboard</a>{_radio_link}{_d75_link}<a href="/sdr" target="content" onclick="setActive(this)">SDR</a><a href="/recordings" target="content" onclick="setActive(this)">Recordings</a><a href="/config" target="content" onclick="setActive(this)">Config</a><a href="/logs" target="content" onclick="setActive(this)">Logs</a>
   </div>
   <div class="shell-pcm">
     <button id="play-btn" onclick="toggleStream()" style="min-width:62px; text-align:center;">&#9654; MP3</button>
@@ -10170,13 +10192,14 @@ class WebConfigServer:
     <input id="ws-vol" type="range" min="0" max="100" value="100" style="width:50px; accent-color:var(--t-accent);" oninput="setWSVol(this.value)">
     <span id="ws-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:var(--t-accent); box-shadow:0 0 6px var(--t-accent);"></span>
     <span id="ws-status" style="font-size:0.75em;"></span>
-    <span style="color:var(--t-border);">|</span>
-    <button onclick="shellCmd('@')">Email</button>
-    <button onclick="if(confirm('Restart gateway?'))shellCmd('q')" style="color:#f39c12;">Restart</button>
-    <button onclick="if(confirm('Exit the gateway server?'))fetch('/exit',{{method:'POST'}}).then(()=>{{document.body.innerHTML='<h1 style=color:#e0e0e0;text-align:center;margin-top:40vh>Stopped.</h1>';}})" style="color:#e74c3c;">Exit</button>
   </div>
 </div>
 <iframe id="shell-frame" name="content" src="/dashboard"></iframe>
+<div id="action-bar">
+  <button onclick="shellCmd('@')">&#9993; Email Status</button>
+  <button onclick="if(confirm('Restart gateway?'))shellCmd('q')" style="color:#f39c12;">&#8635; Restart</button>
+  <button onclick="if(confirm('Exit the gateway server?'))fetch('/exit',{{method:'POST'}}).then(()=>{{document.body.innerHTML='<h1 style=color:#e0e0e0;text-align:center;margin-top:40vh>Stopped.</h1>';}})" style="color:#e74c3c;">&#9632; Exit</button>
+</div>
 <script>
 var _T = {{accent:'{t['accent']}',btnBorder:'{t['btn_border']}'}};
 
@@ -10465,14 +10488,7 @@ function setWSVol(v) {{
     def _generate_logs_page(self):
         """Build the live log viewer HTML page."""
         body = '''
-<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-  <h2 style="margin:0;">Gateway Logs</h2>
-  <div>
-    <a href="/" class="rb rb-sm" style="text-decoration:none;">Config</a>
-    <a href="/" class="rb rb-sm" style="text-decoration:none;">Dashboard</a>
-''' + self._radio_nav_buttons() + '''    <a href="/sdr" class="rb rb-sm" style="text-decoration:none;">SDR</a>
-  </div>
-</div>
+<h2 style="margin:0 0 10px;">Gateway Logs</h2>
 <div style="margin-bottom:8px; display:flex; gap:10px; align-items:center;">
   <label style="color:#888; font-size:0.85em;">
     <input type="checkbox" id="auto-scroll" checked> Auto-scroll
@@ -10593,7 +10609,6 @@ fetch('/logdata?after=0')
         """Build the TH-9800 radio control HTML page."""
         body = '''
 <h1 style="font-size:1.8em">TH-9800 Control</h1>
-<p><a href="/">Dashboard</a> | ''' + self._radio_nav_links() + ''' | <a href="/sdr">SDR</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
 
 <div id="cat-offline" style="display:none; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; margin-bottom:14px;">
   <span id="cat-offline-msg" style="color:#e74c3c; font-weight:bold;">CAT not connected</span>
@@ -11205,7 +11220,6 @@ updateRadio();
         dcs_opts = ''.join(f'<option value="{t}">{t}</option>' for t in dcs_tones)
         body = '''
 <h1 style="font-size:1.8em">TH-D75 Control</h1>
-<p><a href="/">Dashboard</a> | ''' + self._radio_nav_links() + ''' | <a href="/sdr">SDR</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
 
 <style>
 .rb { padding:8px 14px; border:1px solid var(--t-btn-border); border-radius:4px; background:var(--t-btn);
@@ -11981,7 +11995,6 @@ updateD75();
         """Build the SDR control HTML page."""
         body = '''
 <h1 style="font-size:1.8em">SDR Control</h1>
-<p><a href="/">Dashboard</a> | ''' + self._radio_nav_links() + ''' | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
 
 <!-- Status bar -->
 <div id="sdr-status-bar" style="display:flex; align-items:center; gap:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 16px; margin-bottom:14px;">
@@ -12725,7 +12738,6 @@ pollTimer = setInterval(pollStatus, 1000);
         _name_html = '<span style="color:#e0e0e0">' + gw_name + '</span> &mdash; ' if gw_name else ''
         body = '<h1 style="font-size:1.8em; margin:0 0 10px">' + _name_html + 'Radio Gateway Dashboard</h1>'
         body += '''
-''' + f'<p style="margin:0 0 10px;font-size:1.1em"><a href="/config">Config Editor</a> | {self._radio_nav_links()} | <a href="/sdr">SDR</a> | <a href="/recordings">Recordings</a> | <a href="/logs">Logs</a></p>' + '''
 
 <div id="status">Loading...</div>
 <div id="toast-container" style="position:fixed;top:10px;right:10px;z-index:9999;max-width:400px;"></div>
@@ -13624,7 +13636,6 @@ updateAutoHistory();
         """Build the recordings manager HTML page."""
         body = '''
 <h1 style="font-size:1.6em; margin:0 0 10px;">Recording Manager</h1>
-<p style="margin:0 0 10px;font-size:1.1em"><a href="/dashboard">Dashboard</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
 
 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
   <div>
@@ -13961,7 +13972,6 @@ setInterval(loadFiles, 10000);
 
         body = (
             '<h1>Radio Gateway Configuration</h1>'
-            '<p style="margin:0 0 10px"><a href="/">Live Dashboard</a> | <a href="/sdr">SDR</a> | <a href="/logs">Logs</a></p>'
             '<form method="POST" action="/">'
             '<div class="buttons">'
             '<button type="submit" name="_action" value="save" class="btn-save">Save</button>'
