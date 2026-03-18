@@ -8131,18 +8131,27 @@ devices:
         time.sleep(1)
         subprocess.run(['sudo', 'systemctl', 'start', 'sdrplay.service'],
                        capture_output=True, timeout=10)
-        time.sleep(2)
+        # Wait for sdrplay_apiService to be ready — 2s is not enough at boot
+        time.sleep(5)
 
         # Start rtl_airband (daemon mode — it forks into background)
+        # -e routes daemon logs to stderr (syslog disabled); stdout has startup errors
         proc = subprocess.run(
             ['rtl_airband', '-e', '-c', self.CONFIG_PATH],
             capture_output=True, timeout=10
         )
-        time.sleep(1)
-        # Verify it's running (it daemonizes, so check via pgrep)
-        chk = subprocess.run(['pgrep', 'rtl_airband'], capture_output=True, timeout=2)
-        if chk.returncode != 0:
-            raise RuntimeError(f"rtl_airband failed to start: {proc.stderr.decode()[:200]}")
+        # Verify it's running — retry for up to 5s since the daemon may take a moment
+        # to crash if sdrplay still isn't ready
+        alive = False
+        for _ in range(5):
+            time.sleep(1)
+            chk = subprocess.run(['pgrep', 'rtl_airband'], capture_output=True, timeout=2)
+            if chk.returncode == 0:
+                alive = True
+                break
+        if not alive:
+            err = (proc.stdout.decode()[:200] or proc.stderr.decode()[:200]).strip()
+            raise RuntimeError(f"rtl_airband failed to start: {err}")
 
     def stop(self):
         """Stop rtl_airband."""
@@ -12442,7 +12451,7 @@ updateD75();
   <button id="sdr-apply-btn" onclick="applySettings()" style="flex:1; padding:12px; background:#27ae60; color:#fff; border:none; border-radius:6px; font-size:1.1em; font-weight:bold; cursor:pointer;">
     Apply & Restart SDR
   </button>
-  <button onclick="sdrCmd('stop')" style="padding:12px 20px; background:#c0392b; color:#fff; border:none; border-radius:6px; font-size:1.1em; font-weight:bold; cursor:pointer;">
+  <button id="sdr-stop-btn" onclick="sdrCmd('stop')" style="padding:12px 20px; background:#c0392b; color:#fff; border:none; border-radius:6px; font-size:1.1em; font-weight:bold; cursor:pointer;">
     Stop
   </button>
 </div>
@@ -12708,15 +12717,33 @@ function pollStatus() {
         badge.style.color = '#fff';
       }
       // Frequency display
-      if (d.frequency !== undefined) {
-        document.getElementById('sdr-freq-display').textContent = parseFloat(d.frequency).toFixed(3) + ' MHz';
+      var freqEl = document.getElementById('sdr-freq-display');
+      if (d.process_alive && d.frequency !== undefined) {
+        freqEl.textContent = parseFloat(d.frequency).toFixed(3) + ' MHz';
+        freqEl.style.color = '#00ff88';
+      } else if (!d.process_alive) {
+        freqEl.textContent = '---.--- MHz';
+        freqEl.style.color = '#555';
       }
-      // Badges
-      if (d.modulation) document.getElementById('sdr-mod-badge').textContent = d.modulation.toUpperCase();
-      if (d.sample_rate !== undefined) document.getElementById('sdr-sr-badge').textContent = 'SR: ' + d.sample_rate + ' MHz';
-      if (d.antenna) document.getElementById('sdr-ant-badge').textContent = d.antenna;
+      // Badges and controls — dim when stopped
+      var stopBtn = document.getElementById('sdr-stop-btn');
+      if (d.process_alive) {
+        if (d.modulation) document.getElementById('sdr-mod-badge').textContent = d.modulation.toUpperCase();
+        if (d.sample_rate !== undefined) document.getElementById('sdr-sr-badge').textContent = 'SR: ' + d.sample_rate + ' MHz';
+        if (d.antenna) document.getElementById('sdr-ant-badge').textContent = d.antenna;
+        stopBtn.disabled = false;
+        stopBtn.style.opacity = '1';
+        stopBtn.style.cursor = 'pointer';
+      } else {
+        document.getElementById('sdr-mod-badge').textContent = '--';
+        document.getElementById('sdr-sr-badge').textContent = 'SR: --';
+        document.getElementById('sdr-ant-badge').textContent = 'ANT: --';
+        stopBtn.disabled = true;
+        stopBtn.style.opacity = '0.4';
+        stopBtn.style.cursor = 'not-allowed';
+      }
       // Audio level
-      var lvl = d.audio_level || 0;
+      var lvl = d.process_alive ? (d.audio_level || 0) : 0;
       var pct = Math.min(100, Math.max(0, Math.round(lvl)));
       document.getElementById('sdr-audio-bar').style.width = pct + '%';
       document.getElementById('sdr-audio-val').textContent = pct + '%';
