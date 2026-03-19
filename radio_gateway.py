@@ -3471,7 +3471,12 @@ class KV4PCATClient:
         self._serial_connected = False
 
     def _apply_group(self):
-        """Send current frequency/tone/squelch config to radio."""
+        """Send current frequency/tone/squelch config to radio.
+
+        Sends the GROUP command twice with a short delay — the SA818 module
+        occasionally fails to apply the config on the first attempt,
+        especially after firmware reset or power cycle.
+        """
         if not self._radio:
             return
         sys.path.insert(0, os.path.expanduser('~/kv4p-ht-python'))
@@ -3485,6 +3490,8 @@ class KV4PCATClient:
             ctcss_rx=self._ctcss_rx,
         )
         self._radio.tune(group)
+        time.sleep(0.2)
+        self._radio.tune(group)  # Retry to ensure SA818 applies config
 
     def set_frequency(self, freq_mhz, tx_freq_mhz=None):
         """Set RX (and optionally TX) frequency."""
@@ -3625,7 +3632,7 @@ class KV4PAudioSource(AudioSource):
         self.muted = False
         self.audio_boost = float(getattr(config, 'KV4P_AUDIO_BOOST', 1.0))
 
-        self._chunk_queue = collections.deque(maxlen=12)  # Buffer for timing jitter, drops oldest on overflow
+        self._chunk_queue = collections.deque(maxlen=16)  # Buffer for timing jitter, drops oldest on overflow
         self._sub_buffer = b''
         self._chunk_bytes = config.AUDIO_CHUNK_SIZE * config.AUDIO_CHANNELS * 2  # samples × channels × 16-bit
         # Streaming resampler: maintains a fractional sample position across
@@ -3760,7 +3767,7 @@ class KV4PAudioSource(AudioSource):
 
         # Adaptive PLL: adjust resample ratio every tick to keep buffer near target.
         # Proportional control: ratio nudge proportional to buffer error.
-        buf_target = self._chunk_bytes * 2  # 9600 bytes
+        buf_target = self._chunk_bytes * 3  # 14400 bytes — higher target for underrun margin
         buf_now = len(self._sub_buffer)
         buf_error = (buf_now - buf_target) / buf_target  # normalized: >0 = too full, <0 = too empty
         # Proportional gain: 0.002 per 100% error, capped
@@ -10446,8 +10453,28 @@ class WebConfigServer:
                                     result = {'ok': False, 'error': str(e)}
                             else:
                                 result = {'ok': False, 'error': f'Unknown command: {cmd}'}
+                        elif cmd == 'reconnect':
+                            # Reconnect even when kv4p_cat is None
+                            try:
+                                if gw.kv4p_cat:
+                                    try: gw.kv4p_cat.close()
+                                    except: pass
+                                kv4p_port = str(gw.config.KV4P_PORT)
+                                verbose = getattr(gw.config, 'VERBOSE_LOGGING', False)
+                                gw.kv4p_cat = KV4PCATClient(kv4p_port, gw.config, verbose=verbose)
+                                if gw.kv4p_audio_source:
+                                    gw.kv4p_cat.on_rx_audio = gw.kv4p_audio_source.on_opus_rx
+                                if gw.kv4p_cat.connect():
+                                    gw.kv4p_cat.start_polling()
+                                    result = {'ok': True, 'response': 'Reconnected'}
+                                else:
+                                    gw.kv4p_cat = None
+                                    result = {'ok': False, 'error': 'Reconnect failed — check USB'}
+                            except Exception as e:
+                                gw.kv4p_cat = None
+                                result = {'ok': False, 'error': f'Reconnect error: {e}'}
                         else:
-                            result = {'ok': False, 'error': 'KV4P not connected'}
+                            result = {'ok': False, 'error': 'KV4P not connected — try Reconnect'}
                     except Exception as e:
                         result = {'ok': False, 'error': str(e)}
                     try:
@@ -13199,26 +13226,26 @@ updateD75();
     <div>
       <span class="kv-label">Squelch (0-8):</span><br>
       <input id="kv-squelch" type="range" min="0" max="8" value="4" style="width:120px; accent-color:var(--t-accent);"
-        oninput="document.getElementById('kv-sq-val').textContent=this.value"
-        onchange="kvCmd('squelch',this.value)">
+        oninput="_ctrlEditUntil=Date.now()+3000;document.getElementById('kv-sq-val').textContent=this.value"
+        onchange="_ctrlEditUntil=Date.now()+3000;kvCmd('squelch',this.value)">
       <span id="kv-sq-val" class="kv-val">4</span>
     </div>
     <div>
       <span class="kv-label">Volume (0-500%):</span><br>
       <input id="kv-vol" type="range" min="0" max="500" value="100" style="width:120px; accent-color:var(--t-accent);"
-        oninput="document.getElementById('kv-vol-val').textContent=this.value+'%'"
-        onchange="kvCmd('vol',this.value)">
+        oninput="_ctrlEditUntil=Date.now()+3000;document.getElementById('kv-vol-val').textContent=this.value+'%'"
+        onchange="_ctrlEditUntil=Date.now()+3000;kvCmd('vol',this.value)">
       <span id="kv-vol-val" class="kv-val">100%</span>
     </div>
     <div>
       <span class="kv-label">Power:</span><br>
-      <select id="kv-power" class="kv-select" onchange="kvCmd('power',this.value)">
+      <select id="kv-power" class="kv-select" onfocus="_ctrlEditUntil=Date.now()+5000" onchange="_ctrlEditUntil=Date.now()+3000;kvCmd('power',this.value)">
         <option value="high">High</option><option value="low">Low</option>
       </select>
     </div>
     <div>
       <span class="kv-label">Bandwidth:</span><br>
-      <select id="kv-bw" class="kv-select" onchange="kvCmd('bandwidth',this.value)">
+      <select id="kv-bw" class="kv-select" onfocus="_ctrlEditUntil=Date.now()+5000" onchange="_ctrlEditUntil=Date.now()+3000;kvCmd('bandwidth',this.value)">
         <option value="wide">Wide (25kHz)</option><option value="narrow">Narrow (12.5kHz)</option>
       </select>
     </div>
