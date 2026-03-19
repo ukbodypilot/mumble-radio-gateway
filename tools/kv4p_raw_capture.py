@@ -42,14 +42,12 @@ try:
     print(f"Connecting to {PORT}...")
     ver = radio.open(handshake_timeout=10)
     print(f"Connected: fw v{ver.firmware_version}")
-    radio.tune(GroupConfig(tx_freq=146.520, rx_freq=146.520, squelch=0))
-    print(f"Tuned to 146.520 MHz, squelch OFF")
+    radio.tune(GroupConfig(tx_freq=146.520, rx_freq=146.520, squelch=2))
+    print(f"Tuned to 146.520 MHz, squelch=2")
     print(f"\n>>> TRANSMIT NOW — recording for {DURATION} seconds <<<\n")
     time.sleep(DURATION)
 except KeyboardInterrupt:
     pass
-finally:
-    radio.close()
 
 # Write raw decoded PCM to WAV (no resampling, no processing)
 pcm_data = b''
@@ -92,3 +90,4 @@ with open(OUT_INFO, 'w') as f:
 print(f"\nCaptured {len(frames)} frames in {frames[-1][0]:.1f}s ({len(frames)/frames[-1][0]:.1f} fps)")
 print(f"Raw WAV: {OUT_RAW} ({len(pcm_data)/96000:.1f}s)")
 print(f"Info: {OUT_INFO}")
+os._exit(0)  # Force exit — radio.close() hangs due to reader thread
