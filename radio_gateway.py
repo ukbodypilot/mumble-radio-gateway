@@ -3539,8 +3539,13 @@ class KV4PCATClient:
         if self._radio:
             self._radio.enable_smeter(enabled)
 
+    _rx_audio_count = 0
+
     def _on_rx_audio(self, opus_data):
         """Called by KV4PRadio reader thread with Opus RX audio."""
+        self._rx_audio_count += 1
+        if self._rx_audio_count <= 3 or self._rx_audio_count % 500 == 0:
+            print(f"\n[KV4P] _on_rx_audio #{self._rx_audio_count}: {len(opus_data)}B, callback={'set' if self.on_rx_audio else 'NONE'}", flush=True)
         if self.on_rx_audio:
             self.on_rx_audio(opus_data)
 
@@ -3620,10 +3625,18 @@ class KV4PAudioSource(AudioSource):
         self.muted = False
         self.audio_boost = float(getattr(config, 'KV4P_AUDIO_BOOST', 1.0))
 
-        self._chunk_queue = collections.deque(maxlen=6)
+        self._chunk_queue = collections.deque(maxlen=12)  # Buffer for timing jitter, drops oldest on overflow
         self._sub_buffer = b''
-        self._chunk_bytes = 2400  # 48kHz 16-bit mono, 25ms
-        self._max_sub_buffer = self._chunk_bytes * 4  # Drop stale data beyond this
+        self._chunk_bytes = config.AUDIO_CHUNK_SIZE * config.AUDIO_CHANNELS * 2  # samples × channels × 16-bit
+        # Streaming resampler: maintains a fractional sample position across
+        # the sub_buffer to produce exactly _chunk_bytes per tick at the mixer's
+        # sample rate. The ratio compensates for the ESP32's ~2% clock offset.
+        # Phase continuity across chunks prevents clicks/swimming artifacts.
+        self._resample_ratio = 1.132  # Measured: ESP32 sends at 28.3fps vs nominal 25fps
+        self._ratio_adjust_interval = 20   # Fine-tune every 20 ticks (1 second)
+        self._ratio_tick_count = 0
+        self._resample_pos = 0.0     # Fractional position in sub_buffer (in samples)
+        self._buf_max = self._chunk_bytes * 6  # Cap latency
         self._decoder = None
         self._encoder = None
         self._dc_remover = None    # DCOffsetRemover instance
@@ -3640,6 +3653,9 @@ class KV4PAudioSource(AudioSource):
             from kv4p.audio import DCOffsetRemover, VolumeRamp
             self._decoder = opuslib.Decoder(48000, 1)
             self._encoder = opuslib.Encoder(48000, 1, opuslib.APPLICATION_VOIP)
+            # Fast DC remover applied per-Opus-frame to remove inter-frame DC jumps
+            self._dc_remover_frame = DCOffsetRemover(decay_time=0.02, sample_rate=48000)
+            # Slower DC remover on mixer output for residual offset
             self._dc_remover = DCOffsetRemover(decay_time=0.25, sample_rate=48000)
             self._vol_ramp = VolumeRamp(alpha=0.05, threshold=0.7)
             self.server_connected = True
@@ -3654,13 +3670,21 @@ class KV4PAudioSource(AudioSource):
             return False
 
     def on_opus_rx(self, opus_data):
-        """Called by KV4PCATClient when Opus RX audio arrives from radio."""
+        """Called by KV4PCATClient when Opus RX audio arrives from radio.
+
+        Decodes Opus, then resamples from the ESP32's 2%-overclocked rate
+        down to exact 48kHz. Resampling here (per-frame) avoids phase
+        discontinuities at frame boundaries.
+        """
         if not self._decoder or not self.enabled:
             return
+        self._trace_rx_frames += 1
+        self._trace_rx_bytes += len(opus_data)
         try:
-            pcm = self._decoder.decode(opus_data, 1920)  # 40ms frame at 48kHz
+            pcm = self._decoder.decode(opus_data, 1920)  # 40ms frame → 3840 bytes
             if len(self._chunk_queue) >= self._chunk_queue.maxlen:
-                self._chunk_queue.popleft()  # Drop oldest on overflow
+                self._chunk_queue.popleft()
+                self._trace_queue_drops += 1
             self._chunk_queue.append(pcm)
         except Exception:
             pass  # Corrupt frame — skip
@@ -3690,26 +3714,105 @@ class KV4PAudioSource(AudioSource):
         except Exception:
             return False
 
+    # Instrumentation state
+    _inst_count = 0
+    _inst_returns = 0
+    _inst_nones = 0
+    _inst_trims = 0
+    _inst_t0 = 0
+    _inst_intervals = []
+    _inst_sub_sizes = []
+
+    # Per-tick trace state (read and reset each mixer tick when trace is active)
+    _trace_rx_frames = 0       # Opus frames received since last tick
+    _trace_rx_bytes = 0        # Opus bytes received since last tick
+    _trace_decode_errors = 0   # Opus decode failures since last tick
+    _trace_queue_drops = 0     # Frames dropped due to queue overflow
+    _trace_sub_buf_before = 0  # sub_buffer size at start of get_audio
+    _trace_sub_buf_after = 0   # sub_buffer size after get_audio read
+    _trace_returned_data = False  # Did get_audio return data this tick?
+    _trace_pcm_rms = 0.0      # RMS of returned audio chunk
+
     def get_audio(self, chunk_size):
         """Pull decoded PCM audio from the queue for the mixer."""
+        import time as _time
+        now = _time.monotonic()
+        self._inst_count += 1
+
+        # Track call interval
+        if self._inst_t0 > 0:
+            self._inst_intervals.append(now - self._inst_t0)
+        self._inst_t0 = now
+
         if not self.enabled or not self.server_connected:
+            self._trace_returned_data = False
             return None, False
 
         # Drain queue into sub-buffer
+        q_drained = 0
         while self._chunk_queue:
             self._sub_buffer += self._chunk_queue.popleft()
+            q_drained += 1
 
-        # Drop stale audio to prevent latency buildup
-        if len(self._sub_buffer) > self._max_sub_buffer:
-            self._sub_buffer = self._sub_buffer[-self._max_sub_buffer:]
+        self._trace_sub_buf_before = len(self._sub_buffer)
+        trimmed = 0
+        self._inst_sub_sizes.append(len(self._sub_buffer))
 
-        if len(self._sub_buffer) < self._chunk_bytes:
-            # Decay level display
+        # Adaptive PLL: adjust resample ratio every tick to keep buffer near target.
+        # Proportional control: ratio nudge proportional to buffer error.
+        buf_target = self._chunk_bytes * 2  # 9600 bytes
+        buf_now = len(self._sub_buffer)
+        buf_error = (buf_now - buf_target) / buf_target  # normalized: >0 = too full, <0 = too empty
+        # Proportional gain: 0.002 per 100% error, capped
+        adjustment = buf_error * 0.002
+        self._resample_ratio = max(0.95, min(1.25, self._resample_ratio + adjustment))
+
+        self._inst_returns += 1
+        if self._inst_count % 200 == 0:
+            self._print_inst("ok")
+
+        # Streaming resampler: consume input at ratio 1.02 (ESP32 2% overclock)
+        # using vectorized linear interpolation with phase continuity.
+        import numpy as np
+        n_input_samples = len(self._sub_buffer) // 2
+        out_samples_needed = self._chunk_bytes // 2  # 2400
+
+        # Need enough input samples to produce one output chunk
+        input_needed = int(self._resample_pos + out_samples_needed * self._resample_ratio) + 2
+        if n_input_samples < input_needed:
+            self._inst_nones += 1
+            self._trace_returned_data = False
+            self._trace_sub_buf_after = len(self._sub_buffer)
+            self._trace_pcm_rms = 0.0
             self.audio_level = self.audio_level * 0.9
             return None, False
 
-        pcm_data = self._sub_buffer[:self._chunk_bytes]
-        self._sub_buffer = self._sub_buffer[self._chunk_bytes:]
+        in_samples = np.frombuffer(self._sub_buffer, dtype=np.int16).astype(np.float32)
+
+        # Vectorized linear interpolation with fractional positions
+        positions = self._resample_pos + np.arange(out_samples_needed) * self._resample_ratio
+        indices = positions.astype(np.intp)
+        fracs = positions - indices
+        # Clamp to valid range
+        np.clip(indices, 0, n_input_samples - 2, out=indices)
+        out = in_samples[indices] * (1.0 - fracs) + in_samples[indices + 1] * fracs
+
+        # Consume the input samples we've read past
+        consumed_samples = int(positions[-1]) + 1
+        self._resample_pos = positions[-1] + self._resample_ratio - consumed_samples
+        self._sub_buffer = self._sub_buffer[consumed_samples * 2:]
+
+        # Cap buffer to bound latency
+        if len(self._sub_buffer) > self._buf_max:
+            excess = len(self._sub_buffer) - self._buf_max
+            excess = (excess + 1) & ~1
+            self._sub_buffer = self._sub_buffer[excess:]
+            self._resample_pos = 0.0
+            self._inst_trims += 1
+
+        self._trace_sub_buf_after = len(self._sub_buffer)
+        self._trace_returned_data = True
+        pcm_data = np.clip(out, -32768, 32767).astype(np.int16).tobytes()
 
         # Mute check
         if self.muted or (getattr(self.gateway, 'tx_muted', False) and getattr(self.gateway, 'rx_muted', False)):
@@ -3753,7 +3856,69 @@ class KV4PAudioSource(AudioSource):
         if hasattr(self.gateway, 'process_audio_for_kv4p'):
             pcm_data = self.gateway.process_audio_for_kv4p(pcm_data)
 
+        # Trace: compute RMS of final output
+        try:
+            import numpy as np
+            _arr = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
+            self._trace_pcm_rms = float(np.sqrt(np.mean(_arr * _arr))) if len(_arr) > 0 else 0.0
+        except Exception:
+            self._trace_pcm_rms = 0.0
+
+        # Recording hook: append PCM to file when active
+        if getattr(self, '_recording_file', None):
+            try:
+                self._recording_file.write(pcm_data)
+            except Exception:
+                pass
+
         return pcm_data, False
+
+    def get_trace_snapshot(self):
+        """Return trace state dict and reset per-tick counters."""
+        snap = {
+            'rx_frames': self._trace_rx_frames,
+            'rx_bytes': self._trace_rx_bytes,
+            'decode_errors': self._trace_decode_errors,
+            'queue_drops': self._trace_queue_drops,
+            'sub_buf_before': self._trace_sub_buf_before,
+            'sub_buf_after': self._trace_sub_buf_after,
+            'returned_data': self._trace_returned_data,
+            'pcm_rms': self._trace_pcm_rms,
+            'queue_len': len(self._chunk_queue),
+        }
+        # Reset per-tick counters
+        self._trace_rx_frames = 0
+        self._trace_rx_bytes = 0
+        self._trace_decode_errors = 0
+        self._trace_queue_drops = 0
+        return snap
+
+    def _print_inst(self, tag):
+        """Print audio pipeline instrumentation."""
+        total = self._inst_count
+        ret = self._inst_returns
+        none = self._inst_nones
+        trims = self._inst_trims
+        intervals = self._inst_intervals[-200:] if self._inst_intervals else []
+
+        avg_int = sum(intervals) / len(intervals) * 1000 if intervals else 0
+        min_int = min(intervals) * 1000 if intervals else 0
+        max_int = max(intervals) * 1000 if intervals else 0
+
+        sub_sizes = self._inst_sub_sizes[-200:] if self._inst_sub_sizes else []
+        avg_sub = sum(sub_sizes) / len(sub_sizes) if sub_sizes else 0
+
+        pct_data = (ret / total * 100) if total > 0 else 0
+        pct_none = (none / total * 100) if total > 0 else 0
+
+        print(f"\n[KV4P Audio] {tag} | calls={total} data={ret}({pct_data:.0f}%) none={none}({pct_none:.0f}%) trims={trims}"
+              f" | interval: avg={avg_int:.1f}ms min={min_int:.1f}ms max={max_int:.1f}ms"
+              f" | sub_buf: avg={avg_sub:.0f}B chunk={self._chunk_bytes}B"
+              f" | queue_max={self._chunk_queue.maxlen}", flush=True)
+
+        # Reset counters
+        self._inst_intervals = []
+        self._inst_sub_sizes = []
 
     def is_active(self):
         return self.enabled and not self.muted and self.server_connected
@@ -10187,6 +10352,82 @@ class WebConfigServer:
                                     result = {'ok': True, 'response': f'boost={pct}%'}
                                 except (ValueError, TypeError):
                                     result = {'ok': False, 'error': 'usage: vol 0-500 (percentage)'}
+                            elif cmd == 'testtone':
+                                # Toggle a continuous test tone into the audio source.
+                                # Runs in a background thread, feeding frames at real-time rate.
+                                import math as _math
+                                import struct
+                                src = gw.kv4p_audio_source
+                                if not src:
+                                    result = {'ok': False, 'error': 'KV4P audio source not initialized'}
+                                elif getattr(gw, '_kv4p_testtone_active', False):
+                                    # Stop existing tone
+                                    gw._kv4p_testtone_active = False
+                                    result = {'ok': True, 'response': 'Test tone stopped'}
+                                else:
+                                    # Start tone — generate frames matching mixer chunk size
+                                    try:
+                                        tone_freq = float(args) if args else 400.0
+                                    except (ValueError, TypeError):
+                                        tone_freq = 400.0
+                                    sr = gw.config.AUDIO_RATE
+                                    chunk_samples = gw.config.AUDIO_CHUNK_SIZE  # 2400 samples = 50ms
+                                    chunk_ms = chunk_samples / sr  # 0.05s
+                                    # Pre-generate one second of frames (20 frames at 50ms each)
+                                    tone_frames = []
+                                    for f_idx in range(20):
+                                        offset = f_idx * chunk_samples
+                                        tone_frames.append(struct.pack(f'<{chunk_samples}h', *[
+                                            int(_math.sin(2 * _math.pi * tone_freq * (offset + i) / sr) * 0.5 * 32767)
+                                            for i in range(chunk_samples)
+                                        ]))
+                                    import threading as _threading_mod
+                                    gw._kv4p_testtone_active = True
+                                    def _tone_loop():
+                                        idx = 0
+                                        t0 = time.monotonic()
+                                        while getattr(gw, '_kv4p_testtone_active', False):
+                                            # Clear any radio audio to prevent mixing
+                                            src._chunk_queue.clear()
+                                            src._sub_buffer = b''
+                                            # Feed tone directly into sub_buffer at exact chunk size
+                                            src._sub_buffer = tone_frames[idx % len(tone_frames)]
+                                            idx += 1
+                                            target = t0 + idx * chunk_ms
+                                            now = time.monotonic()
+                                            if target > now:
+                                                time.sleep(target - now)
+                                        gw._kv4p_testtone_active = False
+                                    _threading_mod.Thread(target=_tone_loop, daemon=True, name="KV4P-testtone").start()
+                                    result = {'ok': True, 'response': f'{tone_freq:.0f}Hz tone started — press again to stop'}
+                            elif cmd == 'record':
+                                # Record get_audio output to WAV for analysis
+                                import wave as _wave
+                                import os as _os
+                                _rec_src = gw.kv4p_audio_source
+                                wav_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'tools', 'kv4p_capture.wav')
+                                if getattr(_rec_src, '_recording_file', None):
+                                    # Stop recording, finalize WAV
+                                    _rec_src._recording_file.close()
+                                    raw_path = wav_path + '.raw'
+                                    raw_size = _os.path.getsize(raw_path)
+                                    with open(raw_path, 'rb') as rf:
+                                        raw_data = rf.read()
+                                    with _wave.open(wav_path, 'w') as wf:
+                                        wf.setnchannels(1)
+                                        wf.setsampwidth(2)
+                                        wf.setframerate(48000)
+                                        wf.writeframes(raw_data)
+                                    _os.remove(raw_path)
+                                    _rec_src._recording_file = None
+                                    dur = len(raw_data) / 96000.0
+                                    result = {'ok': True, 'response': f'Saved {dur:.1f}s to {wav_path}'}
+                                else:
+                                    # Start recording
+                                    _os.makedirs(_os.path.dirname(wav_path), exist_ok=True)
+                                    raw_path = wav_path + '.raw'
+                                    _rec_src._recording_file = open(raw_path, 'wb')
+                                    result = {'ok': True, 'response': 'Recording started — send record again to stop'}
                             elif cmd == 'reconnect':
                                 try:
                                     cat.close()
@@ -12901,6 +13142,9 @@ updateD75();
   <span style="flex:1;"></span>
   <span id="kv-feedback" style="font-family:monospace; font-size:0.85em; min-width:120px;"></span>
   <button class="rb rb-sm" onclick="kvCmd('ptt')" id="kv-ptt-btn">PTT</button>
+  <button class="rb rb-sm" onclick="kvCmd('testtone','400')" id="kv-tone-btn">Test 400Hz</button>
+  <button class="rb rb-sm" onclick="kvCmd('testtone','1000')">Test 1kHz</button>
+  <button class="rb rb-sm" onclick="kvCmd('testtone')">Stop Tone</button>
   <button class="rb rb-sm" onclick="kvCmd('reconnect')">Reconnect</button>
 </div>
 
@@ -16905,25 +17149,27 @@ class RadioGateway:
                     kv4p_port = str(self.config.KV4P_PORT)
                     verbose = getattr(self.config, 'VERBOSE_LOGGING', False)
                     print(f"Connecting to KV4P HT ({kv4p_port})...")
+                    # Create audio source FIRST so callback is ready before radio starts streaming
+                    try:
+                        self.kv4p_audio_source = KV4PAudioSource(self.config, self)
+                        if self.kv4p_audio_source.setup_audio():
+                            self.kv4p_audio_source.enabled = True
+                            self.kv4p_audio_source.duck = getattr(self.config, 'KV4P_AUDIO_DUCK', True)
+                            self.kv4p_audio_source.sdr_priority = int(getattr(self.config, 'KV4P_AUDIO_PRIORITY', 2))
+                        else:
+                            self.kv4p_audio_source = None
+                    except Exception as e:
+                        print(f"  ⚠ KV4P audio error: {e}")
+                        self.kv4p_audio_source = None
                     self.kv4p_cat = KV4PCATClient(kv4p_port, self.config, verbose=verbose)
+                    # Wire callback BEFORE connect so no frames are missed
+                    if self.kv4p_audio_source:
+                        self.kv4p_cat.on_rx_audio = self.kv4p_audio_source.on_opus_rx
                     if self.kv4p_cat.connect():
                         print(f"  Connected: fw v{self.kv4p_cat._firmware_version}, {self.kv4p_cat._rf_module}")
-                        # Set up audio source
-                        try:
-                            self.kv4p_audio_source = KV4PAudioSource(self.config, self)
-                            if self.kv4p_audio_source.setup_audio():
-                                self.kv4p_audio_source.enabled = True
-                                self.kv4p_audio_source.duck = getattr(self.config, 'KV4P_AUDIO_DUCK', True)
-                                self.kv4p_audio_source.sdr_priority = int(getattr(self.config, 'KV4P_AUDIO_PRIORITY', 2))
-                                # Wire KV4P RX audio to the audio source
-                                self.kv4p_cat.on_rx_audio = self.kv4p_audio_source.on_opus_rx
-                                self.mixer.add_source(self.kv4p_audio_source)
-                                print(f"  KV4P audio source added to mixer")
-                            else:
-                                self.kv4p_audio_source = None
-                        except Exception as e:
-                            print(f"  ⚠ KV4P audio error: {e}")
-                            self.kv4p_audio_source = None
+                        if self.kv4p_audio_source:
+                            self.mixer.add_source(self.kv4p_audio_source)
+                            print(f"  KV4P audio source added to mixer")
                         self.kv4p_cat.start_polling()
                         print(f"  Tuned to {self.kv4p_cat._frequency:.4f} MHz")
                     else:
@@ -18434,6 +18680,7 @@ class RadioGateway:
                     _aioc_sb_after = self.radio_source._sub_buffer_after if self.radio_source else -1
                     _aioc_cb_ovf = self.radio_source._cb_overflow_count if self.radio_source else 0
                     _aioc_cb_drop = self.radio_source._cb_drop_count if self.radio_source else 0
+                    _kv4p_snap = self.kv4p_audio_source.get_trace_snapshot() if self.kv4p_audio_source else {}
 
                     _trace.append((
                         _tick_start - self._audio_trace_t0,  # 0: time (s)
@@ -18471,6 +18718,16 @@ class RadioGateway:
                         _aioc_cb_ovf,                         # 31: AIOC cumulative callback overflow count
                         _aioc_cb_drop,                        # 32: AIOC cumulative callback queue drops
                         _out_disc,                            # 33: output-side sample discontinuity (mixer output)
+                        # === KV4P trace fields (34+) ===
+                        _kv4p_snap.get('rx_frames', 0),       # 34: KV4P Opus frames received this tick
+                        _kv4p_snap.get('rx_bytes', 0),        # 35: KV4P Opus bytes received this tick
+                        _kv4p_snap.get('queue_drops', 0),     # 36: KV4P queue overflow drops this tick
+                        _kv4p_snap.get('sub_buf_before', 0),  # 37: KV4P sub_buffer bytes before get_audio
+                        _kv4p_snap.get('sub_buf_after', 0),   # 38: KV4P sub_buffer bytes after get_audio
+                        _kv4p_snap.get('returned_data', False),  # 39: KV4P returned audio this tick?
+                        _kv4p_snap.get('pcm_rms', 0.0),      # 40: KV4P output PCM RMS
+                        _kv4p_snap.get('queue_len', 0),       # 41: KV4P queue length at snapshot
+                        _kv4p_snap.get('decode_errors', 0),   # 42: KV4P Opus decode errors this tick
                     ))
     
     def _find_darkice_pid(self):
@@ -20089,7 +20346,9 @@ class RadioGateway:
             SQ2, SSB2, SPREBUF, S2PREBUF, REBRO, SVMS, SVSENT, \
             SDR1_DISC, SDR1_SBA, SDR1_OVF, SDR1_DROP, \
             AIOC_DISC, AIOC_SBA, AIOC_OVF, AIOC_DROP, \
-            OUT_DISC = range(34)
+            OUT_DISC, \
+            KV4P_RXF, KV4P_RXB, KV4P_QDROP, KV4P_SBB, KV4P_SBA, \
+            KV4P_GOT, KV4P_RMS, KV4P_QLEN, KV4P_DECERR = range(43)
 
         with open(out_path, 'w') as f:
             dur = trace[-1][T] - trace[0][T] if len(trace) > 1 else 0
@@ -20454,6 +20713,7 @@ class RadioGateway:
                    f"{'outcome':>10} {'m_ms':>5} {'spk_q':>5} {'rms':>7} {'dlen':>5} "
                    f"{'sv_ms':>6} {'sv#':>3} "
                    f"{'s1_disc':>7} {'a_disc':>7} {'o_disc':>7} "
+                   f"{'kv_rxf':>6} {'kv_rxB':>6} {'kv_qd':>5} {'kv_sbb':>7} {'kv_sba':>7} {'kv_got':>6} {'kv_rms':>7} {'kv_q':>4} "
                    f"{'sources':>14} {'state':>14} {'rb':>4}\n")
             f.write(hdr)
             f.write('-' * len(hdr) + '\n')
@@ -20483,6 +20743,15 @@ class RadioGateway:
                 a_disc = r[AIOC_DISC] if _has_enh else 0.0
                 a_sba = r[AIOC_SBA] if _has_enh else -1
                 o_disc = r[OUT_DISC] if (len(r) > OUT_DISC) else 0.0
+                _kv = len(r) > KV4P_RXF
+                kv_rxf = r[KV4P_RXF] if _kv else 0
+                kv_rxB = r[KV4P_RXB] if _kv else 0
+                kv_qd = r[KV4P_QDROP] if _kv else 0
+                kv_sbb = r[KV4P_SBB] if _kv else 0
+                kv_sba = r[KV4P_SBA] if _kv else 0
+                kv_got = r[KV4P_GOT] if _kv else False
+                kv_rms = r[KV4P_RMS] if _kv else 0.0
+                kv_q = r[KV4P_QLEN] if _kv else 0
                 f.write(f"{i:>5}{flag} {r[T]:7.3f} {r[DT]:6.1f} "
                         f"{r[SQ]:4} {r[SSB]:6} {s1_sba:6} {sq2:4} {ssb2:6} {pb1}{pb2} "
                         f"{r[AQ]:6} {r[ASB]:7} {a_sba:6} {'audio' if r[MGOT] else 'NONE':>5} "
@@ -20490,7 +20759,50 @@ class RadioGateway:
                         f"{r[OUTCOME]:>10} {r[MUMMS]:5.1f} {r[SPKQD]:5} {r[DRMS]:7.0f} "
                         f"{r[DLEN]:5} {sv_ms:6.1f} {sv_n:3} "
                         f"{s1_disc:7.0f} {a_disc:7.0f} {o_disc:7.0f} "
+                        f"{kv_rxf:6} {kv_rxB:6} {kv_qd:5} {kv_sbb:7} {kv_sba:7} {'yes' if kv_got else 'no':>6} {kv_rms:7.0f} {kv_q:4} "
                         f"{r[MSRC]:>14} {st} {rb:>4}\n")
+
+            # ── KV4P summary ──
+            kv4p_ticks = [r for r in trace if len(r) > KV4P_RXF]
+            if kv4p_ticks:
+                kv_got = sum(1 for r in kv4p_ticks if r[KV4P_GOT])
+                kv_none = len(kv4p_ticks) - kv_got
+                kv_drops = sum(r[KV4P_QDROP] for r in kv4p_ticks)
+                kv_rxf_total = sum(r[KV4P_RXF] for r in kv4p_ticks)
+                kv_rxB_total = sum(r[KV4P_RXB] for r in kv4p_ticks)
+                kv_sbb_vals = [r[KV4P_SBB] for r in kv4p_ticks]
+                kv_rms_vals = [r[KV4P_RMS] for r in kv4p_ticks if r[KV4P_GOT]]
+                kv_decerr = sum(r[KV4P_DECERR] for r in kv4p_ticks)
+
+                f.write(f"\n{'='*90}\n")
+                f.write("KV4P AUDIO\n")
+                f.write(f"{'='*90}\n")
+                f.write(f"  ticks={len(kv4p_ticks)}  data={kv_got} ({kv_got*100//max(1,len(kv4p_ticks))}%)  "
+                        f"underrun={kv_none} ({kv_none*100//max(1,len(kv4p_ticks))}%)\n")
+                f.write(f"  opus_frames={kv_rxf_total}  opus_bytes={kv_rxB_total}  "
+                        f"queue_drops={kv_drops}  decode_errors={kv_decerr}\n")
+                if kv_sbb_vals:
+                    f.write(f"  sub_buf: mean={statistics.mean(kv_sbb_vals):.0f}B  "
+                            f"min={min(kv_sbb_vals)}B  max={max(kv_sbb_vals)}B\n")
+                if kv_rms_vals:
+                    f.write(f"  rms: mean={statistics.mean(kv_rms_vals):.0f}  "
+                            f"min={min(kv_rms_vals):.0f}  max={max(kv_rms_vals):.0f}\n")
+                # Identify gap patterns: consecutive underruns
+                gaps = []
+                gap_len = 0
+                for r in kv4p_ticks:
+                    if not r[KV4P_GOT]:
+                        gap_len += 1
+                    else:
+                        if gap_len > 0:
+                            gaps.append(gap_len)
+                        gap_len = 0
+                if gap_len > 0:
+                    gaps.append(gap_len)
+                if gaps:
+                    f.write(f"  gap_runs={len(gaps)}  gap_ticks: mean={statistics.mean(gaps):.1f}  "
+                            f"max={max(gaps)}  total={sum(gaps)}\n")
+                f.write("\n")
 
             # ── Events (key presses / mode changes) ──
             events = list(self._trace_events)
