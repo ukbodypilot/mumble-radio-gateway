@@ -133,7 +133,7 @@ class Config:
             'MUMBLE_BITRATE': 72000,
             'MUMBLE_VBR': True,
             'MUMBLE_JITTER_BUFFER': 10,
-            'TX_RADIO': 'th9800',              # 'th9800' or 'd75' — which radio for playback/TTS/announce TX
+            'TX_RADIO': 'th9800',              # 'th9800', 'd75', or 'kv4p' — which radio for playback/TTS/announce TX
             'PTT_METHOD': 'aioc',              # 'aioc', 'relay', or 'software'
             'PTT_RELAY_DEVICE': '/dev/relay_ptt',
             'PTT_RELAY_BAUD': 9600,
@@ -377,6 +377,34 @@ class Config:
             'D75_PROC_ENABLE_NOTCH': False,
             'D75_PROC_NOTCH_FREQ': 1000,
             'D75_PROC_NOTCH_Q': 30.0,
+            # KV4P HT Radio (USB serial, Opus audio)
+            'ENABLE_KV4P': False,
+            'KV4P_PORT': '/dev/ttyUSB0',       # Serial port for KV4P HT
+            'KV4P_FREQ': 146.520,               # Default frequency (MHz)
+            'KV4P_TX_FREQ': 0.0,                # TX frequency (0 = same as RX)
+            'KV4P_SQUELCH': 4,                   # Squelch level 0-8
+            'KV4P_CTCSS_TX': 0,                  # TX CTCSS tone code (0 = none)
+            'KV4P_CTCSS_RX': 0,                  # RX CTCSS tone code (0 = none)
+            'KV4P_BANDWIDTH': 1,                  # 0 = narrow (12.5 kHz), 1 = wide (25 kHz)
+            'KV4P_HIGH_POWER': True,             # True = high power, False = low power
+            'KV4P_AUDIO_DUCK': True,             # Duck KV4P when higher priority source active
+            'KV4P_AUDIO_PRIORITY': 2,            # Priority for ducking
+            'KV4P_AUDIO_DISPLAY_GAIN': 1.0,      # Display level sensitivity
+            'KV4P_AUDIO_BOOST': 1.0,             # RX volume multiplier
+            'KV4P_RECONNECT_INTERVAL': 5.0,      # Seconds between reconnect attempts
+            'KV4P_SMETER': True,                  # Enable S-meter reporting
+            # KV4P audio processing
+            'KV4P_PROC_ENABLE_NOISE_GATE': False,
+            'KV4P_PROC_NOISE_GATE_THRESHOLD': -40,
+            'KV4P_PROC_NOISE_GATE_ATTACK': 0.01,
+            'KV4P_PROC_NOISE_GATE_RELEASE': 0.1,
+            'KV4P_PROC_ENABLE_HPF': True,
+            'KV4P_PROC_HPF_CUTOFF': 300,
+            'KV4P_PROC_ENABLE_LPF': False,
+            'KV4P_PROC_LPF_CUTOFF': 3000,
+            'KV4P_PROC_ENABLE_NOTCH': False,
+            'KV4P_PROC_NOTCH_FREQ': 1000,
+            'KV4P_PROC_NOTCH_Q': 30.0,
             # Dynamic DNS (No-IP compatible)
             # Web Configuration UI
             'ENABLE_WEB_CONFIG': True,
@@ -1708,7 +1736,7 @@ class FilePlaybackSource(AudioSource):
         through front panel). Restored to USB Controlled after so CAT resumes."""
         _ptt_method = str(getattr(self.gateway.config, 'PTT_METHOD', 'aioc')).lower()
         _tx_radio = str(getattr(self.gateway.config, 'TX_RADIO', 'th9800')).lower()
-        if _ptt_method == 'software' or _tx_radio == 'd75':
+        if _ptt_method == 'software' or _tx_radio in ('d75', 'kv4p'):
             return
         _saved = getattr(self.gateway, '_playback_rts_saved', None)
         if _saved is not None:
@@ -3337,6 +3365,429 @@ class D75AudioSource(AudioSource):
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2.0)
         self._sub_buffer = b''
+
+
+# ── KV4P HT Radio (USB Serial + Opus Audio) ──────────────────────────────
+
+class KV4PCATClient:
+    """Control interface for KV4P HT radio over USB serial.
+
+    Wraps the kv4p Python driver to provide a CAT-like interface matching the
+    gateway's D75CATClient pattern: connect, poll state, send commands.
+    """
+
+    def __init__(self, port, config, verbose=False):
+        self._port = port
+        self._config = config
+        self._verbose = verbose
+        self._radio = None          # KV4PRadio instance
+        self._connected = False
+        self._serial_connected = False
+        self._lock = threading.Lock()
+        self._stop = False
+        self._poll_thread = None
+
+        # Radio state
+        self._frequency = 146.520
+        self._tx_frequency = 146.520
+        self._squelch = 4
+        self._bandwidth = 1
+        self._ctcss_tx = 0
+        self._ctcss_rx = 0
+        self._high_power = True
+        self._signal = 0          # S-meter raw value (0-255)
+        self._transmitting = False
+        self._firmware_version = 0
+        self._rf_module = 'VHF'
+        self._smeter_enabled = False
+
+        # Callbacks (set by KV4PAudioSource)
+        self.on_rx_audio = None   # Opus frames
+        self.on_smeter = None
+
+    def connect(self):
+        """Open serial connection to KV4P HT."""
+        try:
+            sys.path.insert(0, os.path.expanduser('~/kv4p-ht-python'))
+            from kv4p.radio import KV4PRadio
+            from kv4p.protocol import GroupConfig, VersionInfo
+            self._radio = KV4PRadio(self._port)
+
+            # Wire up callbacks before open
+            self._radio.on_rx_audio = self._on_rx_audio
+            self._radio.on_smeter = self._on_smeter
+            self._radio.on_phys_ptt = self._on_phys_ptt
+
+            ver = self._radio.open(handshake_timeout=10)
+            self._connected = True
+            self._serial_connected = True
+
+            if ver:
+                self._firmware_version = ver.firmware_version
+                self._rf_module = ver.rf_module_type.name if hasattr(ver.rf_module_type, 'name') else 'VHF'
+
+            # Apply initial config
+            freq = float(getattr(self._config, 'KV4P_FREQ', 146.520))
+            tx_freq = float(getattr(self._config, 'KV4P_TX_FREQ', 0))
+            if tx_freq <= 0:
+                tx_freq = freq
+            self._frequency = freq
+            self._tx_frequency = tx_freq
+            self._squelch = int(getattr(self._config, 'KV4P_SQUELCH', 4))
+            self._bandwidth = int(getattr(self._config, 'KV4P_BANDWIDTH', 1))
+            self._ctcss_tx = int(getattr(self._config, 'KV4P_CTCSS_TX', 0))
+            self._ctcss_rx = int(getattr(self._config, 'KV4P_CTCSS_RX', 0))
+            self._high_power = bool(getattr(self._config, 'KV4P_HIGH_POWER', True))
+
+            self._apply_group()
+            time.sleep(0.3)
+            # Enable DRA818 hardware filters after SA818 is initialized by GROUP
+            from kv4p.protocol import FiltersConfig
+            self._radio.set_filters(FiltersConfig(pre_emphasis=True, highpass=True, lowpass=True))
+            self._radio.set_power(self._high_power)
+
+            if getattr(self._config, 'KV4P_SMETER', True):
+                self._radio.enable_smeter(True)
+                self._smeter_enabled = True
+
+            return True
+        except Exception as e:
+            print(f"  KV4P connect error: {e}")
+            self._connected = False
+            self._serial_connected = False
+            return False
+
+    def close(self):
+        """Stop and disconnect."""
+        self._stop = True
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=2.0)
+        if self._radio:
+            try:
+                self._radio.close()
+            except Exception:
+                pass
+        self._connected = False
+        self._serial_connected = False
+
+    def _apply_group(self):
+        """Send current frequency/tone/squelch config to radio."""
+        if not self._radio:
+            return
+        sys.path.insert(0, os.path.expanduser('~/kv4p-ht-python'))
+        from kv4p.protocol import GroupConfig
+        group = GroupConfig(
+            tx_freq=self._tx_frequency,
+            rx_freq=self._frequency,
+            bandwidth=self._bandwidth,
+            ctcss_tx=self._ctcss_tx,
+            squelch=self._squelch,
+            ctcss_rx=self._ctcss_rx,
+        )
+        self._radio.tune(group)
+
+    def set_frequency(self, freq_mhz, tx_freq_mhz=None):
+        """Set RX (and optionally TX) frequency."""
+        self._frequency = freq_mhz
+        self._tx_frequency = tx_freq_mhz if tx_freq_mhz else freq_mhz
+        self._apply_group()
+
+    def set_squelch(self, level):
+        """Set squelch level (0-8)."""
+        self._squelch = max(0, min(8, int(level)))
+        self._apply_group()
+
+    def set_ctcss(self, tx=None, rx=None):
+        """Set CTCSS tone codes."""
+        if tx is not None:
+            self._ctcss_tx = int(tx)
+        if rx is not None:
+            self._ctcss_rx = int(rx)
+        self._apply_group()
+
+    def set_bandwidth(self, wide=True):
+        """Set bandwidth: True = wide (25kHz), False = narrow (12.5kHz)."""
+        self._bandwidth = 1 if wide else 0
+        self._apply_group()
+
+    def set_power(self, high=True):
+        """Set TX power level."""
+        self._high_power = high
+        if self._radio:
+            self._radio.set_power(high)
+
+    def ptt_on(self):
+        """Key the transmitter."""
+        if self._radio:
+            self._radio.ptt_on()
+            self._transmitting = True
+
+    def ptt_off(self):
+        """Unkey the transmitter."""
+        if self._radio:
+            self._radio.ptt_off()
+            self._transmitting = False
+
+    def send_tx_audio(self, opus_data):
+        """Send an Opus-encoded TX audio frame."""
+        if self._radio:
+            self._radio.send_audio(opus_data)
+
+    def enable_smeter(self, enabled=True):
+        """Enable/disable S-meter reporting."""
+        self._smeter_enabled = enabled
+        if self._radio:
+            self._radio.enable_smeter(enabled)
+
+    def _on_rx_audio(self, opus_data):
+        """Called by KV4PRadio reader thread with Opus RX audio."""
+        if self.on_rx_audio:
+            self.on_rx_audio(opus_data)
+
+    def _on_smeter(self, rssi):
+        """Called by KV4PRadio reader thread with RSSI value."""
+        self._signal = rssi
+        if self.on_smeter:
+            self.on_smeter(rssi)
+
+    def _on_phys_ptt(self, pressed):
+        """Called when physical PTT button on KV4P is pressed/released."""
+        if self._verbose:
+            print(f"\n[KV4P] Physical PTT {'pressed' if pressed else 'released'}")
+
+    def start_polling(self):
+        """Start background health-check thread."""
+        self._stop = False
+        self._poll_thread = threading.Thread(target=self._poll_func, daemon=True, name="KV4P-poll")
+        self._poll_thread.start()
+
+    def _poll_func(self):
+        """Background thread: monitor connection health, auto-reconnect."""
+        while not self._stop:
+            for _ in range(20):  # 2 second sleep in 0.1s increments
+                if self._stop:
+                    return
+                time.sleep(0.1)
+            # Check if radio is still responding
+            if self._radio and not self._radio._running:
+                print("\n[KV4P] Radio connection lost, attempting reconnect...")
+                self._connected = False
+                self._serial_connected = False
+                try:
+                    self._radio.close()
+                except Exception:
+                    pass
+                time.sleep(float(getattr(self._config, 'KV4P_RECONNECT_INTERVAL', 5.0)))
+                self.connect()
+
+    def get_radio_state(self):
+        """Return state dict for web UI."""
+        return {
+            'connected': self._connected,
+            'serial_connected': self._serial_connected,
+            'frequency': f'{self._frequency:.6f}',
+            'tx_frequency': f'{self._tx_frequency:.6f}',
+            'squelch': self._squelch,
+            'bandwidth': self._bandwidth,
+            'ctcss_tx': self._ctcss_tx,
+            'ctcss_rx': self._ctcss_rx,
+            'high_power': self._high_power,
+            'signal': self._signal,
+            'transmitting': self._transmitting,
+            'firmware_version': self._firmware_version,
+            'rf_module': self._rf_module,
+            'smeter_enabled': self._smeter_enabled,
+        }
+
+
+class KV4PAudioSource(AudioSource):
+    """Audio source for KV4P HT radio — receives Opus-encoded RX audio,
+    decodes to 48kHz 16-bit mono PCM for the gateway mixer.
+
+    Also handles TX audio: encodes 48kHz PCM to Opus and sends via serial.
+    """
+
+    def __init__(self, config, gateway):
+        super().__init__("KV4P", config)
+        self.gateway = gateway
+        self.priority = 2
+        self.sdr_priority = int(getattr(config, 'KV4P_AUDIO_PRIORITY', 2))
+        self.ptt_control = False
+        self.volume = 1.0
+        self.mix_ratio = 1.0
+        self.duck = getattr(config, 'KV4P_AUDIO_DUCK', True)
+        self.enabled = True
+        self.muted = False
+        self.audio_boost = float(getattr(config, 'KV4P_AUDIO_BOOST', 1.0))
+
+        self._chunk_queue = collections.deque(maxlen=32)
+        self._sub_buffer = b''
+        self._chunk_bytes = 2400  # 48kHz 16-bit mono, 25ms
+        self._decoder = None
+        self._encoder = None
+        self._dc_remover = None    # DCOffsetRemover instance
+        self._vol_ramp = None      # VolumeRamp instance
+        self._was_active = False   # Track audio activity for ramp
+        self.server_connected = False
+        self.audio_level = 0
+
+    def setup_audio(self):
+        """Initialize Opus codec, DSP chain, and wire up to KV4P CAT client."""
+        try:
+            sys.path.insert(0, os.path.expanduser('~/kv4p-ht-python'))
+            import opuslib
+            from kv4p.audio import DCOffsetRemover, VolumeRamp
+            self._decoder = opuslib.Decoder(48000, 1)
+            self._encoder = opuslib.Encoder(48000, 1, opuslib.APPLICATION_VOIP)
+            self._dc_remover = DCOffsetRemover(decay_time=0.25, sample_rate=48000)
+            self._vol_ramp = VolumeRamp(alpha=0.05, threshold=0.7)
+            self.server_connected = True
+            print("  KV4P Opus codec + DSP initialized (DC removal, volume ramp)")
+            return True
+        except ImportError:
+            print("  ⚠ opuslib not installed — KV4P audio disabled")
+            print("    Install with: pip install opuslib --break-system-packages")
+            return False
+        except Exception as e:
+            print(f"  ⚠ KV4P audio init error: {e}")
+            return False
+
+    def on_opus_rx(self, opus_data):
+        """Called by KV4PCATClient when Opus RX audio arrives from radio."""
+        if not self._decoder or not self.enabled:
+            return
+        try:
+            pcm = self._decoder.decode(opus_data, 1920)  # 40ms frame at 48kHz
+            if len(self._chunk_queue) >= self._chunk_queue.maxlen:
+                self._chunk_queue.popleft()  # Drop oldest on overflow
+            self._chunk_queue.append(pcm)
+        except Exception:
+            pass  # Corrupt frame — skip
+
+    def write_tx_audio(self, pcm_48k):
+        """Encode 48kHz PCM and send to radio for transmission.
+
+        Args:
+            pcm_48k: bytes of signed 16-bit LE mono PCM at 48kHz
+        Returns:
+            True if sent, False on error
+        """
+        if not self._encoder:
+            return False
+        cat = getattr(self.gateway, 'kv4p_cat', None)
+        if not cat:
+            return False
+        try:
+            # Opus needs exactly 1920 samples (40ms at 48kHz) = 3840 bytes
+            frame_bytes = 1920 * 2
+            buf = pcm_48k
+            while len(buf) >= frame_bytes:
+                opus_frame = self._encoder.encode(buf[:frame_bytes], 1920)
+                cat.send_tx_audio(opus_frame)
+                buf = buf[frame_bytes:]
+            return True
+        except Exception:
+            return False
+
+    def get_audio(self, chunk_size):
+        """Pull decoded PCM audio from the queue for the mixer."""
+        if not self.enabled or not self.server_connected:
+            return None, False
+
+        # Drain queue into sub-buffer
+        while self._chunk_queue:
+            self._sub_buffer += self._chunk_queue.popleft()
+
+        if len(self._sub_buffer) < self._chunk_bytes:
+            # Decay level display
+            self.audio_level = self.audio_level * 0.9
+            return None, False
+
+        pcm_data = self._sub_buffer[:self._chunk_bytes]
+        self._sub_buffer = self._sub_buffer[self._chunk_bytes:]
+
+        # Mute check
+        if self.muted or (getattr(self.gateway, 'tx_muted', False) and getattr(self.gateway, 'rx_muted', False)):
+            self.audio_level = self.audio_level * 0.7
+            if self._vol_ramp and self._was_active:
+                self._vol_ramp.stop()
+                self._was_active = False
+            return None, False
+
+        # DC offset removal (matches ESP32 firmware pipeline)
+        if self._dc_remover:
+            pcm_data = self._dc_remover.process(pcm_data)
+
+        # Volume ramp (prevents click/pop when audio starts)
+        if self._vol_ramp:
+            if not self._was_active:
+                self._vol_ramp.start()
+                self._was_active = True
+            pcm_data = self._vol_ramp.process(pcm_data)
+
+        # Level metering
+        try:
+            import numpy as np
+            arr = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
+            rms = np.sqrt(np.mean(arr ** 2)) if len(arr) > 0 else 0.0
+            if rms > 0:
+                import math
+                db = 20 * math.log10(rms / 32767.0)
+                level = max(0, min(100, (db + 60) * (100 / 60)))
+            else:
+                level = 0
+            display_gain = float(getattr(self.config, 'KV4P_AUDIO_DISPLAY_GAIN', 1.0))
+            level = min(100, level * display_gain)
+            if level > self.audio_level:
+                self.audio_level = level
+            else:
+                self.audio_level = self.audio_level * 0.7 + level * 0.3
+        except Exception:
+            pass
+
+        # Audio boost
+        if self.audio_boost != 1.0:
+            try:
+                import numpy as np
+                arr = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
+                pcm_data = np.clip(arr * self.audio_boost, -32768, 32767).astype(np.int16).tobytes()
+            except Exception:
+                pass
+
+        # Audio processing chain
+        if hasattr(self.gateway, 'process_audio_for_kv4p'):
+            pcm_data = self.gateway.process_audio_for_kv4p(pcm_data)
+
+        return pcm_data, False
+
+    def is_active(self):
+        return self.enabled and not self.muted and self.server_connected
+
+    def get_status(self):
+        if not self.enabled:
+            return "KV4P: Disabled"
+        if self.muted:
+            return "KV4P: Muted"
+        if self.server_connected:
+            return f"KV4P: Connected ({int(self.audio_level)}%)"
+        return "KV4P: Disconnected"
+
+    def reset(self):
+        """Reset audio state."""
+        self._sub_buffer = b''
+        self._chunk_queue.clear()
+        self.audio_level = 0
+        self._was_active = False
+        if self._dc_remover:
+            self._dc_remover.reset()
+        if self._vol_ramp:
+            self._vol_ramp.stop()
+
+    def cleanup(self):
+        self._sub_buffer = b''
+        self._chunk_queue.clear()
+        self.server_connected = False
+        self._was_active = False
 
 
 class NetworkAnnouncementSource(AudioSource):
@@ -8244,6 +8695,22 @@ class WebConfigServer:
         'D75_PROC_LPF_CUTOFF': 'Hz',
         'D75_PROC_NOTCH_FREQ': 'Hz',
         'D75_PROC_NOTCH_Q': 'quality factor (higher = narrower)',
+        # KV4P HT
+        'KV4P_PORT': 'serial port (e.g. /dev/ttyUSB0)',
+        'KV4P_FREQ': 'MHz',
+        'KV4P_TX_FREQ': 'MHz (0 = same as RX)',
+        'KV4P_SQUELCH': '0-8',
+        'KV4P_CTCSS_TX': 'tone code (0 = none)',
+        'KV4P_CTCSS_RX': 'tone code (0 = none)',
+        'KV4P_BANDWIDTH': '0 = narrow, 1 = wide',
+        'KV4P_RECONNECT_INTERVAL': 'seconds',
+        'KV4P_PROC_NOISE_GATE_THRESHOLD': 'dBFS (-60 to 0)',
+        'KV4P_PROC_NOISE_GATE_ATTACK': 'seconds',
+        'KV4P_PROC_NOISE_GATE_RELEASE': 'seconds',
+        'KV4P_PROC_HPF_CUTOFF': 'Hz',
+        'KV4P_PROC_LPF_CUTOFF': 'Hz',
+        'KV4P_PROC_NOTCH_FREQ': 'Hz',
+        'KV4P_PROC_NOTCH_Q': 'quality factor (higher = narrower)',
         # SDR 1
         'SDR_DEVICE_NAME': 'PipeWire sink or ALSA device (e.g. hw:6,1)',
         'SDR_MIX_RATIO': 'multiplier (when ducking disabled)',
@@ -8376,7 +8843,7 @@ class WebConfigServer:
 
     # Keys with a fixed set of valid values — rendered as dropdowns
     _SELECT_OPTIONS = {
-        'TX_RADIO': ['th9800', 'd75'],
+        'TX_RADIO': ['th9800', 'd75', 'kv4p'],
         'PTT_METHOD': ['aioc', 'relay', 'software'],
         'REMOTE_AUDIO_ROLE': ['disabled', 'server', 'client'],
         'RELAY_CHARGER_CONTROL': ['gpio', 'serial'],
@@ -8554,6 +9021,18 @@ class WebConfigServer:
             'D75_PROC_ENABLE_NOTCH', 'D75_PROC_NOTCH_FREQ', 'D75_PROC_NOTCH_Q',
             'D75_PROC_ENABLE_NOISE_GATE', 'D75_PROC_NOISE_GATE_THRESHOLD',
             'D75_PROC_NOISE_GATE_ATTACK', 'D75_PROC_NOISE_GATE_RELEASE',
+        ]),
+        ('kv4p', 'KV4P HT Radio', [
+            'ENABLE_KV4P', 'KV4P_PORT', 'KV4P_FREQ', 'KV4P_TX_FREQ',
+            'KV4P_SQUELCH', 'KV4P_CTCSS_TX', 'KV4P_CTCSS_RX', 'KV4P_BANDWIDTH',
+            'KV4P_HIGH_POWER', 'KV4P_SMETER',
+            'KV4P_AUDIO_DUCK', 'KV4P_AUDIO_PRIORITY',
+            'KV4P_AUDIO_DISPLAY_GAIN', 'KV4P_AUDIO_BOOST', 'KV4P_RECONNECT_INTERVAL',
+            'KV4P_PROC_ENABLE_HPF', 'KV4P_PROC_HPF_CUTOFF',
+            'KV4P_PROC_ENABLE_LPF', 'KV4P_PROC_LPF_CUTOFF',
+            'KV4P_PROC_ENABLE_NOTCH', 'KV4P_PROC_NOTCH_FREQ', 'KV4P_PROC_NOTCH_Q',
+            'KV4P_PROC_ENABLE_NOISE_GATE', 'KV4P_PROC_NOISE_GATE_THRESHOLD',
+            'KV4P_PROC_NOISE_GATE_ATTACK', 'KV4P_PROC_NOISE_GATE_RELEASE',
         ]),
         ('web', 'Web Configuration', [
             'ENABLE_WEB_CONFIG', 'WEB_CONFIG_PORT', 'WEB_CONFIG_PASSWORD',
@@ -8809,6 +9288,34 @@ class WebConfigServer:
                             data['audio_connected'] = parent.gateway.d75_audio_source.server_connected
                             data['audio_level'] = parent.gateway.d75_audio_source.audio_level
                             data['audio_boost'] = int(parent.gateway.d75_audio_source.audio_boost * 100)
+                        else:
+                            data['audio_connected'] = False
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-cache')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(data).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                elif self.path == '/kv4p':
+                    # KV4P HT radio control page
+                    html = parent._generate_kv4p_page()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    self.wfile.write(html.encode('utf-8'))
+                elif self.path == '/kv4pstatus':
+                    # KV4P status JSON endpoint
+                    data = {'connected': False, 'kv4p_enabled': False}
+                    if parent.gateway:
+                        data['kv4p_enabled'] = getattr(parent.gateway.config, 'ENABLE_KV4P', False)
+                        if parent.gateway.kv4p_cat:
+                            data.update(parent.gateway.kv4p_cat.get_radio_state())
+                        if parent.gateway.kv4p_audio_source:
+                            data['audio_connected'] = parent.gateway.kv4p_audio_source.server_connected
+                            data['audio_level'] = parent.gateway.kv4p_audio_source.audio_level
+                            data['audio_boost'] = int(parent.gateway.kv4p_audio_source.audio_boost * 100)
                         else:
                             data['audio_connected'] = False
                     try:
@@ -9617,6 +10124,104 @@ class WebConfigServer:
                     except BrokenPipeError:
                         pass
                     return
+                elif self.path == '/kv4pcmd':
+                    # KV4P HT command endpoint
+                    length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(length).decode('utf-8')
+                    result = {'ok': False}
+                    try:
+                        data = json_mod.loads(body)
+                        cmd = data.get('cmd', '')
+                        args = data.get('args', '')
+                        gw = parent.gateway
+                        if gw and gw.kv4p_cat:
+                            cat = gw.kv4p_cat
+                            if cmd == 'freq':
+                                try:
+                                    freq = float(args)
+                                    cat.set_frequency(freq)
+                                    result = {'ok': True, 'response': f'Tuned to {freq:.4f} MHz'}
+                                except (ValueError, TypeError):
+                                    result = {'ok': False, 'error': 'Invalid frequency'}
+                            elif cmd == 'txfreq':
+                                try:
+                                    tx_freq = float(args)
+                                    cat.set_frequency(cat._frequency, tx_freq)
+                                    result = {'ok': True, 'response': f'TX freq set to {tx_freq:.4f} MHz'}
+                                except (ValueError, TypeError):
+                                    result = {'ok': False, 'error': 'Invalid frequency'}
+                            elif cmd == 'squelch':
+                                try:
+                                    cat.set_squelch(int(args))
+                                    result = {'ok': True, 'response': f'Squelch set to {cat._squelch}'}
+                                except (ValueError, TypeError):
+                                    result = {'ok': False, 'error': 'Invalid squelch level'}
+                            elif cmd == 'ctcss':
+                                try:
+                                    parts = str(args).split()
+                                    tx = int(parts[0]) if len(parts) > 0 else 0
+                                    rx = int(parts[1]) if len(parts) > 1 else tx
+                                    cat.set_ctcss(tx=tx, rx=rx)
+                                    result = {'ok': True, 'response': f'CTCSS TX={cat._ctcss_tx} RX={cat._ctcss_rx}'}
+                                except (ValueError, TypeError, IndexError):
+                                    result = {'ok': False, 'error': 'usage: ctcss <tx_code> [rx_code]'}
+                            elif cmd == 'bandwidth':
+                                wide = str(args).lower() in ('1', 'wide', 'true')
+                                cat.set_bandwidth(wide)
+                                result = {'ok': True, 'response': f'Bandwidth: {"wide" if wide else "narrow"}'}
+                            elif cmd == 'power':
+                                high = str(args).lower() in ('1', 'high', 'true', 'h')
+                                cat.set_power(high)
+                                result = {'ok': True, 'response': f'Power: {"high" if high else "low"}'}
+                            elif cmd == 'ptt':
+                                if cat._transmitting:
+                                    cat.ptt_off()
+                                else:
+                                    cat.ptt_on()
+                                result = {'ok': True, 'response': f'PTT {"ON" if cat._transmitting else "OFF"}'}
+                            elif cmd == 'smeter':
+                                enabled = str(args).lower() in ('1', 'true', 'on', '')
+                                cat.enable_smeter(enabled)
+                                result = {'ok': True, 'response': f'S-meter {"enabled" if enabled else "disabled"}'}
+                            elif cmd == 'vol':
+                                try:
+                                    pct = int(args)
+                                    pct = max(0, min(500, pct))
+                                    if gw.kv4p_audio_source:
+                                        gw.kv4p_audio_source.audio_boost = pct / 100.0
+                                    result = {'ok': True, 'response': f'boost={pct}%'}
+                                except (ValueError, TypeError):
+                                    result = {'ok': False, 'error': 'usage: vol 0-500 (percentage)'}
+                            elif cmd == 'reconnect':
+                                try:
+                                    cat.close()
+                                    kv4p_port = str(gw.config.KV4P_PORT)
+                                    verbose = getattr(gw.config, 'VERBOSE_LOGGING', False)
+                                    gw.kv4p_cat = KV4PCATClient(kv4p_port, gw.config, verbose=verbose)
+                                    if gw.kv4p_cat.connect():
+                                        if gw.kv4p_audio_source:
+                                            gw.kv4p_cat.on_rx_audio = gw.kv4p_audio_source.on_opus_rx
+                                        gw.kv4p_cat.start_polling()
+                                        result = {'ok': True, 'response': 'Reconnected'}
+                                    else:
+                                        gw.kv4p_cat = None
+                                        result = {'ok': False, 'error': 'Reconnect failed'}
+                                except Exception as e:
+                                    result = {'ok': False, 'error': str(e)}
+                            else:
+                                result = {'ok': False, 'error': f'Unknown command: {cmd}'}
+                        else:
+                            result = {'ok': False, 'error': 'KV4P not connected'}
+                    except Exception as e:
+                        result = {'ok': False, 'error': str(e)}
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(result).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                    return
                 elif self.path == '/catcmd':
                     # CAT radio command endpoint
                     length = int(self.headers.get('Content-Length', 0))
@@ -10368,6 +10973,8 @@ class WebConfigServer:
             links.append('<a href="/radio">TH-9800</a>')
         if getattr(self.config, 'ENABLE_D75', False):
             links.append('<a href="/d75">TH-D75</a>')
+        if getattr(self.config, 'ENABLE_KV4P', False):
+            links.append('<a href="/kv4p">KV4P HT</a>')
         return ' | '.join(links)
 
     def _radio_nav_buttons(self):
@@ -10377,6 +10984,8 @@ class WebConfigServer:
             html += '    <a href="/radio" class="rb rb-sm" style="text-decoration:none;">TH-9800</a>\n'
         if getattr(self.config, 'ENABLE_D75', False):
             html += '    <a href="/d75" class="rb rb-sm" style="text-decoration:none;">D75</a>\n'
+        if getattr(self.config, 'ENABLE_KV4P', False):
+            html += '    <a href="/kv4p" class="rb rb-sm" style="text-decoration:none;">KV4P</a>\n'
         return html
 
     def _generate_shell_page(self):
@@ -10386,8 +10995,10 @@ class WebConfigServer:
         _title_prefix = f'{gw_name} - ' if gw_name else ''
         has_radio = getattr(self.config, 'ENABLE_CAT_CONTROL', False) or getattr(self.config, 'ENABLE_TH9800', False)
         has_d75 = getattr(self.config, 'ENABLE_D75', False)
+        has_kv4p = getattr(self.config, 'ENABLE_KV4P', False)
         _radio_link = '<a href="/radio" target="content" onclick="setActive(this)">TH-9800</a>' if has_radio else '<a class="nav-disabled">TH-9800</a>'
         _d75_link = '<a href="/d75" target="content" onclick="setActive(this)">TH-D75</a>' if has_d75 else '<a class="nav-disabled">TH-D75</a>'
+        _kv4p_link = '<a href="/kv4p" target="content" onclick="setActive(this)">KV4P</a>' if has_kv4p else ''
         return f'''<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
@@ -10437,7 +11048,7 @@ class WebConfigServer:
 </head><body>
 <div id="shell-bar">
   <div class="shell-nav">
-    <a href="/dashboard" target="content" onclick="setActive(this)">Dashboard</a>{_radio_link}{_d75_link}<a href="/sdr" target="content" onclick="setActive(this)">SDR</a><a href="/recordings" target="content" onclick="setActive(this)">Recordings</a><a href="/config" target="content" onclick="setActive(this)">Config</a><a href="/logs" target="content" onclick="setActive(this)">Logs</a>
+    <a href="/dashboard" target="content" onclick="setActive(this)">Dashboard</a>{_radio_link}{_d75_link}{_kv4p_link}<a href="/sdr" target="content" onclick="setActive(this)">SDR</a><a href="/recordings" target="content" onclick="setActive(this)">Recordings</a><a href="/config" target="content" onclick="setActive(this)">Config</a><a href="/logs" target="content" onclick="setActive(this)">Logs</a>
   </div>
   <div class="shell-pcm">
     <button id="play-btn" onclick="toggleStream()" style="min-width:62px; text-align:center;">&#9654; MP3</button>
@@ -12247,6 +12858,240 @@ updateD75();
 </script>
 '''
         return self._wrap_html('D75 Control', body)
+
+    def _generate_kv4p_page(self):
+        """Build the KV4P HT radio control HTML page."""
+        body = '''
+<h1 style="font-size:1.8em">KV4P HT Control</h1>
+<p><a href="/">Dashboard</a> | ''' + self._radio_nav_links() + ''' | <a href="/sdr">SDR</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
+
+<style>
+.rb { padding:8px 14px; border:1px solid var(--t-btn-border); border-radius:4px; background:var(--t-btn);
+  color:#e0e0e0; cursor:pointer; font-family:monospace; font-size:0.95em; min-width:44px; }
+.rb:hover { background:var(--t-btn-hover); border-color:var(--t-accent); }
+.rb:active { background:var(--t-border); }
+.rb-sm { font-size:0.8em; padding:5px 10px; }
+.rb-active { background:var(--t-accent) !important; color:#fff !important; border-color:var(--t-accent) !important; }
+.kv-panel { background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; margin-bottom:14px; }
+.kv-freq { color:#2ecc71; font-size:2.4em; text-align:center; letter-spacing:2px; margin:8px 0; font-family:monospace; }
+.kv-label { color:#888; font-size:0.85em; }
+.kv-val { color:#e0e0e0; font-family:monospace; }
+.kv-row { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.kv-meter { flex:1; background:var(--t-btn); border:1px solid var(--t-btn-border); border-radius:3px; height:18px; position:relative; overflow:hidden; }
+.kv-meter-fill { height:100%; transition:width 0.3s; }
+.kv-meter-text { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); font-size:0.75em; color:#fff; font-weight:bold; }
+.kv-input { background:var(--t-btn); border:1px solid var(--t-btn-border); color:#2ecc71; padding:6px 10px;
+  border-radius:4px; font-family:monospace; font-size:1.1em; width:140px; text-align:center; }
+.kv-select { background:var(--t-btn); border:1px solid var(--t-btn-border); color:#e0e0e0; padding:5px 8px;
+  border-radius:3px; font-family:monospace; font-size:0.9em; }
+</style>
+
+<div id="kv-offline" style="display:none;" class="kv-panel">
+  <span style="color:#e74c3c; font-weight:bold;">KV4P HT Not Connected</span>
+  <span id="kv-status-detail" style="color:#f39c12; font-size:0.9em; margin-left:10px;"></span>
+  <button class="rb rb-sm" onclick="kvCmd('reconnect')" style="margin-left:10px;">Reconnect</button>
+</div>
+
+<div id="kv-panel" style="display:none;">
+
+<!-- Status bar -->
+<div class="kv-panel" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+  <span class="kv-label">FW:</span> <span id="kv-fw" class="kv-val">—</span>
+  <span style="color:#333;">|</span>
+  <span class="kv-label">Module:</span> <span id="kv-module" class="kv-val">—</span>
+  <span style="color:#333;">|</span>
+  <span class="kv-label">Audio:</span> <span id="kv-audio-status" class="kv-val">—</span>
+  <span style="flex:1;"></span>
+  <span id="kv-tx-badge" style="display:none; background:#c0392b; color:#fff; padding:2px 8px; border-radius:3px; font-weight:bold;">TX</span>
+  <span style="flex:1;"></span>
+  <span id="kv-feedback" style="font-family:monospace; font-size:0.85em; min-width:120px;"></span>
+  <button class="rb rb-sm" onclick="kvCmd('ptt')" id="kv-ptt-btn">PTT</button>
+  <button class="rb rb-sm" onclick="kvCmd('reconnect')">Reconnect</button>
+</div>
+
+<!-- Frequency display -->
+<div class="kv-panel">
+  <div class="kv-row" style="justify-content:center;">
+    <span class="kv-label">RX</span>
+    <span id="kv-rx-freq" class="kv-freq">—</span>
+    <span class="kv-label">MHz</span>
+  </div>
+  <div id="kv-tx-freq-row" class="kv-row" style="justify-content:center; display:none;">
+    <span class="kv-label">TX</span>
+    <span id="kv-tx-freq" style="color:#e67e22; font-size:1.6em; font-family:monospace;">—</span>
+    <span class="kv-label">MHz</span>
+  </div>
+
+  <!-- S-meter -->
+  <div class="kv-row" style="margin-top:10px;">
+    <span class="kv-label" style="min-width:55px;">S-meter</span>
+    <div class="kv-meter">
+      <div id="kv-meter-fill" class="kv-meter-fill" style="width:0%; background:linear-gradient(90deg,#27ae60,#2ecc71,#f1c40f,#e74c3c);"></div>
+      <div id="kv-meter-text" class="kv-meter-text">S0</div>
+    </div>
+  </div>
+
+  <!-- Audio level -->
+  <div class="kv-row">
+    <span class="kv-label" style="min-width:55px;">Audio</span>
+    <div class="kv-meter">
+      <div id="kv-audio-fill" class="kv-meter-fill" style="width:0%; background:var(--t-accent);"></div>
+      <div id="kv-audio-text" class="kv-meter-text">0%</div>
+    </div>
+  </div>
+</div>
+
+<!-- Controls -->
+<div class="kv-panel">
+  <div class="kv-row" style="flex-wrap:wrap; gap:12px;">
+    <div>
+      <span class="kv-label">Frequency (MHz):</span><br>
+      <input id="kv-freq-input" class="kv-input" type="text" placeholder="146.520" onfocus="_ctrlEditUntil=Date.now()+5000">
+      <button class="rb rb-sm" onclick="kvCmd('freq',document.getElementById('kv-freq-input').value)">Set</button>
+    </div>
+    <div>
+      <span class="kv-label">TX Freq (0=same):</span><br>
+      <input id="kv-txfreq-input" class="kv-input" type="text" placeholder="0" onfocus="_ctrlEditUntil=Date.now()+5000">
+      <button class="rb rb-sm" onclick="kvCmd('txfreq',document.getElementById('kv-txfreq-input').value)">Set</button>
+    </div>
+  </div>
+
+  <div class="kv-row" style="margin-top:10px; flex-wrap:wrap; gap:12px;">
+    <div>
+      <span class="kv-label">Squelch (0-8):</span><br>
+      <input id="kv-squelch" type="range" min="0" max="8" value="4" style="width:120px; accent-color:var(--t-accent);"
+        oninput="document.getElementById('kv-sq-val').textContent=this.value"
+        onchange="kvCmd('squelch',this.value)">
+      <span id="kv-sq-val" class="kv-val">4</span>
+    </div>
+    <div>
+      <span class="kv-label">Volume (0-500%):</span><br>
+      <input id="kv-vol" type="range" min="0" max="500" value="100" style="width:120px; accent-color:var(--t-accent);"
+        oninput="document.getElementById('kv-vol-val').textContent=this.value+'%'"
+        onchange="kvCmd('vol',this.value)">
+      <span id="kv-vol-val" class="kv-val">100%</span>
+    </div>
+    <div>
+      <span class="kv-label">Power:</span><br>
+      <select id="kv-power" class="kv-select" onchange="kvCmd('power',this.value)">
+        <option value="high">High</option><option value="low">Low</option>
+      </select>
+    </div>
+    <div>
+      <span class="kv-label">Bandwidth:</span><br>
+      <select id="kv-bw" class="kv-select" onchange="kvCmd('bandwidth',this.value)">
+        <option value="wide">Wide (25kHz)</option><option value="narrow">Narrow (12.5kHz)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="kv-row" style="margin-top:10px; flex-wrap:wrap; gap:12px;">
+    <div>
+      <span class="kv-label">CTCSS TX:</span><br>
+      <input id="kv-ctcss-tx" class="kv-input" type="text" value="0" style="width:60px;" onfocus="_ctrlEditUntil=Date.now()+5000">
+    </div>
+    <div>
+      <span class="kv-label">CTCSS RX:</span><br>
+      <input id="kv-ctcss-rx" class="kv-input" type="text" value="0" style="width:60px;" onfocus="_ctrlEditUntil=Date.now()+5000">
+    </div>
+    <button class="rb rb-sm" onclick="kvCmd('ctcss',document.getElementById('kv-ctcss-tx').value+' '+document.getElementById('kv-ctcss-rx').value)" style="align-self:flex-end;">Set CTCSS</button>
+  </div>
+</div>
+
+</div><!-- end kv-panel -->
+
+<script>
+var _ctrlEditUntil = 0;
+function kvCmd(cmd, args) {
+  var body = {cmd: cmd};
+  if (args !== undefined) body.args = String(args);
+  fetch('/kv4pcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+    .then(function(r){return r.json()})
+    .then(function(d){
+      var fb = document.getElementById('kv-feedback');
+      if (d.ok) {
+        fb.style.color = '#2ecc71';
+        fb.textContent = d.response || 'OK';
+      } else {
+        fb.style.color = '#e74c3c';
+        fb.textContent = d.error || 'Error';
+      }
+      setTimeout(function(){ fb.textContent = ''; }, 4000);
+    });
+}
+
+function kvPoll() {
+  fetch('/kv4pstatus').then(function(r){return r.json()}).then(function(d) {
+    var offline = document.getElementById('kv-offline');
+    var panel = document.getElementById('kv-panel');
+
+    if (!d.kv4p_enabled) {
+      offline.style.display = 'block';
+      panel.style.display = 'none';
+      document.getElementById('kv-status-detail').textContent = 'KV4P disabled in config';
+      return;
+    }
+    if (!d.connected) {
+      offline.style.display = 'block';
+      panel.style.display = 'none';
+      document.getElementById('kv-status-detail').textContent = 'Not connected — check USB';
+      return;
+    }
+
+    offline.style.display = 'none';
+    panel.style.display = 'block';
+
+    // Status bar
+    document.getElementById('kv-fw').textContent = 'v' + (d.firmware_version || '?');
+    document.getElementById('kv-module').textContent = d.rf_module || '?';
+    document.getElementById('kv-audio-status').textContent = d.audio_connected ? 'Connected' : 'No codec';
+    document.getElementById('kv-tx-badge').style.display = d.transmitting ? 'inline' : 'none';
+
+    // Frequency
+    var rxf = d.frequency || '0.000000';
+    document.getElementById('kv-rx-freq').textContent = parseFloat(rxf).toFixed(4);
+
+    var txf = d.tx_frequency || rxf;
+    if (txf !== rxf) {
+      document.getElementById('kv-tx-freq-row').style.display = 'flex';
+      document.getElementById('kv-tx-freq').textContent = parseFloat(txf).toFixed(4);
+    } else {
+      document.getElementById('kv-tx-freq-row').style.display = 'none';
+    }
+
+    // S-meter: raw 0-255 → S0-S9
+    var raw = d.signal || 0;
+    var s = Math.round(raw * 9 / 255);
+    var pct = Math.min(100, Math.round(raw * 100 / 255));
+    document.getElementById('kv-meter-fill').style.width = pct + '%';
+    document.getElementById('kv-meter-text').textContent = 'S' + s + ' (' + raw + ')';
+
+    // Audio level
+    var aLvl = Math.round(d.audio_level || 0);
+    document.getElementById('kv-audio-fill').style.width = Math.min(100, aLvl) + '%';
+    document.getElementById('kv-audio-text').textContent = aLvl + '%';
+
+    // Update controls only if user is not editing
+    if (Date.now() > _ctrlEditUntil) {
+      document.getElementById('kv-squelch').value = d.squelch || 4;
+      document.getElementById('kv-sq-val').textContent = d.squelch || 4;
+      document.getElementById('kv-power').value = d.high_power ? 'high' : 'low';
+      document.getElementById('kv-bw').value = (d.bandwidth === 0) ? 'narrow' : 'wide';
+      document.getElementById('kv-ctcss-tx').value = d.ctcss_tx || 0;
+      document.getElementById('kv-ctcss-rx').value = d.ctcss_rx || 0;
+      if (d.audio_boost !== undefined) {
+        document.getElementById('kv-vol').value = d.audio_boost;
+        document.getElementById('kv-vol-val').textContent = d.audio_boost + '%';
+      }
+    }
+  }).catch(function(){});
+}
+
+setInterval(kvPoll, 1500);
+kvPoll();
+</script>
+'''
+        return self._wrap_html('KV4P Control', body)
 
     def _generate_sdr_page(self):
         """Build the SDR control HTML page."""
@@ -14640,6 +15485,12 @@ class RadioGateway:
         self.d75_audio_source = None  # D75AudioSource instance
         self.d75_muted = False        # D75 audio mute toggle
 
+        # KV4P HT Radio
+        self.kv4p_cat = None           # KV4PCATClient instance
+        self.kv4p_audio_source = None  # KV4PAudioSource instance
+        self.kv4p_muted = False        # KV4P audio mute toggle
+        self.kv4p_processor = AudioProcessor("kv4p", config)
+
         # Mumble Server instances (local mumble-server/murmurd)
         self.mumble_server_1 = None  # MumbleServerManager instance
         self.mumble_server_2 = None  # MumbleServerManager instance
@@ -14899,6 +15750,26 @@ class RadioGateway:
         self._sync_d75_processor()
         return self.d75_processor.process(pcm_data)
 
+    def _sync_kv4p_processor(self):
+        """Sync KV4P-specific config flags into the KV4P AudioProcessor instance."""
+        p = self.kv4p_processor
+        p.enable_noise_gate = getattr(self.config, 'KV4P_PROC_ENABLE_NOISE_GATE', False)
+        p.gate_threshold = getattr(self.config, 'KV4P_PROC_NOISE_GATE_THRESHOLD', -40)
+        p.gate_attack = getattr(self.config, 'KV4P_PROC_NOISE_GATE_ATTACK', 0.01)
+        p.gate_release = getattr(self.config, 'KV4P_PROC_NOISE_GATE_RELEASE', 0.1)
+        p.enable_hpf = getattr(self.config, 'KV4P_PROC_ENABLE_HPF', True)
+        p.hpf_cutoff = getattr(self.config, 'KV4P_PROC_HPF_CUTOFF', 300)
+        p.enable_lpf = getattr(self.config, 'KV4P_PROC_ENABLE_LPF', False)
+        p.lpf_cutoff = getattr(self.config, 'KV4P_PROC_LPF_CUTOFF', 3000)
+        p.enable_notch = getattr(self.config, 'KV4P_PROC_ENABLE_NOTCH', False)
+        p.notch_freq = getattr(self.config, 'KV4P_PROC_NOTCH_FREQ', 1000)
+        p.notch_q = getattr(self.config, 'KV4P_PROC_NOTCH_Q', 30.0)
+
+    def process_audio_for_kv4p(self, pcm_data):
+        """Apply KV4P-specific audio processing chain."""
+        self._sync_kv4p_processor()
+        return self.kv4p_processor.process(pcm_data)
+
     def process_audio_for_mumble(self, pcm_data):
         """Apply all enabled audio processing to clean up radio audio before sending to Mumble.
         Now delegates to the radio AudioProcessor instance.
@@ -15059,6 +15930,8 @@ class RadioGateway:
         tx_radio = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
         if tx_radio == 'd75':
             self._ptt_d75(state_on)
+        elif tx_radio == 'kv4p':
+            self._ptt_kv4p(state_on)
         else:
             method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
             if method == 'relay':
@@ -15182,6 +16055,29 @@ class RadioGateway:
                 print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (D75 CAT)")
         except Exception as e:
             print(f"\n[PTT] D75 !ptt error: {e}")
+            self.notify(f"PTT failed: {e}")
+
+    _kv4p_ptt_on = False  # Track KV4P PTT state
+
+    def _ptt_kv4p(self, state_on):
+        """PTT via KV4P HT serial — direct ptt_on/ptt_off."""
+        cat = getattr(self, 'kv4p_cat', None)
+        if not cat:
+            if state_on:
+                self.notify("PTT failed: KV4P not connected")
+            return
+        if state_on == self._kv4p_ptt_on:
+            return
+        try:
+            if state_on:
+                cat.ptt_on()
+            else:
+                cat.ptt_off()
+            self._kv4p_ptt_on = state_on
+            if self.config.VERBOSE_LOGGING:
+                print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (KV4P)")
+        except Exception as e:
+            print(f"\n[PTT] KV4P ptt error: {e}")
             self.notify(f"PTT failed: {e}")
 
     def sound_received_handler(self, user, soundchunk):
@@ -16007,6 +16903,40 @@ class RadioGateway:
                 except Exception as e:
                     print(f"  D75 CAT error: {e}")
                     self.d75_cat = None
+
+            # Initialize KV4P HT Radio
+            if getattr(self.config, 'ENABLE_KV4P', False):
+                try:
+                    kv4p_port = str(self.config.KV4P_PORT)
+                    verbose = getattr(self.config, 'VERBOSE_LOGGING', False)
+                    print(f"Connecting to KV4P HT ({kv4p_port})...")
+                    self.kv4p_cat = KV4PCATClient(kv4p_port, self.config, verbose=verbose)
+                    if self.kv4p_cat.connect():
+                        print(f"  Connected: fw v{self.kv4p_cat._firmware_version}, {self.kv4p_cat._rf_module}")
+                        # Set up audio source
+                        try:
+                            self.kv4p_audio_source = KV4PAudioSource(self.config, self)
+                            if self.kv4p_audio_source.setup_audio():
+                                self.kv4p_audio_source.enabled = True
+                                self.kv4p_audio_source.duck = getattr(self.config, 'KV4P_AUDIO_DUCK', True)
+                                self.kv4p_audio_source.sdr_priority = int(getattr(self.config, 'KV4P_AUDIO_PRIORITY', 2))
+                                # Wire KV4P RX audio to the audio source
+                                self.kv4p_cat.on_rx_audio = self.kv4p_audio_source.on_opus_rx
+                                self.mixer.add_source(self.kv4p_audio_source)
+                                print(f"  KV4P audio source added to mixer")
+                            else:
+                                self.kv4p_audio_source = None
+                        except Exception as e:
+                            print(f"  ⚠ KV4P audio error: {e}")
+                            self.kv4p_audio_source = None
+                        self.kv4p_cat.start_polling()
+                        print(f"  Tuned to {self.kv4p_cat._frequency:.4f} MHz")
+                    else:
+                        print("  Failed to connect to KV4P HT")
+                        self.kv4p_cat = None
+                except Exception as e:
+                    print(f"  KV4P error: {e}")
+                    self.kv4p_cat = None
 
             # Initialize Mumble Server instances (local mumble-server/murmurd)
             if getattr(self.config, 'ENABLE_MUMBLE_SERVER_1', False):
@@ -17239,7 +18169,8 @@ class RadioGateway:
                         _ptt_wrote = False
                         _tx_radio_cfg = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
                         _use_d75_tx = (_tx_radio_cfg == 'd75' and self.d75_audio_source)
-                        if (_use_d75_tx or self.output_stream) and not self.tx_muted:
+                        _use_kv4p_tx = (_tx_radio_cfg == 'kv4p' and self.kv4p_audio_source)
+                        if (_use_d75_tx or _use_kv4p_tx or self.output_stream) and not self.tx_muted:
                             try:
                                 # Suppress audio while the PTT relay is settling.
                                 # announcement_delay_active is set in the same iteration
@@ -17251,6 +18182,8 @@ class RadioGateway:
                                     pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
                                 if _use_d75_tx:
                                     self.d75_audio_source.write_tx_audio(pcm)
+                                elif _use_kv4p_tx:
+                                    self.kv4p_audio_source.write_tx_audio(pcm)
                                 else:
                                     try:
                                         self.output_stream.write(pcm, exception_on_overflow=False)
