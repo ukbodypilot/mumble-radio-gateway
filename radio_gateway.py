@@ -3710,13 +3710,32 @@ class KV4PAudioSource(AudioSource):
         if not cat:
             return False
         try:
-            # Opus needs exactly 1920 samples (40ms at 48kHz) = 3840 bytes
+            # Opus needs exactly 1920 samples (40ms at 48kHz) = 3840 bytes.
+            # Accumulate across calls: the 960-byte remainder from each 4800-byte
+            # mixer chunk is carried into the next call rather than discarded,
+            # otherwise 20% of TX audio is silently dropped every tick.
             frame_bytes = 1920 * 2
-            buf = pcm_48k
+            self._tx_buf = getattr(self, '_tx_buf', b'') + pcm_48k
+            buf = self._tx_buf
+            # Trace: RMS of full input including carry-over
+            try:
+                import numpy as np
+                _arr = np.frombuffer(pcm_48k, dtype=np.int16).astype(np.float32)
+                self._trace_tx_input_rms = float(np.sqrt(np.mean(_arr * _arr))) if len(_arr) > 0 else 0.0
+            except Exception:
+                pass
+            frames_sent = 0
             while len(buf) >= frame_bytes:
-                opus_frame = self._encoder.encode(buf[:frame_bytes], 1920)
-                cat.send_tx_audio(opus_frame)
+                try:
+                    opus_frame = self._encoder.encode(buf[:frame_bytes], 1920)
+                    cat.send_tx_audio(opus_frame)
+                    frames_sent += 1
+                except Exception:
+                    self._trace_tx_errors += 1
                 buf = buf[frame_bytes:]
+            self._tx_buf = buf  # carry remainder into next call
+            self._trace_tx_frames += frames_sent
+            self._trace_tx_dropped += len(buf)  # bytes not yet sent this tick
             return True
         except Exception:
             return False
@@ -3739,6 +3758,11 @@ class KV4PAudioSource(AudioSource):
     _trace_sub_buf_after = 0   # sub_buffer size after get_audio read
     _trace_returned_data = False  # Did get_audio return data this tick?
     _trace_pcm_rms = 0.0      # RMS of returned audio chunk
+    # TX-side trace
+    _trace_tx_frames = 0      # Opus frames encoded and sent to radio this tick
+    _trace_tx_dropped = 0     # PCM bytes in carry buffer at end of write_tx_audio (not dropped, carried to next tick)
+    _trace_tx_input_rms = 0.0 # RMS of PCM fed into encoder this tick
+    _trace_tx_errors = 0      # Opus encoder exceptions this tick
 
     def get_audio(self, chunk_size):
         """Pull decoded PCM audio from the queue for the mixer."""
@@ -3892,12 +3916,20 @@ class KV4PAudioSource(AudioSource):
             'returned_data': self._trace_returned_data,
             'pcm_rms': self._trace_pcm_rms,
             'queue_len': len(self._chunk_queue),
+            'tx_frames': self._trace_tx_frames,
+            'tx_dropped': self._trace_tx_dropped,
+            'tx_input_rms': self._trace_tx_input_rms,
+            'tx_errors': self._trace_tx_errors,
         }
         # Reset per-tick counters
         self._trace_rx_frames = 0
         self._trace_rx_bytes = 0
         self._trace_decode_errors = 0
         self._trace_queue_drops = 0
+        self._trace_tx_frames = 0
+        self._trace_tx_dropped = 0
+        self._trace_tx_input_rms = 0.0
+        self._trace_tx_errors = 0
         return snap
 
     def _print_inst(self, tag):
@@ -10325,13 +10357,30 @@ class WebConfigServer:
                                     result = {'ok': False, 'error': 'Invalid squelch level'}
                             elif cmd == 'ctcss':
                                 try:
+                                    # DRA818V codes 1-38 (0=none), no 69.3 Hz
+                                    _ctcss_hz = ["67.0","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
+                                        "91.5","94.8","97.4","100.0","103.5","107.2","110.9","114.8","118.8","123.0",
+                                        "127.3","131.8","136.5","141.3","146.2","151.4","156.7","162.2","167.9",
+                                        "173.8","179.9","186.2","192.8","203.5","210.7","218.1","225.7","233.6","241.8","250.3"]
+                                    def _hz_to_code(s):
+                                        s = str(s).strip()
+                                        if s == '0' or s.lower() in ('none', ''):
+                                            return 0
+                                        try:
+                                            # Try as Hz string first (e.g. "103.5")
+                                            idx = _ctcss_hz.index(s)
+                                            return idx + 1  # 1-based code
+                                        except ValueError:
+                                            pass
+                                        # Try as raw integer code
+                                        return int(float(s))
                                     parts = str(args).split()
-                                    tx = int(parts[0]) if len(parts) > 0 else 0
-                                    rx = int(parts[1]) if len(parts) > 1 else tx
+                                    tx = _hz_to_code(parts[0]) if len(parts) > 0 else 0
+                                    rx = _hz_to_code(parts[1]) if len(parts) > 1 else tx
                                     cat.set_ctcss(tx=tx, rx=rx)
                                     result = {'ok': True, 'response': f'CTCSS TX={cat._ctcss_tx} RX={cat._ctcss_rx}'}
                                 except (ValueError, TypeError, IndexError):
-                                    result = {'ok': False, 'error': 'usage: ctcss <tx_code> [rx_code]'}
+                                    result = {'ok': False, 'error': 'Invalid CTCSS value'}
                             elif cmd == 'bandwidth':
                                 wide = str(args).lower() in ('1', 'wide', 'true')
                                 cat.set_bandwidth(wide)
@@ -13124,6 +13173,11 @@ updateD75();
 
     def _generate_kv4p_page(self):
         """Build the KV4P HT radio control HTML page."""
+        # DRA818V CTCSS table: 38 tones, codes 1-38 (0=none). No 69.3 Hz.
+        ctcss_tones = ["67.0","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
+            "91.5","94.8","97.4","100.0","103.5","107.2","110.9","114.8","118.8","123.0",
+            "127.3","131.8","136.5","141.3","146.2","151.4","156.7","162.2","167.9",
+            "173.8","179.9","186.2","192.8","203.5","210.7","218.1","225.7","233.6","241.8","250.3"]
         body = '''
 <h1 style="font-size:1.8em">KV4P HT Control</h1>
 <p><a href="/">Dashboard</a> | ''' + self._radio_nav_links() + ''' | <a href="/sdr">SDR</a> | <a href="/config">Config</a> | <a href="/logs">Logs</a></p>
@@ -13254,11 +13308,17 @@ updateD75();
   <div class="kv-row" style="margin-top:10px; flex-wrap:wrap; gap:12px;">
     <div>
       <span class="kv-label">CTCSS TX:</span><br>
-      <input id="kv-ctcss-tx" class="kv-input" type="text" value="0" style="width:60px;" onfocus="_ctrlEditUntil=Date.now()+5000">
+      <select id="kv-ctcss-tx" class="kv-input" onfocus="_ctrlEditUntil=Date.now()+30000">
+        <option value="0">None</option>
+        ''' + ''.join(f'<option value="{t}">{t} Hz</option>' for t in ctcss_tones) + '''
+      </select>
     </div>
     <div>
       <span class="kv-label">CTCSS RX:</span><br>
-      <input id="kv-ctcss-rx" class="kv-input" type="text" value="0" style="width:60px;" onfocus="_ctrlEditUntil=Date.now()+5000">
+      <select id="kv-ctcss-rx" class="kv-input" onfocus="_ctrlEditUntil=Date.now()+30000">
+        <option value="0">None</option>
+        ''' + ''.join(f'<option value="{t}">{t} Hz</option>' for t in ctcss_tones) + '''
+      </select>
     </div>
     <button class="rb rb-sm" onclick="kvCmd('ctcss',document.getElementById('kv-ctcss-tx').value+' '+document.getElementById('kv-ctcss-rx').value)" style="align-self:flex-end;">Set CTCSS</button>
   </div>
@@ -13268,6 +13328,13 @@ updateD75();
 
 <script>
 var _ctrlEditUntil = 0;
+var _ctcss_tones = [''' + ','.join(f'"{t}"' for t in ctcss_tones) + '''];
+function _ctcssCode2Hz(code) {
+  // code 0 = none, code 1..N = tones[0..N-1]
+  if (!code || code <= 0) return '0';
+  var t = _ctcss_tones[code - 1];
+  return t !== undefined ? t : '0';
+}
 function kvCmd(cmd, args) {
   var body = {cmd: cmd};
   if (args !== undefined) body.args = String(args);
@@ -13337,16 +13404,18 @@ function kvPoll() {
     document.getElementById('kv-audio-fill').style.width = Math.min(100, aLvl) + '%';
     document.getElementById('kv-audio-text').textContent = aLvl + '%';
 
-    // Update controls only if user is not editing
+    // Update controls — skip any field the user currently has focused
+    var _af = document.activeElement ? document.activeElement.id : '';
+    function _kvset(id, val) { if (id !== _af) document.getElementById(id).value = val; }
     if (Date.now() > _ctrlEditUntil) {
-      document.getElementById('kv-squelch').value = d.squelch || 4;
+      _kvset('kv-squelch', d.squelch || 4);
       document.getElementById('kv-sq-val').textContent = d.squelch || 4;
-      document.getElementById('kv-power').value = d.high_power ? 'high' : 'low';
-      document.getElementById('kv-bw').value = (d.bandwidth === 0) ? 'narrow' : 'wide';
-      document.getElementById('kv-ctcss-tx').value = d.ctcss_tx || 0;
-      document.getElementById('kv-ctcss-rx').value = d.ctcss_rx || 0;
+      _kvset('kv-power', d.high_power ? 'high' : 'low');
+      _kvset('kv-bw', (d.bandwidth === 0) ? 'narrow' : 'wide');
+      _kvset('kv-ctcss-tx', _ctcssCode2Hz(d.ctcss_tx));
+      _kvset('kv-ctcss-rx', _ctcssCode2Hz(d.ctcss_rx));
       if (d.audio_boost !== undefined) {
-        document.getElementById('kv-vol').value = d.audio_boost;
+        _kvset('kv-vol', d.audio_boost);
         document.getElementById('kv-vol-val').textContent = d.audio_boost + '%';
       }
     }
@@ -14296,6 +14365,7 @@ pollTimer = setInterval(pollStatus, 1000);
   .bar-sv { background: #f1c40f; } .bar-cl { background: #2ecc71; }
   .bar-sp { background: var(--t-accent); } .bar-an { background: #e74c3c; }
   .bar-d75 { background: #f39c12; }
+  .bar-kv4p { background: #1abc9c; }
   .bar-pct { display: inline-block; width: 3.5em; text-align: right; color: #ccc; }
   .green { color: #2ecc71; } .red { color: #e74c3c; } .yellow { color: #f39c12; }
   @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
@@ -14382,6 +14452,7 @@ function updateStatus() {
     if(s.remote_enabled) h += '<div class="st-item"><span class="st-label">'+s.remote_mode+':</span>'+bar(s.remote_level, s.remote_mode==='SV'?'bar-sv':'bar-cl')+'</div>';
     if(s.announce_enabled) h += '<div class="st-item"><span class="st-label">AN:</span>'+bar(s.an_level,'bar-an')+'</div>';
     if(s.d75_enabled) h += '<div class="st-item"><span class="st-label">D75:</span>'+bar(s.d75_level,'bar-d75')+(s.d75_muted?' <span class="st-val red">M</span>':'')+'</div>';
+    if(s.kv4p_enabled) h += '<div class="st-item"><span class="st-label">KV4P:</span>'+bar(s.kv4p_level,'bar-kv4p')+(s.kv4p_muted?' <span class="st-val red">M</span>':'')+'</div>';
     h += '</div>';
 
     h += '<div class="st-row info-row">';
@@ -16345,6 +16416,9 @@ class RadioGateway:
                 cat.ptt_on()
             else:
                 cat.ptt_off()
+                # Discard any partial Opus frame so it doesn't bleed into next TX
+                if self.kv4p_audio_source:
+                    self.kv4p_audio_source._tx_buf = b''
             self._kv4p_ptt_on = state_on
             if self.config.VERBOSE_LOGGING:
                 print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (KV4P)")
@@ -18450,7 +18524,10 @@ class RadioGateway:
                                 # announcement_delay_active is set in the same iteration
                                 # that PTT first activates, so data already holds a real
                                 # audio chunk — replace it with silence here too.
-                                pcm = b'\x00' * len(data) if self.announcement_delay_active else data
+                                # KV4P uses serial audio with no physical relay, so no
+                                # settle delay is needed — send real audio immediately.
+                                _needs_delay = self.announcement_delay_active and not _use_kv4p_tx
+                                pcm = b'\x00' * len(data) if _needs_delay else data
                                 if self.config.OUTPUT_VOLUME != 1.0:
                                     arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
                                     pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
@@ -18761,6 +18838,12 @@ class RadioGateway:
                         _kv4p_snap.get('pcm_rms', 0.0),      # 40: KV4P output PCM RMS
                         _kv4p_snap.get('queue_len', 0),       # 41: KV4P queue length at snapshot
                         _kv4p_snap.get('decode_errors', 0),   # 42: KV4P Opus decode errors this tick
+                        # === KV4P TX trace fields (43+) ===
+                        _kv4p_snap.get('tx_frames', 0),       # 43: Opus frames encoded+sent to radio
+                        _kv4p_snap.get('tx_dropped', 0),      # 44: PCM bytes dropped (partial-frame remainder)
+                        _kv4p_snap.get('tx_input_rms', 0.0),  # 45: RMS of PCM fed to encoder
+                        _kv4p_snap.get('tx_errors', 0),       # 46: encoder exceptions
+                        self.announcement_delay_active and not (str(getattr(self.config, 'TX_RADIO', '')).lower() == 'kv4p' and bool(self.kv4p_audio_source)),  # 47: TX to KV4P silenced by PTT settle delay (False when TX_RADIO=kv4p, fix in place)
                     ))
     
     def _find_darkice_pid(self):
@@ -19486,6 +19569,9 @@ class RadioGateway:
             'd75_mode': str(getattr(self.config, 'D75_CONNECTION', 'bluetooth')).lower().strip(),
             'd75_level': self.d75_audio_source.audio_level if self.d75_audio_source else 0,
             'd75_muted': getattr(self, 'd75_muted', False),
+            'kv4p_enabled': bool(self.kv4p_audio_source),
+            'kv4p_level': self.kv4p_audio_source.audio_level if self.kv4p_audio_source else 0,
+            'kv4p_muted': getattr(self, 'kv4p_muted', False),
             'files': file_slots,
             'playback_enabled': bool(self.playback_source),
             'tts_enabled': bool(getattr(self, 'tts_engine', None)),
@@ -20381,7 +20467,8 @@ class RadioGateway:
             AIOC_DISC, AIOC_SBA, AIOC_OVF, AIOC_DROP, \
             OUT_DISC, \
             KV4P_RXF, KV4P_RXB, KV4P_QDROP, KV4P_SBB, KV4P_SBA, \
-            KV4P_GOT, KV4P_RMS, KV4P_QLEN, KV4P_DECERR = range(43)
+            KV4P_GOT, KV4P_RMS, KV4P_QLEN, KV4P_DECERR, \
+            KV4P_TXF, KV4P_TXDROP, KV4P_TXRMS, KV4P_TXERR, KV4P_TXANN = range(48)
 
         with open(out_path, 'w') as f:
             dur = trace[-1][T] - trace[0][T] if len(trace) > 1 else 0
@@ -20739,7 +20826,8 @@ class RadioGateway:
             f.write("  PB: B=prebuffering (waiting to rebuild cushion) .=normal\n")
             f.write("  RB: sig=rebroadcast sending  hold=PTT hold  idle=on but no signal\n")
             f.write("  s1_disc/a_disc/o_disc: sample discontinuity at chunk boundary (abs delta, >5000=click)\n")
-            f.write("  s1_sba/a_sba: sub-buffer bytes remaining AFTER serving this chunk\n\n")
+            f.write("  s1_sba/a_sba: sub-buffer bytes remaining AFTER serving this chunk\n")
+            f.write("  kv_txf: TX Opus frames sent | kv_txdrop: TX PCM bytes dropped (partial frame) | kv_txrms: TX input RMS | kv_ann: TX silenced by PTT settle delay\n\n")
             hdr = (f"{'tick':>6} {'t(s)':>7} {'dt':>6} "
                    f"{'s1_q':>4} {'s1_sb':>6} {'s1_sba':>6} {'s2_q':>4} {'s2_sb':>6} {'pb':>2} "
                    f"{'aioc_q':>6} {'aioc_sb':>7} {'a_sba':>6} {'mixer':>5} {'mix_ms':>6} "
@@ -20747,6 +20835,7 @@ class RadioGateway:
                    f"{'sv_ms':>6} {'sv#':>3} "
                    f"{'s1_disc':>7} {'a_disc':>7} {'o_disc':>7} "
                    f"{'kv_rxf':>6} {'kv_rxB':>6} {'kv_qd':>5} {'kv_sbb':>7} {'kv_sba':>7} {'kv_got':>6} {'kv_rms':>7} {'kv_q':>4} "
+                   f"{'kv_txf':>6} {'kv_txdrop':>9} {'kv_txrms':>8} {'kv_txerr':>8} {'kv_ann':>6} "
                    f"{'sources':>14} {'state':>14} {'rb':>4}\n")
             f.write(hdr)
             f.write('-' * len(hdr) + '\n')
@@ -20785,6 +20874,12 @@ class RadioGateway:
                 kv_got = r[KV4P_GOT] if _kv else False
                 kv_rms = r[KV4P_RMS] if _kv else 0.0
                 kv_q = r[KV4P_QLEN] if _kv else 0
+                _kv_tx = len(r) > KV4P_TXF
+                kv_txf = r[KV4P_TXF] if _kv_tx else 0
+                kv_txdrop = r[KV4P_TXDROP] if _kv_tx else 0
+                kv_txrms = r[KV4P_TXRMS] if _kv_tx else 0.0
+                kv_txerr = r[KV4P_TXERR] if _kv_tx else 0
+                kv_ann = 'Y' if (_kv_tx and r[KV4P_TXANN]) else '.'
                 f.write(f"{i:>5}{flag} {r[T]:7.3f} {r[DT]:6.1f} "
                         f"{r[SQ]:4} {r[SSB]:6} {s1_sba:6} {sq2:4} {ssb2:6} {pb1}{pb2} "
                         f"{r[AQ]:6} {r[ASB]:7} {a_sba:6} {'audio' if r[MGOT] else 'NONE':>5} "
@@ -20793,6 +20888,7 @@ class RadioGateway:
                         f"{r[DLEN]:5} {sv_ms:6.1f} {sv_n:3} "
                         f"{s1_disc:7.0f} {a_disc:7.0f} {o_disc:7.0f} "
                         f"{kv_rxf:6} {kv_rxB:6} {kv_qd:5} {kv_sbb:7} {kv_sba:7} {'yes' if kv_got else 'no':>6} {kv_rms:7.0f} {kv_q:4} "
+                        f"{kv_txf:6} {kv_txdrop:9} {kv_txrms:8.0f} {kv_txerr:8} {kv_ann:>6} "
                         f"{r[MSRC]:>14} {st} {rb:>4}\n")
 
             # ── KV4P summary ──
@@ -20835,6 +20931,26 @@ class RadioGateway:
                 if gaps:
                     f.write(f"  gap_runs={len(gaps)}  gap_ticks: mean={statistics.mean(gaps):.1f}  "
                             f"max={max(gaps)}  total={sum(gaps)}\n")
+
+                # TX summary
+                tx_ticks = [r for r in kv4p_ticks if len(r) > KV4P_TXF and r[KV4P_TXF] > 0]
+                ann_ticks = sum(1 for r in kv4p_ticks if len(r) > KV4P_TXANN and r[KV4P_TXANN])
+                tx_frames_total = sum(r[KV4P_TXF] for r in kv4p_ticks if len(r) > KV4P_TXF)
+                tx_drop_total = sum(r[KV4P_TXDROP] for r in kv4p_ticks if len(r) > KV4P_TXDROP)
+                tx_err_total = sum(r[KV4P_TXERR] for r in kv4p_ticks if len(r) > KV4P_TXERR)
+                tx_rms_vals = [r[KV4P_TXRMS] for r in tx_ticks if r[KV4P_TXRMS] > 0]
+                f.write(f"\n  TX (gateway→radio):\n")
+                f.write(f"    ticks_with_tx={len(tx_ticks)}  frames_sent={tx_frames_total}  "
+                        f"buf_carry={tx_drop_total}  encode_errors={tx_err_total}  ann_delay_ticks={ann_ticks}\n")
+                if tx_rms_vals:
+                    f.write(f"    input_rms: mean={statistics.mean(tx_rms_vals):.0f}  "
+                            f"min={min(tx_rms_vals):.0f}  max={max(tx_rms_vals):.0f}\n")
+                if tx_frames_total > 0:
+                    audio_sent = tx_frames_total * 3840
+                    audio_in = len(tx_ticks) * 4800
+                    sent_pct = audio_sent * 100 // max(1, audio_in)
+                    f.write(f"    audio_sent={audio_sent}B ({sent_pct}% of {audio_in}B input)  "
+                            f"buf_carry is bytes held across ticks, not dropped\n")
                 f.write("\n")
 
             # ── Events (key presses / mode changes) ──

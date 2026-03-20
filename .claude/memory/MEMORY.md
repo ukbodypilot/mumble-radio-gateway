@@ -163,10 +163,36 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **Status Bar**: 3-line display, `[HH:MM:SS]` timestamps, `StatusBarWriter` wraps stdout/stderr
 - **Config page**: unsaved changes warning via `beforeunload` event
 
+## KV4P HT Radio (added 2026-03-19)
+- `KV4PAudioSource` class: CP2102 USB-serial (10c4:ea60), kv4p-ht-python package, Opus codec
+- Config: `KV4P_PORT = /dev/kv4p`, `KV4P_BAUD`, `ENABLE_KV4P`, `TX_RADIO = kv4p`
+- udev: `/etc/udev/rules.d/99-kv4p.rules` → symlink `/dev/kv4p` (idVendor=10c4, idProduct=ea60)
+- kv4p-ht-python installed at `~/kv4p-ht-python` (editable install, `pip install --break-system-packages -e`)
+- Dashboard status bar: teal bar (`.bar-kv4p { background: #1abc9c }`)
+- **TX audio fix:** Mixer outputs 4800 bytes (50ms), Opus frame = 3840 bytes (40ms)
+  - Old: 960 bytes dropped per tick = 20% audio loss
+  - Fix: `_tx_buf` accumulation carries remainder across ticks; `_tx_buf` cleared on PTT drop
+- **Announcement delay fix:** `_needs_delay = self.announcement_delay_active and not _use_kv4p_tx`
+  - KV4P is serial audio, no physical relay — skip the 0.5s relay settle delay
+- **CTCSS web control:** dropdown with all 38 DRA818 tones (67.0–250.3 Hz, NO 69.3)
+  - Handler converts Hz string → DRA818 code (1-based, 0=none)
+  - **CRITICAL:** DRA818 uses 38 tones (no 69.3 Hz) — using TH-9800's 39-tone list caused off-by-one (103.5→code14=107.2 Hz instead of code13=103.5 Hz)
+- **CRITICAL:** PTT_METHOD=aioc does NOT key KV4P — KV4P uses its own serial PTT (`_ptt_kv4p`)
+- Audio trace: `buf_carry` = bytes in carry buffer per tick (NOT dropped); `frames_sent` is the key metric
+
+## SDR "Manager Not Available" UI Fix (2026-03-19)
+- JS `_sdrPollErrorActive` flag: poll-set errors clear on recovery without stomping user-action feedback
+
+## Web UI Poll Guard — Fields Never Overwritten While Focused (2026-03-19)
+- All KV4P control fields use `document.activeElement` check before poll-update
+- `_kvset(id, val)` helper skips update if element is currently focused
+- `_ctrlEditUntil` timer remains as secondary guard (30s on focus for dropdowns)
+
 ## Known Bugs Fixed (details in bugs.md)
 See bugs.md for full history. Key recent: DISPLAY_TEXT VFO misattribution (2026-03-13),
 RTS change corrupts display (2026-03-13), audio processing silent (scipy missing),
-WebSocket PCM double-push/latency, CAT serial orphans, ScriptProcessor buffer size.
+WebSocket PCM double-push/latency, CAT serial orphans, ScriptProcessor buffer size,
+KV4P TX 20% audio dropout (2026-03-19), KV4P CTCSS wrong tone (DRA818 table off-by-one, 2026-03-19).
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis

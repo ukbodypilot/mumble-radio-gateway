@@ -196,3 +196,35 @@ When ANY connection closed, it reset `loggedin = False` for all connections.
 ## Save & Restart UnboundLocalError (2026-03-08)
 **Symptom:** `UnboundLocalError: cannot access local variable 'port'` on Save & Restart from web UI.
 **Fix:** Use `window.location.port` in JavaScript instead of Python-side `port` variable.
+
+## KV4P TX 20% Audio Dropout (2026-03-19)
+**Symptom:** KV4P TX audio sounded choppy/incomplete. Audio trace confirmed 960 bytes dropped per tick.
+
+**Root cause:** Mixer outputs 4800 bytes (50ms @ 48kHz stereo int16). Opus encoder requires exactly 3840 bytes (1920 samples × 2 bytes = 40ms frames). 4800 mod 3840 = 960 bytes discarded every tick = 20% loss.
+
+**Fix:** `_tx_buf` accumulation in `write_tx_audio` — carry the remainder across calls. `_tx_buf` cleared on PTT drop to prevent stale audio bleeding into next transmission. Verified via audio trace: `frames_sent` went from 1.0/tick to 1.25/tick (25% more audio delivered).
+
+**Lesson:** Always check frame alignment when bridging fixed-size audio chunks to a codec with different frame size.
+
+## KV4P Announcement Delay Applied to Serial Radio (2026-03-19)
+**Symptom:** First 0.5s of each KV4P announcement silent (×3 = 1.65s total per 3-announcement run).
+
+**Root cause:** `PTT_ANNOUNCEMENT_DELAY` is designed for relay-switched PTT that needs settle time. Was unconditionally applied to all TX paths including KV4P, which uses serial audio with no physical relay.
+
+**Fix:** `_needs_delay = self.announcement_delay_active and not _use_kv4p_tx` — skip silence substitution when KV4P is the TX radio.
+
+## KV4P CTCSS Wrong Tone Transmitted (2026-03-19)
+**Symptom:** Setting CTCSS 103.5 Hz in web UI caused radio to transmit 107.2 Hz instead.
+
+**Root cause:** KV4P CTCSS dropdown was built from the TH-9800's 39-tone list which includes 69.3 Hz at index 1. The DRA818V module used in KV4P has 38 tones (no 69.3 Hz). Every tone above 67.0 was off by one code: 103.5 Hz → index 13 → code 14 → DRA818 maps code 14 to 107.2 Hz.
+
+**Fix:** KV4P page now uses the correct 38-tone DRA818 list (no 69.3 Hz). With correct list: 103.5 Hz → index 12 → code 13 → DRA818 transmits 103.5 Hz.
+
+**Lesson:** DRA818V CTCSS codes 1–38 map to 67.0, 71.9, 74.4 … 250.3 Hz (no 69.3). The Kenwood/ICOM standard includes 69.3; DRA818 does not. Never reuse tone lists across different radio hardware.
+
+## KV4P Web UI Poll Overwriting User Input (2026-03-19)
+**Symptom:** CTCSS and other fields reset while user was trying to type/select a value.
+
+**Root cause:** Status poll fires every 1.5s and unconditionally overwrites all control fields. `_ctrlEditUntil` timer (set on `onfocus`) only protects for 5 seconds — expires before slow user finishes.
+
+**Fix:** `_kvset(id, val)` helper skips update if `document.activeElement.id === id`. Field is never overwritten while focused, regardless of timing. Timer bumped to 30s for dropdowns.
