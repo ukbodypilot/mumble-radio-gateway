@@ -13305,7 +13305,7 @@ updateD75();
 </div>
 
 <!-- Frequency display -->
-<div class="kv-panel">
+<div class="kv-panel" id="kv-freq-box">
   <div class="kv-row" style="justify-content:center;">
     <span class="kv-label">RX</span>
     <span id="kv-rx-freq" class="kv-freq">—</span>
@@ -13454,6 +13454,11 @@ function kvPoll() {
     document.getElementById('kv-module').textContent = d.rf_module || '?';
     document.getElementById('kv-audio-status').textContent = d.audio_connected ? 'Connected' : 'No codec';
     document.getElementById('kv-tx-badge').style.display = d.transmitting ? 'inline' : 'none';
+
+    // Red background on freq display during TX
+    var kvFreqBox = document.getElementById('kv-freq-box');
+    kvFreqBox.style.background = d.transmitting ? '#5c1a1a' : '';
+    kvFreqBox.style.borderColor = d.transmitting ? '#e74c3c' : '';
 
     // Frequency
     var rxf = d.frequency || '0.000000';
