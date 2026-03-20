@@ -14501,10 +14501,12 @@ pollTimer = setInterval(pollStatus, 1000);
     <div style="display:flex; flex-direction:column; gap:4px;">
       <textarea id="ai-text" rows="3" style="width:100%; box-sizing:border-box; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:6px; font-family:monospace; font-size:0.95em; resize:vertical;" placeholder="Enter prompt for AI to research and speak..."></textarea>
       <div style="display:flex; gap:4px; align-items:center;">
-        <label style="color:#888; font-size:0.85em; white-space:nowrap;">Top text</label>
-        <input id="ai-top" type="text" value="QST" style="flex:1; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:4px 6px; font-family:monospace; font-size:0.9em;">
-        <label style="color:#888; font-size:0.85em; white-space:nowrap;">Tail</label>
-        <input id="ai-tail" type="text" value="Callsign" style="flex:1; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:4px 6px; font-family:monospace; font-size:0.9em;">
+        <label style="color:#888; font-size:0.85em; white-space:nowrap; width:4em;">Top text</label>
+        <input id="ai-top" type="text" value="QST" style="flex:1; min-width:0; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:4px 6px; font-family:monospace; font-size:0.9em;">
+      </div>
+      <div style="display:flex; gap:4px; align-items:center;">
+        <label style="color:#888; font-size:0.85em; white-space:nowrap; width:4em;">Tail</label>
+        <input id="ai-tail" type="text" value="Callsign" style="flex:1; min-width:0; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:4px 6px; font-family:monospace; font-size:0.9em;">
       </div>
       <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
         <label style="color:#888; font-size:0.85em; white-space:nowrap;">Secs</label>
