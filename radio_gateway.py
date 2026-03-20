@@ -14506,11 +14506,11 @@ pollTimer = setInterval(pollStatus, 1000);
         <label style="color:#888; font-size:0.85em; white-space:nowrap;">Tail</label>
         <input id="ai-tail" type="text" value="Callsign" style="flex:1; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:4px 6px; font-family:monospace; font-size:0.9em;">
       </div>
-      <div style="display:flex; gap:4px; align-items:center;">
+      <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
         <label style="color:#888; font-size:0.85em; white-space:nowrap;">Secs</label>
         <input id="ai-secs" type="number" value="30" min="5" max="120" style="width:55px; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:4px 6px; font-family:monospace; font-size:0.9em;">
         <label style="color:#888; font-size:0.85em; white-space:nowrap;">Voice</label>
-        <select id="ai-voice" style="flex:1; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:4px 6px; font-family:monospace; font-size:0.9em;">
+        <select id="ai-voice" style="flex:1; min-width:90px; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:4px 6px; font-family:monospace; font-size:0.9em;">
           <option value="1">US English</option>
           <option value="2">British</option>
           <option value="3">Australian</option>
@@ -14521,8 +14521,8 @@ pollTimer = setInterval(pollStatus, 1000);
           <option value="8">French</option>
           <option value="9">German</option>
         </select>
-        <button onclick="sendAIText()" id="btn-ai-send" style="white-space:nowrap;">Send</button>
       </div>
+      <button onclick="sendAIText()" id="btn-ai-send" style="width:100%;">Send to AI</button>
     </div>
     <div id="ai-status" style="font-family:monospace; font-size:0.85em; color:#888; margin-top:6px;">Ready</div>
   </div>
