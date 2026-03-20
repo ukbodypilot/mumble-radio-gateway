@@ -158,7 +158,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 ## Other Features
 - **Cloudflare Tunnel**: cloudflared output → `/tmp/cloudflared_output.log` (not pipe) + `start_new_session=True` so it survives gateway restarts (no SIGPIPE). URL cached in `/tmp/cloudflare_tunnel_url`. On restart, pgrep adopts existing process. On fresh launch, URL file cleared so email waits for new URL (not stale cached). Retry up to 3× if code 1 immediate exit.
-- **Email**: Gmail SMTP on startup/demand (`@` key), includes tunnel base URL + `/config` URL + LAN link + detailed status dump (uptime, Mumble, CAT, PTT, mutes, streaming, system stats). URLs do NOT include `/dashboard` suffix (removed 2026-03-18).
+- **Email**: Gmail SMTP on startup/demand (`@` key), includes tunnel base URL + `/config` URL + LAN link + detailed status dump (uptime, Mumble, CAT, PTT, all mutes, KV4P/D75/SDR status, VAD state, gateway name/version, system stats) + last 200 log lines appended. URLs do NOT include `/dashboard` suffix (removed 2026-03-18).
 - **Relay Control**: `RelayController` class, radio power (`j`), charger (auto), PTT relay
 - **SDR Rebroadcast**: `b` key, routes SDR audio to radio TX
 - **Status Bar**: 3-line display, `[HH:MM:SS]` timestamps, `StatusBarWriter` wraps stdout/stderr
