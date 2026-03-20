@@ -562,6 +562,7 @@ class WebConfigServer:
         # Initialize SDR manager if rtl_airband is available
         if shutil.which('rtl_airband'):
             try:
+                from gateway_core import RTLAirbandManager  # lazy — avoids circular import at module load
                 self.sdr_manager = RTLAirbandManager(os.path.dirname(
                     getattr(self.config, '_config_path', '') or os.path.join(os.path.dirname(__file__), 'gateway_config.txt')))
             except Exception as e:
@@ -1927,16 +1928,26 @@ class WebConfigServer:
                             resp = gw.cat_client._send_cmd("!serial status")
                             result = {'ok': True, 'status': resp or 'unknown'}
                         elif cmd == 'MIC_PTT' and gw:
-                            # Key/unkey TH-9800 via configured PTT_METHOD, regardless of TX_RADIO
-                            gw._web_th9800_ptt = not getattr(gw, '_web_th9800_ptt', False)
-                            state = gw._web_th9800_ptt
-                            method = str(getattr(gw.config, 'PTT_METHOD', 'aioc')).lower()
-                            if method == 'relay':
-                                gw._ptt_relay(state)
-                            elif method == 'software':
-                                gw._ptt_software(state)
+                            # Key/unkey TH-9800 directly, regardless of TX_RADIO config.
+                            # Uses the TH9800PTT controller which handles AIOC/relay/software
+                            # based on PTT_METHOD, and owns its own keyed-state tracking.
+                            ptt = getattr(gw, 'ptt_th9800', None)
+                            if ptt is not None:
+                                if ptt.is_keyed():
+                                    ptt.unkey()
+                                else:
+                                    ptt.key()
                             else:
-                                gw._ptt_aioc(state)
+                                # Fallback for startup edge case
+                                gw._web_th9800_ptt = not getattr(gw, '_web_th9800_ptt', False)
+                                state = gw._web_th9800_ptt
+                                method = str(getattr(gw.config, 'PTT_METHOD', 'aioc')).lower()
+                                if method == 'relay':
+                                    gw._ptt_relay(state)
+                                elif method == 'software':
+                                    gw._ptt_software(state)
+                                else:
+                                    gw._ptt_aioc(state)
                             result = {'ok': True}
                         elif cmd == 'CAT_RECONNECT' and gw:
                             if gw.cat_client:

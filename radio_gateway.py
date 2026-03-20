@@ -134,6 +134,10 @@ class Config:
             'MUMBLE_VBR': True,
             'MUMBLE_JITTER_BUFFER': 10,
             'TX_RADIO': 'th9800',              # 'th9800', 'd75', or 'kv4p' — which radio for playback/TTS/announce TX
+            'MUMBLE_TX_RADIO': '',          # '' = use TX_RADIO; set to override per-source
+            'PLAYBACK_TX_RADIO': '',        # File playback, TTS, CW, Smart Announce
+            'WEBMIC_TX_RADIO': '',          # Browser microphone PTT
+            'ANNOUNCE_TX_RADIO': '',        # Network announcement input (port 9601)
             'PTT_METHOD': 'aioc',              # 'aioc', 'relay', or 'software'
             'PTT_RELAY_DEVICE': '/dev/relay_ptt',
             'PTT_RELAY_BAUD': 9600,

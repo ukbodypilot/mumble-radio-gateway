@@ -107,7 +107,7 @@ from audio_sources import (
     KV4PCATClient, KV4PAudioSource, NetworkAnnouncementSource,
     WebMicSource, StreamOutputSource, AudioMixer, generate_cw_pcm,
 )
-from ptt import RelayController, GPIORelayController
+from ptt import RelayController, GPIORelayController, TH9800PTT, D75PTT, KV4PPTT
 from cat_client import RadioCATClient, D75CATClient
 from smart_announce import SmartAnnouncementManager
 from web_server import WebConfigServer
@@ -2792,6 +2792,11 @@ class RadioGateway:
         self.input_stream = None
         self.output_stream = None
         self.ptt_active = False
+        self.ptt_th9800 = None        # TH9800PTT controller (built in setup_audio)
+        self.ptt_d75 = None           # D75PTT controller
+        self.ptt_kv4p = None          # KV4PPTT controller
+        self._ptt_map = {}            # radio_name → RadioPTT instance
+        self._pending_ptt_radio = None  # Radio to key when _pending_ptt_state fires
         self.running = True
         self.last_sound_time = 0
         self.last_audio_capture_time = 0
@@ -3368,27 +3373,98 @@ class RadioGateway:
         except Exception:
             return True  # On error, allow transmission
         
-    def set_ptt_state(self, state_on):
-        """Control PTT via configured method (aioc, relay, or software).
+    def _setup_ptt_controllers(self):
+        """Create per-radio PTT controller objects. Called from setup_audio()."""
+        ptt_method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
+        self.ptt_th9800 = TH9800PTT(
+            method=ptt_method,
+            get_aioc=lambda: self.aioc_device,
+            get_cat=lambda: getattr(self, 'cat_client', None),
+            relay=self.relay_ptt,
+            aioc_channel=int(getattr(self.config, 'AIOC_PTT_CHANNEL', 3)),
+            config=self.config,
+            notify=self.notify,
+        )
+        self.ptt_d75 = D75PTT(
+            get_d75=lambda: getattr(self, 'd75_cat', None),
+            config=self.config,
+            notify=self.notify,
+        )
+        self.ptt_kv4p = KV4PPTT(
+            get_cat=lambda: getattr(self, 'kv4p_cat', None),
+            get_audio_source=lambda: getattr(self, 'kv4p_audio_source', None),
+            config=self.config,
+            notify=self.notify,
+        )
+        self._ptt_map = {
+            'th9800': self.ptt_th9800,
+            'd75': self.ptt_d75,
+            'kv4p': self.ptt_kv4p,
+        }
 
-        TX_RADIO selects which radio to key:
-          - 'th9800' (default): uses PTT_METHOD (aioc/relay/software via TH-9800 CAT)
-          - 'd75': uses D75 CAT !ptt (software PTT via D75 CAT client)
+    def _resolve_tx_radio(self, source_key):
+        """Return configured TX radio for a named source, falling back to TX_RADIO.
+
+        source_key: 'MUMBLE' | 'PLAYBACK' | 'WEBMIC' | 'ANNOUNCE'
         """
-        tx_radio = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
-        if tx_radio == 'd75':
-            self._ptt_d75(state_on)
-        elif tx_radio == 'kv4p':
-            self._ptt_kv4p(state_on)
-        else:
-            method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
-            if method == 'relay':
-                self._ptt_relay(state_on)
-            elif method == 'software':
-                self._ptt_software(state_on)
+        specific = str(getattr(self.config, f'{source_key}_TX_RADIO', '') or '').strip().lower()
+        return specific if specific else str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
+
+    def _resolve_ptt_radio(self, active_sources):
+        """Choose TX radio based on which mixer sources are currently active.
+
+        active_sources: list of source name strings from the mixer.
+        Priority: WEBMIC > ANNIN > FilePlayback (default PLAYBACK_TX_RADIO).
+        """
+        if active_sources:
+            if 'WEBMIC' in active_sources:
+                return self._resolve_tx_radio('WEBMIC')
+            if 'ANNIN' in active_sources:
+                return self._resolve_tx_radio('ANNOUNCE')
+        return self._resolve_tx_radio('PLAYBACK')
+
+    def set_ptt_state(self, state_on, radio=None):
+        """Control PTT for the specified radio (or TX_RADIO if not given).
+
+        When state_on=True, keys the specified radio.
+        When state_on=False and radio is None, unkeys ALL keyed radios (safe release).
+        When state_on=False and radio is specified, unkeys only that radio.
+        """
+        if self._ptt_map:
+            if state_on:
+                if radio is None:
+                    radio = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
+                ptt = self._ptt_map.get(radio)
+                if ptt:
+                    ptt.key()
             else:
-                self._ptt_aioc(state_on)
-        self.ptt_active = state_on
+                if radio is not None:
+                    ptt = self._ptt_map.get(radio)
+                    if ptt:
+                        ptt.unkey()
+                else:
+                    # Unkey all — safe to call even if not keyed (idempotent)
+                    for p in self._ptt_map.values():
+                        if p.is_keyed():
+                            p.unkey()
+            self.ptt_active = any(p.is_keyed() for p in self._ptt_map.values())
+        else:
+            # Fallback: _ptt_map not yet built (early startup edge case)
+            if radio is None:
+                radio = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
+            if radio == 'd75':
+                self._ptt_d75(state_on)
+            elif radio == 'kv4p':
+                self._ptt_kv4p(state_on)
+            else:
+                method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
+                if method == 'relay':
+                    self._ptt_relay(state_on)
+                elif method == 'software':
+                    self._ptt_software(state_on)
+                else:
+                    self._ptt_aioc(state_on)
+            self.ptt_active = state_on
 
     def _ptt_aioc(self, state_on):
         """PTT via AIOC HID GPIO.
@@ -3560,6 +3636,7 @@ class RadioGateway:
             # Set ptt_active immediately so repeated Mumble callbacks don't
             # queue a second activation before the first is processed.
             self.ptt_active = True
+            self._pending_ptt_radio = self._resolve_tx_radio('MUMBLE')
             self._pending_ptt_state = True
             self._ptt_change_time = time.monotonic()
         
@@ -4219,6 +4296,8 @@ class RadioGateway:
                 except Exception as e:
                     print(f"  Warning: Could not initialize PTT relay: {e}")
                     self.relay_ptt = None
+
+            self._setup_ptt_controllers()
 
             # Initialize TH-9800 CAT control
             if getattr(self.config, 'ENABLE_CAT_CONTROL', False):
@@ -5411,7 +5490,9 @@ class RadioGateway:
                 pending_ptt = self._pending_ptt_state
                 if pending_ptt is not None:
                     self._pending_ptt_state = None
-                    self.set_ptt_state(pending_ptt)
+                    _pending_radio = self._pending_ptt_radio
+                    self._pending_ptt_radio = None
+                    self.set_ptt_state(pending_ptt, radio=_pending_radio if pending_ptt else None)
                     self._ptt_change_time = time.monotonic()  # Tell get_audio to fade in next chunk
 
                 # ── AIOC stream health management ────────────────────────────────
@@ -5610,7 +5691,8 @@ class RadioGateway:
 
                         # Activate PTT if not already active and not muted.
                         if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
-                            self.set_ptt_state(True)
+                            _src_radio = self._resolve_ptt_radio(active_sources)
+                            self.set_ptt_state(True, radio=_src_radio)
                             self._ptt_change_time = time.monotonic()  # arm click suppression in AIOCRadioSource
                             self._announcement_ptt_delay_until = time.time() + self.config.PTT_ANNOUNCEMENT_DELAY
                             self.announcement_delay_active = True
@@ -5621,7 +5703,7 @@ class RadioGateway:
 
                         # Send audio to radio output
                         _ptt_wrote = False
-                        _tx_radio_cfg = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
+                        _tx_radio_cfg = self._resolve_ptt_radio(active_sources)
                         _use_d75_tx = (_tx_radio_cfg == 'd75' and self.d75_audio_source)
                         _use_kv4p_tx = (_tx_radio_cfg == 'kv4p' and self.kv4p_audio_source)
                         if (_use_d75_tx or _use_kv4p_tx or self.output_stream) and not self.tx_muted:
@@ -6631,6 +6713,7 @@ class RadioGateway:
             'uptime': uptime_str,
             'mumble': mumble_ok,
             'ptt_active': getattr(self, 'ptt_active', False),
+            'ptt_radios': {k: p.is_keyed() for k, p in self._ptt_map.items()} if self._ptt_map else {},
             'ptt_method': _ptt_tag,
             'manual_ptt': getattr(self, 'manual_ptt_mode', False),
             'vad_enabled': self.config.ENABLE_VAD,
