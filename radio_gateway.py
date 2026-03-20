@@ -15444,8 +15444,6 @@ setInterval(loadFiles, 10000);
             '<form method="POST" action="/config">'
             '<div class="buttons">'
             '<button type="submit" name="_action" value="save" class="btn-save">Save</button>'
-            '<button type="button" class="btn-exit"'
-            ' onclick="if(confirm(\'Exit the gateway server? This will stop all services.\')){fetch(\'/exit\',{method:\'POST\'}).then(()=>{document.body.innerHTML=\'<h1 style=color:#e0e0e0;text-align:center;margin-top:40vh>Gateway stopped.</h1>\'});}">Exit Server</button>'
             '</div>'
             + ''.join(form_parts) +
             '</form>'
