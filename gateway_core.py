@@ -3,6 +3,19 @@
 
 import sys
 import os
+
+def _get_version():
+    try:
+        import subprocess
+        v = subprocess.check_output(
+            ['git', 'describe', '--tags', '--always'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL, text=True).strip()
+        return v.lstrip('v')
+    except Exception:
+        return "unknown"
+
+__version__ = _get_version()
 import time
 import signal
 import threading
