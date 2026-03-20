@@ -8774,8 +8774,11 @@ devices:
 
         # Restart SDRplay API service — kill hard then start fresh
         # (systemctl restart hangs because sdrplay_apiService ignores SIGTERM)
-        subprocess.run(['sudo', 'systemctl', 'stop', 'sdrplay.service'],
-                       capture_output=True, timeout=3)
+        try:
+            subprocess.run(['sudo', 'systemctl', 'stop', 'sdrplay.service'],
+                           capture_output=True, timeout=3)
+        except subprocess.TimeoutExpired:
+            pass  # Expected — sdrplay_apiService ignores SIGTERM, killed below
         subprocess.run(['sudo', 'killall', '-9', 'sdrplay_apiService'],
                        capture_output=True, timeout=3)
         time.sleep(1)
@@ -10901,22 +10904,9 @@ class WebConfigServer:
                 parent._save_config(values)
                 # Reload config from file so the config page reflects saved values
                 parent.config.load_config()
-                if action == 'restart' and parent.gateway:
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/html; charset=utf-8')
-                    self.end_headers()
-                    msg = parent._wrap_html('Restarting...',
-                        '<h2>Configuration saved</h2>'
-                        '<p>Gateway is restarting... this page will reload in 5 seconds.</p>'
-                        f'<script>setTimeout(function(){{window.top.location="http://"+window.location.hostname+":"+window.location.port+"/"}},5000)</script>')
-                    self.wfile.write(msg.encode('utf-8'))
-                    # Signal restart via main loop
-                    parent.gateway.restart_requested = True
-                    parent.gateway.running = False
-                else:
-                    self.send_response(303)
-                    self.send_header('Location', '/config?saved=1')
-                    self.end_headers()
+                self.send_response(303)
+                self.send_header('Location', '/config?saved=1')
+                self.end_headers()
 
         class ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
             daemon_threads = True
@@ -11322,7 +11312,7 @@ class WebConfigServer:
         has_kv4p = getattr(self.config, 'ENABLE_KV4P', False)
         _radio_link = '<a href="/radio" target="content" onclick="setActive(this)">TH-9800</a>' if has_radio else '<a class="nav-disabled">TH-9800</a>'
         _d75_link = '<a href="/d75" target="content" onclick="setActive(this)">TH-D75</a>' if has_d75 else '<a class="nav-disabled">TH-D75</a>'
-        _kv4p_link = '<a href="/kv4p" target="content" onclick="setActive(this)">KV4P</a>' if has_kv4p else ''
+        _kv4p_link = '<a href="/kv4p" target="content" onclick="setActive(this)">KV4P</a>' if has_kv4p else '<a class="nav-disabled">KV4P</a>'
         return f'''<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
@@ -14236,16 +14226,16 @@ pollTimer = setInterval(pollStatus, 1000);
 <div class="controls">
   <div class="ctrl-group" id="mute-group">
     <h3>Mute Controls</h3>
-    <button onclick="sendKey('t')" id="btn-t">TX</button>
-    <button onclick="sendKey('r')" id="btn-r">RX</button>
     <button onclick="sendKey('m')" id="btn-m">Global</button>
+    <button onclick="sendKey('r')" id="btn-r">RX</button>
+    <button onclick="sendKey('t')" id="btn-t">TX</button>
+    <button onclick="sendKey('w')" id="btn-w">D75</button>
+    <button onclick="sendKey('y')" id="btn-y">KV4P</button>
     <button onclick="sendKey('s')" id="btn-s">SDR1</button>
     <button onclick="sendKey('x')" id="btn-x">SDR2</button>
     <button onclick="sendKey('c')" id="btn-c">Remote</button>
     <button onclick="sendKey('a')" id="btn-a">Announce</button>
     <button onclick="sendKey('o')" id="btn-o">Speaker</button>
-    <button onclick="sendKey('w')" id="btn-w">D75</button>
-    <button onclick="sendKey('y')" id="btn-y">KV4P</button>
   </div>
   <div class="ctrl-group" id="radio-proc-group">
     <h3>Radio Processing</h3>
@@ -15454,8 +15444,6 @@ setInterval(loadFiles, 10000);
             '<form method="POST" action="/config">'
             '<div class="buttons">'
             '<button type="submit" name="_action" value="save" class="btn-save">Save</button>'
-            '<button type="submit" name="_action" value="restart" class="btn-restart"'
-            ' onclick="return confirm(\'Save and restart the gateway?\')">Save &amp; Restart</button>'
             '<button type="button" class="btn-exit"'
             ' onclick="if(confirm(\'Exit the gateway server? This will stop all services.\')){fetch(\'/exit\',{method:\'POST\'}).then(()=>{document.body.innerHTML=\'<h1 style=color:#e0e0e0;text-align:center;margin-top:40vh>Gateway stopped.</h1>\'});}">Exit Server</button>'
             '</div>'
@@ -15846,7 +15834,7 @@ class RadioGateway:
         # KV4P HT Radio
         self.kv4p_cat = None           # KV4PCATClient instance
         self.kv4p_audio_source = None  # KV4PAudioSource instance
-        self.kv4p_muted = False        # KV4P audio mute toggle
+        self.kv4p_muted = True         # KV4P audio mute toggle (muted by default)
         self.kv4p_processor = AudioProcessor("kv4p", config)
 
         # Mumble Server instances (local mumble-server/murmurd)
@@ -17276,6 +17264,7 @@ class RadioGateway:
                         self.kv4p_audio_source = KV4PAudioSource(self.config, self)
                         if self.kv4p_audio_source.setup_audio():
                             self.kv4p_audio_source.enabled = True
+                            self.kv4p_audio_source.muted = self.kv4p_muted
                             self.kv4p_audio_source.duck = getattr(self.config, 'KV4P_AUDIO_DUCK', True)
                             self.kv4p_audio_source.sdr_priority = int(getattr(self.config, 'KV4P_AUDIO_PRIORITY', 2))
                         else:
