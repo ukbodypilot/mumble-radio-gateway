@@ -141,10 +141,12 @@ if [ "$ENABLE_CAT_CONTROL" != "true" ]; then
         try_sudo systemctl stop th9800-cat.service 2>/dev/null
         ts "  Stopped th9800-cat service (CAT disabled)"
     fi
-elif systemctl is-active --quiet th9800-cat.service 2>/dev/null; then
-    ts "  TH-9800 CAT service already running"
 elif systemctl list-unit-files th9800-cat.service &>/dev/null; then
-    try_sudo systemctl start th9800-cat.service 2>/dev/null
+    if systemctl is-active --quiet th9800-cat.service 2>/dev/null; then
+        try_sudo systemctl restart th9800-cat.service 2>/dev/null
+    else
+        try_sudo systemctl start th9800-cat.service 2>/dev/null
+    fi
     # Wait for TCP port to be ready (up to 10s)
     CAT_PORT="$(read_config CAT_PORT 9800)"
     for i in $(seq 1 20); do
@@ -154,7 +156,7 @@ elif systemctl list-unit-files th9800-cat.service &>/dev/null; then
         sleep 0.5
     done
     if systemctl is-active --quiet th9800-cat.service 2>/dev/null && ss -tlnp 2>/dev/null | grep -q ":${CAT_PORT} "; then
-        ts "  TH-9800 CAT service started (port $CAT_PORT)"
+        ts "  TH-9800 CAT service ready (port $CAT_PORT)"
     else
         ts "  TH-9800 CAT service failed to start"
         journalctl -u th9800-cat.service --no-pager -n 5 2>/dev/null

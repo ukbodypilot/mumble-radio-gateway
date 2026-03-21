@@ -231,6 +231,55 @@ When ANY connection closed, it reset `loggedin = False` for all connections.
 
 **Lesson:** DRA818V CTCSS codes 1–38 map to 67.0, 71.9, 74.4 … 250.3 Hz (no 69.3). The Kenwood/ICOM standard includes 69.3; DRA818 does not. Never reuse tone lists across different radio hardware.
 
+## TH9800 PTT State Inversion — Blind Toggle Race (2026-03-21)
+**Symptom:** After switching TX_RADIO from kv4p to th9800, first PTT press showed button on but radio didn't key; second press showed button off but radio keyed up. Classic state inversion.
+
+**Root cause:** `!ptt` in TH9800_CAT.py was a blind toggle — it flipped `radio.mic_ptt` regardless of current state. If gateway state and radio state diverged (e.g. previous session, radio reboot, or any missed command), the states were inverted and stayed inverted until another toggle.
+
+**Fix:** Added `!ptt on` / `!ptt off` explicit-state commands to TH9800_CAT.py. Gateway now always sends `!ptt on` or `!ptt off` instead of the bare toggle. Bare `!ptt` still works for backwards compat. Removed `_software_ptt_on` tracker from gateway_core.py (was attempting to work around the broken toggle; now redundant).
+
+**Also:** ws_mic PTT routing updated to use `!ptt on`/`!ptt off` via `cat_client._send_cmd()` directly, rather than going through `set_ptt_state()` which would double-key.
+
+**Lesson:** Never use a stateful toggle for safety-critical control (PTT, relay, etc.). Always send an explicit desired state so the command is idempotent and safe to retry.
+
+## RTS "Unknown" When CAT_STARTUP_COMMANDS=false (2026-03-21)
+**Symptom:** After serial connect, RTS TX state in dashboard showed "Unknown" instead of "USB Controlled".
+
+**Root cause:** `_rts_usb` is `None` at startup and only set by `set_rts()`. With `CAT_STARTUP_COMMANDS = false`, `setup_radio()` is skipped — and `setup_radio()` was the only caller of `set_rts(True)` at startup. So the dashboard never learned the RTS state.
+
+**Fix:** Call `set_rts(True)` explicitly after successful `!serial connect`, both at gateway startup and in the web UI's SERIAL_CONNECT button handler. No dependency on CAT_STARTUP_COMMANDS.
+
+## SDR Manager Not Available — Circular Import (2026-03-21)
+**Symptom:** Dashboard SDR section showed "SDR manager not available" even when SDR was enabled in config.
+
+**Root cause:** `web_server.py` used `RTLAirbandManager` (defined in `gateway_core.py`) but never imported it. Couldn't add a top-level import: `gateway_core.py` imports `web_server.py` → circular import crash.
+
+**Fix:** Lazy import inside the `if shutil.which('rtl_airband'):` guard block: `from gateway_core import RTLAirbandManager`. Import happens once at runtime when the SDR branch is actually taken.
+
+**Lesson:** Circular imports between web_server.py and gateway_core.py require lazy imports for anything crossing from gateway_core into web_server.
+
+## setup_radio Commands Silently Dropped (2026-03-21)
+**Symptom:** On gateway startup with `CAT_STARTUP_COMMANDS = true`, channel/volume/power commands had no effect on the radio.
+
+**Root cause:** `setup_radio()` was called BEFORE the serial connect block in gateway startup. The serial port was not yet open, so all CAT commands were silently discarded.
+
+**Fix:** Moved the `!serial disconnect` + `!serial connect` block to run BEFORE `setup_radio()` call. Added explicit comment: "Serial connect — must happen before setup_radio so commands reach the radio."
+
+## TH9800 Serial Controls Dead After Gateway Restart (2026-03-21)
+**Symptom:** After any gateway restart, TH9800 VFO dials/buttons in web UI had no effect until user manually pressed TCP Disconnect then Connect in the dashboard.
+
+**Root cause (three layers):**
+1. **Double-STARTUP in TH9800_CAT login handler** — `handle_tcpserver_stream` called `exe_cmd(STARTUP)` on login if serial wasn't connected yet. Command got queued. When gateway then sent `!serial connect`, the connect handler ALSO sent STARTUP. Two back-to-back STARTUPs overwhelmed the radio's serial interface → RIGHT VFO went dead.
+2. **False-positive serial status check** — `_send_cmd("!serial status")` used 2s timeout, but TH9800_CAT sleeps 3s after login. Timeout expired, stale "not connected" response sat in socket, next read consumed it as "connected" (substring `'connected' in 'not connected'`). Gateway skipped `!serial connect` thinking serial was up when it wasn't.
+3. **No STARTUP on reconnect** — Even after fixing (1) and (2), when gateway restarted and serial was already connected from the prior session, no STARTUP was sent. Radio never re-broadcast its display state to the new gateway session → controls appeared dead.
+
+**Fix (three parts):**
+1. **TH9800_CAT.py login handler** — removed `exe_cmd(STARTUP)` entirely. The `!serial connect` handler is the sole owner of the STARTUP sequence.
+2. **gateway_core.py serial startup** — replaced status-check-then-maybe-connect with unconditional `!serial disconnect` + `!serial connect` cycle. Disconnect is a no-op if serial isn't connected; connect always runs STARTUP exactly once.
+3. **start.sh** — changed TH9800_CAT service handling from "start if not running" to "restart if running, start if stopped". Ensures serial is always in a clean disconnected state when the gateway comes up.
+
+**Lesson:** Never assume shared hardware state survives a process restart. Always cycle to a known clean state on startup rather than trying to detect and preserve prior state. The "skip if already connected" optimisation caused more problems than the brief reconnect delay it saved.
+
 ## KV4P Web UI Poll Overwriting User Input (2026-03-19)
 **Symptom:** CTCSS and other fields reset while user was trying to type/select a value.
 

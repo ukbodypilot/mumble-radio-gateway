@@ -81,7 +81,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `_drain()` must use single `_recv_line(0.1)` — loop version breaks all packet parsing
 - **Web radio control** (`/radio`): full front panel replica, `/catstatus` + `/catcmd` endpoints
 - **Graceful close (2026-03-12):** `close()` sets `_stop=True`, sends `!exit`, `shutdown(SHUT_RDWR)`, waits for drain thread
-- **Auto serial connect (2026-03-12):** On startup, queries `!serial status` — if disconnected, sends `!serial connect`. Refreshes display (VFO dial press) either way.
+- **Auto serial connect (2026-03-21):** On startup, always sends `!serial disconnect` then `!serial connect` (unconditional cycle — no status check, no stale response race). Calls `set_rts(True)` after success so dashboard shows "USB Controlled". SERIAL_CONNECT web handler does the same.
 
 ## Auto RTS for Playback, TTS & Announcements (2026-03-13)
 - **Playback (keys 1-9, 0):** Auto-sets RTS to Radio Controlled before playing, restores after
@@ -122,10 +122,11 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 ## PTT Methods
 - `PTT_METHOD`: `aioc` (default), `relay`, or `software`
-- AIOC: HID GPIO, Relay: CH340 USB relay, Software: CAT TCP `!ptt` toggle
-- Software PTT tracks state via `_software_ptt_on` (independent of `ptt_active` which is set in multiple places)
+- AIOC: HID GPIO, Relay: CH340 USB relay, Software: CAT TCP `!ptt on`/`!ptt off`
+- **CRITICAL:** Always use `!ptt on`/`!ptt off` (explicit state), never bare `!ptt` toggle (blind toggle causes state inversion if radio/gateway diverge)
 - Software PTT checks `_last_radio_rx` — refuses to key if radio hasn't sent data in >5 seconds (radio powered off)
 - RTS save/restore and VFO dial-press refresh are skipped in software PTT mode (they cause VFO switching artifacts)
+- `_software_ptt_on` tracker removed (2026-03-21) — made redundant by explicit on/off commands
 
 ## AIOC PTT — RTS Relay Coordination (CRITICAL, 2026-03-15)
 - **Hardware:** RTS line controls a relay switching radio's TX serial between USB dongle and radio front panel
@@ -222,7 +223,9 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 See bugs.md for full history. Key recent: DISPLAY_TEXT VFO misattribution (2026-03-13),
 RTS change corrupts display (2026-03-13), audio processing silent (scipy missing),
 WebSocket PCM double-push/latency, CAT serial orphans, ScriptProcessor buffer size,
-KV4P TX 20% audio dropout (2026-03-19), KV4P CTCSS wrong tone (DRA818 table off-by-one, 2026-03-19).
+KV4P TX 20% audio dropout (2026-03-19), KV4P CTCSS wrong tone (DRA818 table off-by-one, 2026-03-19),
+TH9800 PTT state inversion / blind toggle (2026-03-21), setup_radio before serial connect (2026-03-21),
+SDR manager circular import (2026-03-21).
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis

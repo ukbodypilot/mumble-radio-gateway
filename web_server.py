@@ -22,6 +22,7 @@ import numpy as np
 
 from audio_sources import generate_cw_pcm
 from smart_announce import SmartAnnouncementManager
+from cat_client import RadioCATClient
 
 # ============================================================================
 # WEB CONFIGURATION UI
@@ -384,6 +385,8 @@ class WebConfigServer:
             'ENABLE_PLAYBACK', 'PLAYBACK_DIRECTORY',
             'PLAYBACK_ANNOUNCEMENT_FILE', 'PLAYBACK_ANNOUNCEMENT_INTERVAL',
             'PLAYBACK_VOLUME', 'ENABLE_SOUNDBOARD',
+        ]),
+        ('cw', 'Text to CW', [
             'CW_WPM', 'CW_FREQUENCY', 'CW_VOLUME',
         ]),
         ('tts', 'Text-to-Speech', [
@@ -562,7 +565,7 @@ class WebConfigServer:
         # Initialize SDR manager if rtl_airband is available
         if shutil.which('rtl_airband'):
             try:
-                from gateway_core import RTLAirbandManager  # lazy — avoids circular import at module load
+                from gateway_core import RTLAirbandManager
                 self.sdr_manager = RTLAirbandManager(os.path.dirname(
                     getattr(self.config, '_config_path', '') or os.path.join(os.path.dirname(__file__), 'gateway_config.txt')))
             except Exception as e:
@@ -1072,19 +1075,25 @@ class WebConfigServer:
                     _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     _mic_src.client_connected = True
                     print(f"\n[WS-Mic] Browser mic connected from {_client_ip}")
-                    # Key PTT via CAT !ptt command (same as regular PTT button)
+                    # Key PTT on the selected TX radio
                     _gw = parent.gateway
                     _cat_ptt_keyed = False
-                    if _gw and _gw.cat_client:
+                    _ws_tx_radio = str(getattr(_gw.config, 'TX_RADIO', 'th9800')).lower() if _gw else 'th9800'
+                    if _gw:
                         try:
-                            _gw.cat_client._send_cmd("!ptt")
+                            if _ws_tx_radio == 'd75':
+                                _gw._ptt_d75(True)
+                            elif _ws_tx_radio == 'kv4p':
+                                _gw._ptt_kv4p(True)
+                            elif _gw.cat_client:
+                                _gw.cat_client._send_cmd("!ptt on")
                             _cat_ptt_keyed = True
                             _gw.ptt_active = True
                             _gw._webmic_ptt_active = True
                             _gw.last_sound_time = time.time()
-                            print(f"[WS-Mic] PTT keyed via CAT !ptt")
+                            print(f"[WS-Mic] PTT keyed via {_ws_tx_radio}")
                         except Exception as _ce:
-                            print(f"[WS-Mic] CAT PTT key failed: {_ce}")
+                            print(f"[WS-Mic] PTT key failed: {_ce}")
                     try:
                         while True:
                             try:
@@ -1127,14 +1136,19 @@ class WebConfigServer:
                     finally:
                         _mic_src.client_connected = False
                         _mic_src._sub_buffer = b''
-                        # Unkey PTT via CAT !ptt toggle
+                        # Unkey PTT on the same radio that was keyed
                         if _gw:
                             _gw._webmic_ptt_active = False
-                        if _gw and _gw.cat_client and _cat_ptt_keyed:
+                        if _gw and _cat_ptt_keyed:
                             try:
-                                _gw.cat_client._send_cmd("!ptt")
+                                if _ws_tx_radio == 'd75':
+                                    _gw._ptt_d75(False)
+                                elif _ws_tx_radio == 'kv4p':
+                                    _gw._ptt_kv4p(False)
+                                elif _gw.cat_client:
+                                    _gw.cat_client._send_cmd("!ptt off")
                                 _gw.ptt_active = False
-                                print(f"[WS-Mic] PTT unkeyed via CAT !ptt")
+                                print(f"[WS-Mic] PTT unkeyed via {_ws_tx_radio}")
                             except Exception:
                                 pass
                         print(f"[WS-Mic] Disconnected {_client_ip}")
@@ -1427,13 +1441,15 @@ class WebConfigServer:
                             error = 'playback not available'
                         else:
                             gw = parent.gateway
+                            _wpm  = int(data.get('wpm',  gw.config.CW_WPM))
+                            _freq = int(data.get('freq', gw.config.CW_FREQUENCY))
+                            _vol  = float(data.get('vol', gw.config.CW_VOLUME))
                             import threading
                             def _do_cw():
-                                pcm = generate_cw_pcm(text, gw.config.CW_WPM,
-                                                      gw.config.CW_FREQUENCY, 48000)
-                                if gw.config.CW_VOLUME != 1.0:
+                                pcm = generate_cw_pcm(text, _wpm, _freq, 48000)
+                                if _vol != 1.0:
                                     import numpy as _np
-                                    pcm = _np.clip(pcm.astype(_np.float32) * gw.config.CW_VOLUME,
+                                    pcm = _np.clip(pcm.astype(_np.float32) * _vol,
                                                    -32768, 32767).astype(_np.int16)
                                 import wave as _wave, tempfile as _tmp
                                 tf = _tmp.NamedTemporaryFile(suffix='.wav', delete=False, prefix='cw_')
@@ -1858,7 +1874,16 @@ class WebConfigServer:
                         data = json_mod.loads(body)
                         cmd = data.get('cmd', '')
                         gw = parent.gateway
-                        if cmd == 'CAT_DISCONNECT' and gw and gw.cat_client:
+                        if cmd == 'SET_TX_RADIO' and gw:
+                            radio = data.get('radio', '').lower()
+                            if radio in ('th9800', 'd75', 'kv4p'):
+                                gw.config.TX_RADIO = radio
+                                result = {'ok': True, 'radio': radio}
+                            else:
+                                result = {'ok': False, 'error': 'unknown radio'}
+                        elif cmd == 'GET_TX_RADIO' and gw:
+                            result = {'ok': True, 'radio': str(getattr(gw.config, 'TX_RADIO', 'th9800')).lower()}
+                        elif cmd == 'CAT_DISCONNECT' and gw and gw.cat_client:
                             gw.cat_client._stop = True
                             gw.cat_client.close()
                             gw.cat_client = None
@@ -1889,29 +1914,10 @@ class WebConfigServer:
                             already = ok and 'already' in resp
                             if ok:
                                 cat._serial_connected = True
-                            if ok and not already:
-                                # Display refresh: press+release each VFO dial
-                                time.sleep(0.3)
-                                cat._pause_drain()
                                 try:
-                                    cat._send_button([0x00, 0x25], 3, 5)  # L_DIAL_PRESS
-                                    time.sleep(0.15)
-                                    cat._send_button_release()
-                                    time.sleep(0.3)
-                                    cat._drain(0.5)
-                                    cat._send_button([0x00, 0xA5], 3, 5)  # R_DIAL_PRESS
-                                    time.sleep(0.15)
-                                    cat._send_button_release()
-                                    time.sleep(0.3)
-                                    cat._drain(0.5)
-                                finally:
-                                    cat._drain_paused = False
-                                # Read RTS state from saved file (TH9800 persists it)
-                                try:
-                                    with open('/tmp/th9800_rts_state', 'r') as f:
-                                        cat._rts_usb = f.read().strip() == '1'
+                                    cat.set_rts(True)
                                 except Exception:
-                                    cat._rts_usb = None
+                                    pass
 
                             print(f"\n  [CAT] Serial connect: {resp}")
                             result = {'ok': ok, 'status': resp or ''}
@@ -1928,26 +1934,16 @@ class WebConfigServer:
                             resp = gw.cat_client._send_cmd("!serial status")
                             result = {'ok': True, 'status': resp or 'unknown'}
                         elif cmd == 'MIC_PTT' and gw:
-                            # Key/unkey TH-9800 directly, regardless of TX_RADIO config.
-                            # Uses the TH9800PTT controller which handles AIOC/relay/software
-                            # based on PTT_METHOD, and owns its own keyed-state tracking.
-                            ptt = getattr(gw, 'ptt_th9800', None)
-                            if ptt is not None:
-                                if ptt.is_keyed():
-                                    ptt.unkey()
-                                else:
-                                    ptt.key()
+                            # Key/unkey TH-9800 via configured PTT_METHOD, regardless of TX_RADIO
+                            gw._web_th9800_ptt = not getattr(gw, '_web_th9800_ptt', False)
+                            state = gw._web_th9800_ptt
+                            method = str(getattr(gw.config, 'PTT_METHOD', 'aioc')).lower()
+                            if method == 'relay':
+                                gw._ptt_relay(state)
+                            elif method == 'software':
+                                gw._ptt_software(state)
                             else:
-                                # Fallback for startup edge case
-                                gw._web_th9800_ptt = not getattr(gw, '_web_th9800_ptt', False)
-                                state = gw._web_th9800_ptt
-                                method = str(getattr(gw.config, 'PTT_METHOD', 'aioc')).lower()
-                                if method == 'relay':
-                                    gw._ptt_relay(state)
-                                elif method == 'software':
-                                    gw._ptt_software(state)
-                                else:
-                                    gw._ptt_aioc(state)
+                                gw._ptt_aioc(state)
                             result = {'ok': True}
                         elif cmd == 'CAT_RECONNECT' and gw:
                             if gw.cat_client:
@@ -5265,7 +5261,7 @@ function pollStatus() {
       buildChannelGrid(d.channels);
       // Error display — track poll-set errors so they clear when status recovers
       var statusEl = document.getElementById('sdr-apply-status');
-      if (d.error) {
+      if (d.error && d.error !== 'SDR manager not available') {
         statusEl.textContent = d.error;
         statusEl.style.color = '#ff4444';
         _sdrPollErrorActive = true;
@@ -5643,12 +5639,31 @@ pollTimer = setInterval(pollStatus, 1000);
       <span id="bc-status" style="font-family:monospace; font-size:0.85em;">...</span>
     </div>
   </div>
-  <div class="ctrl-group bottom-btns" style="min-width:0;" id="ptt-relay-group">
-    <h3>PTT &amp; Relay</h3>
-    <div style="display:flex; flex-direction:column; gap:3px;">
-      <button onclick="sendKey('p')" id="btn-p">Manual PTT</button>
-      <button onclick="sendKey('j')" id="btn-j">Radio Power</button>
-      <button onclick="sendKey('h')" id="btn-h">Charger Toggle</button>
+  <div class="ctrl-group bottom-btns" style="width:fit-content;" id="ptt-relay-group">
+    <h3>PTT</h3>
+    <div style="display:flex; gap:10px; align-items:flex-start;">
+      <div style="display:flex; flex-direction:column; gap:3px;">
+        <button onclick="sendKey('p')" id="btn-p">Manual PTT</button>
+        <button onclick="sendKey('j')" id="btn-j">Radio Power</button>
+        <button onclick="sendKey('h')" id="btn-h">Charger Toggle</button>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+        <div style="display:flex; align-items:center; gap:6px; width:100%;">
+          <label style="color:#888; font-size:0.8em; white-space:nowrap;">Radio</label>
+          <select id="webmic-radio" onchange="setWebTxRadio(this.value)"
+            style="flex:1; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:3px 5px; font-size:0.85em;">
+            <option value="th9800">TH9800</option>
+            <option value="d75">D75</option>
+            <option value="kv4p">KV4P</option>
+          </select>
+        </div>
+        <div id="db-mic-level" style="width:70px; height:5px; background:var(--t-btn); border-radius:3px; overflow:hidden;">
+          <div id="db-mic-level-bar" style="height:100%; width:0%; background:#2ecc71; transition:width 0.1s;"></div>
+        </div>
+        <button id="db-mic-ptt-btn" style="width:70px; height:70px; font-size:1.1em; font-weight:bold; border-radius:50%; background:#1a3a1a; border:2px solid #2ecc71; color:#e0e0e0; cursor:pointer;"
+          onclick="dbMicPTTToggle()">MIC<br>PTT</button>
+        <span id="db-mic-status" style="color:#888; font-size:0.75em;">Ready</span>
+      </div>
     </div>
   </div>
   <div class="ctrl-group" style="min-width:300px; width:300px;" id="aitext-group">
@@ -5685,8 +5700,21 @@ pollTimer = setInterval(pollStatus, 1000);
   </div>
   <div class="ctrl-group" style="min-width:220px; width:220px;" id="cw-group">
     <h3>Text to CW</h3>
-    <div style="display:flex; flex-direction:column; gap:3px;">
+    <div style="display:flex; flex-direction:column; gap:4px;">
       <textarea id="cw-text" rows="3" style="width:100%; box-sizing:border-box; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:6px; font-family:monospace; font-size:0.95em; resize:vertical;" placeholder="Enter text for CW..."></textarea>
+      <div style="display:flex; gap:4px; align-items:center;">
+        <label style="color:#888; font-size:0.8em; white-space:nowrap; width:3em;">WPM</label>
+        <input id="cw-wpm" type="number" min="5" max="60" value="20" style="width:55px; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:3px 5px; font-size:0.9em;">
+      </div>
+      <div style="display:flex; gap:4px; align-items:center;">
+        <label style="color:#888; font-size:0.8em; white-space:nowrap; width:3em;">Freq</label>
+        <input id="cw-freq" type="number" min="200" max="1200" value="600" style="width:55px; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:3px 5px; font-size:0.9em;">
+        <span style="color:#888; font-size:0.8em;">Hz</span>
+      </div>
+      <div style="display:flex; gap:4px; align-items:center;">
+        <label style="color:#888; font-size:0.8em; white-space:nowrap; width:3em;">Vol</label>
+        <input id="cw-vol" type="number" min="0.1" max="2.0" step="0.1" value="1.0" style="width:55px; background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border); border-radius:4px; padding:3px 5px; font-size:0.9em;">
+      </div>
       <button onclick="sendCW()" id="btn-cw-send" style="width:100%;">Send CW</button>
     </div>
     <div id="cw-status" style="font-family:monospace; font-size:0.85em; color:#888; margin-top:6px;">Ready</div>
@@ -5791,10 +5819,14 @@ function sendCW() {
   if (!text) return;
   var btn = document.getElementById('btn-cw-send');
   var st = document.getElementById('cw-status');
+  var wpm  = parseFloat(document.getElementById('cw-wpm').value)  || 20;
+  var freq = parseFloat(document.getElementById('cw-freq').value) || 600;
+  var vol  = parseFloat(document.getElementById('cw-vol').value)  || 1.0;
   btn.disabled = true;
   st.textContent = 'Sending...';
   st.style.color = '#f1c40f';
-  fetch('/cw', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:text})})
+  fetch('/cw', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text:text, wpm:wpm, freq:freq, vol:vol})})
     .then(function(r){return r.json()})
     .then(function(d){
       if(d.ok) { st.textContent = 'Sent — playing'; st.style.color = '#2ecc71'; }
@@ -6511,6 +6543,71 @@ setInterval(updateAutomation, 2000);
 setInterval(updateAutoHistory, 5000);
 updateAutomation();
 updateAutoHistory();
+
+// --- Web Mic PTT ---
+var _dbMicWs=null, _dbMicStream=null, _dbMicCtx=null, _dbMicProc=null, _dbMicActive=false;
+
+function setWebTxRadio(radio) {
+  fetch('/catcmd', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cmd:'SET_TX_RADIO', radio:radio})}).catch(function(){});
+}
+
+function dbMicPTTToggle() {
+  if (_dbMicActive) { dbMicCleanup(); return; }
+  _dbMicActive = true;
+  var btn=document.getElementById('db-mic-ptt-btn'), st=document.getElementById('db-mic-status');
+  btn.style.background='#c0392b'; btn.style.borderColor='#e74c3c'; btn.style.color='#fff';
+  st.textContent='Connecting...'; st.style.color='#f39c12';
+  navigator.mediaDevices.getUserMedia(
+    {audio:{sampleRate:48000,channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}}
+  ).then(function(stream) {
+    _dbMicStream = stream;
+    var proto = location.protocol==='https:' ? 'wss:' : 'ws:';
+    _dbMicWs = new WebSocket(proto+'//'+location.host+'/ws_mic');
+    _dbMicWs.binaryType = 'arraybuffer';
+    _dbMicWs.onopen = function() {
+      st.textContent='TX \u2014 click to stop'; st.style.color='#e74c3c';
+      _dbMicCtx = new AudioContext({sampleRate:48000});
+      var src = _dbMicCtx.createMediaStreamSource(stream);
+      var proc = _dbMicCtx.createScriptProcessor(2048,1,1);
+      proc.onaudioprocess = function(e) {
+        if (!_dbMicWs || _dbMicWs.readyState!==1) return;
+        var f32=e.inputBuffer.getChannelData(0), buf=new ArrayBuffer(f32.length*2), i16=new Int16Array(buf), peak=0;
+        for (var i=0;i<f32.length;i++) { var s=Math.max(-1,Math.min(1,f32[i])); i16[i]=s<0?s*32768:s*32767; if(Math.abs(f32[i])>peak)peak=Math.abs(f32[i]); }
+        _dbMicWs.send(buf);
+        document.getElementById('db-mic-level-bar').style.width=Math.min(100,Math.round(peak*100))+'%';
+      };
+      src.connect(proc); proc.connect(_dbMicCtx.destination); _dbMicProc=proc;
+    };
+    _dbMicWs.onerror=function(){dbMicCleanup();};
+    _dbMicWs.onclose=function(){dbMicCleanup();};
+  }).catch(function(){
+    _dbMicActive=false;
+    document.getElementById('db-mic-ptt-btn').style.background='#1a3a1a';
+    document.getElementById('db-mic-ptt-btn').style.borderColor='#2ecc71';
+    document.getElementById('db-mic-status').textContent='Mic denied';
+    document.getElementById('db-mic-status').style.color='#e74c3c';
+  });
+}
+
+function dbMicCleanup() {
+  _dbMicActive=false;
+  if(_dbMicProc){_dbMicProc.disconnect();_dbMicProc=null;}
+  if(_dbMicCtx){_dbMicCtx.close().catch(function(){});_dbMicCtx=null;}
+  if(_dbMicStream){_dbMicStream.getTracks().forEach(function(t){t.stop();});_dbMicStream=null;}
+  if(_dbMicWs){try{_dbMicWs.close();}catch(e){}  _dbMicWs=null;}
+  var btn=document.getElementById('db-mic-ptt-btn');
+  btn.style.background='#1a3a1a'; btn.style.borderColor='#2ecc71'; btn.style.color='#e0e0e0';
+  document.getElementById('db-mic-level-bar').style.width='0%';
+  document.getElementById('db-mic-status').textContent='Ready';
+  document.getElementById('db-mic-status').style.color='#888';
+}
+
+// Initialise radio dropdown from config TX_RADIO
+fetch('/catcmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:'GET_TX_RADIO'})})
+  .then(function(r){return r.json();}).then(function(d){
+    if(d.ok && d.radio){var s=document.getElementById('webmic-radio');if(s)s.value=d.radio;}
+  }).catch(function(){});
 </script>
 '''
         return self._wrap_html('Dashboard', body)
