@@ -127,6 +127,8 @@ class WebConfigServer:
         'KV4P_PROC_NOTCH_Q': 'quality factor (higher = narrower)',
         # ADS-B
         'ADSB_PORT': 'port dump1090-fa web server listens on (default 30080, avoids conflict with gateway on 8080)',
+        'USBIP_SERVER': 'IP address or hostname of the USB/IP server (usbipd)',
+        'USBIP_DEVICES': 'comma-separated bus IDs to attach, e.g. 1-1.4,1-1.3 — leave empty to attach all exported devices',
         # SDR 1
         'SDR_DEVICE_NAME': 'PipeWire sink or ALSA device (e.g. hw:6,1)',
         'SDR_MIX_RATIO': 'multiplier (when ducking disabled)',
@@ -489,6 +491,9 @@ class WebConfigServer:
             'D75_PROC_ENABLE_NOISE_GATE', 'D75_PROC_NOISE_GATE_THRESHOLD',
             'D75_PROC_NOISE_GATE_ATTACK', 'D75_PROC_NOISE_GATE_RELEASE',
         ]),
+        ('usbip', 'USB/IP Remote Devices', [
+            'ENABLE_USBIP', 'USBIP_SERVER', 'USBIP_DEVICES',
+        ]),
         ('vad', 'Voice Activity Detection', [
             'ENABLE_VAD', 'VAD_THRESHOLD', 'VAD_ATTACK', 'VAD_RELEASE',
             'VAD_MIN_DURATION',
@@ -524,6 +529,7 @@ class WebConfigServer:
         self._encoder_stdin = None    # stdin pipe for encoder
         self._last_audio_push = 0     # monotonic time of last real audio
         self.sdr_manager = None       # RTLAirbandManager instance
+        self.usbip_manager = None     # USBIPManager instance
         # WebSocket PCM streaming (low-latency)
         self._ws_clients = []         # list of (socket, queue) tuples for WebSocket PCM clients
         self._ws_lock = threading.Lock()
@@ -590,6 +596,16 @@ class WebConfigServer:
                         print(f"  [SDR] Autostart: using last settings — {'OK' if result.get('ok') else result.get('error', 'failed')}")
                 except Exception as e:
                     print(f"  [SDR] Autostart failed: {e}")
+
+        # Initialize USB/IP manager
+        if getattr(self.config, 'ENABLE_USBIP', False):
+            try:
+                from gateway_core import USBIPManager
+                self.usbip_manager = USBIPManager(self.config)
+                self.usbip_manager.start()
+            except Exception as e:
+                print(f"  [USBIP] Manager init failed: {e}")
+                self.usbip_manager = None
 
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"  # Required for WebSocket upgrade
@@ -953,6 +969,23 @@ class WebConfigServer:
                             parent._adsb_prev_t = _now_t
                         except Exception:
                             pass
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-cache')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(data).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                elif self.path == '/usbipstatus':
+                    import json as json_mod
+                    if parent.usbip_manager:
+                        data = parent.usbip_manager.get_status()
+                    else:
+                        data = {'enabled': bool(getattr(parent.config, 'ENABLE_USBIP', False)),
+                                'server': str(getattr(parent.config, 'USBIP_SERVER', '')),
+                                'server_reachable': False, 'devices': [],
+                                'last_error': '', 'last_check': None}
                     try:
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
@@ -5748,6 +5781,17 @@ pollTimer = setInterval(pollStatus, 1000);
   </div>
 </div>
 
+<div id="usbip-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <h3 style="margin:0; color:var(--t-accent); font-size:1.1em;">USB/IP Remote Devices</h3>
+    <span id="usbip-server-label" style="font-size:0.85em; color:#aaa;"></span>
+  </div>
+  <div id="usbip-status-row" class="st-row" style="margin-bottom:8px;">
+    <div class="st-item"><span class="st-label">Server:</span><span id="usbip-server-dot" class="st-val">&#x25cf;</span></div>
+  </div>
+  <div id="usbip-devices-list" style="margin-top:6px; font-size:0.9em; color:#ccc;">No devices</div>
+</div>
+
 <div class="controls">
   <div class="ctrl-group" id="mute-group">
     <h3>Mute Controls</h3>
@@ -6771,6 +6815,36 @@ function updateAdsb() {
 }
 setInterval(updateAdsb, 3000);
 updateAdsb();
+
+// --- USB/IP Status ---
+var _usbipBusy = false;
+function updateUsbip() {
+  if (_usbipBusy) return;
+  _usbipBusy = true;
+  var _ac = new AbortController(); setTimeout(function(){_ac.abort();}, 5000);
+  fetch('/usbipstatus', {signal:_ac.signal}).then(function(r){return r.json();}).then(function(d) {
+    var panel = document.getElementById('usbip-panel');
+    if (!d.enabled) { panel.style.display='none'; return; }
+    panel.style.display='';
+    document.getElementById('usbip-server-label').textContent = d.server || '';
+    var dot = document.getElementById('usbip-server-dot');
+    dot.textContent = '\u25cf';
+    dot.style.color = d.server_reachable ? '#2ecc71' : '#e74c3c';
+    dot.title = d.server_reachable ? 'reachable' : (d.last_error || 'unreachable');
+    var list = document.getElementById('usbip-devices-list');
+    if (!d.devices || d.devices.length === 0) {
+      list.textContent = d.server_reachable ? 'No exported devices' : 'Server unreachable';
+    } else {
+      list.innerHTML = d.devices.map(function(dev) {
+        var dot = '<span style="color:' + (dev.attached ? '#2ecc71' : '#e74c3c') + '">&#x25cf;</span>';
+        var status = dev.attached ? 'attached' : 'not attached';
+        return dot + ' <b>' + dev.bus_id + '</b> &nbsp;' + dev.description + ' <span style="color:#888;font-size:0.85em;">(' + status + ')</span>';
+      }).join('<br>');
+    }
+  }).catch(function(){}).finally(function(){ _usbipBusy=false; });
+}
+setInterval(updateUsbip, 10000);
+updateUsbip();
 
 // --- Web Mic PTT ---
 var _dbMicWs=null, _dbMicStream=null, _dbMicCtx=null, _dbMicProc=null, _dbMicActive=false;
