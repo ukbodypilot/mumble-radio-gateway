@@ -34,18 +34,20 @@ if [[ $DISTRO == "debian" ]]; then
     apt-get update -qq
     # Try kernel-version-specific tools first, fall back to generic
     KVER=$(uname -r)
-    if apt-get install -y -qq usbip "linux-tools-${KVER}" 2>/dev/null; then
-        USBIPD_BIN=$(find /usr/lib/linux-tools -name usbipd 2>/dev/null | sort | tail -1)
-    fi
-    if [[ -z "$USBIPD_BIN" ]]; then
-        apt-get install -y -qq usbip linux-tools-generic
-        USBIPD_BIN=$(find /usr/lib/linux-tools -name usbipd 2>/dev/null | sort | tail -1)
-    fi
-    # Raspberry Pi / custom kernel — usbip package puts it in /usr/sbin
-    if [[ -z "$USBIPD_BIN" ]]; then
-        USBIPD_BIN=$(command -v usbipd 2>/dev/null || true)
-    fi
-    [[ -z "$USBIPD_BIN" ]] && error "Could not find usbipd binary after install"
+    # Install usbip userspace tools — package name varies by distro:
+    #   Debian/MX/RPiOS: 'usbip' contains usbipd in /usr/sbin
+    #   Ubuntu: usbipd lives in linux-tools-$(uname -r) or linux-tools-generic
+    apt-get install -y -qq usbip 2>/dev/null || true
+    # Try kernel-version-specific tools (Ubuntu)
+    apt-get install -y -qq "linux-tools-${KVER}" 2>/dev/null || true
+    # Try generic tools (Ubuntu fallback)
+    apt-get install -y -qq linux-tools-generic 2>/dev/null || true
+
+    # Locate usbipd — check common locations
+    USBIPD_BIN=$(find /usr/lib/linux-tools -name usbipd 2>/dev/null | sort | tail -1)
+    [[ -z "$USBIPD_BIN" ]] && USBIPD_BIN=$(command -v usbipd 2>/dev/null || true)
+    [[ -z "$USBIPD_BIN" ]] && USBIPD_BIN=$(find /usr/sbin /usr/bin /sbin -name usbipd 2>/dev/null | head -1)
+    [[ -z "$USBIPD_BIN" ]] && error "Could not find usbipd — install usbip package manually"
     info "usbipd at: $USBIPD_BIN"
 else
     pacman -Sy --noconfirm --needed usbip
