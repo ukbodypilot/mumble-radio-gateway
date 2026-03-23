@@ -168,13 +168,16 @@ class SerialManager:
         print("[Serial] Disconnected")
 
     def send_raw(self, cmd):
-        """Send a raw CAT command (no trailing \\r needed), return stripped response."""
+        """Send a raw CAT command (no trailing \\r needed), return stripped response.
+
+        Only marks disconnected on hard socket errors (reset/broken pipe),
+        NOT on timeouts — BT RFCOMM can be slow and a timeout is not a disconnect.
+        """
         with self._lock:
             if not self._ser:
                 return None
             try:
                 self._ser.sendall((cmd.strip() + '\r').encode('ascii'))
-                # Read until \r with a 2-second timeout
                 buf = b''
                 deadline = time.time() + 2.0
                 while time.time() < deadline:
@@ -183,15 +186,20 @@ class SerialManager:
                     except socket.timeout:
                         break
                     if not chunk:
-                        break
+                        # Empty recv = connection closed
+                        self._connected = False
+                        return None
                     buf += chunk
                     if b'\r' in buf:
                         break
                 return buf.decode('ascii', errors='ignore').strip() if buf else None
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                print(f"[Serial] Connection lost: {e}")
+                self._connected = False
+                return None
             except Exception as e:
                 if VERBOSE:
                     print(f"[Serial] send_raw error: {e}")
-                self._connected = False
                 return None
 
     def to_dict(self):
@@ -262,7 +270,7 @@ class SerialManager:
                 self._poll_state()
             except Exception:
                 pass
-            self._poll_stop.wait(2.0)
+            self._poll_stop.wait(10.0)
 
     def _poll_state(self):
         """Query frequency, S-meter, squelch, mode, power for both bands."""
