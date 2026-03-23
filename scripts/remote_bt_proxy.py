@@ -495,9 +495,7 @@ class AudioManager:
             return True
 
         except Exception as e:
-            import traceback
-            print(f"[Audio] Connect failed at step above: {e}")
-            traceback.print_exc()
+            print(f"[Audio] Connect failed: {e}")
             self._close_sockets()
             return False
 
