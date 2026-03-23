@@ -276,16 +276,17 @@ class SerialManager:
         # Query initial frequency and s-meter for both bands
         for band in (0, 1):
             r = self.send_raw(f"SM {band}")
-            print(f"[Serial] SM {band} init response: {r!r}")
             if r:
                 self._process_message(r)
             r = self.send_raw(f"FO {band}")
-            print(f"[Serial] FO {band} init response: {r!r}")
             if r:
                 self._process_message(r)
+            else:
+                print(f"[Serial] WARNING: FO {band} got no response — frequency will be blank until VFO moves")
         with self._state_lock:
             for b in (0, 1):
-                print(f"[Serial] Band {b} initial state: {self.band[b]}")
+                bd = self.band[b]
+                print(f"[Serial] Band {'A' if b == 0 else 'B'}: freq={bd.get('frequency','?')} sm={bd.get('s_meter','?')}")
 
     def _read_loop(self):
         """Read RFCOMM bytes, split on \\r, put lines in _rx_queue."""
@@ -361,7 +362,7 @@ class SerialManager:
         """Update cached state from a streaming CAT message."""
         if not line:
             return
-        if VERBOSE or line.startswith('FQ') or line.startswith('SM') or line.startswith('BY'):
+        if VERBOSE or line.startswith('FQ') or line.startswith('BY'):
             print(f"[Serial] << {line!r}")
         try:
             if line.startswith('FQ') and ',' in line:
