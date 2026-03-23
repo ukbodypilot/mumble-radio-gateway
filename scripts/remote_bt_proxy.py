@@ -308,24 +308,29 @@ class AudioManager:
         """Connect HSP RFCOMM + SCO. send_ckpd=False when CAT serial is open."""
         try:
             # RFCOMM ch1 = Headset Audio Gateway
+            print(f"[Audio] Connecting RFCOMM ch1 to {self._mac}...")
             self._rfcomm = socket.socket(socket.AF_BLUETOOTH,
                                          socket.SOCK_STREAM, BTPROTO_RFCOMM)
             self._rfcomm.settimeout(5.0)
             self._rfcomm.connect((self._mac, 1))
+            print(f"[Audio] RFCOMM ch1 connected")
             time.sleep(0.3)
 
             # SCO socket — must be BEFORE CKPD
+            print(f"[Audio] Connecting SCO...")
             self._sco = socket.socket(socket.AF_BLUETOOTH,
                                       socket.SOCK_SEQPACKET, BTPROTO_SCO)
             opt = struct.pack("H", BT_VOICE_CVSD_16BIT)
             self._sco.setsockopt(SOL_BLUETOOTH, BT_VOICE, opt)
             self._sco.settimeout(5.0)
             self._sco.connect(self._mac)
+            print(f"[Audio] SCO connected")
 
             if send_ckpd:
                 time.sleep(0.1)
                 self._rfcomm.send(b'\r\nAT+CKPD=200\r\n')
                 time.sleep(0.1)
+                print(f"[Audio] CKPD sent")
 
             self._sco.settimeout(1.0)
             self._connected = True
@@ -340,7 +345,9 @@ class AudioManager:
             return True
 
         except Exception as e:
-            print(f"[Audio] Connect failed: {e}")
+            import traceback
+            print(f"[Audio] Connect failed at step above: {e}")
+            traceback.print_exc()
             self._close_sockets()
             return False
 
