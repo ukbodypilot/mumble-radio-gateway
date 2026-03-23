@@ -26,7 +26,9 @@ Gateway config (on the gateway machine):
   D75_AUDIO_PORT = 9751
 """
 
+import ctypes
 import json
+import os
 import socket
 import struct
 import subprocess
@@ -50,6 +52,27 @@ BT_VOICE_CVSD_16BIT = 0x0060
 SOL_SCO             = 17
 SCO_OPTIONS         = 1
 AUDIO_FRAME_SIZE    = 48     # bytes per SCO frame (D75 uses 48-byte SCO frames)
+
+
+# ── SCO connect workaround ─────────────────────────────────────────────────────
+# Python's socket.connect() for BTPROTO_SCO has inconsistent address parsing
+# across distros/versions. Call C connect() directly with a hand-built sockaddr.
+
+_AF_BLUETOOTH = 31   # same as socket.AF_BLUETOOTH
+
+def _sco_connect(sock, mac):
+    """Connect a BTPROTO_SCO socket by calling libc connect() via ctypes.
+
+    Builds sockaddr_sco { sa_family_t(2), bdaddr_t(6) } manually.
+    bdaddr is stored little-endian (reversed MAC octets).
+    """
+    bdaddr = bytes(reversed([int(x, 16) for x in mac.split(':')]))
+    sockaddr = struct.pack('=H6s', _AF_BLUETOOTH, bdaddr)
+    libc = ctypes.CDLL(None, use_errno=True)
+    ret = libc.connect(sock.fileno(), sockaddr, ctypes.c_uint32(len(sockaddr)))
+    if ret < 0:
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -323,7 +346,7 @@ class AudioManager:
             opt = struct.pack("H", BT_VOICE_CVSD_16BIT)
             self._sco.setsockopt(SOL_BLUETOOTH, BT_VOICE, opt)
             self._sco.settimeout(5.0)
-            self._sco.connect(self._mac)
+            _sco_connect(self._sco, self._mac)
             print(f"[Audio] SCO connected")
 
             if send_ckpd:
