@@ -29,6 +29,7 @@ Gateway config (on the gateway machine):
 import ctypes
 import json
 import os
+import queue as _queue_mod
 import socket
 import struct
 import subprocess
@@ -109,31 +110,37 @@ def ensure_paired(mac):
 class SerialManager:
     """RFCOMM ch2 serial connection to D75 for CAT control.
 
-    Binds /dev/rfcomm0 via the `rfcomm` utility (avoids conflict with SCO
-    audio on ch1, matching the pattern used by D75_CAT.py).
-    Maintains a background poll thread that keeps radio state fresh.
-    All sends are serialised via a lock so the poll thread and CAT server
-    can both call send_raw() safely.
+    Architecture:
+      - A dedicated read thread drains the RFCOMM socket into _rx_queue.
+      - send_raw() holds _send_lock (one command at a time), drains any
+        pending streaming messages, sends the command, then waits for a
+        matching response from the queue.
+      - A poll/stream thread drains _rx_queue when no command is in flight,
+        processing streaming messages (FQ, SM, TX/RX, etc.).
+      - AI 1 is sent after init to enable real-time push updates so the
+        gateway sees live frequency, S-meter and TX state.
     """
 
     def __init__(self, mac):
-        self._mac = mac
-        self._ser = None
-        self._lock = threading.Lock()
-        self._connected = False
-
-        # Cached radio state (updated by _poll_loop)
+        self._mac        = mac
+        self._ser        = None
+        self._connected  = False
+        self._send_lock  = threading.Lock()
+        self._rx_queue   = _queue_mod.Queue()
         self._state_lock = threading.Lock()
-        self.model_id     = ''
-        self.fw_version   = ''
-        self.serial_number = ''
-        self.band         = [{}, {}]
-        self.active_band  = 0
-        self.dual_band    = 0
-        self.bluetooth    = False
-        self.transmitting = False
 
-        self._poll_stop   = threading.Event()
+        # Cached radio state
+        self.model_id      = ''
+        self.fw_version    = ''
+        self.serial_number = ''
+        self.band          = [{}, {}]
+        self.active_band   = 0
+        self.dual_band     = 0
+        self.bluetooth     = False
+        self.transmitting  = False
+
+        self._stop_evt    = threading.Event()
+        self._read_thread = None
         self._poll_thread = None
 
     # ── public ─────────────────────────────────────────────────────────────────
@@ -143,17 +150,26 @@ class SerialManager:
         return self._connected
 
     def connect(self):
-        """Connect via raw RFCOMM socket to D75 ch2 (SPP/CAT). No sudo needed."""
+        """Connect via raw RFCOMM socket to D75 ch2 (SPP/CAT)."""
         try:
             sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, BTPROTO_RFCOMM)
             sock.settimeout(8.0)
-            sock.connect((self._mac, 2))   # channel 2 = SPP
+            sock.connect((self._mac, 2))
             sock.settimeout(1.0)
             self._ser = sock
             self._connected = True
+            self._stop_evt.clear()
+            # Read thread must start before any send_raw() calls
+            self._read_thread = threading.Thread(
+                target=self._read_loop, daemon=True, name="serial-read")
+            self._read_thread.start()
             print(f"[Serial] Connected to {self._mac} ch2 (raw RFCOMM)")
             self._init_radio()
-            self._start_poll()
+            # Enable real-time push updates (FQ, SM, TX/RX stream to us)
+            self.send_raw("AI 1")
+            self._poll_thread = threading.Thread(
+                target=self._stream_loop, daemon=True, name="serial-stream")
+            self._poll_thread.start()
             return True
         except Exception as e:
             print(f"[Serial] Connect failed: {e}")
@@ -161,55 +177,56 @@ class SerialManager:
             return False
 
     def disconnect(self):
-        self._poll_stop.set()
-        if self._poll_thread:
-            self._poll_thread.join(timeout=3)
+        self._stop_evt.set()
+        for t in (self._poll_thread, self._read_thread):
+            if t:
+                t.join(timeout=3)
         self._cleanup()
         print("[Serial] Disconnected")
 
     def send_raw(self, cmd):
-        """Send a raw CAT command (no trailing \\r needed), return stripped response.
+        """Send a CAT command and return the matching response line.
 
-        Only marks disconnected on hard socket errors (reset/broken pipe),
-        NOT on timeouts — BT RFCOMM can be slow and a timeout is not a disconnect.
+        Drains any pending streaming messages first (updating state from each),
+        then waits for a response whose first token matches the command code.
         """
-        with self._lock:
-            if not self._ser:
+        cmd_code = cmd.strip().split()[0].upper()
+        with self._send_lock:
+            if not self._ser or not self._connected:
                 return None
+            # Drain stale streaming messages before sending
+            while True:
+                try:
+                    self._process_message(self._rx_queue.get_nowait())
+                except _queue_mod.Empty:
+                    break
+            # Send command
             try:
                 self._ser.sendall((cmd.strip() + '\r').encode('ascii'))
-                buf = b''
-                deadline = time.time() + 2.0
-                while time.time() < deadline:
-                    try:
-                        chunk = self._ser.recv(256)
-                    except socket.timeout:
-                        break
-                    if not chunk:
-                        # Empty recv = connection closed
-                        self._connected = False
-                        return None
-                    buf += chunk
-                    if b'\r' in buf:
-                        break
-                return buf.decode('ascii', errors='ignore').strip() if buf else None
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
-                print(f"[Serial] Connection lost: {e}")
+                print(f"[Serial] Send error: {e}")
                 self._connected = False
                 return None
-            except Exception as e:
-                if VERBOSE:
-                    print(f"[Serial] send_raw error: {e}")
-                return None
+            # Wait for matching response
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                remaining = max(0.05, deadline - time.time())
+                try:
+                    line = self._rx_queue.get(timeout=remaining)
+                    if line.upper().startswith(cmd_code):
+                        return line
+                    self._process_message(line)  # streaming message arrived first
+                except _queue_mod.Empty:
+                    break
+            return None
 
     def to_dict(self):
-        """Return status dict in the same shape as D75_CAT.py RadioState.to_dict()."""
         with self._state_lock:
-            empty_band = {'frequency': '', 'mode': 0, 'squelch': 0,
-                          'power': 'H', 's_meter': 0, 'freq_info': None,
-                          'memory_mode': 0, 'channel': ''}
-            b0 = dict(self.band[0]) if self.band[0] else dict(empty_band)
-            b1 = dict(self.band[1]) if self.band[1] else dict(empty_band)
+            empty = {'frequency': '', 'mode': 0, 'squelch': 0,
+                     'power': 'H', 's_meter': 0, 'freq_info': None,
+                     'memory_mode': 0, 'channel': ''}
+            b0 = dict(self.band[0]) if self.band[0] else dict(empty)
+            b1 = dict(self.band[1]) if self.band[1] else dict(empty)
             return {
                 'model_id':      self.model_id if self._connected else '',
                 'fw_version':    self.fw_version,
@@ -227,95 +244,114 @@ class SerialManager:
     # ── private ────────────────────────────────────────────────────────────────
 
     def _cleanup(self):
-        with self._lock:
-            if self._ser:
-                try:
-                    self._ser.close()
-                except Exception:
-                    pass
-                self._ser = None
-            self._connected = False
+        if self._ser:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
+        self._connected = False
 
     def _init_radio(self):
-        """Query model ID, firmware, serial number."""
+        """Query model ID, firmware, serial number on connect."""
         for _ in range(3):
             r = self.send_raw("ID")
             if r and r.startswith("ID"):
                 with self._state_lock:
-                    self.model_id = r[2:].strip().lstrip()
+                    self.model_id = r[2:].strip()
                 break
             time.sleep(0.3)
-
         r = self.send_raw("FV")
         if r and r.startswith("FV"):
             with self._state_lock:
-                self.fw_version = r[2:].strip().lstrip()
-
+                self.fw_version = r[2:].strip()
         r = self.send_raw("AE")
         if r and r.startswith("AE"):
             with self._state_lock:
-                self.serial_number = r[2:].strip().lstrip()
-
+                self.serial_number = r[2:].strip()
         print(f"[Serial] Radio: model={self.model_id!r} fw={self.fw_version!r}")
 
-    def _start_poll(self):
-        self._poll_stop.clear()
-        self._poll_thread = threading.Thread(
-            target=self._poll_loop, daemon=True, name="serial-poll")
-        self._poll_thread.start()
-
-    def _poll_loop(self):
-        while not self._poll_stop.is_set() and self._connected:
+    def _read_loop(self):
+        """Read RFCOMM bytes, split on \\r, put lines in _rx_queue."""
+        buf = b''
+        while not self._stop_evt.is_set() and self._connected:
             try:
-                self._poll_state()
-            except Exception:
-                pass
-            self._poll_stop.wait(10.0)
+                chunk = self._ser.recv(256)
+                if not chunk:
+                    self._connected = False
+                    break
+                buf += chunk
+                while b'\r' in buf:
+                    idx = buf.index(b'\r')
+                    line = buf[:idx].decode('ascii', errors='ignore').strip()
+                    buf  = buf[idx + 1:]
+                    if line:
+                        self._rx_queue.put(line)
+            except socket.timeout:
+                continue
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                self._connected = False
+                break
+        print("[Serial] Read loop ended")
 
-    def _poll_state(self):
-        """Query frequency, S-meter, squelch, mode, power for both bands."""
-        _parse_int_last = lambda s: int(s.split(',')[-1]) if s and ',' in s else 0
-
-        for b in [0, 1]:
-            fq = self.send_raw(f"FQ {b}")
-            sm = self.send_raw(f"SM {b}")
-            sq = self.send_raw(f"SQ {b}")
-            md = self.send_raw(f"MD {b}")
-            pc = self.send_raw(f"PC {b}")
-
-            # FQ response: "FQ 0,0145500000" — 10-digit frequency in Hz
-            freq = ''
-            if fq and fq.startswith("FQ") and ',' in fq:
-                try:
-                    parts = fq.split(',')
-                    raw = parts[-1].strip()         # "0145500000"
-                    if len(raw) >= 9:
-                        mhz_part  = str(int(raw[:4]))   # "145"
-                        khz_part  = raw[4:7]            # "500"
-                        hz_part   = raw[7:10]           # "000"
-                        freq = f"{mhz_part}.{khz_part}{hz_part}"  # "145.500000"
-                except Exception:
-                    pass
-
-            with self._state_lock:
-                self.band[b] = {
-                    'frequency':   freq,
-                    'mode':        _parse_int_last(md) if md and md.startswith("MD") else 0,
-                    'squelch':     _parse_int_last(sq) if sq and sq.startswith("SQ") else 0,
-                    'power':       (pc.split(',')[-1].strip() if pc and ',' in pc else 'H'),
-                    's_meter':     _parse_int_last(sm) if sm and sm.startswith("SM") else 0,
-                    'freq_info':   None,
-                    'memory_mode': 0,
-                    'channel':     '',
-                }
-
-        dl = self.send_raw("DL")
-        if dl and dl.startswith("DL") and ',' in dl:
+    def _stream_loop(self):
+        """Drain _rx_queue between send_raw() calls, updating state from streaming messages."""
+        while not self._stop_evt.is_set() and self._connected:
             try:
+                line = self._rx_queue.get(timeout=1.0)
+                # Only process if send_lock is free (otherwise send_raw handles it)
+                if self._send_lock.acquire(blocking=False):
+                    try:
+                        self._process_message(line)
+                    finally:
+                        self._send_lock.release()
+                else:
+                    # send_raw is active — put it back so send_raw can pick it up
+                    self._rx_queue.put(line)
+                    time.sleep(0.05)
+            except _queue_mod.Empty:
+                continue
+
+    def _process_message(self, line):
+        """Update cached state from a streaming CAT message."""
+        if not line:
+            return
+        try:
+            if line.startswith('FQ') and ',' in line:
+                # FQ band,XXXXXXXXXX  (10-digit freq in Hz)
+                parts = line.split(',')
+                band  = int(line[2:].split(',')[0].strip())
+                raw   = parts[-1].strip()
+                if len(raw) >= 9:
+                    freq = f"{int(raw[:4])}.{raw[4:7]}{raw[7:10]}"
+                    with self._state_lock:
+                        if 0 <= band <= 1:
+                            self.band[band]['frequency'] = freq
+            elif line.startswith('SM') and ',' in line:
+                parts = line.split(',')
+                band  = int(line[2:].split(',')[0].strip())
+                level = int(parts[-1].strip())
                 with self._state_lock:
-                    self.dual_band = int(dl.split(',')[0].replace('DL', '').strip())
-            except Exception:
-                pass
+                    if 0 <= band <= 1:
+                        self.band[band]['s_meter'] = level
+            elif line.startswith('MD') and ',' in line:
+                parts = line.split(',')
+                band  = int(line[2:].split(',')[0].strip())
+                mode  = int(parts[-1].strip())
+                with self._state_lock:
+                    if 0 <= band <= 1:
+                        self.band[band]['mode'] = mode
+            elif line.startswith('TX'):
+                with self._state_lock:
+                    self.transmitting = True
+            elif line.startswith('RX'):
+                with self._state_lock:
+                    self.transmitting = False
+            elif line.startswith('DL') and ',' in line:
+                with self._state_lock:
+                    self.dual_band = int(line.split(',')[-1].strip())
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
