@@ -70,6 +70,16 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **CRITICAL: DISPLAY_TEXT vfo_byte** — must use vfo_byte from packet (0x40/0x60=LEFT, 0xC0/0xE0=RIGHT), NOT stale `_channel_vfo`. Fixed 2026-03-13.
 - **Auto serial connect (2026-03-21):** On startup, always sends `!serial disconnect` then `!serial connect`
 
+## TH-D75 Bluetooth Radio (2026-03-24)
+- `D75CATClient` class in `cat_client.py`; remote proxy: `scripts/remote_bt_proxy.py` on 192.168.2.134
+- Proxy ports: 9750 (CAT text), 9751 (raw 8kHz PCM audio)
+- **CRITICAL — btstart is non-blocking:** proxy returns "btstart initiated" immediately; BT connects in background thread. `poll_state()` clears `_btstart_in_progress` when `serial_connected=True` arrives in status.
+- **CRITICAL — serial_connected field:** proxy `to_dict()` includes `serial_connected: self._connected` — don't use `model_id` (empty if `ID` query times out on init).
+- **CRITICAL — poll thread self-join:** `close()` checks `self._poll_thread is not threading.current_thread()` before joining — poll thread calls `close()` on TCP drop, would crash otherwise.
+- **Web UI:** `/d75` page; status checklist shows "Connecting..." (orange) while `_btstart_in_progress=True`; BT Start button hidden during pending connect.
+- **Channel load:** `d75GoChannel` checks `_d75LastStatus.dual_band/active_band` — switches active band via `BC` (not `DL 0`) in single-band mode to avoid forcing dual-band.
+- **Up/Down buttons:** send `!cat UP` / `!cat DN` via passthrough.
+
 ## Systemd Service & Process Management
 - **Service:** `radio-gateway.service` — `KillMode=control-group`, `TimeoutStopSec=15`
 - **CRITICAL:** Always restart gateway via start.sh, never `python3 radio_gateway.py` directly
@@ -131,7 +141,8 @@ MCP sdr_tune wrong payload keys (2026-03-23),
 SDR2 permanently ducked: D75 noise above SDR_SIGNAL_THRESHOLD=-70 kept other_audio_active=True (2026-03-24),
 ANNIN level bar stuck after voice note transmission (2026-03-24),
 D75 default unmuted caused noise + SDR ducking on startup (2026-03-24),
-D75 BT Start button shown during auto-connect: added _btstart_in_progress flag, UI shows "Connecting..." (2026-03-24).
+D75 BT Start button shown during auto-connect: added _btstart_in_progress flag (2026-03-24),
+D75 serial never connects: btstart blocking caused protocol desync, _do_btstart skipped serial.connect(), poll thread self-join crash (2026-03-24).
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis

@@ -1,5 +1,18 @@
 # Bug History — Radio Gateway
 
+## D75 serial never connects on startup (2026-03-24)
+**Symptom:** UI stuck at "Connecting..." forever. Proxy showed btstart completing but `serial_connected=False` permanently.
+**Root causes (3 separate bugs):**
+1. `_send_cmd` has 3s timeout but `!btstart` blocked the proxy for 15-30s → response desync corrupted all subsequent poll_state JSON parses → `serial_connected` never became True.
+2. After making btstart non-blocking in proxy, `_do_btstart` connected audio+CKPD but skipped `serial.connect()` when serial wasn't already up at btstart time — only reconnected serial if it was previously connected.
+3. When TCP dropped, poll thread called `close()` which tried to `join()` the current thread → `RuntimeError: cannot join current thread` → poll thread died → no more CAT activity.
+**Fixes:**
+1. `remote_bt_proxy.py`: made `!btstart` non-blocking (background thread, returns "btstart initiated" immediately).
+2. `remote_bt_proxy.py`: `_do_btstart` always calls `serial.connect()` at the end regardless of prior serial state.
+3. `cat_client.py`: `close()` checks `self._poll_thread is not threading.current_thread()` before joining.
+4. `remote_bt_proxy.py`: added `serial_connected` field to `to_dict()` (not derived from `model_id` which is empty if `ID` query times out on init).
+**Lesson:** Any proxy command that does BT I/O must be non-blocking or use a long timeout. TCP protocol desync is hard to debug without trace logging.
+
 ## D75 BT Start button appears during auto-connect (2026-03-24)
 **Symptom:** After gateway auto-connects to D75 proxy (via retry loop), the web UI shows "Radio BT Serial: Not responding" and a BT Start button even though btstart was already triggered automatically. User sees this and thinks they need to press the button.
 **Root cause:** No "in progress" state was tracked. The UI showed `serial_connected=False` with the BT Start button immediately, with no indication that btstart was already running.
