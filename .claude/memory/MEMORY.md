@@ -153,7 +153,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 ## MCP Server (gateway_mcp.py) — AI Control Interface (2026-03-23)
 - **File:** `gateway_mcp.py` — stdio MCP server; 19 tools; talks to gateway HTTP API on port 8080
-- **Config:** `.claude/settings.json` (project-level) — Claude Code auto-loads it in this directory
+- **Config:** `.mcp.json` (project root) — MCP server definition; `.claude/settings.json` set to `enableAllProjectMcpServers: true`
 - **Transport:** stdio (local Claude Code); future: SSE/HTTP via Cloudflare tunnel
 - **Reads:** `gateway_config.txt` at startup to get WEB_CONFIG_PORT and WEB_CONFIG_PASSWORD
 - **Tools:** gateway_status, sdr_status, cat_status, system_info, sdr_tune, sdr_restart, sdr_stop, radio_ptt, radio_tts, radio_cw, radio_ai_announce, radio_set_tx, radio_get_tx, recordings_list, recordings_delete, gateway_logs, gateway_key, automation_trigger, audio_trace_toggle
@@ -170,7 +170,9 @@ WebSocket PCM double-push/latency, KV4P TX 20% audio dropout (2026-03-19), KV4P 
 TH9800 PTT blind toggle state inversion (2026-03-21), setup_radio before serial connect (2026-03-21),
 SDR manager circular import (2026-03-21), f-string double-brace in `_write_config_sdr2()` continuous line (2026-03-23),
 SDR autostart crash `'RTLAirbandManager' has no attribute 'channels'` after channel memory removal (2026-03-23),
-SDR post-duck stutter: aioc_ducks_sdrs gate removed + re-duck inhibit (2s) + fade-in reset at duck-in (2026-03-23).
+SDR post-duck stutter: aioc_ducks_sdrs gate removed + re-duck inhibit (2s) + fade-in reset at duck-in (2026-03-23),
+stream_health always False (was reporting config flag not actual connected state) (2026-03-23),
+MCP sdr_tune wrong payload keys (`freq`/`squelch` → `frequency`/`frequency2`/`squelch_threshold`/`squelch_threshold2`) + timeout too short (2026-03-23).
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis

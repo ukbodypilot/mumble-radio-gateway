@@ -309,6 +309,24 @@ After duck-in (`is_ducked=False`), if AIOC sent any blob, `other_audio_active=Tr
 
 **Lesson:** When suppressing audio via a high-level gate (`aioc_ducks_sdrs`), the gate must be stable for the full duration the audio should be suppressed — don't poke holes in it based on input data availability. Use a separate hold timer. Re-entry into a duck cycle after release should require a cooldown.
 
+## stream_health Always False in /status API (2026-03-23)
+**Symptom:** Broadcastify stream health always reported False in `/status` JSON even when DarkIce was running and stream was connected.
+
+**Root cause:** `stream_health` was set to `bool(getattr(self.config, 'ENABLE_STREAM_HEALTH', False))` — returning whether a (non-existent) config option was enabled, not whether the stream was actually alive. `ENABLE_STREAM_HEALTH` doesn't exist in config, so `getattr` always returned False.
+
+**Fix:** `stream_health` now checks all three conditions: `self._darkice_pid is not None and getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)` — DarkIce process running AND StreamOutputSource connected. This matches the existing `stream_pipe_ok` field logic (line 6981).
+
+**Lesson:** When adding a new status field, copy the pattern from an existing similar field rather than inventing a new attribute name.
+
+## MCP sdr_tune Wrong Payload Keys (2026-03-23)
+**Symptom:** `sdr_tune` MCP tool sent `freq` and `squelch` keys in the POST body, but the gateway `/sdrcmd` handler expected `frequency` / `frequency2` and `squelch_threshold` / `squelch_threshold2`. Commands silently had no effect.
+
+**Root cause:** MCP tool was written before the SDR2 dual-tuner channel key naming was finalised. Old single-channel keys (`freq`, `squelch`) were never updated. The `label` parameter was also vestigial (gateway ignores it).
+
+**Fix:** `sdr_tune` now uses channel-specific keys: channel 1 → `frequency`/`squelch_threshold`, channel 2 → `frequency2`/`squelch_threshold2`. Removed `label` param. Timeout raised from 10s to 20s (tuning requires SDR restart which takes ~12s). `sdr_restart` timeout also raised to 20s. `_post()` now accepts a configurable `timeout` parameter.
+
+**Lesson:** When the gateway API changes, audit all MCP tool payloads that hit affected endpoints — they won't throw errors, they just silently do nothing.
+
 ## KV4P Web UI Poll Overwriting User Input (2026-03-19)
 **Symptom:** CTCSS and other fields reset while user was trying to type/select a value.
 

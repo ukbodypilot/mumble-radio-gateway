@@ -6983,7 +6983,7 @@ class RadioGateway:
             'darkice_pid': self._darkice_pid,
             'darkice_restarts': self._darkice_restart_count,
             'stream_restarts': self.stream_restart_count,
-            'stream_health': bool(getattr(self.config, 'ENABLE_STREAM_HEALTH', False)),
+            'stream_health': bool(self._darkice_pid is not None and getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
             'darkice_stats': self._get_darkice_stats_cached(),
             'notifications': list(self._notifications),
             'automation_enabled': bool(self.automation_engine),

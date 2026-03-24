@@ -89,13 +89,13 @@ def _get(path: str) -> dict:
         return {'error': str(e), 'ok': False}
 
 
-def _post(path: str, data: dict) -> dict:
+def _post(path: str, data: dict, timeout: int = 10) -> dict:
     url = GW_BASE_URL + path
     body = json.dumps(data).encode()
     headers = {**_auth_headers(), 'Content-Type': 'application/json'}
     req = urllib.request.Request(url, data=body, headers=headers, method='POST')
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return {'error': f'HTTP {e.code}', 'ok': False}
@@ -173,24 +173,22 @@ def sdr_tune(
     freq_mhz: float,
     channel: int = 1,
     squelch_db: float | None = None,
-    label: str | None = None,
 ) -> str:
     """
-    Retune an SDR receiver channel to a new frequency.
+    Retune an SDR receiver channel to a new frequency.  Restarts both tuners (~12s).
 
     Args:
         freq_mhz:    Frequency in MHz (e.g. 118.1 for aircraft, 162.55 for NOAA weather).
         channel:     SDR channel number — 1 or 2 (default 1).
         squelch_db:  Optional squelch threshold in dBFS (negative, e.g. -40.0).
                      Omit to keep current squelch.
-        label:       Optional human-readable label for the channel (e.g. "Tower").
     """
-    payload: dict = {'cmd': 'tune', 'channel': channel, 'freq': freq_mhz}
+    freq_key = 'frequency' if channel == 1 else 'frequency2'
+    squelch_key = 'squelch_threshold' if channel == 1 else 'squelch_threshold2'
+    payload: dict = {'cmd': 'tune', freq_key: freq_mhz}
     if squelch_db is not None:
-        payload['squelch'] = squelch_db
-    if label is not None:
-        payload['label'] = label
-    result = _post('/sdrcmd', payload)
+        payload[squelch_key] = squelch_db
+    result = _post('/sdrcmd', payload, timeout=20)
     return json.dumps(result, indent=2)
 
 
@@ -201,7 +199,7 @@ def sdr_restart() -> str:
     STOPPED or audio has dropped out.  Restarts the sdrplay systemd service
     and relaunches rtl_airband.
     """
-    result = _post('/sdrcmd', {'cmd': 'restart'})
+    result = _post('/sdrcmd', {'cmd': 'restart'}, timeout=20)
     return json.dumps(result, indent=2)
 
 

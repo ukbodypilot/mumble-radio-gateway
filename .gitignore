@@ -56,6 +56,12 @@ certs/
 # Audio test files — kept locally but never committed (sensitive content)
 audio/
 
+# Chrome Remote Desktop session files (system-generated, not project-related)
+chrome-remote-desktop-existing-session/
+
+# Runtime output files
+tools/audio_trace.txt
+
 # Downloads/temp
 node-*.tar.xz
 *.deb
