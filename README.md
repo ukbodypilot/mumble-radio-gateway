@@ -1581,15 +1581,17 @@ sudo ufw allow 9601/tcp
 
 ## Telegram Bot — Phone Control
 
-Control the gateway from your phone using plain English via Telegram. Messages are injected into a running Claude Code tmux session which uses the gateway MCP tools to act on requests. Claude replies via the `telegram_reply()` MCP tool, which sends the response directly back to Telegram.
+Control the gateway from your phone using plain English via Telegram. Text messages are injected into a running Claude Code tmux session which uses the gateway MCP tools to act on requests and replies via the `telegram_reply()` MCP tool. **Voice notes** are handled directly — downloaded, converted, and transmitted over the radio immediately without involving Claude.
 
 ```
-You (phone) → Telegram → telegram_bot.py → tmux send-keys → Claude Code session
-                                                                  ↓ (MCP tools)
-You (phone) ← Telegram ← telegram_reply() MCP tool ←←←←←←←←←← gateway
+Text:  You (phone) → Telegram → telegram_bot.py → tmux → Claude Code (MCP)
+                                                               ↓
+       You (phone) ← Telegram ←←←← telegram_reply() MCP tool ←
+
+Voice: You (phone) → Telegram → telegram_bot.py → ffmpeg → port 9601 → radio TX (PTT auto)
 ```
 
-**Example interactions:**
+**Example text interactions:**
 
 > *"What frequency is SDR1 on?"*
 > *"Tune SDR2 to 162.550 MHz NFM"*
@@ -1598,15 +1600,16 @@ You (phone) ← Telegram ← telegram_reply() MCP tool ←←←←←←←←�
 > *"What's the CPU temperature?"*
 > *"Restart the SDR"*
 
+**Voice notes** are transmitted directly over the TX radio with automatic PTT — no text needed.
+
 Claude maintains full context across the session — follow-up questions work naturally.
 
 ### How It Works
 
 - `tools/telegram_bot.py` polls Telegram using long-polling (30s timeout — near-zero CPU when idle)
-- When a message arrives it is injected into the Claude Code tmux session as if typed at the keyboard
-- Claude processes the request using the gateway MCP tools, then calls `telegram_reply()` when done
-- `telegram_reply()` is an MCP tool that sends the response directly to Telegram
-- **Zero idle cost** — the bot sleeps in the Telegram long-poll; Claude Code is only active when a message arrives
+- **Text messages** are injected into the Claude Code tmux session; Claude replies via `telegram_reply()`
+- **Voice notes / audio files** are downloaded, converted to PCM via ffmpeg, and streamed to the gateway's announcement input port (9601) at real-time rate — the gateway keys PTT and transmits
+- **Zero idle cost** — the bot sleeps in the Telegram long-poll; Claude Code is only active when a text message arrives
 
 ### Setup
 
@@ -1632,20 +1635,25 @@ TELEGRAM_CHAT_ID = 987654321
 TELEGRAM_TMUX_SESSION = claude-gateway
 ```
 
+Also ensure `ENABLE_ANNOUNCE_INPUT = true` for voice note transmission.
+
 **Step 4 — Start Claude Code in a named tmux session**
 
 ```bash
 tmux new-session -s claude-gateway
-claude
-# (Claude Code is now running inside tmux — you can attach/detach normally)
+cd ~/Downloads/radio-gateway && claude --dangerously-skip-permissions
+# Detach (leave running): Ctrl+B then D
+# Reattach later:         tmux attach -t claude-gateway
 ```
 
 **Step 5 — Enable the systemd service**
 
+The installer copies `telegram-bot.service` to systemd automatically. Just enable it:
+
 ```bash
-sudo cp tools/telegram-bot.service /etc/systemd/system/
 sudo systemctl enable --now telegram-bot
 sudo systemctl status telegram-bot
+# Logs: journalctl -u telegram-bot -f
 ```
 
 Or run manually for testing:
@@ -1659,7 +1667,9 @@ python3 tools/telegram_bot.py
 
 **Why not `claude -p`?**  `claude -p` (non-interactive) spawns a fresh session per message — no context between messages. The tmux approach is a persistent session.
 
-**The `telegram_reply()` tool**  is the completion signal. Claude is instructed to call it when done. This avoids any ambiguity about when Claude has finished — the tool firing means the response is sent. Claude naturally won't call it mid-thought because it models it as "send this to the user."
+**The `telegram_reply()` tool**  is the completion signal. Claude is instructed to call it when done. This avoids any ambiguity about when Claude has finished — the tool firing means the response is sent.
+
+**Voice note rate limiting**  Audio is sent to port 9601 at real-time rate (one 50ms chunk per 50ms) to match the gateway's tick rate. Sending all at once would overflow the ANNIN queue (maxsize=16) and drop 90% of the audio.
 
 **Security**  Only messages from `TELEGRAM_CHAT_ID` are accepted. All others get an "Unauthorized" reply. The bot token should be kept in `gateway_config.txt` (gitignored).
 

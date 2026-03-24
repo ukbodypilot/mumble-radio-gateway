@@ -55,6 +55,7 @@ if [ "$DISTRO" = "arch" ]; then
         ffmpeg \
         opus \
         git \
+        tmux \
         xdotool \
         xclip \
         xorg-server-xvfb \
@@ -74,6 +75,7 @@ else
         libopus0 \
         libopus-dev \
         git \
+        tmux \
         xdotool \
         xclip \
         xvfb \
@@ -275,6 +277,13 @@ if [ -d "$KV4P_DIR" ]; then
         || echo "  ⚠ Could not pip install kv4p-ht-python — gateway will use sys.path fallback"
     set -e
 fi
+
+# MCP Python package — required for gateway_mcp.py (AI control interface)
+set +e
+_pip mcp 2>/dev/null \
+    && echo "  ✓ mcp installed (MCP server for AI control)" \
+    || echo "  ⚠ Could not pip install mcp — gateway_mcp.py will not work (run: pip install mcp)"
+set -e
 
 # UDEV rule for CP2102 (KV4P HT USB-serial chip) — stable /dev/kv4p symlink
 KV4P_UDEV='SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="kv4p", MODE="0666"'
@@ -1371,6 +1380,15 @@ if [ -f "$SERVICE_TEMPLATE" ]; then
     sudo systemctl daemon-reload
     sudo systemctl enable radio-gateway.service 2>/dev/null || true
     echo "  ✓ radio-gateway.service installed and enabled"
+
+# Install Telegram bot service (not enabled — requires config first)
+TG_SERVICE_SRC="$GATEWAY_DIR/tools/telegram-bot.service"
+TG_SERVICE_DEST="/etc/systemd/system/telegram-bot.service"
+if [ -f "$TG_SERVICE_SRC" ]; then
+    sudo cp "$TG_SERVICE_SRC" "$TG_SERVICE_DEST"
+    sudo systemctl daemon-reload
+    echo "  ✓ telegram-bot.service installed (not enabled — configure first)"
+fi
     echo "    Start:   sudo systemctl start radio-gateway"
     echo "    Stop:    sudo systemctl stop radio-gateway"
     echo "    Restart: sudo systemctl restart radio-gateway"
@@ -1510,6 +1528,24 @@ echo "  SDR control:    http://<gateway-ip>:8080/sdr"
 echo "  Log viewer:     http://<gateway-ip>:8080/logs"
 echo "  Set WEB_CONFIG_PASSWORD for basic auth (user: admin)"
 echo "  Firewall: sudo ufw allow 8080/tcp"
+echo
+echo "TELEGRAM BOT — PHONE CONTROL (optional):"
+echo "  Control the gateway from your phone in plain English via a Claude Code session."
+echo "  Voice notes sent to the bot are transmitted over the radio automatically."
+echo "  1. Create a bot via @BotFather on Telegram — copy the token"
+echo "  2. Send a message to your bot to get your chat_id:"
+echo "       curl 'https://api.telegram.org/bot<TOKEN>/getUpdates'"
+echo "  3. Edit gateway_config.txt:"
+echo "       ENABLE_TELEGRAM      = true"
+echo "       TELEGRAM_BOT_TOKEN   = <token>"
+echo "       TELEGRAM_CHAT_ID     = <chat_id>"
+echo "  4. Start Claude Code in a named tmux session:"
+echo "       tmux new-session -s claude-gateway"
+echo "       cd $GATEWAY_DIR && claude --dangerously-skip-permissions"
+echo "       (detach: Ctrl+B then D)"
+echo "  5. Enable and start the bot service:"
+echo "       sudo systemctl enable --now telegram-bot"
+echo "  See README.md — Telegram Bot section for full details."
 echo
 echo "DYNAMIC DNS (optional):"
 echo "  Set ENABLE_DDNS = true in gateway_config.txt"

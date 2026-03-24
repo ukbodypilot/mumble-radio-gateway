@@ -3206,7 +3206,7 @@ class RadioGateway:
         # D75 CAT Control + Audio
         self.d75_cat = None           # D75CATClient instance
         self.d75_audio_source = None  # D75AudioSource instance
-        self.d75_muted = False        # D75 audio mute toggle
+        self.d75_muted = True         # D75 audio mute toggle (muted by default)
 
         # KV4P HT Radio
         self.kv4p_cat = None           # KV4PCATClient instance
@@ -4595,6 +4595,7 @@ class RadioGateway:
                                 self.d75_audio_source = D75AudioSource(self.config, self)
                                 if self.d75_audio_source.setup_audio():
                                     self.d75_audio_source.enabled = True
+                                    self.d75_audio_source.muted = self.d75_muted
                                     self.d75_audio_source.duck = self.config.D75_AUDIO_DUCK
                                     self.d75_audio_source.sdr_priority = int(self.config.D75_AUDIO_PRIORITY)
                                     self.mixer.add_source(self.d75_audio_source)

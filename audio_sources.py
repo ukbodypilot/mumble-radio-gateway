@@ -3610,6 +3610,7 @@ class NetworkAnnouncementSource(AudioSource):
                 # No data in queue — check if PTT hold is still active
                 if now - self._last_above_threshold < self._ptt_hold_time and self._last_above_threshold > 0:
                     return b'\x00' * cb, True  # silence but keep PTT keyed
+                self.audio_level = 0
                 return None, False
 
         raw = self._sub_buffer[:cb]
@@ -3635,6 +3636,7 @@ class NetworkAnnouncementSource(AudioSource):
             # Below threshold — hold PTT with silence for up to 2s
             if now - self._last_above_threshold < self._ptt_hold_time and self._last_above_threshold > 0:
                 return b'\x00' * cb, True  # silence but keep PTT keyed
+            self.audio_level = 0
             return None, False  # Hold expired: let PTT release
 
         # Above threshold — update hold timer
