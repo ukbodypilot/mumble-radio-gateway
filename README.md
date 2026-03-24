@@ -1,6 +1,6 @@
 # Radio Gateway
 
-A multi-source radio audio gateway with Mumble VoIP bridging, SDR integration, AI-powered announcements, CAT radio control, real-time audio processing, and streaming.
+A multi-source radio audio gateway with Mumble VoIP bridging, SDR integration, AI-powered announcements, CAT radio control, real-time audio processing, and streaming. Ham radio & GMRS gateway and repeater — bridges two-way radios to Mumble, Broadcastify, and the internet. AIOC USB, RSPduo dual SDR, TH-9800/D75/KV4P CAT control, AI announcements, ADS-B tracking, MCP server for AI control, live web dashboard. Raspberry Pi & Linux. 
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════════════╗
