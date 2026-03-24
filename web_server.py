@@ -3973,12 +3973,12 @@ updateRadio();
     <span id="d75-status-detail" style="color:#f39c12; font-size:0.9em;"></span>
   </div>
   <div id="d75-status-steps" style="margin-top:10px; font-size:0.85em; font-family:monospace;">
-    <div><span id="d75-chk-svc" style="color:#888;">&#x25cf;</span> D75 CAT Service: <span id="d75-chk-svc-text">checking...</span>
-      <button id="d75-start-svc-btn" class="rb rb-sm" onclick="d75svcAction('start_service')" style="display:none; margin-left:8px;">Start Service</button></div>
     <div><span id="d75-chk-tcp" style="color:#888;">&#x25cf;</span> Gateway TCP Link: <span id="d75-chk-tcp-text">checking...</span>
       <button id="d75-reconnect-btn" class="rb rb-sm" onclick="d75svcAction('reconnect')" style="display:none; margin-left:8px;">Reconnect</button></div>
-    <div><span id="d75-chk-serial" style="color:#888;">&#x25cf;</span> Radio Serial/BT: <span id="d75-chk-serial-text">checking...</span>
+    <div><span id="d75-chk-serial" style="color:#888;">&#x25cf;</span> Radio BT Serial: <span id="d75-chk-serial-text">checking...</span>
       <button id="d75-offline-btstart-btn" class="rb rb-sm" onclick="d75svcAction('btstart_via_reconnect')" style="display:none; margin-left:8px;">BT Start</button></div>
+    <div><span id="d75-chk-svc" style="color:#888;">&#x25cf;</span> Local CAT Service: <span id="d75-chk-svc-text">checking...</span>
+      <button id="d75-start-svc-btn" class="rb rb-sm" onclick="d75svcAction('start_service')" style="display:none; margin-left:8px;">Start Service</button></div>
   </div>
 </div>
 
