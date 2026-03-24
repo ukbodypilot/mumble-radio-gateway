@@ -3994,6 +3994,8 @@ updateRadio();
   <span id="d75-feedback" style="font-family:monospace; font-size:0.85em; min-width:120px;"></span>
   <button id="d75-btstart-btn" class="rb rb-sm" onclick="d75cmd('btstart')" style="display:none;">BT Start</button>
   <button id="d75-btstop-btn" class="rb rb-sm" onclick="d75cmd('btstop')" style="display:none;">BT Stop</button>
+  <button id="d75-audio-off-btn" class="rb rb-sm" onclick="d75cmd('audio','disconnect')" style="display:none;">Audio Off</button>
+  <button id="d75-audio-on-btn" class="rb rb-sm" onclick="d75cmd('audio','connect')" style="display:none;">Audio On</button>
   <button class="rb rb-sm" onclick="d75cmd('ptt')" id="d75-ptt-btn">PTT</button>
 </div>
 
@@ -4077,13 +4079,13 @@ updateRadio();
 
     <!-- VFO/Memory mode + Channel -->
     <div class="d75-row">
-      <select id="d75-a-vfomode" class="d75-select" onchange="d75cmd('vfomode','0 '+this.value)">
-        <option value="vfo">VFO</option><option value="mem">Memory</option><option value="call">Call</option><option value="dv">DV</option>
+      <select id="d75-a-vfomode" class="d75-select" onchange="d75cmd('cat','VM 0,'+this.value)">
+        <option value="0">VFO</option><option value="1">Memory</option><option value="2">Call</option><option value="3">DV</option>
       </select>
       <span class="d75-label">CH:</span>
       <input id="d75-a-ch" class="d75-input" style="width:60px;" placeholder="001"
-        onkeydown="if(event.key==='Enter')d75cmd('channel','0 '+this.value)">
-      <button class="rb rb-sm" onclick="d75cmd('channel','0 '+document.getElementById('d75-a-ch').value)">Go</button>
+        onkeydown="if(event.key==='Enter')d75cmd('cat','MC 0,'+this.value)">
+      <button class="rb rb-sm" onclick="d75cmd('cat','MC 0,'+document.getElementById('d75-a-ch').value)">Go</button>
     </div>
 
     <!-- S-Meter -->
@@ -4173,13 +4175,13 @@ updateRadio();
 
     <!-- VFO/Memory mode + Channel -->
     <div class="d75-row">
-      <select id="d75-b-vfomode" class="d75-select" onchange="d75cmd('vfomode','1 '+this.value)">
-        <option value="vfo">VFO</option><option value="mem">Memory</option><option value="call">Call</option><option value="dv">DV</option>
+      <select id="d75-b-vfomode" class="d75-select" onchange="d75cmd('cat','VM 1,'+this.value)">
+        <option value="0">VFO</option><option value="1">Memory</option><option value="2">Call</option><option value="3">DV</option>
       </select>
       <span class="d75-label">CH:</span>
       <input id="d75-b-ch" class="d75-input" style="width:60px;" placeholder="001"
-        onkeydown="if(event.key==='Enter')d75cmd('channel','1 '+this.value)">
-      <button class="rb rb-sm" onclick="d75cmd('channel','1 '+document.getElementById('d75-b-ch').value)">Go</button>
+        onkeydown="if(event.key==='Enter')d75cmd('cat','MC 1,'+this.value)">
+      <button class="rb rb-sm" onclick="d75cmd('cat','MC 1,'+document.getElementById('d75-b-ch').value)">Go</button>
     </div>
 
     <!-- S-Meter -->
@@ -4502,12 +4504,16 @@ function _d75RenderMemList() {
 }
 
 function d75GoChannel(band, ch) {
-  // Switch to memory mode on specified band, then set channel
-  d75cmd('cat', 'VM ' + band + ',1');  // Memory mode
+  // Look up channel frequency from scan data and set it via FQ (same path as manual freq entry)
+  var chData = (_d75Channels || []).find(function(c) { return c.ch === ch; });
+  if (!chData) { _d75flash('CH ' + ch + ' not in list — rescan first', '#e74c3c'); return; }
+  var hz = Math.round(chData.freq * 1000000);
+  var padded = ('0000000000' + hz).slice(-10);
+  d75cmd('cat', 'VM ' + band + ',0');  // VFO mode
   setTimeout(function() {
-    d75cmd('channel', band + ' ' + ch);
-  }, 300);
-  _d75flash('Band ' + (band ? 'B' : 'A') + ' → CH ' + ch, '#2ecc71');
+    d75cmd('cat', 'FQ ' + band + ',' + padded);
+  }, 200);
+  _d75flash('Band ' + (band ? 'B' : 'A') + ' → ' + chData.freq + ' MHz', '#2ecc71');
 }
 
 function d75VolDebounce(val) {
@@ -4573,6 +4579,8 @@ function updateD75() {
     document.getElementById('d75-audio-row').style.display = isBT ? '' : 'none';
     document.getElementById('d75-btstart-btn').style.display = (isBT && d.tcp_connected && !d.serial_connected) ? '' : 'none';
     document.getElementById('d75-btstop-btn').style.display = (isBT && d.tcp_connected && d.serial_connected) ? '' : 'none';
+    document.getElementById('d75-audio-off-btn').style.display = (isBT && d.tcp_connected && d.serial_connected && d.audio_connected) ? '' : 'none';
+    document.getElementById('d75-audio-on-btn').style.display = (isBT && d.tcp_connected && d.serial_connected && !d.audio_connected) ? '' : 'none';
 
     // Audio status (bluetooth only)
     if (isBT) {
@@ -4663,16 +4671,18 @@ function updateD75() {
     document.getElementById('d75-a-sig-bar').style.width = (aSig / 5 * 100) + '%';
     document.getElementById('d75-a-sig-text').textContent = 'S' + aSig;
     // Update selects (skip while user is editing)
+    var _pwrMap = {'H':0, 'M':1, 'L':2, 'EL':3};
     if (Date.now() > _toneEditUntil[0]) {
       document.getElementById('d75-a-mode-sel').value = a.mode || 0;
-      document.getElementById('d75-a-pwr-sel').value = a.power || 0;
+      document.getElementById('d75-a-pwr-sel').value = (_pwrMap[a.power] !== undefined) ? _pwrMap[a.power] : (parseInt(a.power) || 0);
     }
     var asq = document.getElementById('d75-a-sq');
     if (!asq.matches(':active')) { asq.value = a.squelch || 0; document.getElementById('d75-a-sq-val').textContent = a.squelch || 0; }
     if (a.freq_info) _updateToneUI(0, a.freq_info);
     _updateToneDisplay(0, a.freq_info);
     var avfm = document.getElementById('d75-a-vfomode');
-    if (avfm !== document.activeElement) avfm.value = (a.memory_mode||'VFO').toLowerCase().replace('memory','mem');
+    var _vmMap = {'VFO':0, 'Memory':1, 'Call':2, 'DV':3};
+    if (avfm !== document.activeElement) avfm.value = _vmMap[a.memory_mode] !== undefined ? _vmMap[a.memory_mode] : 0;
     var ach = document.getElementById('d75-a-ch');
     if (ach !== document.activeElement && a.channel) ach.value = a.channel;
 
@@ -4686,14 +4696,14 @@ function updateD75() {
     document.getElementById('d75-b-sig-text').textContent = 'S' + bSig;
     if (Date.now() > _toneEditUntil[1]) {
       document.getElementById('d75-b-mode-sel').value = b.mode || 0;
-      document.getElementById('d75-b-pwr-sel').value = b.power || 0;
+      document.getElementById('d75-b-pwr-sel').value = (_pwrMap[b.power] !== undefined) ? _pwrMap[b.power] : (parseInt(b.power) || 0);
     }
     var bsq = document.getElementById('d75-b-sq');
     if (!bsq.matches(':active')) { bsq.value = b.squelch || 0; document.getElementById('d75-b-sq-val').textContent = b.squelch || 0; }
     if (b.freq_info) _updateToneUI(1, b.freq_info);
     _updateToneDisplay(1, b.freq_info);
     var bvfm = document.getElementById('d75-b-vfomode');
-    if (bvfm !== document.activeElement) bvfm.value = (b.memory_mode||'VFO').toLowerCase().replace('memory','mem');
+    if (bvfm !== document.activeElement) bvfm.value = _vmMap[b.memory_mode] !== undefined ? _vmMap[b.memory_mode] : 0;
     var bch = document.getElementById('d75-b-ch');
     if (bch !== document.activeElement && b.channel) bch.value = b.channel;
 

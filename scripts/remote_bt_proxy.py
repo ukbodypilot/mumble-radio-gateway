@@ -226,7 +226,7 @@ class SerialManager:
     def to_dict(self):
         with self._state_lock:
             empty = {'frequency': '', 'mode': 0, 'squelch': 0,
-                     'power': 'H', 's_meter': 0, 'freq_info': None,
+                     'power': 0, 's_meter': 0, 'freq_info': None,
                      'memory_mode': 0, 'channel': ''}
             b0 = dict(self.band[0]) if self.band[0] else dict(empty)
             b1 = dict(self.band[1]) if self.band[1] else dict(empty)
@@ -273,7 +273,7 @@ class SerialManager:
             with self._state_lock:
                 self.serial_number = r[2:].strip()
         print(f"[Serial] Radio: model={self.model_id!r} fw={self.fw_version!r}")
-        # Query initial frequency and s-meter for both bands
+        # Query initial frequency, s-meter, and power for both bands
         for band in (0, 1):
             r = self.send_raw(f"SM {band}")
             if r:
@@ -283,6 +283,9 @@ class SerialManager:
                 self._process_message(r)
             else:
                 print(f"[Serial] WARNING: FO {band} got no response — frequency will be blank until VFO moves")
+            r = self.send_raw(f"PC {band}")
+            if r:
+                self._process_message(r)
         with self._state_lock:
             for b in (0, 1):
                 bd = self.band[b]
@@ -421,6 +424,13 @@ class SerialManager:
             elif line.startswith('DL') and ',' in line:
                 with self._state_lock:
                     self.dual_band = int(line.split(',')[-1].strip())
+            elif line.startswith('PC') and ',' in line:
+                parts = line.split(',')
+                band = int(line[2:].split(',')[0].strip())
+                pwr  = int(parts[-1].strip())
+                with self._state_lock:
+                    if 0 <= band <= 1:
+                        self.band[band]['power'] = pwr
         except Exception:
             pass
 
