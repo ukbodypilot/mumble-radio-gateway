@@ -244,7 +244,6 @@ class SerialManager:
                 'band_0':        b0,
                 'band_1':        b1,
             }
-            print(f"[D75-TRACE] to_dict: serial_connected={self._connected} model_id={self.model_id!r}")
             return d
 
     # ── private ────────────────────────────────────────────────────────────────
