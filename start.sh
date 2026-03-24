@@ -32,6 +32,7 @@ read_config() {
 ENABLE_STREAM_OUTPUT="$(read_config ENABLE_STREAM_OUTPUT false)"
 ENABLE_CAT_CONTROL="$(read_config ENABLE_TH9800 false)"
 START_CLAUDE_CODE="$(read_config START_CLAUDE_CODE false)"
+CLAUDE_TMUX_SESSION="$(read_config TELEGRAM_TMUX_SESSION claude-gateway)"
 HEADLESS_MODE="$(read_config HEADLESS_MODE false)"
 
 echo "=========================================="
@@ -181,7 +182,17 @@ fi
 if [ "$CLAUDE_RUNNING" = false ]; then
     CLAUDE_BIN="$(command -v claude 2>/dev/null)"
     if [ -n "$CLAUDE_BIN" ]; then
-        if command -v xfce4-terminal > /dev/null 2>&1; then
+        if command -v tmux > /dev/null 2>&1; then
+            # Prefer tmux — keeps context alive for Telegram bot integration
+            if tmux has-session -t "$CLAUDE_TMUX_SESSION" 2>/dev/null; then
+                ts "  Claude Code tmux session '$CLAUDE_TMUX_SESSION' already running"
+            else
+                tmux new-session -d -s "$CLAUDE_TMUX_SESSION" -c "$GATEWAY_DIR" \
+                    "$CLAUDE_BIN --dangerously-skip-permissions"
+                ts "  Claude Code started in tmux session '$CLAUDE_TMUX_SESSION'"
+                ts "    Attach: tmux attach -t $CLAUDE_TMUX_SESSION"
+            fi
+        elif command -v xfce4-terminal > /dev/null 2>&1; then
             xfce4-terminal --geometry=130x25 --working-directory="$GATEWAY_DIR" -e "$CLAUDE_BIN" &
             disown
         elif command -v lxterminal > /dev/null 2>&1; then
