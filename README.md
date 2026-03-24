@@ -4,56 +4,70 @@ A multi-source radio audio gateway with Mumble VoIP bridging, SDR integration, A
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════════════╗
-║                       RADIO GATEWAY — AUDIO FLOW                              ║
+║                         RADIO GATEWAY — AUDIO FLOW                                  ║
 ╚══════════════════════════════════════════════════════════════════════════════════════╝
 
-  ┌─────────────────┐  PTT audio (direct)                           ┌──────────────────┐
-  │  Mumble RX      │──────────────────────────────────────────────►│  Radio TX        │
-  │  (Opus VoIP)    │  Mumble users heard → keyed to radio          │  AIOC USB        │
-  └─────────────────┘  auto-PTT, bypasses mixer                     │  GPIO PTT        │
-                                                                     │                  │
-  SOURCES                                  MIXER                    │  ↑ also receives ┤
-  ───────                       ╔══════════════════════╗            │  File Playback   │
+  Direct PTT paths (bypass mixer):                                  ┌──────────────────┐
+  ┌─────────────────┐  PTT audio (direct)                          │  Radio TX        │
+  │  Mumble RX      │─────────────────────────────────────────────►│  AIOC USB / GPIO │
+  │  (Opus VoIP)    │  Mumble users → radio TX                     │  or KV4P HT      │
+  └─────────────────┘                                               │  (TX_RADIO=kv4p) │
+                                                                    │                  │
+  ┌─────────────────┐  PTT audio (direct)                          │  ↑ also keyed by ┤
+  │  WebMic (P0)    │─────────────────────────────────────────────►│  File Playback   │
+  │  Browser WS/mic │  Browser mic → radio TX via CAT PTT           │  ANNIN TCP:9601  │
+  └─────────────────┘                                               └──────────────────┘
+                                                                            ▲
+  SOURCES                                  MIXER                            │
+  ───────                       ╔══════════════════════╗                    │
+                                ║                      ║   PTT audio        │
+  ┌─────────────────┐           ║                      ╠────────────────────┘
+  │  File Playback  │──────────►║   P R I O R I T Y    ║
+  │  Priority 0     │           ║      M I X E R       ║  Radio RX  ┌──────────────────┐
+  │  WAV·MP3·FLAC   │           ║                      ╠───────────►│  Mumble TX       │
+  │  10 slots (0–9) │           ║  Priority-based      ║            │  Opus VoIP       │
+  └─────────────────┘           ║  source selection    ║            └──────────────────┘
+                                ║                      ║
+  ┌─────────────────┐           ║  Duck hierarchy:     ║  Mixed     ┌──────────────────┐
+  │  Radio RX (P1)  │──────────►║  P1 (Radio RX)       ╠───────────►│  Stream Output   │
+  │  AIOC USB       │           ║    ducks P2 sources  ║            │  DarkIce /       │
+  └─────────────────┘           ║    ducks P3 (SDRSV)  ║            │  Broadcastify    │
                                 ║                      ║            └──────────────────┘
-  ┌─────────────────┐           ║                      ║   PTT audio        ▲
-  │  File Playback  │──────────►║   P R I O R I T Y    ╠────────────────────┘
-  │  Priority 0     │           ║      M I X E R       ║
-  │  WAV·MP3·FLAC   │           ║                      ║  Radio RX  ┌──────────────────┐
-  │  10 slots (0–9) │           ║  Priority-based      ╠───────────►│  Mumble TX       │
-  └─────────────────┘           ║  source selection    ║            │  Opus VoIP       │
-                                ║                      ║            └──────────────────┘
-  ┌─────────────────┐           ║  SDR ducking:        ║
-  │  Radio RX (P1)  │──────────►║  Radio RX            ║  Mixed     ┌──────────────────┐
-  │  AIOC USB       │           ║    > SDR1 (P1)       ╠───────────►│  Stream Output   │
-  └─────────────────┘           ║      > SDR2 (P2)     ║            │  Darkice /       │
-                                ║      > SDRSV (P3)    ║            │  Broadcastify    │
-  ┌─────────────────┐           ║                      ║            └──────────────────┘
-  │  SDR1 (P2)      │──────────►║  Attack/Release/     ║
-  │  ALSA Loopback  │  [DUCK]   ║  Padding transitions ║  EchoLink  ┌──────────────────┐
-  │  ■ cyan bar     │           ║                      ╠───────────►│  EchoLink TX     │
-  └─────────────────┘           ║  Audio Processing:   ║            │  Named Pipes     │
-                                ║  VAD · Noise Gate    ║            └──────────────────┘
-  ┌─────────────────┐           ║  AGC · HPF           ║
-  │  SDR2 (P2)      │──────────►║  HPF · LPF · Notch   ║  TCP out   ┌──────────────────┐
-  │  ALSA Loopback  │  [DUCK]   ║                      ╠───────────►│  Remote Client   │
-  │  ■ magenta bar  │           ╚══════════════════════╝            │  (role=client)   │
-  └─────────────────┘                                               │  SV:[yellow bar] │
-                                Duck priority:                      └──────────────────┘
-  ┌─────────────────┐             Radio RX > SDR1 (P1) > SDR2 (P2) > SDRSV (P3)
-  │  SDRSV (P3)     │──────────►
-  │  Remote Audio   │  [DUCK]   Each duck transition uses attack / release / padding:
-  │  TCP (role=cl.) │  ■ green    [source active] → silence gap → [audio switches]
-  └─────────────────┘             [source silent ] → silence gap → [audio restores]
+  ┌─────────────────┐           ║  P2 sources duck     ║
+  │  SDR1 (P2)      │──────────►║  each other by       ║  EchoLink  ┌──────────────────┐
+  │  PipeWire sink  │  [DUCK]   ║  config priority     ╠───────────►│  EchoLink TX     │
+  │  RSPduo Tuner 1 │           ║                      ║            │  Named Pipes     │
+  │  ■ cyan bar     │           ║  Attack/Release/     ║            └──────────────────┘
+  └─────────────────┘           ║  Padding transitions ║
+                                ║                      ║  TCP out   ┌──────────────────┐
+  ┌─────────────────┐           ║  Audio Processing:   ╠───────────►│  Remote Client   │
+  │  SDR2 (P2)      │──────────►║  VAD · Noise Gate    ║            │  (role=client)   │
+  │  PipeWire sink  │  [DUCK]   ║  HPF · LPF · Notch   ║            └──────────────────┘
+  │  RSPduo Tuner 2 │           ╚══════════════════════╝
+  │  ■ magenta bar  │
+  └─────────────────┘           Duck priority order:
+                                  Radio RX > SDR1 (P2) > SDR2 (P2) > KV4P (P2) > SDRSV (P3)
+  ┌─────────────────┐
+  │  KV4P HT (P2)   │──────────►  [enters mixer — configurable priority and ducking]
+  │  SA818 / DRA818 │  [DUCK]     KV4P_AUDIO_PRIORITY, KV4P_AUDIO_DUCK
+  │  USB-serial     │
+  └─────────────────┘             Each duck transition uses attack / release / padding:
+                                    [source active] → silence gap → [audio switches]
+  ┌─────────────────┐               [source silent] → silence gap → [audio restores]
+  │  SDRSV (P3)     │──────────►  [enters mixer — streamed from second gateway (role=server)]
+  │  Remote Audio   │  [DUCK]
+  │  TCP (role=cl.) │  ■ green
+  └─────────────────┘
 
   ┌─────────────────┐
-  │  EchoLink (P4)  │──────────►
+  │  EchoLink (P4)  │──────────►  [enters mixer — TheLinkBox compatible named pipes]
   │  Named Pipes    │
   └─────────────────┘
 
-  ┌─────────────────┐  PTT (audio-gated)
-  │  ANNIN (P0)     │──────────►  Radio TX only (bypasses Mumble/SDR)
-  │  TCP port 9601  │  Silence frames consumed but not transmitted.
-  │  ■ red bar      │  PTT held for PTT_RELEASE_DELAY after audio stops.
+  ┌─────────────────┐  PTT (audio-gated, bypasses mixer)
+  │  ANNIN (P0)     │──────────►  Radio TX only — keyed when audio exceeds threshold
+  │  TCP port 9601  │             Silence frames consumed but not transmitted.
+  │  ■ red bar      │             PTT held for PTT_RELEASE_DELAY after audio stops.
   └─────────────────┘
 
   SDR REBROADCAST (toggle: b key)
