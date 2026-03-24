@@ -505,7 +505,7 @@ WEB_THEME = blue
 - 7 dark color themes with consistent accent colors across all pages
 
 ![Config Editor](docs/img/config-editor.png)
-*Configuration editor with collapsible sections, Save & Restart, and Exit Server controls.*
+*Configuration editor with collapsible sections grouped alphabetically, Save & Restart, and Exit Server controls.*
 
 **Live Dashboard** (`http://<gateway-ip>:8080/dashboard`):
 - Real-time gateway status updated every second via JSON polling
@@ -531,7 +531,7 @@ WEB_THEME = blue
 - **Responsive layout** — control buttons wrap on narrow/mobile screens instead of overflowing off-screen
 
 ![Live Dashboard](docs/img/dashboard.png)
-*Live dashboard showing gateway status, audio level bars, mute/processing/playback controls, and the browser audio player.*
+*Live dashboard showing gateway status, audio level bars, system info, mute/processing/playback controls, and the browser audio player.*
 
 **TH-9800 Radio Control** (`http://<gateway-ip>:8080/radio`):
 - Full front-panel replica of the TH-9800 dual-band radio in the browser
@@ -541,8 +541,27 @@ WEB_THEME = blue
 - PTT toggle button, TCP/Serial connect/disconnect, RTS control
 - Browser microphone PTT (MIC PTT button)
 
-![Radio Control](docs/img/radio-control.png)
-*TH-9800 radio control page with dual VFO, signal meters, and full button panel.*
+![TH-9800 Control](docs/img/radio-th9800.png)
+*TH-9800 radio control page with dual VFO display, signal meters, full button panel, and browser microphone PTT.*
+
+**TH-D75 Radio Control** (`http://<gateway-ip>:8080/d75`):
+- Full control page for the Kenwood TH-D75 dual-band D-STAR HT
+- GPS status, D-STAR call routing, band A / band B VFO display
+- Memory channel browser, squelch, volume, bandwidth, and power controls
+- Serial connect/disconnect, baud rate selector, GPS NMEA passthrough
+
+![TH-D75 Control](docs/img/radio-thd75.png)
+*TH-D75 control page showing band A/B VFOs, memory channels, and D-STAR status.*
+
+**KV4P HT Control** (`http://<gateway-ip>:8080/kv4p` — shown on dashboard nav when enabled):
+- Control page for the KV4P HT software-defined ham radio module (SA818/DRA818)
+- Live RX frequency display with S-meter and audio level bar
+- Frequency / TX offset, squelch, volume, power, bandwidth (wide/narrow)
+- CTCSS TX and RX tone selectors, PTT button, test tone buttons
+- Firmware version and module type displayed; Reconnect button
+
+![KV4P HT Control](docs/img/radio-kv4p.png)
+*KV4P HT control page showing 146.400 MHz receive with S-meter, CTCSS, and all radio parameters.*
 
 **SDR Control** (`http://<gateway-ip>:8080/sdr`):
 - Full SDR receiver control via RTLSDR-Airband + SoapySDR
@@ -558,7 +577,25 @@ WEB_THEME = blue
 - Settings persist across gateway restarts
 
 ![SDR Control](docs/img/sdr-control.png)
-*SDR control page tuned to 446.760 MHz NFM with gain, squelch, audio filters, and channel memory.*
+*SDR control page — RSPduo dual tuner with Tuner 1 (446.750 MHz NFM) and Tuner 2 (446.640 MHz NFM) running simultaneously.*
+
+**ADS-B Aircraft Tracking** (`http://<gateway-ip>:8080/aircraft` — when `ENABLE_ADSB = true`):
+- Embedded FlightAware PiAware SkyAware map via lighttpd reverse proxy
+- Live aircraft positions, altitude, speed, heading, and squawk from dump1090-fa
+- Single-port access through the gateway's Cloudflare tunnel — no extra port forwarding needed
+- Dashboard panel showing aircraft count, message rate, and service health
+
+![ADS-B Aircraft Tracking](docs/img/adsb.png)
+*ADS-B tracking page showing live aircraft over the Los Angeles area via PiAware SkyAware.*
+
+**Recording Manager** (`http://<gateway-ip>:8080/recordings`):
+- Browse, play, download, and delete recorded audio files
+- Filter by radio source, date, and frequency
+- Bulk select with Select All / Select None; Download Selected or Delete Selected
+- In-browser playback for any recording
+
+![Recording Manager](docs/img/recordings.png)
+*Recording manager with radio/date/frequency filters and bulk download/delete controls.*
 
 **Gateway Logs** (`http://<gateway-ip>:8080/logs`):
 - Live scrolling log viewer with auto-scroll toggle
@@ -567,7 +604,7 @@ WEB_THEME = blue
 - Audio Trace and Watchdog Trace buttons
 
 ![Gateway Logs](docs/img/logs.png)
-*Live log viewer showing gateway startup sequence, keyboard controls, and service status.*
+*Live log viewer with regex filter, clear, Audio Trace, and Watchdog Trace controls.*
 
 ### Cloudflare Tunnel
 
