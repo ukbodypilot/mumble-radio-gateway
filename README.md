@@ -80,6 +80,32 @@ A multi-source radio audio gateway with Mumble VoIP bridging, SDR integration, A
   │  SDR1 + SDR2    │──────────►│  Radio TX        │
   │  (SDR-only mix) │  PTT auto │  AIOC USB        │
   └─────────────────┘           └──────────────────┘
+
+  CONNECTED SUBSYSTEMS (data / control — no audio path through mixer)
+  ────────────────────
+  ┌─────────────────┐  CAT serial (USB)                ┌──────────────────┐
+  │  TH-9800        │◄───────────────────────────────►│  Web UI /radio   │
+  │  Dual-band      │  Frequency, VFO, memory,         └──────────────────┘
+  │  mobile radio   │  signal meter, PTT, RTS
+  └─────────────────┘
+
+  ┌─────────────────┐  CAT serial (USB)                ┌──────────────────┐
+  │  TH-D75 HT      │◄───────────────────────────────►│  Web UI /d75     │
+  │  D-STAR HT      │  Frequency, memory, GPS,         └──────────────────┘
+  │  (optional)     │  band A/B, D-STAR routing
+  └─────────────────┘
+
+  ┌─────────────────┐  USB serial (CP2102)             ┌──────────────────┐
+  │  KV4P HT        │◄───────────────────────────────►│  Web UI /kv4p    │
+  │  SA818/DRA818   │  Frequency, CTCSS, squelch,      └──────────────────┘
+  │  radio module   │  power, bandwidth, PTT
+  └─────────────────┘  (also feeds audio into mixer — see SOURCES above)
+
+  ┌─────────────────┐  JSON (localhost)                ┌──────────────────┐
+  │  ADS-B          │────────────────────────────────►│  Web UI /aircraft│
+  │  dump1090-fa    │  Aircraft positions, altitude,   └──────────────────┘
+  │  RTL-SDR dongle │  squawk, speed, heading
+  └─────────────────┘  (reverse-proxied through gateway on single port)
 ```
 
 ## Table of Contents
@@ -117,12 +143,14 @@ A multi-source radio audio gateway with Mumble VoIP bridging, SDR integration, A
 ```
 Priority 0 (Highest) → File Playback    [PTT → Radio TX]
 Priority 0 (Highest) → ANNIN            [PTT → Radio TX, audio-gated — TCP port 9601]
-Priority 1           → Mumble RX        [PTT → Radio TX, direct path]
+Priority 0 (Highest) → WebMic           [PTT → Radio TX, browser microphone via CAT]
+Priority 1           → Mumble RX        [PTT → Radio TX, direct path — bypasses mixer]
 Priority 1           → Radio RX         [→ Mumble TX, no PTT]
 Priority 2           → SDR1 Receiver    [→ Mumble TX, with ducking]
 Priority 2           → SDR2 Receiver    [→ Mumble TX, with ducking]
+Priority 2           → KV4P HT          [→ Mumble TX, with ducking — configurable]
 Priority 3 (default) → SDRSV            [→ Mumble TX, Remote Audio Link client]
-Priority 4 (Lowest)  → EchoLink        [→ Mumble TX]
+Priority 4 (Lowest)  → EchoLink         [→ Mumble TX]
 ```
 
 #### 1. **File Playback** (Priority 0, PTT enabled)
@@ -139,13 +167,15 @@ Priority 4 (Lowest)  → EchoLink        [→ Mumble TX]
    - Independent mute control
 
 #### 3. **SDR1 Receiver** (Priority 2, with ducking)
-   - ALSA loopback device input
+   - PipeWire sink (`pw:sdr_capture` via parec) or ALSA loopback device input
+   - Typically RSPduo Tuner 1 via rtl_airband + SoapySDR
    - Independent volume, mute, and duck controls
    - Real-time level display (cyan bar)
-   - Ducked by Radio RX and higher-priority SDR
+   - Ducked by Radio RX and higher-priority sources
 
 #### 4. **SDR2 Receiver** (Priority 2, with ducking)
-   - Second independent ALSA loopback input
+   - PipeWire sink (`pw:sdr_capture2` via parec) or ALSA loopback device input
+   - Typically RSPduo Tuner 2 via rtl_airband + SoapySDR (Master/Slave mode)
    - Same controls as SDR1 but independent (`x` to mute)
    - Real-time level display (magenta bar)
    - Priority-based ducking vs SDR1 (configurable)
@@ -216,13 +246,16 @@ The SDR source features **audio ducking** to prevent interference with primary c
 Two SDR inputs can run simultaneously with configurable priority:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  PRIORITY HIERARCHY                                          │
-│                                                              │
-│  1. Radio RX (AIOC)  ← always top priority, ducks all SDRs  │
-│  2. SDR1 (priority=1) ← ducks SDR2 only when SDR1 has signal │
-│  3. SDR2 (priority=2) ← lowest, ducked by SDR1 and radio    │
-└──────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│  PRIORITY HIERARCHY                                            │
+│                                                                │
+│  1. Radio RX (AIOC)   ← top priority, ducks all P2+ sources   │
+│  2. SDR1              ← ducks SDR2/KV4P when SDR1 has signal  │
+│  2. SDR2              ← ducked by Radio RX and SDR1           │
+│  2. KV4P HT audio    ← same level as SDR, priority configurable│
+│  3. SDRSV             ← ducked by Radio RX, SDR1, SDR2, KV4P  │
+│  4. EchoLink          ← lowest priority                        │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 **Example use cases:**
@@ -1192,14 +1225,18 @@ This creates responsive bars that show peaks immediately but decay smoothly.
 ┌──────────────────────────────────────────────────────────────────┐
 │                         AUDIO INPUTS                              │
 ├──────────────────────────────────────────────────────────────────┤
-│  Priority 0:  File Playback (10 slots) ───────┐                  │
-│  Priority 0:  ANNIN (TCP port 9601)   ────────┤                  │
-│  Priority 1:  Radio RX (AIOC)         ────────┼──→ MIXER         │
-│  Priority 2:  SDR (ALSA Loopback)     ────────┤                  │
-│  Priority 3:  EchoLink (Named Pipes)  ────────┘                  │
+│  Priority 0:  File Playback (10 slots) ────────┐                 │
+│  Priority 0:  ANNIN (TCP port 9601)    ────────┤                 │
+│  Priority 1:  Radio RX (AIOC)          ────────┼──→ MIXER        │
+│  Priority 2:  SDR1 (PipeWire/ALSA)     ────────┤                 │
+│  Priority 2:  SDR2 (PipeWire/ALSA)     ────────┤                 │
+│  Priority 2:  KV4P HT audio            ────────┤                 │
+│  Priority 3:  SDRSV (Remote Audio TCP) ────────┤                 │
+│  Priority 4:  EchoLink (Named Pipes)   ────────┘                 │
 │                                                                   │
-│  Mumble RX  ──────────────────────────────────→ Radio TX (PTT)   │
-│             (direct callback path, bypasses mixer entirely)       │
+│  Mumble RX ───────────────────────────────────→ Radio TX (PTT)   │
+│  WebMic (browser) ────────────────────────────→ Radio TX (PTT)   │
+│             (direct paths — bypass mixer entirely)                │
 └──────────────────────────────────────────────────────────────────┘
                                                   │
                                                   ↓
@@ -1217,9 +1254,10 @@ This creates responsive bars that show peaks immediately but decay smoothly.
 ┌──────────────────────────────────────────────────────────────────┐
 │                        AUDIO OUTPUTS                              │
 ├──────────────────────────────────────────────────────────────────┤
-│  ├─→ Radio TX (AIOC + Auto-PTT)                                  │
-│  ├─→ Mumble TX                                                    │
-│  ├─→ Darkice Stream (Icecast/Broadcastify)                       │
+│  ├─→ Radio TX (AIOC / KV4P HT + Auto-PTT)                       │
+│  ├─→ Mumble TX (Opus VoIP)                                       │
+│  ├─→ DarkIce Stream (Icecast / Broadcastify)                     │
+│  ├─→ Remote Client TCP (role=server → client machine)            │
 │  ├─→ Speaker Output (local monitoring, optional)                 │
 │  └─→ EchoLink TX (if enabled)                                    │
 └──────────────────────────────────────────────────────────────────┘
@@ -1230,12 +1268,13 @@ This creates responsive bars that show peaks immediately but decay smoothly.
 When multiple sources provide audio simultaneously:
 
 ```
-Mumble RX (direct path — bypasses mixer):
-  ├─ Audio captured via callback, PTT keyed immediately
-  ├─ Written directly to AIOC output → Radio TX
+Mumble RX / WebMic (direct paths — bypass mixer entirely):
+  ├─ Mumble RX: audio captured via callback, PTT keyed immediately
+  ├─ WebMic: browser mic via WebSocket /ws_mic → radio TX via CAT PTT
+  ├─ Written directly to radio TX (AIOC or KV4P)
   └─ Suppressed only when TX muted or manual PTT mode active
 
-Priority 0 (File Playback and ANNIN):
+Priority 0 (File Playback, ANNIN):
   ├─ Triggers PTT → audio sent to Radio TX
   ├─ ANNIN (TCP 9601): audio-gated — silence frames discarded, PTT fires only on real audio
   ├─ Concurrent Radio RX still forwarded to Mumble
@@ -1243,15 +1282,21 @@ Priority 0 (File Playback and ANNIN):
 
 Priority 1 (Radio RX / AIOC):
   ├─ Radio RX → Mumble TX (and stream if enabled)
+  ├─ Ducks all P2+ sources when active
   └─ Forwarded to all listeners
 
-Priority 2 (SDR):
+Priority 2 (SDR1, SDR2, KV4P HT):
   ├─ DUCKED when Priority 0 or 1 active (default)
   ├─ OR mixed at SDR_MIX_RATIO (if ducking disabled)
+  ├─ P2 sources can also duck each other by sub-priority configuration
   └─ Goes to Mumble TX only
 
-Priority 3 (EchoLink):
-  └─ Lowest priority
+Priority 3 (SDRSV — Remote Audio Link client):
+  ├─ DUCKED by all higher-priority sources (default)
+  └─ Goes to Mumble TX only
+
+Priority 4 (EchoLink):
+  └─ Lowest priority, goes to Mumble TX only
 ```
 
 ### SDR Ducking Logic
