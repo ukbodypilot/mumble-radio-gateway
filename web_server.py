@@ -832,24 +832,22 @@ class WebConfigServer:
                                 if freq_hz < 1000000:
                                     continue
                                 freq = freq_hz / 1_000_000
-                                tx_hz = int(fields[2])  # ME[2] = TX freq in Hz (NOT offset)
-                                tx_freq = tx_hz / 1_000_000
+                                field2 = int(fields[2])  # ME[2]: offset if small, TX freq if large
                                 mode = int(fields[5])
                                 tone_on = fields[8] == '1'
                                 ctcss_on = fields[9] == '1'
                                 dcs_on = fields[10] == '1'
                                 shift = int(fields[13])  # 0=simplex, 1=+, 2=-
-                                # Determine shift display from TX vs RX freq
-                                if tx_hz == 0 or tx_hz == freq_hz:
-                                    shift_str = 'S'
-                                    offset_str = ''
-                                else:
+                                # Determine shift display
+                                # ME field[2] < 100 MHz → offset; >= 100 MHz → TX frequency
+                                if field2 >= 100_000_000:
+                                    # TX frequency — derive offset and shift
+                                    tx_freq = field2 / 1_000_000
                                     diff = tx_freq - freq
                                     if abs(diff) < 0.001:
                                         shift_str = 'S'
                                         offset_str = ''
                                     elif abs(diff) > 50:
-                                        # Cross-band: show TX freq directly
                                         shift_str = 'X'
                                         offset_str = f'{tx_freq:.4f}'
                                     elif diff > 0:
@@ -858,6 +856,14 @@ class WebConfigServer:
                                     else:
                                         shift_str = '-'
                                         offset_str = f'{abs(diff):.4f}'
+                                elif field2 > 0 and shift != 0:
+                                    # Small value = offset in Hz
+                                    offset_mhz = field2 / 1_000_000
+                                    shift_str = '+' if shift == 1 else '-'
+                                    offset_str = f'{offset_mhz:.4f}'
+                                else:
+                                    shift_str = 'S'
+                                    offset_str = ''
                                 tone_str = ''
                                 tone_idx = int(fields[14])
                                 ctcss_idx = int(fields[15])
@@ -4790,23 +4796,28 @@ function d75GoChannel(band, ch) {
     d75cmd('cat', 'VM ' + band + ',0');
     setTimeout(function() {
       if (chData.me_fields) {
-        // ME field[2] = TX freq in Hz; FO field[2] = offset in Hz — must convert
+        // ME field[2] has dual meaning:
+        //   Small value (< 100 MHz) → already an offset (e.g. 600000 = 600 kHz)
+        //   Large value (>= 100 MHz) → TX frequency (e.g. 437450000 for cross-band)
+        // FO field[2] always wants offset in Hz
         var mf = chData.me_fields.split(',');
-        var rxHz = parseInt(mf[0]) || 0;  // me_fields[0] = RX freq
-        var txHz = parseInt(mf[1]) || 0;  // me_fields[1] = TX freq
-        var offsetHz = 0;
-        var shift = parseInt(mf[12]) || 0;  // me_fields[12] = shift (0=S,1=+,2=-)
-        if (txHz > 0 && txHz !== rxHz) {
-          offsetHz = Math.abs(txHz - rxHz);
-          // Fix shift direction from actual TX/RX relationship
-          if (txHz > rxHz) shift = 1;      // +
-          else if (txHz < rxHz) shift = 2; // -
+        var rxHz = parseInt(mf[0]) || 0;
+        var field2 = parseInt(mf[1]) || 0;
+        var shift = parseInt(mf[12]) || 0;
+        var offsetHz;
+        if (field2 >= 100000000) {
+          // TX frequency — calculate offset
+          offsetHz = Math.abs(field2 - rxHz);
+          if (field2 > rxHz) shift = 1;
+          else if (field2 < rxHz) shift = 2;
+          else { shift = 0; offsetHz = 0; }
         } else {
-          shift = 0; offsetHz = 0;
+          // Already an offset — use as-is
+          offsetHz = field2;
         }
         mf[1] = ('0000000000' + offsetHz).slice(-10);
         mf[12] = String(shift);
-        _d75dbg('TX=' + txHz + ' RX=' + rxHz + ' offset=' + offsetHz + ' shift=' + shift);
+        _d75dbg('field2=' + field2 + (field2 >= 100000000 ? '(TX)' : '(offset)') + ' offset=' + offsetHz + ' shift=' + shift);
         var fo = band + ',' + mf.join(',');
         _d75dbg('FO ' + fo.substring(0, 80));
         d75cmd('cat', 'FO ' + fo);
