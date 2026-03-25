@@ -1199,6 +1199,10 @@ class D75CATClient:
                 self._serial_connected = bool(data.get('model_id'))
             if self._serial_connected:
                 self._btstart_in_progress = False
+            elif self._btstart_in_progress and hasattr(self, '_btstart_time'):
+                # Clear stale btstart flag after 30s so retry can trigger
+                if time.monotonic() - self._btstart_time > 30.0:
+                    self._btstart_in_progress = False
             self._model = data.get('model_id', '')
             self._serial_number = data.get('serial_number', '')
             self._firmware = data.get('fw_version', '')
@@ -1257,6 +1261,8 @@ class D75CATClient:
         """Poll !status every 2 seconds. Auto-reconnect on connection loss."""
         _reconnect_interval = 5.0
         _reconnect_count = 0
+        _last_btstart_attempt = 0
+        _BTSTART_RETRY_INTERVAL = 15.0
         while not self._stop:
             # Check connection health and reconnect if needed
             if not self._connected or not self._sock:
@@ -1277,6 +1283,8 @@ class D75CATClient:
                     if not self._serial_connected and not self._bt_stopped:
                         print(f"[D75 CAT] Serial not connected — requesting btstart...")
                         self._btstart_in_progress = True
+                        self._btstart_time = time.monotonic()
+                        _last_btstart_attempt = time.monotonic()
                         try:
                             resp = self._send_cmd("!btstart")
                             print(f"[D75 CAT] btstart response: {resp}")
@@ -1301,6 +1309,19 @@ class D75CATClient:
                     self._connected = False
                 except Exception as e:
                     print(f"  [D75 CAT] poll error: {e}")
+                # Periodic btstart retry if serial is down
+                if (self._connected and not self._serial_connected
+                        and not self._bt_stopped and not self._btstart_in_progress
+                        and time.monotonic() - _last_btstart_attempt >= _BTSTART_RETRY_INTERVAL):
+                    _last_btstart_attempt = time.monotonic()
+                    print(f"[D75 CAT] Serial still down — retrying btstart...")
+                    self._btstart_in_progress = True
+                    self._btstart_time = time.monotonic()
+                    try:
+                        resp = self._send_cmd("!btstart")
+                        print(f"[D75 CAT] btstart retry: {resp}")
+                    except Exception as e:
+                        print(f"[D75 CAT] btstart retry error: {e}")
             for _ in range(20):  # 2 seconds in 0.1s increments
                 if self._stop:
                     return
