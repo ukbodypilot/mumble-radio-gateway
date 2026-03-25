@@ -1024,16 +1024,16 @@ class CATServer:
             if live_mode is not None:
                 fp[4] = str(live_mode)
             fo_set = ','.join(fp)
-            print(f"[tone] FO SET send={fo_set!r}")
             r = self._serial.send_raw(fo_set)
-            print(f"[tone] FO SET resp={r!r}")
             if r:
                 self._serial._process_message(r)
-            # Always read back FO to confirm radio accepted the change
-            fo_rb = self._serial.send_raw(f"FO {band}")
-            print(f"[tone] FO READ-BACK resp={fo_rb!r}")
-            if fo_rb:
-                self._serial._process_message(fo_rb)
+            # Read back FO in background so freq_info updates without blocking
+            def _fo_rb(b):
+                time.sleep(0.3)
+                rb = self._serial.send_raw(f"FO {b}")
+                if rb:
+                    self._serial._process_message(rb)
+            threading.Thread(target=_fo_rb, args=(band,), daemon=True).start()
             return r or 'ok'
 
         # ── shift direction ────────────────────────────────────────────────────
@@ -1059,9 +1059,12 @@ class CATServer:
             r = self._serial.send_raw(fo_set)
             if r:
                 self._serial._process_message(r)
-            fo_rb = self._serial.send_raw(f"FO {band}")
-            if fo_rb:
-                self._serial._process_message(fo_rb)
+            def _fo_rb(b):
+                time.sleep(0.3)
+                rb = self._serial.send_raw(f"FO {b}")
+                if rb:
+                    self._serial._process_message(rb)
+            threading.Thread(target=_fo_rb, args=(band,), daemon=True).start()
             return r or 'ok'
 
         # ── repeater offset ────────────────────────────────────────────────────
@@ -1087,9 +1090,12 @@ class CATServer:
             r = self._serial.send_raw(fo_set)
             if r:
                 self._serial._process_message(r)
-            fo_rb = self._serial.send_raw(f"FO {band}")
-            if fo_rb:
-                self._serial._process_message(fo_rb)
+            def _fo_rb(b):
+                time.sleep(0.3)
+                rb = self._serial.send_raw(f"FO {b}")
+                if rb:
+                    self._serial._process_message(rb)
+            threading.Thread(target=_fo_rb, args=(band,), daemon=True).start()
             return r or 'ok'
 
         return f'unknown command: {cmd}'
