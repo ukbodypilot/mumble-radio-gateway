@@ -420,6 +420,7 @@ class SerialManager:
             elif line.startswith('FO') and ',' in line:
                 # FO band,rxfreq,txfreq,shift,rev,tone,ctcss,dcs,tone_idx,ctcss_idx,dcs_idx
                 parts = line.split(',')
+                print(f"[FO] raw line={line!r} nfields={len(parts)}")
                 try:
                     band = int(line[2:].split(',')[0].strip())
                     raw  = parts[1].strip()    # 10-digit RX frequency in Hz
@@ -473,11 +474,14 @@ class SerialManager:
                                 'shift_direction': str(shift),
                                 'offset':       offset_str,
                             }
+                            print(f"[FO] band={band} parsed freq_info={fi}")
                             with self._state_lock:
                                 if 0 <= band <= 1:
                                     self.band[band]['freq_info'] = fi
-                        except (ValueError, IndexError):
-                            pass
+                        except (ValueError, IndexError) as e:
+                            print(f"[FO] parse error: {e}")
+                    else:
+                        print(f"[FO] only {len(parts)} fields — skipping freq_info parse")
                 except (ValueError, IndexError):
                     pass
             elif line.startswith('TX'):
@@ -961,6 +965,7 @@ class CATServer:
             band  = int(parts[0])
             ttype = parts[1].lower()
             fo_resp = self._serial.send_raw(f"FO {band}")
+            print(f"[tone] FO READ resp={fo_resp!r}")
             if not fo_resp or not fo_resp.startswith('FO') or fo_resp.count(',') < 10:
                 return f'could not read FO: {fo_resp!r}'
             fp = fo_resp.split(',')
@@ -1011,11 +1016,14 @@ class CATServer:
             else:
                 return f'unknown tone type: {ttype}'
             fo_set = f"FO {band},{rxfreq},{txfreq},{shift_d},{rev},{tone_fl},{ctcss_fl},{dcs_fl},{tone_idx},{ctcss_idx},{dcs_idx}"
+            print(f"[tone] FO SET send={fo_set!r}")
             r = self._serial.send_raw(fo_set)
+            print(f"[tone] FO SET resp={r!r}")
             if r:
                 self._serial._process_message(r)
             # Always read back FO to confirm radio accepted the change
             fo_rb = self._serial.send_raw(f"FO {band}")
+            print(f"[tone] FO READ-BACK resp={fo_rb!r}")
             if fo_rb:
                 self._serial._process_message(fo_rb)
             return r or 'ok'
