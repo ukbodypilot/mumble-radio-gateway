@@ -80,6 +80,19 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **Channel load:** `d75GoChannel` checks `_d75LastStatus.dual_band/active_band` — switches active band via `BC` (not `DL 0`) in single-band mode to avoid forcing dual-band.
 - **Up/Down buttons:** send `!cat UP` / `!cat DN` via passthrough.
 
+### D75 FO Command — 21-field format (LA3QMA / Hamlib thd74.c verified, 2026-03-24)
+- `radio_automation.py` `_tune_d75()` already uses correct indices — use as reference
+- **CRITICAL — field map (0-indexed from comma split):**
+  - `[0]=band  [1]=rxfreq  [2]=offset_hz  [3]=rxstep  [4]=txstep`
+  - `[5]=mode  [6]=fine_mode  [7]=fine_step`
+  - `[8]=tone  [9]=ctcss  [10]=dcs  [11]=cross  [12]=reverse  [13]=shift`
+  - `[14]=tone_idx  [15]=ctcss_idx  [16]=dcs_idx`
+  - `[17]=cross_type  [18]=urcall  [19]=dsql_type  [20]=dsql_code`
+- **Mode values:** 0=FM, 1=DV, 2=AM, 3=LSB, 4=USB, 5=CW, 6=NFM, 7=DR, 8=WFM
+- **42-tone CTCSS list** (not 39): includes 206.5, 229.1, 254.1
+- **FO SET:** radio gives no echo response (send_raw returns None) — use async readback
+- **Proxy no SSH:** 192.168.2.134 has no SSH; deploy via `git pull` from remote desktop
+
 ## Systemd Service & Process Management
 - **Service:** `radio-gateway.service` — `KillMode=control-group`, `TimeoutStopSec=15`
 - **CRITICAL:** Always restart gateway via start.sh, never `python3 radio_gateway.py` directly
@@ -152,7 +165,8 @@ SDR2 permanently ducked: D75 noise above SDR_SIGNAL_THRESHOLD=-70 kept other_aud
 ANNIN level bar stuck after voice note transmission (2026-03-24),
 D75 default unmuted caused noise + SDR ducking on startup (2026-03-24),
 D75 BT Start button shown during auto-connect: added _btstart_in_progress flag (2026-03-24),
-D75 serial never connects: btstart blocking caused protocol desync, _do_btstart skipped serial.connect(), poll thread self-join crash (2026-03-24).
+D75 serial never connects: btstart blocking caused protocol desync, _do_btstart skipped serial.connect(), poll thread self-join crash (2026-03-24),
+D75 tone/shift/offset wrong FO indices: 4 layered bugs — 11-field vs 21-field, wrong flag/shift/mode positions, gateway timeout crash (2026-03-24).
 
 ## User Preferences
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis

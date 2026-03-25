@@ -425,7 +425,6 @@ class SerialManager:
                 # [14]=tone_idx  [15]=ctcss_idx  [16]=dcs_idx
                 # [17]=cross_type  [18]=urcall  [19]=dsql_type  [20]=dsql_code
                 parts = line.split(',')
-                print(f"[FO] raw line={line!r} nfields={len(parts)}")
                 try:
                     band = int(line[2:].split(',')[0].strip())
                     raw  = parts[1].strip()    # 10-digit RX frequency in Hz
@@ -477,14 +476,11 @@ class SerialManager:
                                 'shift_direction': str(shift),
                                 'offset':       offset_str,
                             }
-                            print(f"[FO] band={band} parsed freq_info={fi}")
                             with self._state_lock:
                                 if 0 <= band <= 1:
                                     self.band[band]['freq_info'] = fi
-                        except (ValueError, IndexError) as e:
-                            print(f"[FO] parse error: {e}")
-                    else:
-                        print(f"[FO] only {len(parts)} fields — skipping freq_info parse")
+                        except (ValueError, IndexError):
+                            pass
                 except (ValueError, IndexError):
                     pass
             elif line.startswith('TX'):
@@ -968,7 +964,6 @@ class CATServer:
             band  = int(parts[0])
             ttype = parts[1].lower()
             fo_resp = self._serial.send_raw(f"FO {band}")
-            print(f"[tone] FO READ resp={fo_resp!r}")
             if not fo_resp or not fo_resp.startswith('FO') or fo_resp.count(',') < 10:
                 return f'could not read FO: {fo_resp!r}'
             fp = fo_resp.split(',')

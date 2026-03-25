@@ -1831,12 +1831,7 @@ class WebConfigServer:
                                 except (ValueError, TypeError):
                                     result = {'ok': False, 'error': 'usage: vol 0-500 (percentage)'}
                             else:
-                                full_cmd = f"!{cmd} {args}".strip()
-                                if cmd in ('tone', 'shift', 'offset'):
-                                    print(f"[D75-cmd] sending {full_cmd!r}")
-                                resp = gw.d75_cat.send_command(full_cmd)
-                                if cmd in ('tone', 'shift', 'offset'):
-                                    print(f"[D75-cmd] response {resp!r}")
+                                resp = gw.d75_cat.send_command(f"!{cmd} {args}".strip())
                                 result = {'ok': True, 'response': resp or ''}
                         else:
                             result = {'ok': False, 'error': 'D75 not connected — try Start Service then Reconnect'}

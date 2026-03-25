@@ -1203,10 +1203,7 @@ class D75CATClient:
                     self._squelch[band] = b.get('squelch', 0)
                     self._power[band] = b.get('power', 0)
                     self._signal[band] = b.get('s_meter', 0)
-                    new_fi = b.get('freq_info')
-                    if new_fi != self._freq_info.get(band):
-                        print(f"[D75-CAT] freq_info band={band} changed: {self._freq_info.get(band)} -> {new_fi}")
-                    self._freq_info[band] = new_fi
+                    self._freq_info[band] = b.get('freq_info')
                     self._memory_mode[band] = b.get('memory_mode', 0)
                     self._channel[band] = b.get('channel', '')
         except (json_mod.JSONDecodeError, Exception):

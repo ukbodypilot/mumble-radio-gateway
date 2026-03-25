@@ -1,5 +1,15 @@
 # Bug History — Radio Gateway
 
+## D75 tone/shift/offset wrong FO field indices (2026-03-24)
+**Symptom:** Tone display always showed "DCS ON" (false), setting tone changed mode to DV, FO SET silently rejected (resp=None), proxy crashed on tone command (gateway timeout → broken pipe).
+**Root causes (4 layered bugs, each masked by the next):**
+1. **Wrong FO field count:** Assumed 11-field FO format; TH-D75 has 21 fields. FO SET with 11 fields silently rejected by radio (no response). Fixed: send all 21 fields via `','.join(fp)`.
+2. **Wrong flag indices:** Tone/CTCSS/DCS flags at fp[5/6/7] → actually fp[8/9/10]. fp[7] (fine_step=1) was read as DCS ON. Mode at fp[5] was overwritten as "tone flag" → corrupted mode to DV.
+3. **Wrong shift/mode indices:** fp[3] used as shift (actually rxstep), fp[4] used as mode (actually txstep). Real shift=fp[13], real mode=fp[5].
+4. **Gateway timeout crash:** 3 serial operations (FO read + FO SET 2s timeout + FO readback) exceeded gateway's 3s send_command timeout → broken pipe. Fixed: async readback in background thread.
+**Fix:** Complete rewrite using LA3QMA/Hamlib-verified 21-field layout. Also updated CTCSS list to 42 tones (was 39). `radio_automation.py` `_tune_d75()` already had correct indices — should have been used as reference from the start.
+**Lesson:** Always check existing codebase for reference implementations before guessing field layouts. Instrument and verify with real data immediately rather than iterating on assumptions.
+
 ## D75 serial never connects on startup (2026-03-24)
 **Symptom:** UI stuck at "Connecting..." forever. Proxy showed btstart completing but `serial_connected=False` permanently.
 **Root causes (3 separate bugs):**
