@@ -418,7 +418,12 @@ class SerialManager:
                         if 0 <= band <= 1:
                             self.band[band]['s_meter'] = 0
             elif line.startswith('FO') and ',' in line:
-                # FO band,rxfreq,txfreq,shift,rev,tone,ctcss,dcs,tone_idx,ctcss_idx,dcs_idx
+                # TH-D75 FO: 21 fields (LA3QMA / Hamlib thd74.c verified)
+                # fp[0]=band  [1]=rxfreq  [2]=offset  [3]=rxstep  [4]=txstep
+                # [5]=mode  [6]=fine_mode  [7]=fine_step
+                # [8]=tone  [9]=ctcss  [10]=dcs  [11]=cross  [12]=reverse  [13]=shift
+                # [14]=tone_idx  [15]=ctcss_idx  [16]=dcs_idx
+                # [17]=cross_type  [18]=urcall  [19]=dsql_type  [20]=dsql_code
                 parts = line.split(',')
                 print(f"[FO] raw line={line!r} nfields={len(parts)}")
                 try:
@@ -429,12 +434,15 @@ class SerialManager:
                         with self._state_lock:
                             if 0 <= band <= 1:
                                 self.band[band]['frequency'] = freq
-                    # Parse tone/shift/offset fields if present
-                    if len(parts) >= 11:
-                        _ctcss_list = ["67.0","69.3","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
+                    # Parse tone/shift/offset — need at least 17 fields for D75
+                    if len(parts) >= 17:
+                        # 42-tone CTCSS list for TH-D75 (indices 00-41)
+                        _ctcss_list = [
+                            "67.0","69.3","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
                             "91.5","94.8","97.4","100.0","103.5","107.2","110.9","114.8","118.8","123.0",
                             "127.3","131.8","136.5","141.3","146.2","151.4","156.7","162.2","167.9",
-                            "173.8","179.9","186.2","192.8","203.5","210.7","218.1","225.7","233.6","241.8","250.3"]
+                            "173.8","179.9","186.2","192.8","203.5","206.5","210.7","218.1","225.7",
+                            "229.1","233.6","241.8","250.3","254.1"]
                         _dcs_list = ["023","025","026","031","032","036","043","047","051","053","054",
                             "065","071","072","073","074","114","115","116","122","125","131",
                             "132","134","143","145","152","155","156","162","165","172","174",
@@ -446,25 +454,17 @@ class SerialManager:
                             "612","624","627","631","632","654","662","664","703","712","723",
                             "731","732","734","743","754"]
                         try:
-                            n = len(parts)
-                            shift    = int(parts[3].strip())
-                            tone_on  = parts[5].strip() == '1'
-                            ctcss_on = parts[6].strip() == '1'
-                            dcs_on   = parts[7].strip() == '1'
-                            # D75 has 21 fields — indices at 14/15/16
-                            # Standard 11-field format — indices at 8/9/10
-                            if n >= 17:
-                                tone_idx  = int(parts[14].strip())
-                                ctcss_idx = int(parts[15].strip())
-                                dcs_idx   = int(parts[16].strip())
-                            else:
-                                tone_idx  = int(parts[8].strip())
-                                ctcss_idx = int(parts[9].strip())
-                                dcs_idx   = int(parts[10].strip())
+                            tone_on  = parts[8].strip() == '1'
+                            ctcss_on = parts[9].strip() == '1'
+                            dcs_on   = parts[10].strip() == '1'
+                            shift    = int(parts[13].strip())
+                            tone_idx  = int(parts[14].strip())
+                            ctcss_idx = int(parts[15].strip())
+                            dcs_idx   = int(parts[16].strip())
                             tone_hz  = _ctcss_list[tone_idx]  if tone_idx  < len(_ctcss_list) else ''
                             ctcss_hz = _ctcss_list[ctcss_idx] if ctcss_idx < len(_ctcss_list) else ''
                             dcs_code = _dcs_list[dcs_idx]     if dcs_idx   < len(_dcs_list)   else ''
-                            # fp[2] is the stored offset value in Hz (not absolute TX freq)
+                            # fp[2] = offset in Hz
                             offset_hz  = int(parts[2].strip())
                             offset_str = f'{offset_hz / 1_000_000:.4f}' if offset_hz >= 1000 else ''
                             fi = {
@@ -972,11 +972,13 @@ class CATServer:
             if not fo_resp or not fo_resp.startswith('FO') or fo_resp.count(',') < 10:
                 return f'could not read FO: {fo_resp!r}'
             fp = fo_resp.split(',')
-            n = len(fp)
-            _ctcss = ["67.0","69.3","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
+            # 42-tone CTCSS list for TH-D75 (indices 00-41)
+            _ctcss = [
+                "67.0","69.3","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
                 "91.5","94.8","97.4","100.0","103.5","107.2","110.9","114.8","118.8","123.0",
                 "127.3","131.8","136.5","141.3","146.2","151.4","156.7","162.2","167.9",
-                "173.8","179.9","186.2","192.8","203.5","210.7","218.1","225.7","233.6","241.8","250.3"]
+                "173.8","179.9","186.2","192.8","203.5","206.5","210.7","218.1","225.7",
+                "229.1","233.6","241.8","250.3","254.1"]
             _dcs = ["023","025","026","031","032","036","043","047","051","053","054",
                 "065","071","072","073","074","114","115","116","122","125","131",
                 "132","134","143","145","152","155","156","162","165","172","174",
@@ -987,14 +989,13 @@ class CATServer:
                 "465","466","503","506","516","523","526","532","546","565","606",
                 "612","624","627","631","632","654","662","664","703","712","723",
                 "731","732","734","743","754"]
-            # D75=21 fields: tone/ctcss/dcs indices at fp[14/15/16]
-            # Standard=11 fields: indices at fp[8/9/10]
-            i_tone_fl = 5; i_ctcss_fl = 6; i_dcs_fl = 7
-            i_tone_idx, i_ctcss_idx, i_dcs_idx = (14, 15, 16) if n >= 17 else (8, 9, 10)
-            # Apply requested change
-            fp[i_tone_fl]  = '0'
-            fp[i_ctcss_fl] = '0'
-            fp[i_dcs_fl]   = '0'
+            # D75 FO field indices (verified: LA3QMA / Hamlib thd74.c):
+            #   [8]=tone  [9]=ctcss  [10]=dcs  [13]=shift
+            #   [14]=tone_idx  [15]=ctcss_idx  [16]=dcs_idx
+            # Clear all tone/ctcss/dcs flags then set requested
+            fp[8]  = '0'  # tone off
+            fp[9]  = '0'  # ctcss off
+            fp[10] = '0'  # dcs off
             if ttype == 'off':
                 pass
             elif ttype in ('tone', 'ctcss'):
@@ -1003,26 +1004,20 @@ class CATServer:
                     return f'unknown CTCSS freq: {hz}'
                 idx = _ctcss.index(hz)
                 if ttype == 'tone':
-                    fp[i_tone_fl]  = '1'
-                    fp[i_tone_idx] = f'{idx:02d}'
+                    fp[8]  = '1'
+                    fp[14] = f'{idx:02d}'
                 else:
-                    fp[i_ctcss_fl]  = '1'
-                    fp[i_ctcss_idx] = f'{idx:02d}'
-                    fp[i_tone_idx]  = f'{idx:02d}'
+                    fp[9]  = '1'
+                    fp[15] = f'{idx:02d}'
+                    fp[14] = f'{idx:02d}'
             elif ttype == 'dcs':
                 code = parts[2] if len(parts) > 2 else ''
                 if code not in _dcs:
                     return f'unknown DCS code: {code}'
-                fp[i_dcs_fl]   = '1'
-                fp[i_dcs_idx]  = f'{_dcs.index(code):03d}'
+                fp[10] = '1'
+                fp[16] = f'{_dcs.index(code):03d}'
             else:
                 return f'unknown tone type: {ttype}'
-            # fp[4] = mode — preserve current live mode so FO SET doesn't revert
-            # the user's mode (e.g. FM) back to what the stored VFO has (e.g. DV)
-            with self._state_lock:
-                live_mode = self.band[band].get('mode') if 0 <= band <= 1 else None
-            if live_mode is not None:
-                fp[4] = str(live_mode)
             fo_set = ','.join(fp)
             r = self._serial.send_raw(fo_set)
             if r:
@@ -1050,11 +1045,7 @@ class CATServer:
             if not fo_resp or not fo_resp.startswith('FO') or fo_resp.count(',') < 10:
                 return f'could not read FO: {fo_resp!r}'
             fp = fo_resp.split(',')
-            fp[3] = direction
-            with self._state_lock:
-                live_mode = self.band[band].get('mode') if 0 <= band <= 1 else None
-            if live_mode is not None:
-                fp[4] = str(live_mode)
+            fp[13] = direction  # [13]=shift direction (0=simplex, 1=+, 2=-)
             fo_set = ','.join(fp)
             r = self._serial.send_raw(fo_set)
             if r:
@@ -1081,11 +1072,7 @@ class CATServer:
             if not fo_resp or not fo_resp.startswith('FO') or fo_resp.count(',') < 10:
                 return f'could not read FO: {fo_resp!r}'
             fp = fo_resp.split(',')
-            fp[2] = f'{int(offset_mhz * 1_000_000):010d}'
-            with self._state_lock:
-                live_mode = self.band[band].get('mode') if 0 <= band <= 1 else None
-            if live_mode is not None:
-                fp[4] = str(live_mode)
+            fp[2] = f'{int(offset_mhz * 1_000_000):010d}'  # [2]=offset in Hz
             fo_set = ','.join(fp)
             r = self._serial.send_raw(fo_set)
             if r:
