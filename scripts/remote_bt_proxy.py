@@ -1014,6 +1014,10 @@ class CATServer:
             r = self._serial.send_raw(fo_set)
             if r:
                 self._serial._process_message(r)
+            # Always read back FO to confirm radio accepted the change
+            fo_rb = self._serial.send_raw(f"FO {band}")
+            if fo_rb:
+                self._serial._process_message(fo_rb)
             return r or 'ok'
 
         # ── shift direction ────────────────────────────────────────────────────
@@ -1045,6 +1049,9 @@ class CATServer:
             r = self._serial.send_raw(fo_set)
             if r:
                 self._serial._process_message(r)
+            fo_rb = self._serial.send_raw(f"FO {band}")
+            if fo_rb:
+                self._serial._process_message(fo_rb)
             return r or 'ok'
 
         # ── repeater offset ────────────────────────────────────────────────────
@@ -1082,6 +1089,9 @@ class CATServer:
             r = self._serial.send_raw(fo_set)
             if r:
                 self._serial._process_message(r)
+            fo_rb = self._serial.send_raw(f"FO {band}")
+            if fo_rb:
+                self._serial._process_message(fo_rb)
             return r or 'ok'
 
         return f'unknown command: {cmd}'

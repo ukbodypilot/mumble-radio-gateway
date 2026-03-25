@@ -4372,6 +4372,7 @@ var _toneEditUntil = [0, 0];  // per-band timestamps for tone/offset/shift
 var _ctrlEditUntil = 0;       // timestamp for band/dual controls
 var _volEditUntil = 0;        // timestamp for volume slider
 function _toneTouched(band) { _toneEditUntil[band] = Date.now() + 5000; }
+function _toneSent(band) { _toneEditUntil[band] = Date.now() + 20000; }
 
 function d75setTone(band) {
   _toneTouched(band);
@@ -4386,16 +4387,17 @@ function d75setTone(band) {
   var args = type;
   if (type === 'tone' || type === 'ctcss') args += ' ' + freqSel.value;
   else if (type === 'dcs') args += ' ' + dcsSel.value;
+  _toneSent(band);
   d75cmd('tone', band + ' ' + args);
 }
 
 function d75setShift(band, val) {
-  _toneTouched(band);
+  _toneSent(band);
   d75cmd('shift', band + ' ' + val);
 }
 
 function d75setOffset(band, val) {
-  _toneTouched(band);
+  _toneSent(band);
   if (!val) return;
   d75cmd('offset', band + ' ' + val);
 }
