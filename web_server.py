@@ -6123,6 +6123,21 @@ pollTimer = setInterval(pollStatus, 1000);
 
             # Hostname
             info['hostname'] = socket.gethostname()
+
+            # Cloudflare tunnel IP
+            if self.gateway and self.gateway.cloudflare_tunnel:
+                url = self.gateway.cloudflare_tunnel.get_url() or ''
+                if url:
+                    try:
+                        host = url.replace('https://', '').replace('http://', '').split('/')[0]
+                        ip = socket.gethostbyname(host)
+                        info['tunnel_ip'] = ip
+                    except Exception:
+                        info['tunnel_ip'] = ''
+                else:
+                    info['tunnel_ip'] = ''
+            else:
+                info['tunnel_ip'] = ''
         except Exception:
             info['ips'] = []
             info['hostname'] = ''
@@ -6637,7 +6652,6 @@ function updateStatus() {
       if(rTot > 0) h += '<div class="st-item"><span class="st-label">Restarts:</span><span class="st-val yellow">'+(s.darkice_restarts||0)+'d/'+(s.stream_restarts||0)+'s</span></div>';
       h += '<div class="st-item"><span class="st-label">Health:</span><span class="st-val '+(s.stream_health?'green':'red')+'">'+(s.stream_health?'ON':'off')+'</span></div>';
     }
-    if(s.tunnel_url) h += '<div style="width:100%; margin-top:4px; border-top:1px solid var(--t-border); padding-top:4px;"><span class="st-label">CF:</span> <a href="'+s.tunnel_url+'" target="_blank" style="color:#2ecc71; font-size:0.85em;">'+s.tunnel_url.replace('https://','')+'</a></div>';
     h += '</div>';
 
 
@@ -7133,6 +7147,7 @@ function updateSysInfo() {
       for (var i=0; i<s.ips.length; i++) {
         h += '<div class="st-item"><span class="st-label">'+s.ips[i].iface+':</span><span class="st-val white">'+s.ips[i].addr+'</span></div>';
       }
+      if (s.tunnel_ip) h += '<div class="st-item"><span class="st-label">CF:</span><span class="st-val green">'+s.tunnel_ip+'</span></div>';
       h += '</div>';
     }
     document.getElementById('sysinfo').innerHTML = h;
