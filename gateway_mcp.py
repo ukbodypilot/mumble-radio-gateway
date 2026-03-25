@@ -566,6 +566,493 @@ def telegram_reply(message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tools — TH-9800 Radio Control
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def radio_frequency(
+    vfo: str = 'left',
+    volume: int | None = None,
+    squelch: int | None = None,
+) -> str:
+    """
+    Read TH-9800 radio state and optionally set volume/squelch.
+    Returns frequency, channel, power, signal strength, and volume for a VFO.
+
+    The TH-9800 is channel-based — frequency is determined by the memory channel.
+    Use the web UI /radio page or front-panel buttons to change channels.
+
+    Args:
+        vfo:      Which VFO side — 'left' or 'right' (default 'left').
+        volume:   Set volume level 0-100.  Omit to read only.
+        squelch:  Set squelch level 0-100.  Omit to read only.
+    """
+    vfo = vfo.lower().strip()
+    if vfo not in ('left', 'right'):
+        return "Error: vfo must be 'left' or 'right'"
+
+    results = []
+
+    # Set volume if requested
+    if volume is not None:
+        vol_cmd = 'VOL_LEFT' if vfo == 'left' else 'VOL_RIGHT'
+        result = _post('/catcmd', {'cmd': vol_cmd, 'value': max(0, min(100, volume))})
+        if result.get('ok'):
+            results.append(f'Volume set to {volume}')
+        else:
+            results.append(f'Volume set failed: {result.get("error", "unknown")}')
+
+    # Set squelch if requested
+    if squelch is not None:
+        sq_cmd = 'SQ_LEFT' if vfo == 'left' else 'SQ_RIGHT'
+        result = _post('/catcmd', {'cmd': sq_cmd, 'value': max(0, min(100, squelch))})
+        if result.get('ok'):
+            results.append(f'Squelch set to {squelch}')
+        else:
+            results.append(f'Squelch set failed: {result.get("error", "unknown")}')
+
+    # Always read current state
+    state = _get('/catstatus')
+    if 'error' in state and not state.get('connected'):
+        if results:
+            return '\n'.join(results) + '\n(Could not read back state — radio disconnected)'
+        return 'TH-9800 not connected'
+
+    side = state.get(vfo, {})
+    info = {
+        'vfo': vfo,
+        'display': side.get('display', ''),
+        'channel': side.get('channel', ''),
+        'power': side.get('power', ''),
+        'signal': side.get('signal', 0),
+        'volume': state.get('volume', {}).get(vfo, -1),
+        'serial_connected': state.get('serial_connected', False),
+    }
+
+    if results:
+        return '\n'.join(results) + '\n' + json.dumps(info, indent=2)
+    return json.dumps(info, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Tools — D75 Radio
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def d75_status() -> str:
+    """
+    Get TH-D75 handheld radio status: Bluetooth/serial connection state,
+    frequency, mode, signal, battery, GPS, and audio levels for both bands.
+    """
+    return json.dumps(_get('/d75status'), indent=2)
+
+
+@mcp.tool()
+def d75_command(
+    cmd: str,
+    args: str = '',
+) -> str:
+    """
+    Send a command to the TH-D75 radio.
+
+    Args:
+        cmd:  Command name — one of:
+              'btstart'    — Start Bluetooth connection
+              'btstop'     — Stop Bluetooth connection
+              'reconnect'  — Reconnect TCP + auto BT start
+              'start_service' — Start d75-cat systemd service
+              'cat'        — Send raw CAT command (put command in args)
+              'vol'        — Set audio boost 0-500% (put value in args)
+              'ptt'        — Toggle PTT on D75
+        args: Arguments for the command (e.g. CAT command string like 'FO 0',
+              or volume percentage like '200').
+    """
+    cmd = cmd.lower().strip()
+    valid = ('btstart', 'btstop', 'reconnect', 'start_service', 'cat', 'vol', 'ptt')
+    if cmd not in valid:
+        return f"Error: cmd must be one of: {', '.join(valid)}"
+    result = _post('/d75cmd', {'cmd': cmd, 'args': args}, timeout=15)
+    if result.get('ok'):
+        resp = result.get('response', '')
+        return f"D75 {cmd} OK" + (f': {resp}' if resp else '')
+    return f"D75 {cmd} failed: {result.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def d75_frequency(
+    freq_mhz: float,
+    mode: str = 'FM',
+) -> str:
+    """
+    Tune the TH-D75 to a specific frequency on the active band.
+    Uses the FO (frequency offset) CAT command.
+
+    Args:
+        freq_mhz: Frequency in MHz (e.g. 145.500, 446.000).
+        mode:     Modulation mode — FM, AM, NFM, DV, LSB, USB, CW, DR, WFM
+                  (default FM).
+    """
+    mode_map = {'FM': 0, 'DV': 1, 'AM': 2, 'LSB': 3, 'USB': 4,
+                'CW': 5, 'NFM': 6, 'DR': 7, 'WFM': 8}
+    mode = mode.upper().strip()
+    mode_val = mode_map.get(mode)
+    if mode_val is None:
+        return f"Error: mode must be one of: {', '.join(mode_map.keys())}"
+
+    # Get current D75 state to determine active band
+    state = _get('/d75status')
+    band = state.get('active_band', 0)
+
+    # Build FO command: frequency in Hz, 21-field format
+    freq_hz = int(freq_mhz * 1_000_000)
+    # FO band,rxfreq,offset,rxstep,txstep,mode,fine_mode,fine_step,
+    #    tone,ctcss,dcs,cross,reverse,shift,tone_idx,ctcss_idx,dcs_idx,
+    #    cross_type,urcall,dsql_type,dsql_code
+    fo_cmd = (
+        f'FO {band},{freq_hz:011d},0000000,0,0,'
+        f'{mode_val},0,0,'
+        f'0,0,0,0,0,0,08,08,000,'
+        f'0,CQCQCQ,0,00000'
+    )
+    result = _post('/d75cmd', {'cmd': 'cat', 'args': fo_cmd}, timeout=10)
+    if result.get('ok'):
+        return f'D75 tuned to {freq_mhz:.4f} MHz ({mode})'
+    return f"D75 tune failed: {result.get('error', 'unknown')}"
+
+
+# ---------------------------------------------------------------------------
+# Tools — KV4P Radio
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def kv4p_status() -> str:
+    """
+    Get KV4P HT radio status: USB connection state, frequency, squelch,
+    CTCSS tones, power level, bandwidth, and audio levels.
+    """
+    return json.dumps(_get('/kv4pstatus'), indent=2)
+
+
+@mcp.tool()
+def kv4p_command(
+    cmd: str,
+    args: str = '',
+) -> str:
+    """
+    Send a command to the KV4P HT radio.
+
+    Args:
+        cmd:  Command name — one of:
+              'freq'      — Set RX frequency in MHz (e.g. '146.520')
+              'txfreq'    — Set TX frequency in MHz (0 = same as RX)
+              'squelch'   — Set squelch level 0-9
+              'ctcss'     — Set CTCSS tones (e.g. '103.5 103.5' for TX RX)
+              'bandwidth' — Set wide (1) or narrow (0)
+              'power'     — Set high (1) or low (0) power
+              'ptt'       — Toggle PTT
+              'vol'       — Set audio boost 0-500%
+              'reconnect' — Reconnect USB device
+        args: Value for the command.
+    """
+    cmd = cmd.lower().strip()
+    valid = ('freq', 'txfreq', 'squelch', 'ctcss', 'bandwidth', 'power',
+             'ptt', 'vol', 'reconnect')
+    if cmd not in valid:
+        return f"Error: cmd must be one of: {', '.join(valid)}"
+    result = _post('/kv4pcmd', {'cmd': cmd, 'args': args}, timeout=10)
+    if result.get('ok'):
+        resp = result.get('response', '')
+        return f"KV4P {cmd} OK" + (f': {resp}' if resp else '')
+    return f"KV4P {cmd} failed: {result.get('error', 'unknown')}"
+
+
+# ---------------------------------------------------------------------------
+# Tools — Mixer Control
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def mixer_control(
+    action: str,
+    source: str | None = None,
+    value: float | None = None,
+    flag: str | None = None,
+    state: bool | None = None,
+) -> str:
+    """
+    Control the audio mixer — mute/unmute sources, adjust volume/boost,
+    toggle duck, and control processing flags.
+
+    Args:
+        action: One of:
+                'status'     — Full mixer state: mutes, levels, volumes, duck, flags, boosts, processing
+                'mute'       — Mute a source (requires source)
+                'unmute'     — Unmute a source (requires source)
+                'toggle'     — Toggle mute on a source (requires source)
+                'volume'     — Set master input volume (requires value, range 0.1-3.0)
+                'duck'       — Enable/disable ducking on a source (requires source,
+                               optionally state=true/false; omit state to toggle)
+                'boost'      — Set per-source audio boost % (requires source + value,
+                               range 0-500; sources: d75, kv4p, remote)
+                'flag'       — Toggle or set a mixer flag (requires flag arg)
+                'processing' — Toggle or set an audio processing filter (requires source
+                               + flag for filter name; optionally state=true/false)
+        source: Audio source — one of:
+                'global' (TX+RX), 'tx', 'rx', 'sdr1', 'sdr2', 'd75',
+                'kv4p', 'remote', 'announce', 'speaker'
+        value:  Numeric value for 'volume' (0.1-3.0) or 'boost' (0-500) actions.
+        flag:   For 'flag' action — one of:
+                'vad'          — Voice Activity Detection
+                'agc'          — Automatic Gain Control
+                'echo_cancel'  — Echo Cancellation
+                'rebroadcast'  — SDR-to-radio rebroadcast
+                For 'processing' action — one of:
+                'gate'  — Noise gate
+                'hpf'   — High-pass filter
+                'lpf'   — Low-pass filter
+                'notch' — Notch filter
+        state:  Explicit true/false for 'duck', 'flag', and 'processing' actions.
+                Omit to toggle.
+    """
+    action = action.lower().strip()
+
+    if action == 'status':
+        result = _post('/mixer', {'action': 'status'})
+        if result.get('ok'):
+            return json.dumps(result, indent=2)
+        return f"Error: {result.get('error', 'unknown')}"
+
+    if action in ('mute', 'unmute', 'toggle'):
+        if not source:
+            return 'Error: source required for mute/unmute/toggle'
+        source = source.lower().strip()
+        valid = ('global', 'tx', 'rx', 'sdr1', 'sdr2', 'd75',
+                 'kv4p', 'remote', 'announce', 'speaker')
+        if source not in valid:
+            return f"Error: source must be one of: {', '.join(valid)}"
+        result = _post('/mixer', {'action': action, 'source': source})
+        if result.get('ok'):
+            muted = result.get('muted')
+            return f"{source} {'muted' if muted else 'unmuted'}"
+        return f"Failed: {result.get('error', 'unknown')}"
+
+    if action == 'volume':
+        if value is None:
+            # Read-only
+            result = _post('/mixer', {'action': 'volume'})
+        else:
+            result = _post('/mixer', {'action': 'volume', 'value': float(value)})
+        if result.get('ok'):
+            return f"Volume: {result.get('volume', '?')}"
+        return f"Failed: {result.get('error', 'unknown')}"
+
+    if action == 'duck':
+        if not source:
+            return 'Error: source required for duck (sdr1, sdr2, d75, kv4p, remote)'
+        payload = {'action': 'duck', 'source': source.lower().strip()}
+        if state is not None:
+            payload['state'] = state
+        result = _post('/mixer', payload)
+        if result.get('ok'):
+            return f"{source} duck: {'enabled' if result.get('duck') else 'disabled'}"
+        return f"Failed: {result.get('error', 'unknown')}"
+
+    if action == 'boost':
+        if not source:
+            return 'Error: source required for boost (d75, kv4p, remote)'
+        if value is None:
+            return 'Error: value required for boost (0-500 percent)'
+        result = _post('/mixer', {'action': 'boost', 'source': source.lower().strip(),
+                                   'value': int(value)})
+        if result.get('ok'):
+            return f"{source} boost: {result.get('boost_pct', '?')}%"
+        return f"Failed: {result.get('error', 'unknown')}"
+
+    if action == 'flag':
+        if not flag:
+            return 'Error: flag required (vad, agc, echo_cancel, rebroadcast)'
+        payload = {'action': 'flag', 'flag': flag.lower().strip()}
+        if state is not None:
+            payload['state'] = state
+        result = _post('/mixer', payload)
+        if result.get('ok'):
+            return f"{flag}: {'enabled' if result.get('enabled') else 'disabled'}"
+        return f"Failed: {result.get('error', 'unknown')}"
+
+    if action == 'processing':
+        if not source:
+            return 'Error: source required (radio, sdr, d75, kv4p)'
+        if not flag:
+            return 'Error: flag required for filter name (gate, hpf, lpf, notch)'
+        payload = {'action': 'processing', 'source': source.lower().strip(),
+                   'filter': flag.lower().strip()}
+        if state is not None:
+            payload['state'] = state
+        result = _post('/mixer', payload)
+        if result.get('ok'):
+            active = result.get('active', [])
+            return f"{source} processing: [{', '.join(active)}]" if active else f"{source} processing: none active"
+        return f"Failed: {result.get('error', 'unknown')}"
+
+    return ("Error: action must be one of: status, mute, unmute, toggle, "
+            "volume, duck, boost, flag, processing")
+
+
+# ---------------------------------------------------------------------------
+# Tools — Recording Playback
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def recording_playback(filename: str, target: str = 'radio') -> str:
+    """
+    Play a recording file over the air or to Mumble.  The gateway keys the
+    radio (if target is 'radio'), plays the audio, then unkeys.
+
+    Args:
+        filename: Recording filename from recordings_list (e.g. "SDR_118.100MHz_...wav").
+        target:   Where to play — 'radio' (over the air via TX) or 'mumble'
+                  (to Mumble channel).  Default 'radio'.
+    """
+    if not filename or '/' in filename or '..' in filename:
+        return 'Error: invalid filename'
+    target = target.lower().strip()
+    if target not in ('radio', 'mumble'):
+        return "Error: target must be 'radio' or 'mumble'"
+
+    # Check file exists via recordings list
+    files = _get('/recordingslist')
+    if isinstance(files, list):
+        names = [f.get('name', '') for f in files]
+        if filename not in names:
+            return f'Error: recording not found. Available: {", ".join(names[:5])}...'
+
+    # Use TTS endpoint with file path — or use the automation trigger
+    # Actually, there's no direct playback endpoint yet. Use the key command
+    # to play soundboard slots or suggest alternative
+    return (f'Recording playback via MCP not yet implemented — '
+            f'the gateway needs a /playrecording endpoint. '
+            f'For now, download via /recordingsdownload?file={filename} '
+            f'and use radio_tts for spoken content.')
+
+
+# ---------------------------------------------------------------------------
+# Tools — Configuration
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def config_read(section: str | None = None) -> str:
+    """
+    Read current gateway_config.txt settings.  Returns key=value pairs,
+    optionally filtered to a specific INI section.
+
+    SECURITY: Passwords and tokens are redacted in the output.
+
+    Args:
+        section: Optional INI section name to filter (e.g. 'audio', 'sdr',
+                 'telegram', 'radio').  Omit to return all settings.
+    """
+    cfg_path = os.path.join(os.path.dirname(__file__), 'gateway_config.txt')
+    if not os.path.isfile(cfg_path):
+        return 'Error: gateway_config.txt not found'
+
+    sensitive = {'PASSWORD', 'TOKEN', 'SECRET', 'KEY', 'MOUNT', 'STREAM_PASSWORD'}
+
+    lines = []
+    current_section = ''
+    with open(cfg_path) as f:
+        for line in f:
+            line = line.rstrip('\n')
+            stripped = line.strip()
+            if stripped.startswith('[') and stripped.endswith(']'):
+                current_section = stripped[1:-1].lower()
+                if section is None or current_section == section.lower():
+                    lines.append(line)
+                continue
+            if section is not None and current_section != section.lower():
+                continue
+            if stripped.startswith('#') or not stripped:
+                continue
+            # Redact sensitive values
+            if '=' in stripped:
+                k, _, v = stripped.partition('=')
+                k_upper = k.strip().upper()
+                if any(s in k_upper for s in sensitive) and v.strip():
+                    lines.append(f'{k.strip()} = ****')
+                    continue
+            lines.append(line)
+
+    if not lines:
+        if section:
+            return f'Section [{section}] not found in config'
+        return 'Config file is empty'
+    return '\n'.join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tools — Telegram Status
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def telegram_status() -> str:
+    """
+    Get Telegram bot status: whether the bot process is running, tmux session
+    state, message counts today, and last message timestamps.
+    """
+    return json.dumps(_get('/telegramstatus'), indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Tools — Process Control
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def process_control(service: str, action: str) -> str:
+    """
+    Start, stop, or restart a gateway sub-process.
+
+    Args:
+        service: Service to control — one of:
+                 'darkice'  — Broadcastify/Icecast streaming daemon
+                 'sdr'      — SDR receiver (rtl_airband)
+                 'd75'      — D75 CAT proxy service (d75-cat.service)
+        action:  One of 'start', 'stop', 'restart'.
+    """
+    service = service.lower().strip()
+    action = action.lower().strip()
+
+    if action not in ('start', 'stop', 'restart'):
+        return "Error: action must be 'start', 'stop', or 'restart'"
+
+    if service == 'darkice':
+        if action == 'start':
+            result = _post('/darkicecmd', {'cmd': 'start'})
+        elif action == 'stop':
+            result = _post('/darkicecmd', {'cmd': 'stop'})
+        else:
+            result = _post('/darkicecmd', {'cmd': 'restart'})
+        return f"DarkIce {action}: {'OK' if result.get('ok') else result.get('error', 'failed')}"
+
+    elif service == 'sdr':
+        if action == 'stop':
+            result = _post('/sdrcmd', {'cmd': 'stop'})
+        else:  # start or restart both restart rtl_airband
+            result = _post('/sdrcmd', {'cmd': 'restart'}, timeout=20)
+        return f"SDR {action}: {'OK' if result.get('ok') else result.get('error', 'failed')}"
+
+    elif service == 'd75':
+        if action == 'start':
+            result = _post('/d75cmd', {'cmd': 'start_service'}, timeout=10)
+        elif action == 'stop':
+            # No stop endpoint — suggest systemctl
+            return 'D75 service stop: use systemctl stop d75-cat manually'
+        else:
+            result = _post('/d75cmd', {'cmd': 'reconnect'}, timeout=15)
+        return f"D75 {action}: {'OK' if result.get('ok') else result.get('error', 'failed')}"
+
+    else:
+        return f"Error: unknown service '{service}' — use darkice, sdr, or d75"
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

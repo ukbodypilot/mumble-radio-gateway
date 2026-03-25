@@ -1554,6 +1554,236 @@ class WebConfigServer:
                     self.end_headers()
                     self.wfile.write(b'{"ok":true}')
                     return
+                elif self.path == '/mixer':
+                    # Mixer control endpoint — explicit mute/unmute/volume/duck/boost/toggles
+                    length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(length).decode('utf-8')
+                    result = {'ok': False, 'error': 'no gateway'}
+                    try:
+                        data = json_mod.loads(body)
+                        action = data.get('action', '')
+                        source = data.get('source', '')
+                        gw = parent.gateway
+                        if not gw:
+                            pass
+                        elif action == 'status':
+                            # Return full mixer state
+                            s = gw.get_status_dict()
+                            result = {'ok': True, 'mutes': {
+                                'tx': s.get('tx_muted', False),
+                                'rx': s.get('rx_muted', False),
+                                'sdr1': s.get('sdr1_muted', False),
+                                'sdr2': s.get('sdr2_muted', False),
+                                'd75': s.get('d75_muted', False),
+                                'kv4p': s.get('kv4p_muted', False),
+                                'remote': s.get('remote_muted', False),
+                                'announce': s.get('announce_muted', False),
+                                'speaker': s.get('speaker_muted', False),
+                            }, 'levels': {
+                                'radio_rx': s.get('radio_rx', 0),
+                                'radio_tx': s.get('radio_tx', 0),
+                                'sdr1': s.get('sdr1_level', 0),
+                                'sdr2': s.get('sdr2_level', 0),
+                                'd75': s.get('d75_level', 0),
+                                'kv4p': s.get('kv4p_level', 0),
+                                'remote': s.get('remote_level', 0),
+                                'announce': s.get('an_level', 0),
+                                'speaker': s.get('speaker_level', 0),
+                            }, 'volume': s.get('volume', 1.0),
+                            'duck': {
+                                'sdr1': s.get('sdr1_duck', False),
+                                'sdr2': gw.sdr2_source.duck if gw.sdr2_source and hasattr(gw.sdr2_source, 'duck') else False,
+                                'd75': gw.d75_audio_source.duck if gw.d75_audio_source and hasattr(gw.d75_audio_source, 'duck') else False,
+                                'kv4p': gw.kv4p_audio_source.duck if gw.kv4p_audio_source and hasattr(gw.kv4p_audio_source, 'duck') else False,
+                                'remote': gw.remote_audio_source.duck if gw.remote_audio_source and hasattr(gw.remote_audio_source, 'duck') else False,
+                            }, 'ducked': {
+                                'sdr1': s.get('sdr1_ducked', False),
+                                'sdr2': s.get('sdr2_ducked', False),
+                                'remote': s.get('cl_ducked', False),
+                            }, 'flags': {
+                                'vad': s.get('vad_enabled', False),
+                                'agc': getattr(gw.config, 'ENABLE_AGC', False),
+                                'echo_cancel': getattr(gw.config, 'ENABLE_ECHO_CANCELLATION', False),
+                                'rebroadcast': s.get('sdr_rebroadcast', False),
+                                'manual_ptt': s.get('manual_ptt', False),
+                            }, 'boost': {
+                                'd75': int(gw.d75_audio_source.audio_boost * 100) if gw.d75_audio_source and hasattr(gw.d75_audio_source, 'audio_boost') else 100,
+                                'kv4p': int(gw.kv4p_audio_source.audio_boost * 100) if gw.kv4p_audio_source and hasattr(gw.kv4p_audio_source, 'audio_boost') else 100,
+                                'remote': int(gw.remote_audio_source.audio_boost * 100) if gw.remote_audio_source and hasattr(gw.remote_audio_source, 'audio_boost') else 100,
+                            }, 'processing': {
+                                'radio': gw.radio_processor.get_active_list() if hasattr(gw, 'radio_processor') else [],
+                                'sdr': gw.sdr_processor.get_active_list() if hasattr(gw, 'sdr_processor') else [],
+                                'd75': gw.d75_processor.get_active_list() if hasattr(gw, 'd75_processor') else [],
+                                'kv4p': gw.kv4p_processor.get_active_list() if hasattr(gw, 'kv4p_processor') else [],
+                            }}
+
+                        elif action in ('mute', 'unmute', 'toggle'):
+                            # Mute control for a specific source
+                            _mute_map = {
+                                'tx':       ('tx_muted', None),
+                                'rx':       ('rx_muted', None),
+                                'sdr1':     ('sdr_muted', 'sdr_source'),
+                                'sdr2':     ('sdr2_muted', 'sdr2_source'),
+                                'd75':      ('d75_muted', 'd75_audio_source'),
+                                'kv4p':     ('kv4p_muted', 'kv4p_audio_source'),
+                                'remote':   ('remote_audio_muted', 'remote_audio_source'),
+                                'announce': ('announce_input_muted', 'announce_input_source'),
+                                'speaker':  ('speaker_muted', None),
+                            }
+                            if source == 'global':
+                                current = gw.tx_muted and gw.rx_muted
+                                if action == 'toggle':
+                                    want = not current
+                                elif action == 'mute':
+                                    want = True
+                                else:
+                                    want = False
+                                gw.tx_muted = want
+                                gw.rx_muted = want
+                                result = {'ok': True, 'muted': want}
+                            elif source in _mute_map:
+                                attr, src_attr = _mute_map[source]
+                                current = getattr(gw, attr, False)
+                                if action == 'toggle':
+                                    want = not current
+                                elif action == 'mute':
+                                    want = True
+                                else:
+                                    want = False
+                                setattr(gw, attr, want)
+                                # Sync to source object if it has .muted
+                                if src_attr:
+                                    src_obj = getattr(gw, src_attr, None)
+                                    if src_obj:
+                                        src_obj.muted = want
+                                result = {'ok': True, 'source': source, 'muted': want}
+                            else:
+                                result = {'ok': False, 'error': f'unknown source: {source}'}
+
+                        elif action == 'volume':
+                            # Set absolute INPUT_VOLUME
+                            val = data.get('value')
+                            if val is not None:
+                                gw.config.INPUT_VOLUME = max(0.1, min(3.0, float(val)))
+                                result = {'ok': True, 'volume': round(gw.config.INPUT_VOLUME, 2)}
+                            else:
+                                result = {'ok': True, 'volume': round(gw.config.INPUT_VOLUME, 2)}
+
+                        elif action == 'duck':
+                            # Enable/disable duck on a source
+                            state = data.get('state')  # true/false or omit for toggle
+                            _duck_map = {
+                                'sdr1': 'sdr_source', 'sdr2': 'sdr2_source',
+                                'd75': 'd75_audio_source', 'kv4p': 'kv4p_audio_source',
+                                'remote': 'remote_audio_source',
+                            }
+                            if source in _duck_map:
+                                src_obj = getattr(gw, _duck_map[source], None)
+                                if src_obj and hasattr(src_obj, 'duck'):
+                                    if state is None:
+                                        src_obj.duck = not src_obj.duck
+                                    else:
+                                        src_obj.duck = bool(state)
+                                    result = {'ok': True, 'source': source, 'duck': src_obj.duck}
+                                else:
+                                    result = {'ok': False, 'error': f'{source} not available'}
+                            else:
+                                result = {'ok': False, 'error': f'duck not supported for: {source}'}
+
+                        elif action == 'boost':
+                            # Set per-source audio boost (percentage 0-500)
+                            pct = data.get('value', 100)
+                            _boost_map = {
+                                'd75': 'd75_audio_source',
+                                'kv4p': 'kv4p_audio_source',
+                                'remote': 'remote_audio_source',
+                            }
+                            if source in _boost_map:
+                                src_obj = getattr(gw, _boost_map[source], None)
+                                if src_obj and hasattr(src_obj, 'audio_boost'):
+                                    src_obj.audio_boost = max(0, min(5.0, float(pct) / 100.0))
+                                    result = {'ok': True, 'source': source, 'boost_pct': int(src_obj.audio_boost * 100)}
+                                else:
+                                    result = {'ok': False, 'error': f'{source} not available'}
+                            else:
+                                result = {'ok': False, 'error': f'boost not supported for: {source}'}
+
+                        elif action == 'flag':
+                            # Toggle or set a mixer flag (vad, agc, echo_cancel, rebroadcast)
+                            flag = data.get('flag', '')
+                            state = data.get('state')  # true/false or omit for toggle
+                            if flag == 'vad':
+                                if state is None:
+                                    gw.config.ENABLE_VAD = not gw.config.ENABLE_VAD
+                                else:
+                                    gw.config.ENABLE_VAD = bool(state)
+                                result = {'ok': True, 'flag': 'vad', 'enabled': gw.config.ENABLE_VAD}
+                            elif flag == 'agc':
+                                if state is None:
+                                    gw.config.ENABLE_AGC = not gw.config.ENABLE_AGC
+                                else:
+                                    gw.config.ENABLE_AGC = bool(state)
+                                result = {'ok': True, 'flag': 'agc', 'enabled': gw.config.ENABLE_AGC}
+                            elif flag == 'echo_cancel':
+                                if state is None:
+                                    gw.config.ENABLE_ECHO_CANCELLATION = not gw.config.ENABLE_ECHO_CANCELLATION
+                                else:
+                                    gw.config.ENABLE_ECHO_CANCELLATION = bool(state)
+                                result = {'ok': True, 'flag': 'echo_cancel', 'enabled': gw.config.ENABLE_ECHO_CANCELLATION}
+                            elif flag == 'rebroadcast':
+                                if state is None:
+                                    new_state = not gw.sdr_rebroadcast
+                                else:
+                                    new_state = bool(state)
+                                gw.sdr_rebroadcast = new_state
+                                if not new_state:
+                                    # Clean up PTT if disabling rebroadcast
+                                    if getattr(gw, '_rebroadcast_ptt_active', False):
+                                        gw._rebroadcast_ptt_active = False
+                                    if gw.radio_source:
+                                        gw.radio_source.enabled = True
+                                result = {'ok': True, 'flag': 'rebroadcast', 'enabled': gw.sdr_rebroadcast}
+                            else:
+                                result = {'ok': False, 'error': f'unknown flag: {flag}'}
+
+                        elif action == 'processing':
+                            # Toggle or set audio processing filter
+                            # source: radio, sdr, d75, kv4p
+                            # filter: gate, hpf, lpf, notch
+                            filt = data.get('filter', '')
+                            proc_state = data.get('state')  # true/false or omit for toggle
+                            valid_sources = ('radio', 'sdr', 'd75', 'kv4p')
+                            valid_filters = ('gate', 'hpf', 'lpf', 'notch')
+                            if source not in valid_sources:
+                                result = {'ok': False, 'error': f'source must be one of: {", ".join(valid_sources)}'}
+                            elif filt not in valid_filters:
+                                result = {'ok': False, 'error': f'filter must be one of: {", ".join(valid_filters)}'}
+                            else:
+                                gw.handle_proc_toggle(source, filt, state=proc_state)
+                                # Read back the current state
+                                _proc_map = {
+                                    'radio': gw.radio_processor,
+                                    'sdr': gw.sdr_processor,
+                                    'd75': gw.d75_processor,
+                                    'kv4p': gw.kv4p_processor,
+                                }
+                                proc_obj = _proc_map.get(source)
+                                active = proc_obj.get_active_list() if proc_obj else []
+                                result = {'ok': True, 'source': source, 'active': active}
+
+                        else:
+                            result = {'ok': False, 'error': f'unknown action: {action}'}
+
+                    except Exception as e:
+                        result = {'ok': False, 'error': str(e)}
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(result).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                    return
                 elif self.path == '/aitext':
                     # Text-to-AI announcement endpoint
                     length = int(self.headers.get('Content-Length', 0))
@@ -5969,6 +6199,20 @@ pollTimer = setInterval(pollStatus, 1000);
     <button onclick="togProc('sdr','lpf')" id="btn-sp-lpf">LPF</button>
     <button onclick="togProc('sdr','notch')" id="btn-sp-notch">Notch</button>
   </div>
+  <div class="ctrl-group" id="d75-proc-group">
+    <h3>D75 Processing</h3>
+    <button onclick="togProc('d75','gate')" id="btn-dp-gate">Gate</button>
+    <button onclick="togProc('d75','hpf')" id="btn-dp-hpf">HPF</button>
+    <button onclick="togProc('d75','lpf')" id="btn-dp-lpf">LPF</button>
+    <button onclick="togProc('d75','notch')" id="btn-dp-notch">Notch</button>
+  </div>
+  <div class="ctrl-group" id="kv4p-proc-group">
+    <h3>KV4P Processing</h3>
+    <button onclick="togProc('kv4p','gate')" id="btn-kp-gate">Gate</button>
+    <button onclick="togProc('kv4p','hpf')" id="btn-kp-hpf">HPF</button>
+    <button onclick="togProc('kv4p','lpf')" id="btn-kp-lpf">LPF</button>
+    <button onclick="togProc('kv4p','notch')" id="btn-kp-notch">Notch</button>
+  </div>
   <div class="ctrl-group" id="sdr-ctrl-group">
     <h3>SDR</h3>
     <button onclick="sendKey('d')" id="btn-d">Duck Toggle</button>
@@ -6301,6 +6545,8 @@ function updateStatus() {
     h += '<div class="st-item"><span class="st-label">Vol:</span><span class="st-val yellow">'+s.volume+'x</span></div>';
     if(s.radio_proc && s.radio_proc.length) h += '<div class="st-item"><span class="st-label">Radio:</span><span class="st-val yellow">['+s.radio_proc.join(',')+']</span></div>';
     if(s.sdr_proc && s.sdr_proc.length) h += '<div class="st-item"><span class="st-label">SDR:</span><span class="st-val cyan">['+s.sdr_proc.join(',')+']</span></div>';
+    if(s.d75_proc && s.d75_proc.length) h += '<div class="st-item"><span class="st-label">D75:</span><span class="st-val yellow">['+s.d75_proc.join(',')+']</span></div>';
+    if(s.kv4p_proc && s.kv4p_proc.length) h += '<div class="st-item"><span class="st-label">KV4P:</span><span class="st-val yellow">['+s.kv4p_proc.join(',')+']</span></div>';
     var mutes = [];
     if(s.tx_muted) mutes.push('TX');
     if(s.rx_muted) mutes.push('RX');
@@ -6401,6 +6647,20 @@ function updateStatus() {
       setBtn('btn-sp-hpf', s.sdr_proc.indexOf('HPF')>=0, 'active');
       setBtn('btn-sp-lpf', s.sdr_proc.indexOf('LPF')>=0, 'active');
       setBtn('btn-sp-notch', s.sdr_proc.indexOf('Notch')>=0, 'active');
+    }
+    // D75 processing buttons
+    if(s.d75_proc) {
+      setBtn('btn-dp-gate', s.d75_proc.indexOf('Gate')>=0, 'active');
+      setBtn('btn-dp-hpf', s.d75_proc.indexOf('HPF')>=0, 'active');
+      setBtn('btn-dp-lpf', s.d75_proc.indexOf('LPF')>=0, 'active');
+      setBtn('btn-dp-notch', s.d75_proc.indexOf('Notch')>=0, 'active');
+    }
+    // KV4P processing buttons
+    if(s.kv4p_proc) {
+      setBtn('btn-kp-gate', s.kv4p_proc.indexOf('Gate')>=0, 'active');
+      setBtn('btn-kp-hpf', s.kv4p_proc.indexOf('HPF')>=0, 'active');
+      setBtn('btn-kp-lpf', s.kv4p_proc.indexOf('LPF')>=0, 'active');
+      setBtn('btn-kp-notch', s.kv4p_proc.indexOf('Notch')>=0, 'active');
     }
     // Smart announce activity status
     var smSt = document.getElementById('smart-status');

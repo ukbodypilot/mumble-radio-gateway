@@ -5377,35 +5377,50 @@ class RadioGateway:
             except:
                 pass
 
-    def handle_proc_toggle(self, source, filt):
-        """Toggle a processing filter for a specific source (radio or sdr).
-        Called from the /proc_toggle API endpoint.
+    def handle_proc_toggle(self, source, filt, state=None):
+        """Toggle or set a processing filter for a specific source.
+        Called from the /proc_toggle and /mixer API endpoints.
+        If state is None, toggles; if True/False, sets explicitly.
         """
-        # Map source to config prefix and processor
-        if source == 'radio':
-            toggle_map = {
-                'gate':     'ENABLE_NOISE_GATE',
-                'hpf':      'ENABLE_HIGHPASS_FILTER',
-                'lpf':      'ENABLE_LOWPASS_FILTER',
-                'notch':    'ENABLE_NOTCH_FILTER',
-            }
-            key = toggle_map.get(filt)
-            if key:
+        # Map source to config keys and sync method
+        _source_map = {
+            'radio': ({
+                'gate':  'ENABLE_NOISE_GATE',
+                'hpf':   'ENABLE_HIGHPASS_FILTER',
+                'lpf':   'ENABLE_LOWPASS_FILTER',
+                'notch': 'ENABLE_NOTCH_FILTER',
+            }, '_sync_radio_processor'),
+            'sdr': ({
+                'gate':  'SDR_PROC_ENABLE_NOISE_GATE',
+                'hpf':   'SDR_PROC_ENABLE_HPF',
+                'lpf':   'SDR_PROC_ENABLE_LPF',
+                'notch': 'SDR_PROC_ENABLE_NOTCH',
+            }, '_sync_sdr_processor'),
+            'd75': ({
+                'gate':  'D75_PROC_ENABLE_NOISE_GATE',
+                'hpf':   'D75_PROC_ENABLE_HPF',
+                'lpf':   'D75_PROC_ENABLE_LPF',
+                'notch': 'D75_PROC_ENABLE_NOTCH',
+            }, '_sync_d75_processor'),
+            'kv4p': ({
+                'gate':  'KV4P_PROC_ENABLE_NOISE_GATE',
+                'hpf':   'KV4P_PROC_ENABLE_HPF',
+                'lpf':   'KV4P_PROC_ENABLE_LPF',
+                'notch': 'KV4P_PROC_ENABLE_NOTCH',
+            }, '_sync_kv4p_processor'),
+        }
+        entry = _source_map.get(source)
+        if not entry:
+            return
+        toggle_map, sync_method = entry
+        key = toggle_map.get(filt)
+        if key:
+            if state is None:
                 current = getattr(self.config, key, False)
                 setattr(self.config, key, not current)
-                self._sync_radio_processor()
-        elif source == 'sdr':
-            toggle_map = {
-                'gate':     'SDR_PROC_ENABLE_NOISE_GATE',
-                'hpf':      'SDR_PROC_ENABLE_HPF',
-                'lpf':      'SDR_PROC_ENABLE_LPF',
-                'notch':    'SDR_PROC_ENABLE_NOTCH',
-            }
-            key = toggle_map.get(filt)
-            if key:
-                current = getattr(self.config, key, False)
-                setattr(self.config, key, not current)
-                self._sync_sdr_processor()
+            else:
+                setattr(self.config, key, bool(state))
+            getattr(self, sync_method)()
 
     def handle_key(self, char):
         """Process a key command (called by keyboard loop and web UI)."""
@@ -5709,6 +5724,8 @@ class RadioGateway:
             'processing': proc,
             'radio_proc': proc,
             'sdr_proc': sdr_proc,
+            'd75_proc': self.d75_processor.get_active_list(),
+            'kv4p_proc': self.kv4p_processor.get_active_list(),
             'smart_countdowns': sa_countdowns,
             'smart_activity': self.smart_announce.get_activity() if self.smart_announce and hasattr(self.smart_announce, 'get_activity') else {},
             'ddns': ddns_status,
