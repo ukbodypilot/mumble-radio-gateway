@@ -4788,7 +4788,7 @@ function d75GoChannel(band, ch) {
           var resp = d.response || '';
           // Find FO line in response
           var foLine = '';
-          resp.split('\n').forEach(function(l) {
+          resp.split('\\n').forEach(function(l) {
             l = l.trim();
             if (l.indexOf('FO ') === 0) foLine = l.substring(3);
             else if (l.indexOf(',') > 0 && l.split(',').length >= 21) foLine = l;
