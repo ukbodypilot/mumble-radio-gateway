@@ -714,17 +714,22 @@ class WebConfigServer:
                             data['serial_connected'] = getattr(cat, '_serial_connected', False) if cat._connected else False
                             data['af_gain'] = getattr(cat, '_af_gain', -1)
                         # Build status detail message
+                        _has_client = parent.gateway.d75_cat is not None
                         if not data['d75_enabled']:
                             data['status_detail'] = 'D75 disabled in config (ENABLE_D75)'
-                        elif not data['service_running']:
-                            data['status_detail'] = 'D75 CAT service not running'
                         elif not data.get('tcp_connected', False):
-                            data['status_detail'] = 'Gateway cannot reach D75 CAT server (TCP)'
+                            if _has_client:
+                                # Gateway has a client object — poll thread is trying to connect
+                                data['status_detail'] = 'Connecting to D75 proxy...'
+                            elif not data['service_running']:
+                                data['status_detail'] = 'D75 CAT service not running'
+                            else:
+                                data['status_detail'] = 'Gateway cannot reach D75 CAT server (TCP)'
                         elif not data.get('serial_connected', False):
                             if data.get('btstart_in_progress', False):
                                 data['status_detail'] = 'Connecting BT — please wait...'
                             else:
-                                data['status_detail'] = 'D75 CAT running but radio not responding (BT/serial down)'
+                                data['status_detail'] = 'TCP connected — radio not responding (BT/serial down)'
                         else:
                             data['status_detail'] = ''
                         # Include audio status
