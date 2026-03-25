@@ -139,6 +139,8 @@ class SerialManager:
         self.bluetooth     = False
         self.battery_level = -1
         self.transmitting  = False
+        self.tnc           = [0, 0]  # [mode, band] — 0=Off, 1=APRS, 2=KISS
+        self.beacon_type   = 0       # 0=Manual, 1=PTT, 2=Auto, 3=SmartBeacon
 
         self._stop_evt    = threading.Event()
         self._read_thread = None
@@ -241,6 +243,8 @@ class SerialManager:
                 'dual_band':     self.dual_band,
                 'bluetooth':     self._connected,  # BT is on if serial is connected
                 'transmitting':  self.transmitting,
+                'tnc':           self.tnc,
+                'beacon_type':   self.beacon_type,
                 'af_gain':       -1,
                 'battery_level': self.battery_level,
                 'band_0':        b0,
@@ -328,7 +332,7 @@ class SerialManager:
             if not _init_done:
                 _init_done = True
                 time.sleep(0.5)
-                for cmd in ("DL", "BC", "PC 0", "PC 1", "BL"):
+                for cmd in ("DL", "BC", "PC 0", "PC 1", "BL", "TN", "PT"):
                     if not self._connected:
                         break
                     time.sleep(0.2)
@@ -526,6 +530,17 @@ class SerialManager:
                 if val.isdigit():
                     with self._state_lock:
                         self.battery_level = int(val)
+            elif line.startswith('TN') and ',' in line:
+                parts = line.split(',')
+                mode = int(line[2:].split(',')[0].strip())
+                tnc_band = int(parts[-1].strip())
+                with self._state_lock:
+                    self.tnc = [mode, tnc_band]
+            elif line.startswith('PT'):
+                val = line[2:].strip().lstrip(' ')
+                if val.isdigit():
+                    with self._state_lock:
+                        self.beacon_type = int(val)
         except Exception:
             pass
 
