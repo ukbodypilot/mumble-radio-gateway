@@ -1058,22 +1058,19 @@ class D75CATClient:
             if resp and 'Login Successful' in resp:
                 self._connected = True
                 self._last_activity = time.monotonic()
+                print(f"  [D75 CAT] TCP connected to {self._host}:{self._port}")
                 return True
             else:
-                print(f"  D75 CAT auth failed: {resp}")
-                self.close()
+                print(f"  [D75 CAT] Auth failed ({self._host}:{self._port}): {resp}")
+                self._cleanup_socket()
                 return False
         except Exception as e:
-            print(f"  D75 CAT connect error: {e}")
-            self.close()
+            print(f"  [D75 CAT] Connect error ({self._host}:{self._port}): {e}")
+            self._cleanup_socket()
             return False
 
-    def close(self):
-        """Close TCP connection."""
-        self._stop = True
-        if (self._poll_thread and self._poll_thread.is_alive()
-                and self._poll_thread is not threading.current_thread()):
-            self._poll_thread.join(timeout=2.0)
+    def _cleanup_socket(self):
+        """Close just the TCP socket without touching _stop or the poll thread."""
         if self._sock:
             try:
                 self._sock.sendall(b'!exit\n')
@@ -1090,6 +1087,16 @@ class D75CATClient:
                 pass
             self._sock = None
         self._connected = False
+        self._buf = b''
+
+    def close(self):
+        """Close TCP connection and stop poll thread."""
+        print(f"  [D75 CAT] close() called (stop={self._stop}, poll_alive={self._poll_thread.is_alive() if self._poll_thread else False})")
+        self._stop = True
+        if (self._poll_thread and self._poll_thread.is_alive()
+                and self._poll_thread is not threading.current_thread()):
+            self._poll_thread.join(timeout=2.0)
+        self._cleanup_socket()
 
     def _recv_line(self, timeout=2.0):
         """Read one line from socket."""
@@ -1107,11 +1114,14 @@ class D75CATClient:
             try:
                 data = self._sock.recv(4096)
                 if not data:
+                    # EOF — remote closed connection
+                    self._connected = False
                     return None
                 self._buf += data
             except socket.timeout:
                 continue
             except Exception:
+                self._connected = False
                 return None
         return None
 
@@ -1135,29 +1145,33 @@ class D75CATClient:
                         resp = self._recv_line(timeout=3.0)
                 return resp
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
-                print(f"  [D75 CAT] Connection error: {e}")
+                print(f"  [D75 CAT] Connection error in _send_cmd({cmd}): {e}")
                 self._connected = False
                 return None
             except Exception as e:
-                if self._verbose:
-                    print(f"  D75 CAT send error: {e}")
+                print(f"  [D75 CAT] Unexpected error in _send_cmd({cmd}): {e}")
+                self._connected = False
                 return None
 
     def send_command(self, cmd):
         """Send command with poll pausing. Use this for user/web commands."""
+        if not self._sock or not self._connected:
+            print(f"  [D75 CAT] send_command({cmd}) — no connection")
+            return None
         self._poll_paused = True
         time.sleep(0.3)  # Wait for current poll to finish
         # Drain any stale poll response from socket
         with self._sock_lock:
             self._buf = b''
-            self._sock.settimeout(0.1)
-            try:
-                while True:
-                    d = self._sock.recv(4096)
-                    if not d:
-                        break
-            except (socket.timeout, BlockingIOError, OSError):
-                pass
+            if self._sock:
+                self._sock.settimeout(0.1)
+                try:
+                    while True:
+                        d = self._sock.recv(4096)
+                        if not d:
+                            break
+                except (socket.timeout, BlockingIOError, OSError):
+                    pass
         try:
             return self._send_cmd(cmd)
         finally:
@@ -1171,7 +1185,11 @@ class D75CATClient:
         """
         resp = self._send_cmd("!status")
         if not resp:
+            self._poll_fail_count = getattr(self, '_poll_fail_count', 0) + 1
+            if self._poll_fail_count == 1 or self._poll_fail_count % 10 == 0:
+                print(f"  [D75 CAT] poll_state: no response (fail #{self._poll_fail_count}, connected={self._connected})")
             return
+        self._poll_fail_count = 0
         try:
             data = json_mod.loads(resp)
             # Use explicit serial_connected flag if proxy provides it (avoids empty model_id on init)
@@ -1219,17 +1237,36 @@ class D75CATClient:
         )
         self._poll_thread.start()
 
+    def _disconnect_for_reconnect(self):
+        """Tear down TCP socket without setting _stop (unlike close()).
+        Used by the poll thread to reset the socket before reconnecting."""
+        if self._sock:
+            try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+        self._connected = False
+        self._buf = b''
+
     def _poll_thread_func(self):
         """Poll !status every 2 seconds. Auto-reconnect on connection loss."""
         _reconnect_interval = 5.0
+        _reconnect_count = 0
         while not self._stop:
             # Check connection health and reconnect if needed
             if not self._connected or not self._sock:
-                print(f"\n[D75 CAT] Connection lost — reconnecting to {self._host}:{self._port}...")
-                self.close()
-                self._stop = False  # close() sets _stop=True
+                _reconnect_count += 1
+                if _reconnect_count <= 3 or _reconnect_count % 10 == 0:
+                    print(f"\n[D75 CAT] Connection lost — reconnecting to {self._host}:{self._port} (attempt #{_reconnect_count})...")
+                self._disconnect_for_reconnect()
                 if self.connect():
-                    print(f"[D75 CAT] Reconnected TCP")
+                    _reconnect_count = 0
+                    print(f"[D75 CAT] Reconnected TCP to {self._host}:{self._port}")
                     # Check if D75 serial is up; if not, trigger btstart
                     # But NOT if user intentionally stopped BT via btstop
                     time.sleep(1)
@@ -1241,8 +1278,8 @@ class D75CATClient:
                         print(f"[D75 CAT] Serial not connected — requesting btstart...")
                         self._btstart_in_progress = True
                         try:
-                            resp = self.send_command("!btstart")
-                            print(f"[D75 CAT] btstart: {resp}")
+                            resp = self._send_cmd("!btstart")
+                            print(f"[D75 CAT] btstart response: {resp}")
                         except Exception as e:
                             print(f"[D75 CAT] btstart error: {e}")
                     elif self._bt_stopped:
@@ -1258,11 +1295,12 @@ class D75CATClient:
             if not self._poll_paused:
                 try:
                     self.poll_state()
-                except OSError:
+                except OSError as e:
                     # Connection dead — will reconnect on next iteration
+                    print(f"  [D75 CAT] poll OSError: {e}")
                     self._connected = False
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"  [D75 CAT] poll error: {e}")
             for _ in range(20):  # 2 seconds in 0.1s increments
                 if self._stop:
                     return

@@ -2001,21 +2001,11 @@ class WebConfigServer:
                                                         gw.d75_audio_source = None
                                                 except Exception:
                                                     gw.d75_audio_source = None
-                                            # Auto-trigger btstart so user doesn't need a second click
-                                            _cat_ref = gw.d75_cat
-                                            _cat_ref._btstart_in_progress = True
-                                            def _btstart_bg(c):
-                                                c.send_command("!btstart")
-                                                for _w in range(40):
-                                                    time.sleep(1)
-                                                    if not c._btstart_in_progress:
-                                                        return
-                                                c._btstart_in_progress = False
-                                            threading.Thread(
-                                                target=_btstart_bg,
-                                                args=(_cat_ref,), daemon=True, name="D75-reconnect-btstart"
-                                            ).start()
-                                        result = {'ok': True, 'response': 'Connected — starting BT link in background'}
+                                            # Poll thread auto-triggers btstart if serial not connected
+                                            # Just mark btstart_in_progress so UI shows "Connecting..."
+                                            gw.d75_cat._btstart_in_progress = True
+                                            gw.d75_cat._bt_stopped = False
+                                        result = {'ok': True, 'response': 'Connected — poll thread will start BT link'}
                                     else:
                                         gw.d75_cat = None
                                         result = {'ok': False, 'error': 'Could not connect to D75 CAT server — is the proxy running on the remote machine?'}

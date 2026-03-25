@@ -187,7 +187,7 @@ class SerialManager:
         self._cleanup()
         print("[Serial] Disconnected")
 
-    def send_raw(self, cmd):
+    def send_raw(self, cmd, timeout=2.0):
         """Send a CAT command and return the matching response line.
 
         Drains any pending streaming messages first (updating state from each),
@@ -211,7 +211,7 @@ class SerialManager:
                 self._connected = False
                 return None
             # Wait for matching response
-            deadline = time.time() + 2.0
+            deadline = time.time() + timeout
             while time.time() < deadline:
                 remaining = max(0.05, deadline - time.time())
                 try:
@@ -321,19 +321,21 @@ class SerialManager:
         print("[Serial] Read loop ended")
 
     def _stream_loop(self):
-        """Drain _rx_queue between send_raw() calls; polls S-meter every 2s.
+        """Drain _rx_queue between send_raw() calls; polls S-meter periodically.
 
         AI 1 streaming pushes FQ/TX/RX/MD/DL but NOT SM — S-meter must be
-        polled explicitly.
+        polled explicitly.  BT RFCOMM is slow — poll conservatively to avoid
+        saturating the link and blocking user commands.
         """
         _last_sm_poll = 0.0
         _last_fo_poll = 0.0
         _last_state_dump = 0.0
-        SM_POLL_INTERVAL = 0.5
+        _sm_fail_count = 0
+        SM_POLL_INTERVAL = 3.0     # BT RFCOMM can't handle 0.5s — causes timeouts and link death
         FO_POLL_INTERVAL = 15.0
         STATE_DUMP_INTERVAL = 30.0
         while not self._stop_evt.is_set() and self._connected:
-            # Drain queue (shorter timeout so SM poll fires promptly)
+            # Drain queue (shorter timeout so polls fire)
             try:
                 line = self._rx_queue.get(timeout=0.5)
                 # Only process if send_lock is free (otherwise send_raw handles it)
@@ -352,16 +354,30 @@ class SerialManager:
             now = time.time()
             if now - _last_sm_poll >= SM_POLL_INTERVAL and self._connected:
                 _last_sm_poll = now
+                _sm_ok = True
                 r = self.send_raw("SM 0")
                 if r:
                     self._process_message(r)
                 else:
-                    print("[Serial] SM 0 poll: no response (timeout)")
-                r = self.send_raw("SM 1")
-                if r:
-                    self._process_message(r)
+                    _sm_ok = False
+                # Only poll SM 1 if SM 0 succeeded — avoids 4s lock hold on double timeout
+                if _sm_ok and self._connected:
+                    r = self.send_raw("SM 1")
+                    if r:
+                        self._process_message(r)
+                    else:
+                        _sm_ok = False
+                if not _sm_ok:
+                    _sm_fail_count += 1
+                    if _sm_fail_count <= 3 or _sm_fail_count % 5 == 0:
+                        print(f"[Serial] SM poll timeout (fail #{_sm_fail_count})")
+                    # Back off on repeated failures — don't hammer a dying link
+                    if _sm_fail_count >= 3:
+                        _last_sm_poll = now + min(_sm_fail_count * 2.0, 30.0) - SM_POLL_INTERVAL
                 else:
-                    print("[Serial] SM 1 poll: no response (timeout)")
+                    if _sm_fail_count > 0:
+                        print(f"[Serial] SM poll recovered after {_sm_fail_count} failures")
+                    _sm_fail_count = 0
             # Periodic FO poll — keeps freq_info (tone/shift/offset) current
             if now - _last_fo_poll >= FO_POLL_INTERVAL and self._connected:
                 _last_fo_poll = now
