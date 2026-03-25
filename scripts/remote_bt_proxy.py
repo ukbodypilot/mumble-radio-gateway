@@ -166,8 +166,9 @@ class SerialManager:
             print(f"[Serial] Connected to {self._mac} ch2 (raw RFCOMM)")
             self._init_radio()
             # Enable real-time push updates (FQ, SM, TX/RX stream to us)
+            time.sleep(0.3)
             self.send_raw("AI 0")   # disable first (D75_CAT.py pattern)
-            time.sleep(0.2)
+            time.sleep(0.3)
             r = self.send_raw("AI 1")
             print(f"[Serial] AI 1 response: {r!r}")
             self._poll_thread = threading.Thread(
@@ -258,18 +259,22 @@ class SerialManager:
         self._connected = False
 
     def _init_radio(self):
-        """Query model ID, firmware, serial number on connect."""
+        """Query model ID, firmware, serial number on connect.
+        BT RFCOMM needs breathing room — small delays between commands."""
+        _INIT_DELAY = 0.15  # seconds between init commands
         for _ in range(3):
             r = self.send_raw("ID")
             if r and r.startswith("ID"):
                 with self._state_lock:
                     self.model_id = r[2:].strip()
                 break
-            time.sleep(0.3)
+            time.sleep(0.5)
+        time.sleep(_INIT_DELAY)
         r = self.send_raw("FV")
         if r and r.startswith("FV"):
             with self._state_lock:
                 self.fw_version = r[2:].strip()
+        time.sleep(_INIT_DELAY)
         r = self.send_raw("AE")
         if r and r.startswith("AE"):
             with self._state_lock:
@@ -277,18 +282,22 @@ class SerialManager:
         print(f"[Serial] Radio: model={self.model_id!r} fw={self.fw_version!r}")
         # Query initial frequency, s-meter, and power for both bands
         for band in (0, 1):
+            time.sleep(_INIT_DELAY)
             r = self.send_raw(f"SM {band}")
             if r:
                 self._process_message(r)
+            time.sleep(_INIT_DELAY)
             r = self.send_raw(f"FO {band}")
             if r:
                 self._process_message(r)
             else:
                 print(f"[Serial] WARNING: FO {band} got no response — frequency will be blank until VFO moves")
+            time.sleep(_INIT_DELAY)
             r = self.send_raw(f"PC {band}")
             if r:
                 self._process_message(r)
         for cmd in ("DL", "BC"):
+            time.sleep(_INIT_DELAY)
             r = self.send_raw(cmd)
             if r:
                 self._process_message(r)
