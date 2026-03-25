@@ -871,15 +871,8 @@ class WebConfigServer:
                                     'mode': _modes.get(mode, '?'),
                                     'shift': shift_str,
                                     'tone': tone_str, 'name': name,
-                                    # Raw values for FO/PC load
-                                    'mode_num': mode,
-                                    'tone_on': 1 if tone_on else 0,
-                                    'ctcss_on': 1 if ctcss_on else 0,
-                                    'dcs_on': 1 if dcs_on else 0,
-                                    'tone_idx': tone_idx, 'ctcss_idx': ctcss_idx,
-                                    'dcs_idx': int(fields[16]) if len(fields) > 16 else 0,
-                                    'shift_num': shift,
-                                    'offset_hz': offset_hz,
+                                    # Raw ME fields 1-20 (same layout as FO) for direct FO construction
+                                    'me_fields': ','.join(fields[1:21]) if len(fields) >= 21 else '',
                                     'power': power,
                                 })
                                 _empty_streak = 0
@@ -4771,7 +4764,8 @@ function _d75RenderMemList() {
 }
 
 function d75GoChannel(band, ch) {
-  // Look up channel data from scan and load via FO (freq+mode+tone+shift atomically) + PC (power)
+  // Load channel via FO (freq+mode+tone+shift atomically) + PC (power)
+  // Uses raw ME fields stored during scan — no FO read needed
   var chData = (_d75Channels || []).find(function(c) { return c.ch === ch; });
   if (!chData) { _d75flash('CH ' + ch + ' not in list — rescan first', '#e74c3c'); return; }
   var isDual = (_d75LastStatus.dual_band === 0);   // DL 0=dual, DL 1=single
@@ -4781,53 +4775,21 @@ function d75GoChannel(band, ch) {
     // Switch to VFO mode first
     d75cmd('cat', 'VM ' + band + ',0');
     setTimeout(function() {
-      // Read current FO as template, then overlay memory channel values
-      fetch('/d75cmd', {method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({cmd:'cat', args:'FO ' + band})})
-        .then(function(r){return r.json()}).then(function(d) {
-          var resp = d.response || '';
-          // Find FO line in response
-          var foLine = '';
-          resp.split('\\n').forEach(function(l) {
-            l = l.trim();
-            if (l.indexOf('FO ') === 0) foLine = l.substring(3);
-            else if (l.indexOf(',') > 0 && l.split(',').length >= 21) foLine = l;
-          });
-          if (!foLine || foLine.split(',').length < 21) {
-            _d75flash('FO read failed — falling back to FQ only', '#e74c3c');
-            var hz = Math.round(chData.freq * 1000000);
-            d75cmd('cat', 'FQ ' + band + ',' + ('0000000000' + hz).slice(-10));
-            return;
-          }
-          var f = foLine.split(',');
-          // Set frequency
-          var hz = Math.round(chData.freq * 1000000);
-          f[1] = ('0000000000' + hz).slice(-10);
-          // Set mode
-          if (chData.mode_num !== undefined) f[5] = String(chData.mode_num);
-          // Set tone flags and indices
-          f[8] = String(chData.tone_on || 0);
-          f[9] = String(chData.ctcss_on || 0);
-          f[10] = String(chData.dcs_on || 0);
-          f[14] = String(chData.tone_idx || 0);
-          f[15] = String(chData.ctcss_idx || 0);
-          f[16] = String(chData.dcs_idx || 0);
-          // Set shift and offset
-          f[13] = String(chData.shift_num || 0);
-          if (chData.offset_hz > 0) {
-            f[2] = ('0000000000' + chData.offset_hz).slice(-10);
-          } else {
-            f[2] = '0000000000';
-          }
-          // Send FO
-          d75cmd('cat', 'FO ' + f.join(','));
-          // Set power if known
-          if (chData.power >= 0) {
-            setTimeout(function() {
-              d75cmd('cat', 'PC ' + band + ',' + chData.power);
-            }, 200);
-          }
-        });
+      if (chData.me_fields) {
+        // Construct FO directly from ME fields (same layout: fields 1-20)
+        var fo = band + ',' + chData.me_fields;
+        d75cmd('cat', 'FO ' + fo);
+      } else {
+        // Fallback: FQ only (old channels without me_fields)
+        var hz = Math.round(chData.freq * 1000000);
+        d75cmd('cat', 'FQ ' + band + ',' + ('0000000000' + hz).slice(-10));
+      }
+      // Set power if known (FO doesn't include power)
+      if (chData.power >= 0) {
+        setTimeout(function() {
+          d75cmd('cat', 'PC ' + band + ',' + chData.power);
+        }, 300);
+      }
     }, 200);
   }
 
