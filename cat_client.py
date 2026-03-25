@@ -1125,7 +1125,7 @@ class D75CATClient:
                 return None
         return None
 
-    def _send_cmd(self, cmd):
+    def _send_cmd(self, cmd, timeout=3.0):
         """Send command, return response. Auto-re-auths on Unauthorized.
         Internal use — callers should use send_command() which pauses polling."""
         if not self._sock:
@@ -1135,7 +1135,7 @@ class D75CATClient:
                 self._buf = b''  # Clear any partial line in buffer
                 self._sock.sendall(f"{cmd}\n".encode())
                 self._last_activity = time.monotonic()
-                resp = self._recv_line(timeout=3.0)
+                resp = self._recv_line(timeout=timeout)
                 if resp and 'Unauthorized' in resp:
                     self._sock.sendall(f"!pass {self._password}\n".encode())
                     auth_resp = self._recv_line(timeout=2.0)
@@ -1153,7 +1153,7 @@ class D75CATClient:
                 self._connected = False
                 return None
 
-    def send_command(self, cmd):
+    def send_command(self, cmd, timeout=3.0):
         """Send command with poll pausing. Use this for user/web commands."""
         if not self._sock or not self._connected:
             print(f"  [D75 CAT] send_command({cmd}) — no connection")
@@ -1173,7 +1173,7 @@ class D75CATClient:
                 except (socket.timeout, BlockingIOError, OSError):
                     pass
         try:
-            return self._send_cmd(cmd)
+            return self._send_cmd(cmd, timeout=timeout)
         finally:
             self._poll_paused = False
 

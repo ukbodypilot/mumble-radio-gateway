@@ -2007,10 +2007,12 @@ class WebConfigServer:
                                             gw.d75_cat._bt_stopped = False
                                         result = {'ok': True, 'response': 'Connected — poll thread will start BT link'}
                                     else:
-                                        gw.d75_cat = None
-                                        result = {'ok': False, 'error': 'Could not connect to D75 CAT server — is the proxy running on the remote machine?'}
+                                        # Keep client with poll thread for auto-retry instead of nulling it
+                                        gw.d75_cat.start_polling()
+                                        result = {'ok': False, 'error': 'Could not connect to D75 CAT server — poll thread will retry'}
                                 except Exception as e:
-                                    gw.d75_cat = None
+                                    print(f"  [D75 CAT] Reconnect handler error: {e}")
+                                    # Don't null d75_cat — leave for poll thread retry
                                     result = {'ok': False, 'error': f'Reconnect failed: {e}'}
                             else:
                                 result = {'ok': False, 'error': 'Gateway not initialized'}
@@ -2021,20 +2023,18 @@ class WebConfigServer:
                             elif cmd == 'btstart':
                                 gw.d75_cat._bt_stopped = False
                                 gw.d75_cat._btstart_in_progress = True
-                                resp = gw.d75_cat.send_command("!btstart")
-                                result = {'ok': True, 'response': resp or ''}
+                                if not gw.d75_cat._connected:
+                                    # TCP is down — poll thread will auto-btstart when it reconnects
+                                    result = {'ok': True, 'response': 'TCP down — poll thread will connect and btstart'}
+                                else:
+                                    resp = gw.d75_cat.send_command("!btstart")
+                                    result = {'ok': True, 'response': resp or 'sent (no response)'}
                             elif cmd == 'btstop':
-                                # btstop takes several seconds — use longer recv timeout
-                                gw.d75_cat._poll_paused = True
+                                # btstop takes several seconds — use longer timeout
                                 gw.d75_cat._bt_stopped = True
-                                time.sleep(0.3)
-                                with gw.d75_cat._sock_lock:
-                                    gw.d75_cat._buf = b''
-                                    gw.d75_cat._sock.sendall(b"!btstop\n")
-                                    resp = gw.d75_cat._recv_line(timeout=15.0)
+                                resp = gw.d75_cat.send_command("!btstop", timeout=15.0)
                                 gw.d75_cat._serial_connected = False
                                 gw.d75_cat._btstart_in_progress = False
-                                gw.d75_cat._poll_paused = False
                                 result = {'ok': True, 'response': resp or ''}
                             elif cmd == 'ptt':
                                 resp = gw.d75_cat.send_command("!ptt on" if not getattr(gw, '_d75_ptt', False) else "!ptt off")
