@@ -688,6 +688,7 @@ class WebConfigServer:
                     html = parent._generate_d75_page()
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
                     self.end_headers()
                     self.wfile.write(html.encode('utf-8'))
                 elif self.path == '/d75status':
