@@ -4298,6 +4298,7 @@ updateRadio();
   <div id="d75-mem-list" style="max-height:300px; overflow-y:auto; font-family:monospace; font-size:0.85em;">
     <span style="color:#888;">Press Scan to read memory channels from radio</span>
   </div>
+  <div id="d75-debug" style="margin-top:6px; color:#f39c12; font-size:0.8em; font-family:monospace; max-height:60px; overflow-y:auto; white-space:pre-wrap;"></div>
 </div>
 
 <!-- Volume control (full width) -->
@@ -4764,29 +4765,36 @@ function _d75RenderMemList() {
   list.innerHTML = h;
 }
 
+function _d75dbg(msg) {
+  console.log('[d75GoChannel] ' + msg);
+  var el = document.getElementById('d75-debug');
+  if (el) { el.textContent = msg + '\\n' + el.textContent; el.scrollTop = 0; }
+}
 function d75GoChannel(band, ch) {
-  // Load channel via FO (freq+mode+tone+shift atomically) + PC (power)
-  // Uses raw ME fields stored during scan — no FO read needed
+  _d75dbg('ENTER band=' + band + ' ch=' + ch);
   var chData = (_d75Channels || []).find(function(c) { return c.ch === ch; });
-  if (!chData) { _d75flash('CH ' + ch + ' not in list — rescan first', '#e74c3c'); return; }
-  var isDual = (_d75LastStatus.dual_band === 0);   // DL 0=dual, DL 1=single
+  if (!chData) { _d75dbg('CH NOT FOUND: ' + ch); _d75flash('CH ' + ch + ' not in list — rescan first', '#e74c3c'); return; }
+  _d75dbg('chData: ' + JSON.stringify(chData).substring(0, 200));
+  var isDual = (_d75LastStatus.dual_band === 0);
   var activeBand = (_d75LastStatus.active_band !== undefined) ? _d75LastStatus.active_band : band;
+  _d75dbg('isDual=' + isDual + ' activeBand=' + activeBand + ' target=' + band);
 
   function _loadViaFO() {
-    // Switch to VFO mode first
+    _d75dbg('VM ' + band + ',0');
     d75cmd('cat', 'VM ' + band + ',0');
     setTimeout(function() {
       if (chData.me_fields) {
-        // Construct FO directly from ME fields (same layout: fields 1-20)
         var fo = band + ',' + chData.me_fields;
+        _d75dbg('FO ' + fo.substring(0, 80));
         d75cmd('cat', 'FO ' + fo);
       } else {
-        // Fallback: FQ only (old channels without me_fields)
         var hz = Math.round(chData.freq * 1000000);
-        d75cmd('cat', 'FQ ' + band + ',' + ('0000000000' + hz).slice(-10));
+        var fqCmd = 'FQ ' + band + ',' + ('0000000000' + hz).slice(-10);
+        _d75dbg('no me_fields! fallback: ' + fqCmd);
+        d75cmd('cat', fqCmd);
       }
-      // Set power if known (FO doesn't include power)
       if (chData.power >= 0) {
+        _d75dbg('PC ' + band + ',' + chData.power);
         setTimeout(function() {
           d75cmd('cat', 'PC ' + band + ',' + chData.power);
         }, 300);
@@ -4795,10 +4803,11 @@ function d75GoChannel(band, ch) {
   }
 
   if (!isDual && activeBand !== band) {
-    // Single-band mode, target band not active — switch active band first
+    _d75dbg('switching band: BC ' + band);
     d75cmd('cat', 'BC ' + band);
     setTimeout(_loadViaFO, 300);
   } else {
+    _d75dbg('calling _loadViaFO');
     _loadViaFO();
   }
   var info = chData.freq + ' MHz';
