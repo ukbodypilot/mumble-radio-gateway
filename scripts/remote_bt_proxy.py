@@ -325,39 +325,20 @@ class SerialManager:
         STATE_DUMP_INTERVAL = 30.0
         _init_done = False
         while not self._stop_evt.is_set() and self._connected:
-            # Deferred init: query FO/SM/PC/DL/BC after stream loop starts
-            # (gives BT link time to stabilize before heavy queries)
+            # Deferred init: query PC/DL/BC (quick commands).
+            # Skip FO on init — it consistently times out on fresh BT connects.
+            # The periodic FO poll (every 15s) will pick it up once the link stabilises.
             if not _init_done:
                 _init_done = True
-                time.sleep(1.0)  # Let BT settle after AI 1
-                print("[Serial] Deferred init: querying FO/SM/PC/DL/BC...")
-                for band in (0, 1):
-                    if not self._connected:
-                        break
-                    time.sleep(0.3)
-                    r = self.send_raw(f"FO {band}", timeout=3.0)
-                    if r:
-                        self._process_message(r)
-                    else:
-                        print(f"[Serial] FO {band}: no response")
-                    time.sleep(0.3)
-                    r = self.send_raw(f"PC {band}", timeout=2.0)
-                    if r:
-                        self._process_message(r)
-                for cmd in ("DL", "BC"):
+                time.sleep(0.5)
+                for cmd in ("DL", "BC", "PC 0", "PC 1"):
                     if not self._connected:
                         break
                     time.sleep(0.2)
-                    r = self.send_raw(cmd, timeout=2.0)
+                    r = self.send_raw(cmd, timeout=1.0)
                     if r:
                         self._process_message(r)
-                if self._connected:
-                    with self._state_lock:
-                        for b in (0, 1):
-                            bd = self.band[b]
-                            print(f"[Serial] Band {'A' if b == 0 else 'B'}: "
-                                  f"freq={bd.get('frequency','?')} sm={bd.get('s_meter','?')}")
-                    _last_fo_poll = time.time()
+                print(f"[Serial] Init done — FO deferred to periodic poll")
                 continue
             # Drain queue (shorter timeout so polls fire)
             try:
