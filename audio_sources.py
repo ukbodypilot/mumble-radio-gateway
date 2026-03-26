@@ -1673,6 +1673,23 @@ class SDRSource(AudioSource):
                 arr = np.clip(farr * audio_boost, -32768, 32767).astype(np.int16)
                 raw = arr.tobytes()
 
+        # Click suppressor: detect sharp sample-to-sample jumps and interpolate
+        # over a 4-sample window to soften them. Threshold 800 (~2.4% of full scale)
+        # catches audible clicks without affecting normal audio.
+        _CLICK_THRESH = 800
+        _CLICK_RADIUS = 2  # samples on each side to interpolate
+        if len(arr) > 8:
+            diffs = np.abs(np.diff(arr.astype(np.int32)))
+            clicks = np.where(diffs > _CLICK_THRESH)[0]
+            if len(clicks) > 0:
+                farr = arr.astype(np.float32)
+                for idx in clicks:
+                    lo = max(0, idx - _CLICK_RADIUS)
+                    hi = min(len(farr) - 1, idx + 1 + _CLICK_RADIUS)
+                    if hi - lo >= 2:
+                        farr[lo:hi+1] = np.linspace(farr[lo], farr[hi], hi - lo + 1)
+                raw = np.clip(farr, -32768, 32767).astype(np.int16).tobytes()
+
         # Apply per-source audio processing (HPF, LPF, notch, gate, etc.)
         raw = self.gateway.process_audio_for_sdr(raw, self.name)
 
