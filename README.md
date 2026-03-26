@@ -546,7 +546,6 @@ ENABLE_WEB_MONITOR = false
 - **Save & Restart** button saves and restarts the gateway for changes to take effect
 - 7 dark color themes with consistent accent colors across all pages
 
-![Config Editor](docs/img/config-editor.png)
 *Configuration editor with collapsible sections grouped alphabetically, Save & Restart, and Exit Server controls.*
 
 **Live Dashboard** (`http://<gateway-ip>:8080/dashboard`):
@@ -571,7 +570,6 @@ ENABLE_WEB_MONITOR = false
 - **Toast notifications** — real-time error/warning popups (top-right, auto-dismiss) for PTT failures, playback errors, CAT disconnection, and radio non-response
 - **Responsive layout** — control buttons wrap on narrow/mobile screens instead of overflowing off-screen
 
-![Live Dashboard](docs/img/dashboard.png)
 *Live dashboard showing gateway status, audio level bars, system info, mute/processing/playback controls, and the browser audio player.*
 
 **Controls** (`http://<gateway-ip>:8080/controls`):
@@ -592,7 +590,6 @@ ENABLE_WEB_MONITOR = false
 - PTT toggle button, TCP/Serial connect/disconnect, RTS control
 - Browser microphone PTT (MIC PTT button)
 
-![TH-9800 Control](docs/img/radio-th9800.png)
 *TH-9800 radio control page with dual VFO display, signal meters, full button panel, and browser microphone PTT.*
 
 **TH-D75 Radio Control** (`http://<gateway-ip>:8080/d75`):
@@ -605,7 +602,6 @@ ENABLE_WEB_MONITOR = false
 - **D75 BT Reliability**: Auto-reconnect with 15s btstart retry, SM poll rate limiting (3s with backoff), deferred init, fire-and-forget PTT to avoid blocking audio thread.
 - **D75 Proxy Status**: Battery level, TNC mode, beacon type now reported from proxy.
 
-![TH-D75 Control](docs/img/radio-thd75.png)
 *TH-D75 control page showing band A/B VFOs, memory channels, and D-STAR status.*
 
 **KV4P HT Control** (`http://<gateway-ip>:8080/kv4p` — shown on dashboard nav when enabled):
@@ -615,7 +611,6 @@ ENABLE_WEB_MONITOR = false
 - CTCSS TX and RX tone selectors, PTT button, test tone buttons
 - Firmware version and module type displayed; Reconnect button
 
-![KV4P HT Control](docs/img/radio-kv4p.png)
 *KV4P HT control page showing 146.400 MHz receive with S-meter, CTCSS, and all radio parameters.*
 
 **SDR Control** (`http://<gateway-ip>:8080/sdr`):
@@ -631,7 +626,6 @@ ENABLE_WEB_MONITOR = false
 - 10-slot channel memory with 1-press recall, save with name, delete
 - Settings persist across gateway restarts
 
-![SDR Control](docs/img/sdr-control.png)
 *SDR control page — RSPduo dual tuner with Tuner 1 (446.750 MHz NFM) and Tuner 2 (446.640 MHz NFM) running simultaneously.*
 
 **ADS-B Aircraft Tracking** (`http://<gateway-ip>:8080/aircraft` — when `ENABLE_ADSB = true`):
@@ -641,7 +635,6 @@ ENABLE_WEB_MONITOR = false
 - Single-port access through the gateway's Cloudflare tunnel — no extra port forwarding needed
 - Dashboard panel showing aircraft count, message rate, and service health
 
-![ADS-B Aircraft Tracking](docs/img/adsb.png)
 *ADS-B tracking page showing live aircraft over the Los Angeles area via PiAware SkyAware.*
 
 **Recording Manager** (`http://<gateway-ip>:8080/recordings`):
@@ -650,7 +643,6 @@ ENABLE_WEB_MONITOR = false
 - Bulk select with Select All / Select None; Download Selected or Delete Selected
 - In-browser playback for any recording
 
-![Recording Manager](docs/img/recordings.png)
 *Recording manager with radio/date/frequency filters and bulk download/delete controls.*
 
 **Gateway Logs** (`http://<gateway-ip>:8080/logs`):
@@ -659,7 +651,6 @@ ENABLE_WEB_MONITOR = false
 - Clear button and new-line counter
 - Audio Trace and Watchdog Trace buttons
 
-![Gateway Logs](docs/img/logs.png)
 *Live log viewer with regex filter, clear, Audio Trace, and Watchdog Trace controls.*
 
 ### Cloudflare Tunnel
@@ -1161,7 +1152,6 @@ Press keys during operation to control the gateway:
 
 ## Status Bar
 
-![Status Bar Example](docs/img/status_bar_example.svg)
 
 The status bar uses up to three lines fixed at the bottom of the terminal. Log messages scroll above so all lines are always visible.
 
@@ -1198,7 +1188,6 @@ Bars appear in this order on line 1: TX → RX → SP → SDR1 → SDR2 → SV o
 
 **Bar States:**
 
-![Status Bar States](docs/img/status_bar_states.svg)
 
 **All bars have fixed width** (11 visible characters: 6-char bar + space + 4-char suffix) to prevent line length changes.
 
