@@ -3051,7 +3051,7 @@ class KV4PCATClient:
     def _on_rx_audio(self, opus_data):
         """Called by KV4PRadio reader thread with Opus RX audio."""
         self._rx_audio_count += 1
-        if self._rx_audio_count <= 3 or self._rx_audio_count % 500 == 0:
+        if getattr(self, '_verbose', False) and (self._rx_audio_count <= 3 or self._rx_audio_count % 500 == 0):
             print(f"\n[KV4P] _on_rx_audio #{self._rx_audio_count}: {len(opus_data)}B, callback={'set' if self.on_rx_audio else 'NONE'}", flush=True)
         if self.on_rx_audio:
             self.on_rx_audio(opus_data)
@@ -3122,6 +3122,7 @@ class KV4PAudioSource(AudioSource):
     def __init__(self, config, gateway):
         super().__init__("KV4P", config)
         self.gateway = gateway
+        self._verbose = getattr(config, 'VERBOSE_LOGGING', False)
         self.priority = 2
         self.sdr_priority = int(getattr(config, 'KV4P_AUDIO_PRIORITY', 2))
         self.ptt_control = False
@@ -3299,7 +3300,7 @@ class KV4PAudioSource(AudioSource):
         self._resample_ratio = max(0.95, min(1.25, self._resample_ratio + adjustment))
 
         self._inst_returns += 1
-        if self._inst_count % 200 == 0:
+        if getattr(self, '_verbose', False) and self._inst_count % 200 == 0:
             self._print_inst("ok")
 
         # Streaming resampler: consume input at ratio 1.02 (ESP32 2% overclock)
