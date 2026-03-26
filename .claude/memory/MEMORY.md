@@ -31,6 +31,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ## ADS-B Aircraft Tracking (2026-03-21)
 - RTL2838/R820T USB dongle; dump1090-fa + lighttpd on port 30080; fr24feed → FlightRadar24
 - Gateway reverse proxy: `/adsb/*` → `http://127.0.0.1:{ADSB_PORT}`
+- **Map centered on Santa Ana CA** (33.745, -117.868); all view layers enabled by default
 
 ## Announcement Input (port 9601)
 - `NetworkAnnouncementSource` — TCP, length-prefixed PCM, `ptt_control=True`, `priority=0`
@@ -42,7 +43,15 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 
 ## Web Configuration UI & Live Dashboard
 - `WebConfigServer` class: built-in HTTP server (Python `http.server`, no Flask)
-- Pages: `/` shell, `/dashboard`, `/sdr`, `/radio` (TH-9800), `/d75` (TH-D75), `/aircraft`, `/recordings`, `/logs`
+- Pages: `/` shell, `/dashboard`, `/controls`, `/sdr`, `/radio` (TH-9800), `/d75` (TH-D75), `/aircraft`, `/recordings`, `/logs`
+- **Shell page (`/`):** nav bar + MP3/PCM controls (inline) + audio level bars (always visible) + iframe
+- **Audio bars:** RX, TX, KV4P, D75, SDR1, SDR2, SV, AN, SP — fixed 190px width, 10px track bars
+- **Controls page (`/controls`):** all control groups moved from dashboard (2026-03-26)
+- **Dashboard:** status info + Telegram + USB/IP panels only
+- **Page titles removed** — implicit from nav bar active underline; gateway name in System Status block
+- **CF tunnel URL:** shown as short clickable link in System Status IPs row
+- **Footer action bar removed** (2026-03-26)
+- **D75 page:** no-cache header to prevent stale JS
 - **D75/KV4P processing buttons (2026-03-25):** Gate/HPF/LPF/Notch per source, with live highlighting
 - **Telegram panel:** "Open" button launches xfce4-terminal attached to Claude tmux session
 
@@ -80,7 +89,7 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 ### D75 TX Audio via BT SCO (2026-03-26)
 - **Path:** gateway `write_tx_audio` → downsample 48k→8k → TCP port 9751 → proxy `_rx_loop` → `write_sco` → SCO to radio
 - **CRITICAL:** SCO is SEQPACKET with 48-byte frames — must split data into frame-sized chunks
-- Dedicated `_tx_loop` thread paces frame delivery at 3ms intervals from a buffer
+- **SCO TX thread pacing:** dedicated `_tx_loop` sends frames every 3ms from buffer
 - Without frame splitting: silent. Without pacing: 10Hz stutter
 - Announcement pre-TX delay applies to ALL radios (gives radio time to key up)
 
@@ -107,6 +116,11 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - `KV4PAudioSource` class: CP2102 USB-serial, kv4p-ht-python package, Opus codec
 - **CRITICAL:** DRA818 uses 38 tones (no 69.3 Hz) — off-by-one CTCSS errors with TH-9800's 39-tone list
 - **CRITICAL:** PTT_METHOD=aioc does NOT key KV4P — KV4P uses its own serial PTT (`_ptt_kv4p`)
+- **KV4P logging gated behind VERBOSE_LOGGING** (2026-03-26)
+
+## SDR Click Suppressor (2026-03-26)
+- Detects sample-to-sample jumps >800, interpolates over 4-sample window
+- Runs after audio boost, before HPF/LPF/notch
 
 ## Audio Mixer — Duck State Machine (aioc_vs_sdrs)
 - `aioc_ducks_sdrs = ds['is_ducked'] or in_padding` — SDR suppressed while ducked or in transition padding
@@ -155,6 +169,7 @@ D75 playback JS newline syntax error (2026-03-26), config file damage from repla
 - CBR Opus (not VBR), commits requested explicitly, concise responses, no emojis
 - **gateway_config.txt is NOT committed** — repo is PUBLIC; config is in .gitignore
 - Config file overrides code defaults — changing defaults in code has no effect if config has the old value
+- **Code defaults updated (2026-03-26):** ENABLE_ADSB, ENABLE_DDNS, ENABLE_USBIP, ENABLE_SPEAKER_OUTPUT now match production config
 - Pre-TX announcement delay wanted for ALL radios (not just relay/AIOC)
 - Instrument the code rather than guess at bugs
 
