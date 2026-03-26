@@ -3178,7 +3178,7 @@ class WebConfigServer:
     padding: 6px 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
     flex-shrink: 0; min-height: 40px; z-index: 100;
   }}
-  #shell-bar a {{ color: var(--t-accent); text-decoration: none; font-size: 0.9em; }}
+  #shell-bar a {{ color: var(--t-accent); text-decoration: none; font-size: 0.8em; }}
   #shell-bar a:hover {{ text-decoration: underline; }}
   #shell-bar a.active {{ font-weight: bold; border-bottom: 2px solid var(--t-accent); }}
   #shell-bar a.nav-disabled {{ color: #555; cursor: default; pointer-events: none; text-decoration: none; }}
