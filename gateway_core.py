@@ -256,7 +256,7 @@ class EmailNotifier:
         if self.gateway and self.gateway.cloudflare_tunnel:
             url = self.gateway.cloudflare_tunnel.get_url()
             if url:
-                ws_url = url.replace('https://', 'wss://').replace('http://', 'ws://')
+                ws_url = url.replace('https://', 'ws://').replace('http://', 'ws://')
                 lines.append(f"Gateway:   {url}")
                 lines.append(f"Config:    {url}/config")
                 lines.append(f"Monitor:   {url}/monitor")
