@@ -2740,6 +2740,7 @@ class D75AudioSource(AudioSource):
                 if self._reader_running:
                     time.sleep(self._reconnect_interval)
 
+    _tx_write_count = 0
     def write_tx_audio(self, pcm_48k):
         """Downsample 48kHz PCM to 8kHz and send to D75 via audio TCP for BT TX.
 
@@ -2747,6 +2748,8 @@ class D75AudioSource(AudioSource):
         and writes it to SCO for radio transmission.
         """
         if not self._sock or not self.server_connected:
+            if self._tx_write_count == 0:
+                print(f"  [D75 TX] write_tx_audio: no sock/server (sock={self._sock is not None}, conn={self.server_connected})")
             return False
         try:
             # Downsample 48kHz → 8kHz (take every 6th sample)
@@ -2754,8 +2757,13 @@ class D75AudioSource(AudioSource):
             arr_8k = arr[::6]
             data_8k = arr_8k.tobytes()
             self._sock.sendall(data_8k)
+            self._tx_write_count += 1
+            if self._tx_write_count <= 3 or self._tx_write_count % 100 == 0:
+                peak = int(np.max(np.abs(arr_8k))) if len(arr_8k) > 0 else 0
+                print(f"  [D75 TX] sent {len(data_8k)}B (#{self._tx_write_count}, peak={peak})")
             return True
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            print(f"  [D75 TX] write error: {e}")
             return False
 
     def get_audio(self, chunk_size):
