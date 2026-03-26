@@ -47,7 +47,7 @@ class MainActivity : AppCompatActivity() {
         // Gain: slider 0-100 maps to 1x-10x
         gainSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                MonitorService.gain = 1.0f + progress * 0.09f  // 1.0 to 10.0
+                MonitorService.gain = 1.0f + progress * 0.49f  // 1.0 to 50.0
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {}
             override fun onStopTrackingTouch(sb: SeekBar?) {}

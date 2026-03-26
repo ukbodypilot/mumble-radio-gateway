@@ -7909,7 +7909,7 @@ updateControls();
       <label style="color:#888; font-size:0.85em; display:block; margin-bottom:4px;">
         Gain: <span id="mon-gain-val">1x</span>
       </label>
-      <input id="mon-gain" type="range" min="1" max="10" step="0.5" value="1"
+      <input id="mon-gain" type="range" min="1" max="50" step="1" value="1"
         style="width:100%; accent-color:var(--t-accent);"
         oninput="document.getElementById('mon-gain-val').textContent=this.value+'x'">
     </div>
