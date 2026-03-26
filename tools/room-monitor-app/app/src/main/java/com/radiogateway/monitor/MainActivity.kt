@@ -151,11 +151,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startMonitoring() {
-        val url = serverUrl.text.toString().trim()
+        var url = serverUrl.text.toString().trim()
         if (url.isEmpty()) {
             Toast.makeText(this, "Enter gateway URL", Toast.LENGTH_SHORT).show()
             return
         }
+        // Auto-convert pasted HTTP(S) URLs to WebSocket
+        url = url.replace("https://", "wss://").replace("http://", "ws://")
         val intent = Intent(this, MonitorService::class.java).apply {
             putExtra("url", url)
         }

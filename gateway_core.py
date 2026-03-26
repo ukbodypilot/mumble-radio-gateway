@@ -256,11 +256,10 @@ class EmailNotifier:
         if self.gateway and self.gateway.cloudflare_tunnel:
             url = self.gateway.cloudflare_tunnel.get_url()
             if url:
-                ws_url = url.replace('https://', 'ws://').replace('http://', 'ws://')
                 lines.append(f"Gateway:   {url}")
                 lines.append(f"Config:    {url}/config")
                 lines.append(f"Monitor:   {url}/monitor")
-                lines.append(f"Monitor App (internet): {ws_url}/ws_monitor")
+                lines.append(f"Monitor App: {url}/ws_monitor")
                 lines.append("")
 
         # LAN link
@@ -272,7 +271,7 @@ class EmailNotifier:
             lan_ip = s.getsockname()[0]
             s.close()
             lines.append(f"LAN:       http://{lan_ip}:{port}")
-            lines.append(f"Monitor App (LAN):      ws://{lan_ip}:{port}/ws_monitor")
+            lines.append(f"LAN App:   http://{lan_ip}:{port}/ws_monitor")
         except Exception:
             pass
         lines.append(f"Local:     http://localhost:{port}")
