@@ -3562,7 +3562,6 @@ _updateBars();
     def _generate_logs_page(self):
         """Build the live log viewer HTML page."""
         body = '''
-<h2 style="margin:0 0 10px;">Gateway Logs</h2>
 <div style="margin-bottom:8px; display:flex; gap:10px; align-items:center;">
   <label style="color:#888; font-size:0.85em;">
     <input type="checkbox" id="auto-scroll" checked> Auto-scroll
@@ -6427,6 +6426,7 @@ pollTimer = setInterval(pollStatus, 1000);
 
             # Hostname
             info['hostname'] = socket.gethostname()
+            info['gateway_name'] = str(getattr(self.config, 'GATEWAY_NAME', '') or '').strip() if self.gateway else ''
 
             # Cloudflare tunnel URL for display in system status
             if self.gateway and self.gateway.cloudflare_tunnel:
@@ -6442,10 +6442,7 @@ pollTimer = setInterval(pollStatus, 1000);
     def _generate_dashboard(self):
         """Build the live status dashboard HTML page."""
         port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
-        gw_name = str(getattr(self.config, 'GATEWAY_NAME', '') or '').strip()
-        _name_html = '<span style="color:#e0e0e0">' + gw_name + '</span> &mdash; ' if gw_name else ''
-        body = '<h1 style="font-size:1.8em; margin:0 0 10px">' + _name_html + 'Radio Gateway Dashboard</h1>'
-        body += '''
+        body = '''
 
 <div id="status">Loading...</div>
 <div id="toast-container" style="position:fixed;top:10px;right:10px;z-index:9999;max-width:400px;"></div>
@@ -6990,6 +6987,7 @@ function updateSysInfo() {
     h += '</div>';
     if (s.ips && s.ips.length) {
       h += '<div class="st-row">';
+      if (s.gateway_name) h += '<div class="st-item"><span class="st-label">Name:</span><span class="st-val white">'+s.gateway_name+'</span></div>';
       if (s.hostname) h += '<div class="st-item"><span class="st-label">Host:</span><span class="st-val cyan">'+s.hostname+'</span></div>';
       for (var i=0; i<s.ips.length; i++) {
         h += '<div class="st-item"><span class="st-label">'+s.ips[i].iface+':</span><span class="st-val white">'+s.ips[i].addr+'</span></div>';
@@ -7196,7 +7194,6 @@ updateTelegram();
     def _generate_controls_page(self):
         """Build the controls page HTML (moved from dashboard)."""
         body = '''
-<h1 style="font-size:1.6em; margin:0 0 10px;">Controls</h1>
 
 <div class="controls">
   <div class="ctrl-group" id="mute-group">
@@ -7743,7 +7740,6 @@ updateControls();
     def _generate_recordings_page(self):
         """Build the recordings manager HTML page."""
         body = '''
-<h1 style="font-size:1.6em; margin:0 0 10px;">Recording Manager</h1>
 
 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
   <div>
@@ -8078,7 +8074,7 @@ setInterval(loadFiles, 10000);
                 f'<div class="fields">{"".join(fields_html)}</div></details>')
 
         body = (
-            '<h1>Radio Gateway Configuration</h1>'
+            ''
             '<form method="POST" action="/config">'
             '<div class="buttons">'
             '<button type="submit" name="_action" value="save" class="btn-save">Save</button>'
