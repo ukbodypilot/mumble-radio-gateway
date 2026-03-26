@@ -6447,6 +6447,14 @@ pollTimer = setInterval(pollStatus, 1000);
 <div id="status">Loading...</div>
 <div id="toast-container" style="position:fixed;top:10px;right:10px;z-index:9999;max-width:400px;"></div>
 
+<div id="bc-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px; font-family:monospace; font-size:0.9em; margin-top:10px; display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+    <h3 style="margin:0; color:var(--t-accent); font-size:1em;">Broadcastify Stream</h3>
+    <span id="bc-status-badge" style="font-weight:bold;"></span>
+  </div>
+  <div class="st-row" id="bc-stats"></div>
+</div>
+
 <div id="sysinfo" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:1.0em; margin-top:10px;">Loading...</div>
 
 <div id="automation-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
@@ -6604,21 +6612,29 @@ function updateStatus() {
     if(s.charger) h += '<div class="st-item"><span class="st-label">Charger:</span><span class="st-val '+(s.charger.startsWith("CHARGING")?'green':'red')+'">'+s.charger+'</span></div>';
     if(s.cat_reliability && s.cat_reliability.sent) { var r=s.cat_reliability; var missClr=r.missed>0?'red':'green'; h += '<div class="st-item"><span class="st-label">CMD:</span><span class="st-val green">'+r.sent+'</span>/<span class="st-val '+missClr+'">'+r.missed+' miss</span></div>'; }
     if(s.cat_reliability && s.cat_reliability.last_miss) { h += '<div class="st-item"><span class="st-val red" style="font-size:11px">'+s.cat_reliability.last_miss+'</span></div>'; }
+    // Broadcastify panel (separate div)
+    var bcPanel = document.getElementById('bc-panel');
     if(s.streaming_enabled) {
+      bcPanel.style.display = '';
       var bcRun = s.darkice_running;
-      var bcPipe = s.stream_pipe_ok;
       var ds = s.darkice_stats || {};
       var conn = ds.connected;
       var stClr = bcRun&&conn?'green':bcRun?'yellow':'red';
       var stTxt = bcRun?(conn?'LIVE':'NO CONN'):'OFF';
-      h += '<div class="st-item"><span class="st-label">Stream:</span><span class="st-val '+stClr+'">'+stTxt+'</span></div>';
-      if(ds.uptime) { var u=ds.uptime; var uh=Math.floor(u/3600); var um=Math.floor((u%3600)/60); var us=u%60; h += '<div class="st-item"><span class="st-label">Age:</span><span class="st-val white">'+uh+'h '+('0'+um).slice(-2)+'m '+('0'+us).slice(-2)+'s</span></div>'; }
-      if(ds.bytes_sent) { var kb=ds.bytes_sent/1024; var mb=kb/1024; h += '<div class="st-item"><span class="st-label">Sent:</span><span class="st-val cyan">'+(mb>=1?mb.toFixed(1)+' MB':kb.toFixed(0)+' KB')+'</span></div>'; }
-      if(ds.send_rate) h += '<div class="st-item"><span class="st-label">Rate:</span><span class="st-val cyan">'+ds.send_rate+'</span></div>';
-      if(ds.rtt) h += '<div class="st-item"><span class="st-label">RTT:</span><span class="st-val '+(ds.rtt<100?'green':ds.rtt<500?'yellow':'red')+'">'+ds.rtt.toFixed(0)+'ms</span></div>';
+      document.getElementById('bc-status-badge').innerHTML = '<span style="color:'+stClr+'">'+stTxt+'</span>';
+      var bh = '';
+      if(ds.uptime) { var u=ds.uptime; var uh=Math.floor(u/3600); var um=Math.floor((u%3600)/60); var us=u%60; bh += '<div class="st-item"><span class="st-label">Uptime:</span><span class="st-val white">'+uh+'h '+('0'+um).slice(-2)+'m '+('0'+us).slice(-2)+'s</span></div>'; }
+      if(ds.bytes_sent) { var kb=ds.bytes_sent/1024; var mb=kb/1024; bh += '<div class="st-item"><span class="st-label">Sent:</span><span class="st-val cyan">'+(mb>=1?mb.toFixed(1)+' MB':kb.toFixed(0)+' KB')+'</span></div>'; }
+      if(ds.send_rate) bh += '<div class="st-item"><span class="st-label">Rate:</span><span class="st-val cyan">'+ds.send_rate+'</span></div>';
+      if(ds.rtt) bh += '<div class="st-item"><span class="st-label">RTT:</span><span class="st-val '+(ds.rtt<100?'green':ds.rtt<500?'yellow':'red')+'">'+ds.rtt.toFixed(0)+'ms</span></div>';
+      bh += '<div class="st-item"><span class="st-label">Pipe:</span><span class="st-val '+(s.stream_pipe_ok?'green':'red')+'">'+(s.stream_pipe_ok?'OK':'ERR')+'</span></div>';
+      bh += '<div class="st-item"><span class="st-label">Health:</span><span class="st-val '+(s.stream_health?'green':'red')+'">'+(s.stream_health?'ON':'off')+'</span></div>';
+      bh += '<div class="st-item"><span class="st-label">PID:</span><span class="st-val white">'+(s.darkice_pid||'—')+'</span></div>';
       var rTot = (s.darkice_restarts||0) + (s.stream_restarts||0);
-      if(rTot > 0) h += '<div class="st-item"><span class="st-label">Restarts:</span><span class="st-val yellow">'+(s.darkice_restarts||0)+'d/'+(s.stream_restarts||0)+'s</span></div>';
-      h += '<div class="st-item"><span class="st-label">Health:</span><span class="st-val '+(s.stream_health?'green':'red')+'">'+(s.stream_health?'ON':'off')+'</span></div>';
+      if(rTot > 0) bh += '<div class="st-item"><span class="st-label">Restarts:</span><span class="st-val yellow">'+(s.darkice_restarts||0)+'d/'+(s.stream_restarts||0)+'s</span></div>';
+      document.getElementById('bc-stats').innerHTML = bh;
+    } else {
+      bcPanel.style.display = 'none';
     }
     h += '</div>';
 
