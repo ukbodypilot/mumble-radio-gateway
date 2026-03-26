@@ -3505,15 +3505,15 @@ function _updateBars() {{
   _sbBusy = true;
   fetch('/status').then(function(r){{return r.json()}}).then(function(s){{
     var h = '';
-    h += '<div class="sb"><span class="sb-label">TX:</span>'+_sbBar(s.radio_tx,'sb-tx')+'</div>';
     h += '<div class="sb"><span class="sb-label">RX:</span>'+_sbBar(s.radio_rx,'sb-rx')+'</div>';
-    if(s.speaker_enabled) h += '<div class="sb"><span class="sb-label">SP:</span>'+_sbBar(s.speaker_level,'sb-sp')+'</div>';
+    h += '<div class="sb"><span class="sb-label">TX:</span>'+_sbBar(s.radio_tx,'sb-tx')+'</div>';
+    if(s.kv4p_enabled) h += '<div class="sb"><span class="sb-label">KV4P:</span>'+_sbBar(s.kv4p_level,'sb-kv4p')+(s.kv4p_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+'</div>';
+    if(s.d75_enabled) h += '<div class="sb"><span class="sb-label">D75:</span>'+_sbBar(s.d75_level,'sb-d75')+(s.d75_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+'</div>';
     if(s.sdr1_enabled) h += '<div class="sb"><span class="sb-label">SDR1:</span>'+_sbBar(s.sdr1_level,'sb-sdr1',s.sdr1_ducked)+'</div>';
     if(s.sdr2_enabled) h += '<div class="sb"><span class="sb-label">SDR2:</span>'+_sbBar(s.sdr2_level,'sb-sdr2',s.sdr2_ducked)+'</div>';
     if(s.remote_enabled) h += '<div class="sb"><span class="sb-label">'+s.remote_mode+':</span>'+_sbBar(s.remote_level, s.remote_mode==='SV'?'sb-sv':'sb-cl', s.remote_mode==='CL'&&s.cl_ducked)+'</div>';
     if(s.announce_enabled) h += '<div class="sb"><span class="sb-label">AN:</span>'+_sbBar(s.an_level,'sb-an')+'</div>';
-    if(s.d75_enabled) h += '<div class="sb"><span class="sb-label">D75:</span>'+_sbBar(s.d75_level,'sb-d75')+(s.d75_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+'</div>';
-    if(s.kv4p_enabled) h += '<div class="sb"><span class="sb-label">KV4P:</span>'+_sbBar(s.kv4p_level,'sb-kv4p')+(s.kv4p_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+'</div>';
+    if(s.speaker_enabled) h += '<div class="sb"><span class="sb-label">SP:</span>'+_sbBar(s.speaker_level,'sb-sp')+'</div>';
     document.getElementById('shell-bars').innerHTML = h;
   }}).catch(function(){{}}).finally(function(){{_sbBusy=false}});
 }}
@@ -6506,17 +6506,6 @@ pollTimer = setInterval(pollStatus, 1000);
   </div>
 </div>
 
-<div id="usbip-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-    <h3 style="margin:0; color:var(--t-accent); font-size:1.1em;">USB/IP Remote Devices</h3>
-    <span id="usbip-server-label" style="font-size:0.85em; color:#aaa;"></span>
-  </div>
-  <div id="usbip-status-row" class="st-row" style="margin-bottom:8px;">
-    <div class="st-item"><span class="st-label">Server:</span><span id="usbip-server-dot" class="st-val">&#x25cf;</span></div>
-  </div>
-  <div id="usbip-devices-list" style="margin-top:6px; font-size:0.9em; color:#ccc;">No devices</div>
-</div>
-
 <div id="tg-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
     <h3 style="margin:0; color:var(--t-accent); font-size:1.1em;">Telegram Bot</h3>
@@ -6533,6 +6522,17 @@ pollTimer = setInterval(pollStatus, 1000);
     <div class="st-item"><span class="st-label">Last out:</span><span id="tg-last-out" class="st-val green">--</span></div>
   </div>
   <div style="font-size:0.85em; color:#aaa; margin-top:4px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;" id="tg-last-text"></div>
+</div>
+
+<div id="usbip-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <h3 style="margin:0; color:var(--t-accent); font-size:1.1em;">USB/IP Remote Devices</h3>
+    <span id="usbip-server-label" style="font-size:0.85em; color:#aaa;"></span>
+  </div>
+  <div id="usbip-status-row" class="st-row" style="margin-bottom:8px;">
+    <div class="st-item"><span class="st-label">Server:</span><span id="usbip-server-dot" class="st-val">&#x25cf;</span></div>
+  </div>
+  <div id="usbip-devices-list" style="margin-top:6px; font-size:0.9em; color:#ccc;">No devices</div>
 </div>
 
 <style>
