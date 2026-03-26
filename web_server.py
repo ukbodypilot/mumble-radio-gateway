@@ -3209,16 +3209,6 @@ class WebConfigServer:
   .sb-sp {{ background: var(--t-accent); }} .sb-an {{ background: #e74c3c; }}
   .sb-d75 {{ background: #f39c12; }} .sb-kv4p {{ background: #1abc9c; }}
   #shell-status {{ color: #888; font-size: 0.75em; white-space: nowrap; }}
-  #action-bar {{
-    background: var(--t-panel); border-top: 1px solid var(--t-border);
-    padding: 8px 14px; display: flex; align-items: center; justify-content: center;
-    gap: 10px; flex-shrink: 0; flex-wrap: wrap;
-  }}
-  #action-bar button {{
-    background: var(--t-btn); border: 1px solid var(--t-btn-border); color: #e0e0e0;
-    border-radius: 4px; padding: 6px 20px; cursor: pointer; font-size: 0.9em; font-family: inherit;
-  }}
-  #action-bar button:hover {{ background: var(--t-btn-hover); }}
 </style>
 </head><body>
 <div id="shell-bar">
@@ -3239,11 +3229,6 @@ class WebConfigServer:
 </div>
 <div id="shell-bars"></div>
 <iframe id="shell-frame" name="content" src="/dashboard"></iframe>
-<div id="action-bar">
-  <button onclick="shellCmd('@')">&#9993; Email Status</button>
-  <button onclick="if(confirm('Restart gateway?'))shellCmd('q')" style="color:#f39c12;">&#8635; Restart</button>
-  <button onclick="if(confirm('Exit the gateway server?'))fetch('/exit',{{method:'POST'}}).then(()=>{{document.body.innerHTML='<h1 style=color:#e0e0e0;text-align:center;margin-top:40vh>Stopped.</h1>';}})" style="color:#e74c3c;">&#9632; Exit</button>
-</div>
 <script>
 var _T = {{accent:'{t['accent']}',btnBorder:'{t['btn_border']}'}};
 
