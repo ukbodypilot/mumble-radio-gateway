@@ -609,6 +609,7 @@ class AudioManager:
             self._read_thread = threading.Thread(
                 target=self._read_loop, daemon=True, name="sco-read")
             self._read_thread.start()
+            self._start_tx_thread()
 
             ckpd = " (+CKPD)" if send_ckpd else ""
             print(f"[Audio] Connected to {self._mac}{ckpd}")
@@ -647,39 +648,65 @@ class AudioManager:
             except Exception as e:
                 print(f"[Audio] CKPD failed: {e}")
 
-    _sco_tx_count = 0
-    _sco_tx_errors = 0
     def write_sco(self, data):
-        """Write TX audio data to SCO (called from AudioServer TX reader).
+        """Queue TX audio data for SCO transmission.
+        The _tx_thread sends frames at a steady rate to avoid stutter."""
+        if hasattr(self, '_tx_buf_lock'):
+            with self._tx_buf_lock:
+                self._tx_buf += data
 
-        SCO is SEQPACKET with 48-byte frames. Must split incoming data into
-        frame-sized chunks and pace delivery to match real-time rate (~3ms/frame)
-        to avoid burst-then-silence stutter.
-        """
-        if self._sco and self._connected:
+    def _start_tx_thread(self):
+        """Start the SCO TX pacing thread."""
+        self._tx_buf = b''
+        self._tx_buf_lock = threading.Lock()
+        self._tx_thread = threading.Thread(
+            target=self._tx_loop, daemon=True, name="sco-tx")
+        self._tx_thread.start()
+
+    def _tx_loop(self):
+        """Send SCO frames at a steady 3ms rate from the TX buffer.
+        48 bytes = 24 samples @ 8kHz = 3ms per frame."""
+        _frame_interval = AUDIO_FRAME_SIZE / (8000 * 2)  # 48/(8000*2) = 3ms
+        _next_frame_time = time.monotonic()
+        _tx_count = 0
+        _tx_underrun = 0
+        _silence_frame = b'\x00' * AUDIO_FRAME_SIZE
+        print(f"[Audio TX] TX thread started (frame_interval={_frame_interval*1000:.1f}ms)")
+        while self._running and self._connected:
+            now = time.monotonic()
+            if now < _next_frame_time:
+                time.sleep(max(0, _next_frame_time - now - 0.0002))
+                continue
+            _next_frame_time += _frame_interval
+            # Prevent drift accumulation — if we're way behind, reset
+            if now - _next_frame_time > 0.050:
+                _next_frame_time = now + _frame_interval
+            # Get one frame from buffer
+            frame = None
+            with self._tx_buf_lock:
+                if len(self._tx_buf) >= AUDIO_FRAME_SIZE:
+                    frame = self._tx_buf[:AUDIO_FRAME_SIZE]
+                    self._tx_buf = self._tx_buf[AUDIO_FRAME_SIZE:]
+                elif len(self._tx_buf) > 0:
+                    # Partial frame — pad with silence
+                    frame = self._tx_buf + b'\x00' * (AUDIO_FRAME_SIZE - len(self._tx_buf))
+                    self._tx_buf = b''
+            if frame is None:
+                # No data — don't send silence (let SCO idle)
+                continue
             try:
-                n_frames = 0
-                for i in range(0, len(data), AUDIO_FRAME_SIZE):
-                    frame = data[i:i + AUDIO_FRAME_SIZE]
-                    if len(frame) < AUDIO_FRAME_SIZE:
-                        frame += b'\x00' * (AUDIO_FRAME_SIZE - len(frame))
+                if self._sco:
                     self._sco.send(frame)
-                    n_frames += 1
-                    # Pace at real-time rate: 48 bytes = 24 samples @ 8kHz = 3ms
-                    # Sleep slightly less than 3ms to account for send() overhead
-                    if n_frames % 4 == 0:
-                        time.sleep(0.010)  # ~10ms per 4 frames (12ms of audio)
-                self._sco_tx_count += 1
-                if self._sco_tx_count <= 3 or self._sco_tx_count % 200 == 0:
-                    print(f"[Audio TX] #{self._sco_tx_count}: {len(data)}B → {n_frames} frames")
+                    _tx_count += 1
+                    if _tx_count <= 3 or _tx_count % 500 == 0:
+                        with self._tx_buf_lock:
+                            _buf_ms = len(self._tx_buf) / (8000 * 2) * 1000
+                        print(f"[Audio TX] frame #{_tx_count} buf={_buf_ms:.0f}ms underruns={_tx_underrun}")
             except Exception as e:
-                self._sco_tx_errors += 1
-                if self._sco_tx_errors <= 3 or self._sco_tx_errors % 50 == 0:
-                    print(f"[Audio TX] SCO write error #{self._sco_tx_errors}: {e}")
-        else:
-            if not hasattr(self, '_sco_tx_noconn_logged'):
-                self._sco_tx_noconn_logged = True
-                print(f"[Audio TX] No SCO connection (sco={self._sco is not None}, conn={self._connected})")
+                if _tx_count <= 3:
+                    print(f"[Audio TX] SCO write error: {e}")
+                break
+        print(f"[Audio TX] TX thread ended (sent {_tx_count} frames, {_tx_underrun} underruns)")
 
     # ── private ────────────────────────────────────────────────────────────────
 
