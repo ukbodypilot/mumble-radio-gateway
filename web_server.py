@@ -6447,6 +6447,8 @@ pollTimer = setInterval(pollStatus, 1000);
 <div id="status">Loading...</div>
 <div id="toast-container" style="position:fixed;top:10px;right:10px;z-index:9999;max-width:400px;"></div>
 
+<div id="sysinfo" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:1.0em; margin-top:10px;">Loading...</div>
+
 <div id="bc-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px; font-family:monospace; font-size:0.9em; margin-top:10px; display:none;">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
     <h3 style="margin:0; color:var(--t-accent); font-size:1em;">Broadcastify Stream</h3>
@@ -6454,8 +6456,6 @@ pollTimer = setInterval(pollStatus, 1000);
   </div>
   <div class="st-row" id="bc-stats"></div>
 </div>
-
-<div id="sysinfo" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:1.0em; margin-top:10px;">Loading...</div>
 
 <div id="automation-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
