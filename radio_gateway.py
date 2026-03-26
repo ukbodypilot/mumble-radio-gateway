@@ -289,6 +289,8 @@ class Config:
             # Web Microphone PTT (browser mic → radio TX via WebSocket)
             'ENABLE_WEB_MIC': True,
             'WEB_MIC_VOLUME': 4.0,              # volume multiplier for browser mic audio
+            # Web Monitor (browser mic → mixer via WebSocket, no PTT)
+            'ENABLE_WEB_MONITOR': True,
             # Soundboard — auto-fill empty playback slots with random sound effects
             'ENABLE_SOUNDBOARD': True,
             # Relay Control — Radio Power

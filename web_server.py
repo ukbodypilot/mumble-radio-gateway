@@ -501,6 +501,7 @@ class WebConfigServer:
             'ENABLE_WEB_CONFIG', 'WEB_CONFIG_PORT', 'WEB_CONFIG_PASSWORD',
             'WEB_CONFIG_HTTPS', 'GATEWAY_NAME', 'WEB_THEME',
             'ENABLE_WEB_MIC', 'WEB_MIC_VOLUME',
+            'ENABLE_WEB_MONITOR',
             'ENABLE_CLOUDFLARE_TUNNEL',
         ]),
         ('advanced', 'Advanced / Diagnostics', [
@@ -3313,7 +3314,7 @@ class WebConfigServer:
   .sb-rx {{ background: #2ecc71; }} .sb-tx {{ background: #e74c3c; }}
   .sb-sdr1 {{ background: var(--t-accent); }} .sb-sdr2 {{ background: #e056a0; }}
   .sb-sv {{ background: #f1c40f; }} .sb-cl {{ background: #2ecc71; }}
-  .sb-sp {{ background: var(--t-accent); }} .sb-an {{ background: #e74c3c; }}
+  .sb-sp {{ background: var(--t-accent); }} .sb-an {{ background: #e74c3c; }} .sb-mon {{ background: #9b59b6; }}
   .sb-d75 {{ background: #f39c12; }} .sb-kv4p {{ background: #1abc9c; }}
   #shell-status {{ color: #888; font-size: 0.75em; white-space: nowrap; }}
 </style>
@@ -3606,6 +3607,7 @@ function _updateBars() {{
     if(s.remote_enabled) h += '<div class="sb"><span class="sb-label">'+s.remote_mode+':</span>'+_sbBar(s.remote_level, s.remote_mode==='SV'?'sb-sv':'sb-cl', s.remote_mode==='CL'&&s.cl_ducked)+'</div>';
     if(s.announce_enabled) h += '<div class="sb"><span class="sb-label">AN:</span>'+_sbBar(s.an_level,'sb-an')+'</div>';
     if(s.speaker_enabled) h += '<div class="sb"><span class="sb-label">SP:</span>'+_sbBar(s.speaker_level,'sb-sp')+'</div>';
+    if(s.monitor_enabled) h += '<div class="sb"><span class="sb-label">MON:</span>'+_sbBar(s.monitor_level,'sb-mon')+'</div>';
     document.getElementById('shell-bars').innerHTML = h;
   }}).catch(function(){{}}).finally(function(){{_sbBusy=false}});
 }}

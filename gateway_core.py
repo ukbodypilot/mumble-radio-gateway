@@ -3176,14 +3176,15 @@ class RadioGateway:
                     self.web_mic_source = None
 
             # Initialize web monitor source (browser mic → mixer, no PTT)
-            try:
-                self.web_monitor_source = WebMonitorSource(self.config, self)
-                if self.web_monitor_source.setup_audio():
-                    self.mixer.add_source(self.web_monitor_source)
-                    print("✓ Web monitor source (MONITOR) added to mixer")
-            except Exception as e:
-                print(f"⚠ Warning: Could not initialize web monitor source: {e}")
-                self.web_monitor_source = None
+            if getattr(self.config, 'ENABLE_WEB_MONITOR', True):
+                try:
+                    self.web_monitor_source = WebMonitorSource(self.config, self)
+                    if self.web_monitor_source.setup_audio():
+                        self.mixer.add_source(self.web_monitor_source)
+                        print("✓ Web monitor source (MONITOR) added to mixer")
+                except Exception as e:
+                    print(f"⚠ Warning: Could not initialize web monitor source: {e}")
+                    self.web_monitor_source = None
 
             # Initialize relay controllers
             if getattr(self.config, 'ENABLE_RELAY_RADIO', False):
@@ -5785,6 +5786,8 @@ class RadioGateway:
             'kv4p_enabled': bool(self.kv4p_audio_source),
             'kv4p_level': self.kv4p_audio_source.audio_level if self.kv4p_audio_source else 0,
             'kv4p_muted': getattr(self, 'kv4p_muted', False),
+            'monitor_enabled': bool(self.web_monitor_source),
+            'monitor_level': self.web_monitor_source.audio_level if self.web_monitor_source else 0,
             'files': file_slots,
             'playback_enabled': bool(self.playback_source),
             'tts_enabled': bool(getattr(self, 'tts_engine', None)),
