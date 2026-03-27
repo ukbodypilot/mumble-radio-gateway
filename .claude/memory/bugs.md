@@ -1,5 +1,20 @@
 # Bug History — Radio Gateway
 
+## ADS-B map broken: stray `, false)` in layers.js (2026-03-26)
+**Symptom:** ADS-B map page failed to load — JavaScript syntax error in layers.js.
+**Root cause:** `europe.push(...)` calls in layers.js had stray `, false)` appended, creating invalid JS syntax.
+**Fix:** Removed the stray text from all affected lines in the ADS-B layers.js overlay.
+
+## MON bar float % and stuck level after disconnect (2026-03-26)
+**Symptom:** Monitor audio bar showed floating-point percentage (e.g., "12.345%") and level stayed stuck at last value after WebSocket disconnect.
+**Root cause:** (1) Level value not rounded to integer before display. (2) No cleanup handler to reset level to 0 when monitor WebSocket closes.
+**Fix:** Rounded level to integer. Added disconnect handler that resets monitor level to 0.
+
+## Missing D75CATClient/D75AudioSource imports in web_server.py (2026-03-26)
+**Symptom:** D75 reconnect and other handlers crashed with NameError — classes not imported.
+**Root cause:** `web_server.py` referenced `D75CATClient` and `D75AudioSource` but never imported them (circular import avoidance pattern).
+**Fix:** Added lazy imports (`from cat_client import D75CATClient`) inside the handler functions that need them.
+
 ## Config file damage from replace_all Edit (2026-03-26)
 **Symptom:** After using Edit tool with `replace_all` to update a config value, multiple unrelated config values were changed to the wrong value.
 **Root cause:** `replace_all` replaces ALL occurrences of the old_string in the file. Config values like `False` or numeric values appeared multiple times. Replacing one changed all of them.

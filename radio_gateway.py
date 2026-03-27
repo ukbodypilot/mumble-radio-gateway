@@ -462,6 +462,14 @@ class Config:
             'AUTOMATION_START_TIME': '06:00',      # Daily start time (HH:MM)
             'AUTOMATION_END_TIME': '23:00',        # Daily end time (HH:MM)
             'AUTOMATION_MAX_TASK_DURATION': 600,   # Max seconds per task
+
+            # Gateway Link (duplex audio + command protocol for remote endpoints)
+            'ENABLE_GATEWAY_LINK': False,
+            'LINK_PORT': 9700,
+            'LINK_AUDIO_DUCK': False,
+            'LINK_AUDIO_PRIORITY': 3,
+            'LINK_AUDIO_BOOST': 1.0,
+            'LINK_AUDIO_DISPLAY_GAIN': 1.0,
         }
         
         # Store defaults for type inference (used by WebConfigServer)

@@ -490,6 +490,11 @@ class WebConfigServer:
         ('usbip', 'USB/IP Remote Devices', [
             'ENABLE_USBIP', 'USBIP_SERVER', 'USBIP_DEVICES',
         ]),
+        ('link', 'Gateway Link', [
+            'ENABLE_GATEWAY_LINK', 'LINK_PORT',
+            'LINK_AUDIO_DUCK', 'LINK_AUDIO_PRIORITY',
+            'LINK_AUDIO_BOOST', 'LINK_AUDIO_DISPLAY_GAIN',
+        ]),
         ('vad', 'Voice Activity Detection', [
             'ENABLE_VAD', 'VAD_THRESHOLD', 'VAD_ATTACK', 'VAD_RELEASE',
             'VAD_MIN_DURATION',
@@ -3314,7 +3319,7 @@ class WebConfigServer:
   .sb-rx {{ background: #2ecc71; }} .sb-tx {{ background: #e74c3c; }}
   .sb-sdr1 {{ background: var(--t-accent); }} .sb-sdr2 {{ background: #e056a0; }}
   .sb-sv {{ background: #f1c40f; }} .sb-cl {{ background: #2ecc71; }}
-  .sb-sp {{ background: var(--t-accent); }} .sb-an {{ background: #e74c3c; }} .sb-mon {{ background: #9b59b6; }}
+  .sb-sp {{ background: var(--t-accent); }} .sb-an {{ background: #e74c3c; }} .sb-mon {{ background: #9b59b6; }} .sb-link {{ background: #e67e22; }}
   .sb-d75 {{ background: #f39c12; }} .sb-kv4p {{ background: #1abc9c; }}
   #shell-status {{ color: #888; font-size: 0.75em; white-space: nowrap; }}
 </style>
@@ -3608,6 +3613,7 @@ function _updateBars() {{
     if(s.announce_enabled) h += '<div class="sb"><span class="sb-label">AN:</span>'+_sbBar(s.an_level,'sb-an')+'</div>';
     if(s.speaker_enabled) h += '<div class="sb"><span class="sb-label">SP:</span>'+_sbBar(s.speaker_level,'sb-sp')+'</div>';
     if(s.monitor_enabled) h += '<div class="sb"><span class="sb-label">MON:</span>'+_sbBar(s.monitor_level,'sb-mon')+'</div>';
+    if(s.link_enabled) h += '<div class="sb"><span class="sb-label">LINK:</span>'+_sbBar(s.link_level,'sb-link')+(s.link_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+(s.link_connected?'':' <span style="color:#888;">--</span>')+'</div>';
     document.getElementById('shell-bars').innerHTML = h;
   }}).catch(function(){{}}).finally(function(){{_sbBusy=false}});
 }}

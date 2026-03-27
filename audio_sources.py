@@ -3490,6 +3490,89 @@ class KV4PAudioSource(AudioSource):
         self._was_active = False
 
 
+class LinkAudioSource(AudioSource):
+    """Audio source for Gateway Link — receives duplex audio from a remote endpoint.
+
+    Similar to RemoteAudioSource but fed by GatewayLinkServer's frame dispatch.
+    The server calls push_audio() when AUDIO frames arrive from the endpoint.
+    """
+
+    def __init__(self, config, gateway):
+        super().__init__("LINK", config)
+        self.gateway = gateway
+        self.priority = int(getattr(config, 'LINK_AUDIO_PRIORITY', 3))
+        self.sdr_priority = self.priority
+        self.ptt_control = False
+        self.volume = 1.0
+        self.mix_ratio = 1.0
+        self.duck = getattr(config, 'LINK_AUDIO_DUCK', False)
+        self.audio_boost = float(getattr(config, 'LINK_AUDIO_BOOST', 1.0))
+        self.display_gain = float(getattr(config, 'LINK_AUDIO_DISPLAY_GAIN', 1.0))
+        self.server_connected = False
+        self.muted = False
+        self._chunk_bytes = int(getattr(config, 'AUDIO_RATE', 48000)) * 2 * int(getattr(config, 'AUDIO_CHANNELS', 1)) // 20  # 50ms
+        self._chunk_queue = _queue_mod.deque(maxlen=16)
+        self._sub_buffer = b''
+        self._link_server = None  # Set by gateway_core after init
+
+    def setup_audio(self):
+        return True
+
+    def push_audio(self, pcm):
+        """Called by GatewayLinkServer reader thread when AUDIO frame arrives."""
+        self._chunk_queue.append(pcm)
+
+    def get_audio(self, chunk_size):
+        if not self.enabled or self.muted:
+            self.audio_level = max(0, int(self.audio_level * 0.7))
+            return None, False
+        if not self.server_connected:
+            self.audio_level = max(0, int(self.audio_level * 0.7))
+            return None, False
+
+        cb = self._chunk_bytes
+        while len(self._sub_buffer) < cb:
+            try:
+                blob = self._chunk_queue.popleft()
+                self._sub_buffer += blob
+            except IndexError:
+                self.audio_level = max(0, int(self.audio_level * 0.7))
+                return None, False
+
+        raw = self._sub_buffer[:cb]
+        self._sub_buffer = self._sub_buffer[cb:]
+
+        # Level metering
+        arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
+        raw_level = int(max(0, min(100, (20 * _math_mod.log10(rms / 32767.0) + 60) * (100 / 60)))) if rms > 0 else 0
+        display_level = min(100, int(raw_level * self.display_gain))
+        self.audio_level = display_level if display_level > self.audio_level else int(self.audio_level * 0.7 + display_level * 0.3)
+
+        # Audio boost
+        if self.audio_boost != 1.0:
+            arr = np.clip(arr * self.audio_boost, -32768, 32767).astype(np.int16)
+            raw = arr.tobytes()
+
+        return raw, False
+
+    def write_tx_audio(self, pcm):
+        """Send gateway audio to the remote endpoint."""
+        if self._link_server and self._link_server.connected:
+            try:
+                self._link_server.send_audio(pcm)
+            except Exception:
+                pass
+
+    def is_active(self):
+        return self.enabled and not self.muted and self.server_connected
+
+    def get_status(self):
+        if not self.enabled:
+            return "LINK: disabled"
+        return f"LINK: {'connected' if self.server_connected else 'disconnected'}"
+
+
 class NetworkAnnouncementSource(AudioSource):
     """Listens for an inbound TCP connection on port 9601 and receives PCM
     audio to transmit over the radio.

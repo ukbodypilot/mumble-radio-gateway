@@ -105,7 +105,7 @@ from audio_sources import (
     EchoLinkSource, SDRSource, PipeWireSDRSource,
     RemoteAudioServer, RemoteAudioSource, D75AudioSource,
     KV4PCATClient, KV4PAudioSource, NetworkAnnouncementSource,
-    WebMicSource, WebMonitorSource, StreamOutputSource, AudioMixer, generate_cw_pcm,
+    WebMicSource, WebMonitorSource, LinkAudioSource, StreamOutputSource, AudioMixer, generate_cw_pcm,
 )
 from ptt import RelayController, GPIORelayController
 from cat_client import RadioCATClient, D75CATClient
@@ -1884,6 +1884,9 @@ class RadioGateway:
         self.announce_input_muted = False # Announcement input: mute toggle
         self.web_mic_source = None        # WebMicSource (browser mic → radio TX)
         self.web_monitor_source = None    # WebMonitorSource (room monitor, no PTT)
+        self.link_server = None           # GatewayLinkServer (duplex audio + commands)
+        self.link_audio_source = None     # LinkAudioSource (mixer source for link)
+        self.link_muted = False
         self.aioc_available = False  # Track if AIOC is connected
 
         # SDR rebroadcast — route mixed SDR audio to AIOC radio TX
@@ -3429,6 +3432,43 @@ class RadioGateway:
                     print(f"  KV4P error: {e}")
                     self.kv4p_cat = None
 
+            # Initialize Gateway Link (duplex audio + command protocol)
+            if getattr(self.config, 'ENABLE_GATEWAY_LINK', False):
+                try:
+                    from gateway_link import GatewayLinkServer
+                    link_port = int(getattr(self.config, 'LINK_PORT', 9700))
+                    print(f"Initializing Gateway Link server (port {link_port})...")
+                    self.link_audio_source = LinkAudioSource(self.config, self)
+                    if self.link_audio_source.setup_audio():
+                        self.link_audio_source.enabled = True
+                        self.link_audio_source.muted = self.link_muted
+                        self.mixer.add_source(self.link_audio_source)
+                    self.link_server = GatewayLinkServer(
+                        port=link_port,
+                        on_audio=self.link_audio_source.push_audio,
+                        on_register=lambda info: print(f"  [Link] Endpoint registered: {info.get('name', '?')} ({info.get('plugin', '?')})"),
+                        on_disconnect=lambda: print("  [Link] Endpoint disconnected"),
+                    )
+                    self.link_audio_source._link_server = self.link_server
+                    # Wire connected state
+                    _orig_on_register = self.link_server._on_register
+                    def _link_on_register(info, _orig=_orig_on_register):
+                        _orig(info)
+                        self.link_audio_source.server_connected = True
+                    self.link_server._on_register = _link_on_register
+                    _orig_on_disconnect = self.link_server._on_disconnect
+                    def _link_on_disconnect(_orig=_orig_on_disconnect):
+                        _orig()
+                        self.link_audio_source.server_connected = False
+                    self.link_server._on_disconnect = _link_on_disconnect
+                    self.link_server.start()
+                    print(f"  Gateway Link listening on port {link_port}")
+                except Exception as e:
+                    print(f"  Gateway Link error: {e}")
+                    import traceback; traceback.print_exc()
+                    self.link_server = None
+                    self.link_audio_source = None
+
             # Initialize Mumble Server instances (local mumble-server/murmurd)
             if getattr(self.config, 'ENABLE_MUMBLE_SERVER_1', False):
                 try:
@@ -4904,6 +4944,13 @@ class RadioGateway:
                     except Exception:
                         pass
 
+                # Gateway Link: send mixed audio to remote endpoint
+                if self.link_server and self.link_server.connected:
+                    try:
+                        self.link_server.send_audio(data)
+                    except Exception:
+                        pass
+
                 if not self.mumble:
                     _tr_outcome = 'no_mumble'
                     continue
@@ -5807,6 +5854,11 @@ class RadioGateway:
             'kv4p_muted': getattr(self, 'kv4p_muted', False),
             'monitor_enabled': bool(self.web_monitor_source),
             'monitor_level': self.web_monitor_source.audio_level if self.web_monitor_source else 0,
+            'link_enabled': bool(self.link_server),
+            'link_connected': bool(self.link_server and self.link_server.connected),
+            'link_endpoint_name': self.link_server.endpoint_info.get('name', '') if self.link_server and self.link_server.endpoint_info else '',
+            'link_level': self.link_audio_source.audio_level if self.link_audio_source else 0,
+            'link_muted': getattr(self, 'link_muted', False),
             'files': file_slots,
             'playback_enabled': bool(self.playback_source),
             'tts_enabled': bool(getattr(self, 'tts_engine', None)),
