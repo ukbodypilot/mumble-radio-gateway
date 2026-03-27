@@ -1790,8 +1790,6 @@ class WebConfigServer:
                                 'remote':   ('remote_audio_muted', 'remote_audio_source'),
                                 'announce': ('announce_input_muted', 'announce_input_source'),
                                 'speaker':  ('speaker_muted', None),
-                                'link_rx':  ('link_rx_muted', None),
-                                'link_tx':  ('link_tx_muted', None),
                             }
                             if source == 'global':
                                 current = gw.tx_muted and gw.rx_muted
@@ -1820,6 +1818,24 @@ class WebConfigServer:
                                     if src_obj:
                                         src_obj.muted = want
                                 result = {'ok': True, 'source': source, 'muted': want}
+                            elif source.startswith('link_rx:') or source.startswith('link_tx:'):
+                                parts = source.split(':', 1)
+                                direction = parts[0]  # 'link_rx' or 'link_tx'
+                                ep_name = parts[1] if len(parts) > 1 else ''
+                                if not ep_name:
+                                    result = {'ok': False, 'error': 'missing endpoint name'}
+                                else:
+                                    settings = gw.link_endpoint_settings.setdefault(ep_name, {})
+                                    mute_key = 'rx_muted' if direction == 'link_rx' else 'tx_muted'
+                                    current = settings.get(mute_key, False)
+                                    want = not current if action == 'toggle' else (action == 'mute')
+                                    settings[mute_key] = want
+                                    if direction == 'link_rx':
+                                        src = gw.link_endpoints.get(ep_name)
+                                        if src:
+                                            src.muted = want
+                                    gw._save_link_settings()
+                                    result = {'ok': True, 'muted': want}
                             else:
                                 result = {'ok': False, 'error': f'unknown source: {source}'}
 
@@ -2453,24 +2469,27 @@ class WebConfigServer:
                     try:
                         data = json_mod.loads(body)
                         gw = parent.gateway
-                        if gw and gw.link_server and gw.link_server.connected:
-                            # Clear last status before sending so we can detect the new one
+                        endpoint_name = data.get('endpoint', '')
+                        if not endpoint_name:
+                            result = {'ok': False, 'error': 'missing endpoint name'}
+                        elif not gw or not gw.link_server:
+                            result = {'ok': False, 'error': 'link server not running'}
+                        elif endpoint_name not in gw.link_endpoints:
+                            result = {'ok': False, 'error': f'endpoint not connected: {endpoint_name}'}
+                        else:
                             cmd_name = data.get('cmd', '')
                             if cmd_name == 'status':
-                                gw._link_last_status = {}
-                            gw.link_server.send_command(data)
-                            # Wait briefly for ACK on status commands
+                                gw._link_last_status[endpoint_name] = {}
+                            gw.link_server.send_command_to(endpoint_name, data)
                             if cmd_name == 'status':
                                 import time as _time
                                 for _ in range(10):  # 1 second max
                                     _time.sleep(0.1)
-                                    if gw._link_last_status:
+                                    if gw._link_last_status.get(endpoint_name):
                                         break
-                                result = {'ok': True, 'status': gw._link_last_status}
+                                result = {'ok': True, 'status': gw._link_last_status.get(endpoint_name, {})}
                             else:
                                 result = {'ok': True, 'sent': data}
-                        else:
-                            result = {'ok': False, 'error': 'link not connected'}
                     except Exception as e:
                         result = {'ok': False, 'error': str(e)}
                     try:
@@ -3663,7 +3682,7 @@ function _updateBars() {{
     if(s.announce_enabled) h += '<div class="sb"><span class="sb-label">AN:</span>'+_sbBar(s.an_level,'sb-an')+'</div>';
     if(s.speaker_enabled) h += '<div class="sb"><span class="sb-label">SP:</span>'+_sbBar(s.speaker_level,'sb-sp')+'</div>';
     if(s.monitor_enabled) h += '<div class="sb"><span class="sb-label">MON:</span>'+_sbBar(s.monitor_level,'sb-mon')+'</div>';
-    if(s.link_enabled) h += '<div class="sb"><span class="sb-label">LINK:</span>'+_sbBar(s.link_level,'sb-link')+(s.link_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+(s.link_connected?'':' <span style="color:#888;">--</span>')+'</div>';
+    if(s.link_enabled && s.link_endpoints) {{ for(var i=0; i<s.link_endpoints.length; i++) {{ var le = s.link_endpoints[i]; h += '<div class="sb"><span class="sb-label">'+le.name+':</span>'+_sbBar(le.level,'sb-link')+(le.rx_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+'</div>'; }} }}
     document.getElementById('shell-bars').innerHTML = h;
   }}).catch(function(){{}}).finally(function(){{_sbBusy=false}});
 }}
@@ -6687,7 +6706,6 @@ pollTimer = setInterval(pollStatus, 1000);
     <span id="link-status-badge" style="font-weight:bold;"></span>
   </div>
   <div class="st-row" id="link-info"></div>
-  <div class="st-row" id="link-endpoint-status" style="margin-top:4px; border-top:1px solid var(--t-border); padding-top:6px; display:none;"></div>
 </div>
 
 <div id="usbip-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
@@ -6741,11 +6759,9 @@ function showToast(msg, level) {
 }
 
 var _statusBusy = false;
-var _statusPollCount = 9;
 function updateStatus() {
   if (_statusBusy) return;
   _statusBusy = true;
-  _statusPollCount++;
   var _ac = new AbortController(); setTimeout(function(){_ac.abort();}, 10000);
   fetch('/status', {signal:_ac.signal}).then(r=>r.json()).then(function(s) {
     _lostCount = 0;
@@ -6824,39 +6840,35 @@ function updateStatus() {
     // Gateway Link panel
     var linkPanel = document.getElementById('link-panel');
     if(s.link_enabled) {
-      linkPanel.style.display = '';
-      var lConn = s.link_connected;
-      document.getElementById('link-status-badge').innerHTML = '<span style="color:'+(lConn?'#2ecc71':'#e74c3c')+'">'+(lConn?'Connected':'Disconnected')+'</span>';
-      var lh = '';
-      if(lConn && s.link_endpoint_name) {
-        lh += '<div class="st-item"><span class="st-label">Endpoint:</span><span class="st-val white">'+s.link_endpoint_name+'</span></div>';
-        if(s.link_endpoint_plugin) lh += '<div class="st-item"><span class="st-label">Plugin:</span><span class="st-val cyan">'+s.link_endpoint_plugin+'</span></div>';
-      }
-      document.getElementById('link-info').innerHTML = lh;
-      // Show endpoint status fields from last polled status
-      var lsDiv = document.getElementById('link-endpoint-status');
-      if(lsDiv) {
-        var es = s.link_endpoint_status || {};
-        var esKeys = Object.keys(es);
-        if(lConn && esKeys.length > 0) {
-          lsDiv.style.display = '';
-          var esh = '';
-          for(var ei=0; ei<esKeys.length; ei++) {
-            var ek = esKeys[ei];
-            var ev = es[ek];
-            var eCol = (ev===true)?'green':(ev===false)?'red':'white';
-            var eDot = (ev===true)?'<span style="color:#2ecc71">&#9679;</span> ':(ev===false)?'<span style="color:#e74c3c">&#9679;</span> ':'';
-            var eTxt = (ev===true)?'Yes':(ev===false)?'No':String(ev);
-            esh += '<div class="st-item"><span class="st-label">'+ek+':</span>'+eDot+'<span class="st-val '+eCol+'">'+eTxt+'</span></div>';
+      var eps = s.link_endpoints || [];
+      if(eps.length > 0) {
+        linkPanel.style.display = '';
+        var lh = '';
+        for(var i=0; i<eps.length; i++) {
+          var le = eps[i];
+          if(i > 0) lh += '<div style="border-top:1px solid var(--t-border); margin-top:8px; padding-top:8px;"></div>';
+          lh += '<div style="display:flex; justify-content:space-between; margin-bottom:4px;">';
+          lh += '<span class="st-val white">'+le.name+'</span>';
+          lh += '<span class="st-val cyan">'+le.plugin+'</span>';
+          lh += '</div>';
+          var est = le.endpoint_status || {};
+          var eh = '';
+          for(var k in est) {
+            if(est.hasOwnProperty(k)) {
+              var v = est[k];
+              var col = (v===true)?'green':(v===false)?'red':'white';
+              var txt = (v===true)?'Yes':(v===false)?'No':String(v);
+              eh += '<div class="st-item"><span class="st-label">'+k+':</span><span class="st-val '+col+'">'+txt+'</span></div>';
+            }
           }
-          lsDiv.innerHTML = esh;
-        } else {
-          lsDiv.style.display = 'none';
+          if(eh) lh += '<div class="st-row">'+eh+'</div>';
         }
-      }
-      // Periodically poll endpoint status to keep it fresh (every 10s)
-      if(lConn && _statusPollCount % 10 === 0) {
-        fetch('/linkcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({cmd:'status'})}).catch(function(){});
+        document.getElementById('link-info').innerHTML = lh;
+        document.getElementById('link-status-badge').innerHTML = '<span style="color:#2ecc71">'+eps.length+' connected</span>';
+      } else {
+        linkPanel.style.display = '';
+        document.getElementById('link-info').innerHTML = '';
+        document.getElementById('link-status-badge').innerHTML = '<span style="color:#888">No endpoints</span>';
       }
     } else {
       linkPanel.style.display = 'none';
@@ -7486,39 +7498,7 @@ updateTelegram();
     <button onclick="sendKey('d')" id="btn-d">Duck Toggle</button>
     <button onclick="sendKey('b')" id="btn-b">Rebroadcast</button>
   </div>
-  <div class="ctrl-group" id="link-ctrl-group" style="min-width:280px; display:none;">
-    <h3>Gateway Link</h3>
-    <div id="link-ctrl-status" style="margin-bottom:8px; font-size:0.85em; color:#888;">Disconnected</div>
-    <div style="display:flex; gap:10px; align-items:flex-start;">
-        <div style="display:flex; flex-direction:column; gap:4px; align-items:center;">
-            <button onclick="linkPttToggle()" id="link-ptt-btn" style="width:80px; height:50px; font-size:1.1em;">PTT</button>
-        </div>
-        <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
-            <div style="display:flex; align-items:center; gap:6px;">
-                <span style="color:#888; width:2em; text-align:right; font-size:0.8em;">RX</span>
-                <div style="flex:1; height:12px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden;">
-                    <div id="link-rx-bar" style="height:100%; width:0%; background:#2ecc71; border-radius:2px;"></div>
-                </div>
-            </div>
-            <div style="display:flex; align-items:center; gap:6px;">
-                <span style="color:#888; width:2em; text-align:right; font-size:0.8em;">TX</span>
-                <div style="flex:1; height:12px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden;">
-                    <div id="link-tx-bar" style="height:100%; width:0%; background:#e74c3c; border-radius:2px;"></div>
-                </div>
-            </div>
-            <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
-                <button onclick="linkMuteToggle('rx')" id="link-rx-mute" style="width:3em; padding:4px; font-size:0.75em; border:1px solid var(--t-btn-border); border-radius:3px; background:var(--t-btn); color:#e0e0e0; cursor:pointer;">Mute</button>
-                <input id="link-rx-gain" type="range" min="-10" max="10" step="1" value="0" style="flex:1; accent-color:var(--t-accent);" oninput="linkGain('rx_gain',this.value)">
-                <span id="link-rx-gain-val" style="color:#888; font-size:0.8em; width:3.5em;">0 dB</span>
-            </div>
-            <div style="display:flex; align-items:center; gap:6px;">
-                <button onclick="linkMuteToggle('tx')" id="link-tx-mute" style="width:3em; padding:4px; font-size:0.75em; border:1px solid var(--t-btn-border); border-radius:3px; background:var(--t-btn); color:#e0e0e0; cursor:pointer;">Mute</button>
-                <input id="link-tx-gain" type="range" min="-10" max="10" step="1" value="0" style="flex:1; accent-color:var(--t-accent);" oninput="linkGain('tx_gain',this.value)">
-                <span id="link-tx-gain-val" style="color:#888; font-size:0.8em; width:3.5em;">0 dB</span>
-            </div>
-        </div>
-    </div>
-  </div>
+  <div id="link-ctrl-container"></div>
 </div>
 
 <div id="playback-section" style="margin-top:10px; display:flex; flex-wrap:wrap; gap:10px; align-items:flex-start;">
@@ -7713,23 +7693,24 @@ function darkiceCmd(cmd) {
 function openTmux() {
   fetch('/open_tmux', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
 }
-var _linkPttState = false;
-function linkCmd(cmd) {
+window._lastLinkEndpoints = [];
+function linkCmd(endpoint, cmd) {
+  cmd.endpoint = endpoint;
   return fetch('/linkcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cmd)})
     .then(function(r){return r.json()}).catch(function(){return {};});
 }
-function linkPttToggle() {
-  _linkPttState = !_linkPttState;
-  linkCmd({cmd:'ptt', state:_linkPttState});
+function linkPttToggle(endpoint) {
+  var eps = window._lastLinkEndpoints || [];
+  var current = false;
+  for(var i=0; i<eps.length; i++) { if(eps[i].name === endpoint) { current = eps[i].ptt_active; break; } }
+  linkCmd(endpoint, {cmd:'ptt', state:!current});
 }
-function linkGain(cmd, db) {
-  var label = cmd === 'rx_gain' ? 'link-rx-gain-val' : 'link-tx-gain-val';
-  document.getElementById(label).textContent = db + ' dB';
-  linkCmd({cmd: cmd, db: parseInt(db)});
+function linkGain(endpoint, cmd, db) {
+  linkCmd(endpoint, {cmd: cmd, db: parseInt(db)});
 }
-function linkMuteToggle(dir) {
+function linkMuteToggle(endpoint, dir) {
   fetch('/mixer', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'toggle', source:'link_'+dir})}).catch(function(){});
+    body:JSON.stringify({action:'toggle', source:'link_'+dir+':'+endpoint})}).catch(function(){});
 }
 function sendAIText() {
   var text = document.getElementById('ai-text').value.trim();
@@ -8019,54 +8000,54 @@ function updateControls() {
       setBtn('btn-bc-stop', !s.darkice_running && s.streaming_enabled, 'muted');
     }
     // Gateway Link controls
-    var linkGrp = document.getElementById('link-ctrl-group');
-    if(linkGrp) {
-      if(s.link_enabled && s.link_connected) {
-        linkGrp.style.display = '';
-        document.getElementById('link-ctrl-status').textContent = s.link_endpoint_name + ' (' + (s.link_endpoint_plugin||'?') + ')';
-        // PTT button state
-        var pttBtn = document.getElementById('link-ptt-btn');
-        if(pttBtn) {
-          if(s.link_ptt_active) {
-            pttBtn.style.background = 'var(--t-btn-active)';
-            pttBtn.style.borderColor = 'var(--t-accent)';
-            pttBtn.style.color = 'var(--t-accent)';
-            pttBtn.textContent = 'PTT ON';
-          } else {
-            pttBtn.style.background = 'var(--t-btn)';
-            pttBtn.style.borderColor = 'var(--t-btn-border)';
-            pttBtn.style.color = '#e0e0e0';
-            pttBtn.textContent = 'PTT';
+    var linkCont = document.getElementById('link-ctrl-container');
+    if(linkCont && s.link_enabled) {
+      var eps = s.link_endpoints || [];
+      window._lastLinkEndpoints = eps;
+      if(eps.length > 0) {
+        var ch = '';
+        for(var ei=0; ei<eps.length; ei++) {
+          var le = eps[ei];
+          var eid = le.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+          ch += '<div class="ctrl-group" style="min-width:280px;">';
+          ch += '<h3>Link: '+le.name+'</h3>';
+          ch += '<div style="font-size:0.85em; color:#888; margin-bottom:8px;">'+le.plugin+' '+(le.connected?'<span style="color:#2ecc71;">connected</span>':'<span style="color:#e74c3c;">offline</span>')+'</div>';
+          ch += '<div style="display:flex; gap:10px; align-items:flex-start;">';
+          if(le.capabilities && le.capabilities.ptt) {
+            var pttStyle = le.ptt_active ? 'background:var(--t-btn-active);border-color:var(--t-accent);color:var(--t-accent);' : 'background:var(--t-btn);border-color:var(--t-btn-border);color:#e0e0e0;';
+            ch += '<button onclick="linkPttToggle(\\\''+le.name.replace(/'/g, "\\\\'")+'\\\')" style="width:80px; height:50px; font-size:1.1em; border:1px solid; border-radius:4px; cursor:pointer; '+pttStyle+'">'+(le.ptt_active?'PTT ON':'PTT')+'</button>';
           }
+          ch += '<div style="flex:1; display:flex; flex-direction:column; gap:4px;">';
+          ch += '<div style="display:flex; align-items:center; gap:6px;">';
+          ch += '<span style="color:#888; width:2em; text-align:right; font-size:0.8em;">RX</span>';
+          ch += '<div style="flex:1; height:12px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden;"><div style="height:100%; width:'+(le.level||0)+'%; background:#2ecc71; border-radius:2px;"></div></div>';
+          ch += '</div>';
+          ch += '<div style="display:flex; align-items:center; gap:6px;">';
+          ch += '<span style="color:#888; width:2em; text-align:right; font-size:0.8em;">TX</span>';
+          ch += '<div style="flex:1; height:12px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden;"><div style="height:100%; width:'+(le.tx_level||0)+'%; background:#e74c3c; border-radius:2px;"></div></div>';
+          ch += '</div>';
+          var rxmStyle = le.rx_muted ? 'background:#5c1a1a;border-color:#c0392b;color:#ff6b6b;' : 'background:var(--t-btn);border-color:var(--t-btn-border);color:#e0e0e0;';
+          ch += '<div style="display:flex; align-items:center; gap:6px; margin-top:4px;">';
+          ch += '<button onclick="linkMuteToggle(\\\''+le.name.replace(/'/g, "\\\\'")+'\\\',\\\'rx\\\')" style="width:3em; padding:4px; font-size:0.75em; border:1px solid; border-radius:3px; cursor:pointer; '+rxmStyle+'">Mute</button>';
+          ch += '<input type="range" min="-10" max="10" step="1" value="'+(le.endpoint_status&&le.endpoint_status.rx_gain_db!==undefined?le.endpoint_status.rx_gain_db:0)+'" style="flex:1; accent-color:var(--t-accent);" oninput="linkGain(\\\''+le.name.replace(/'/g, "\\\\'")+'\\\',\\\'rx_gain\\\',this.value)">';
+          ch += '<span style="color:#888; font-size:0.8em; width:3.5em;">'+(le.endpoint_status&&le.endpoint_status.rx_gain_db!==undefined?le.endpoint_status.rx_gain_db:0)+' dB</span>';
+          ch += '</div>';
+          var txmStyle = le.tx_muted ? 'background:#5c1a1a;border-color:#c0392b;color:#ff6b6b;' : 'background:var(--t-btn);border-color:var(--t-btn-border);color:#e0e0e0;';
+          ch += '<div style="display:flex; align-items:center; gap:6px;">';
+          ch += '<button onclick="linkMuteToggle(\\\''+le.name.replace(/'/g, "\\\\'")+'\\\',\\\'tx\\\')" style="width:3em; padding:4px; font-size:0.75em; border:1px solid; border-radius:3px; cursor:pointer; '+txmStyle+'">Mute</button>';
+          ch += '<input type="range" min="-10" max="10" step="1" value="'+(le.endpoint_status&&le.endpoint_status.tx_gain_db!==undefined?le.endpoint_status.tx_gain_db:0)+'" style="flex:1; accent-color:var(--t-accent);" oninput="linkGain(\\\''+le.name.replace(/'/g, "\\\\'")+'\\\',\\\'tx_gain\\\',this.value)">';
+          ch += '<span style="color:#888; font-size:0.8em; width:3.5em;">'+(le.endpoint_status&&le.endpoint_status.tx_gain_db!==undefined?le.endpoint_status.tx_gain_db:0)+' dB</span>';
+          ch += '</div>';
+          ch += '</div></div></div>';
         }
-        // Audio level bars
-        document.getElementById('link-rx-bar').style.width = (s.link_level||0) + '%';
-        document.getElementById('link-tx-bar').style.width = (s.link_tx_level||0) + '%';
-        // Gain sliders
-        if(s.link_endpoint_status) {
-          var ls = s.link_endpoint_status;
-          var rxg = document.getElementById('link-rx-gain');
-          var txg = document.getElementById('link-tx-gain');
-          if(rxg && !rxg.matches(':active') && ls.rx_gain_db !== undefined) {
-            rxg.value = ls.rx_gain_db;
-            document.getElementById('link-rx-gain-val').textContent = ls.rx_gain_db + ' dB';
-          }
-          if(txg && !txg.matches(':active') && ls.tx_gain_db !== undefined) {
-            txg.value = ls.tx_gain_db;
-            document.getElementById('link-tx-gain-val').textContent = ls.tx_gain_db + ' dB';
-          }
-        }
-        // Mute buttons
-        var rxm = document.getElementById('link-rx-mute');
-        var txm = document.getElementById('link-tx-mute');
-        if(rxm) { var rm = s.link_rx_muted; rxm.style.background = rm ? '#5c1a1a' : 'var(--t-btn)'; rxm.style.borderColor = rm ? '#c0392b' : 'var(--t-btn-border)'; rxm.style.color = rm ? '#ff6b6b' : '#e0e0e0'; }
-        if(txm) { var tm = s.link_tx_muted; txm.style.background = tm ? '#5c1a1a' : 'var(--t-btn)'; txm.style.borderColor = tm ? '#c0392b' : 'var(--t-btn-border)'; txm.style.color = tm ? '#ff6b6b' : '#e0e0e0'; }
-      } else if(s.link_enabled) {
-        linkGrp.style.display = '';
-        document.getElementById('link-ctrl-status').textContent = 'Disconnected';
+        linkCont.innerHTML = ch;
+        linkCont.style.display = '';
       } else {
-        linkGrp.style.display = 'none';
+        linkCont.innerHTML = '';
+        linkCont.style.display = s.link_enabled ? '' : 'none';
       }
+    } else if(linkCont) {
+      linkCont.style.display = 'none';
     }
   }).catch(function(){}).finally(function(){ _ctrlBusy=false; });
 }

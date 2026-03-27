@@ -1884,11 +1884,13 @@ class RadioGateway:
         self.announce_input_muted = False # Announcement input: mute toggle
         self.web_mic_source = None        # WebMicSource (browser mic → radio TX)
         self.web_monitor_source = None    # WebMonitorSource (room monitor, no PTT)
-        self.link_server = None           # GatewayLinkServer (duplex audio + commands)
-        self.link_audio_source = None     # LinkAudioSource (mixer source for link)
-        self.link_muted = False
-        self.link_rx_muted = getattr(config, 'LINK_RX_MUTED', False)   # Mute endpoint→gateway audio
-        self.link_tx_muted = getattr(config, 'LINK_TX_MUTED', False)   # Mute gateway→endpoint audio
+        self.link_server = None           # GatewayLinkServer (multi-endpoint)
+        self.link_endpoints = {}          # {name: LinkAudioSource}
+        self.link_endpoint_settings = {}  # {name: {rx_muted, tx_muted}} — persisted
+        self._link_ptt_active = {}        # {name: bool}
+        self._link_last_status = {}       # {name: dict}
+        self._link_tx_levels = {}         # {name: int}
+        self._link_settings_path = os.path.expanduser('~/.config/radio-gateway/link_endpoints.json')
         self.aioc_available = False  # Track if AIOC is connected
 
         # SDR rebroadcast — route mixed SDR audio to AIOC radio TX
@@ -2245,6 +2247,25 @@ class RadioGateway:
         self.gate_envelope = self.radio_processor.gate_envelope
         self.highpass_state = self.radio_processor.highpass_state
         return result
+
+    def _load_link_settings(self):
+        """Load saved per-endpoint settings (rx_muted, tx_muted) from JSON."""
+        try:
+            with open(self._link_settings_path) as f:
+                import json as _json
+                self.link_endpoint_settings = _json.load(f)
+        except (FileNotFoundError, ValueError):
+            self.link_endpoint_settings = {}
+
+    def _save_link_settings(self):
+        """Persist per-endpoint settings to JSON."""
+        import json as _json
+        try:
+            os.makedirs(os.path.dirname(self._link_settings_path), exist_ok=True)
+            with open(self._link_settings_path, 'w') as f:
+                _json.dump(self.link_endpoint_settings, f, indent=2)
+        except Exception as e:
+            print(f"  [Link] Failed to save settings: {e}")
 
     def process_audio_for_sdr(self, pcm_data, source_name='SDR1'):
         """Apply SDR-specific audio processing chain.
@@ -3440,36 +3461,54 @@ class RadioGateway:
                     from gateway_link import GatewayLinkServer
                     link_port = int(getattr(self.config, 'LINK_PORT', 9700))
                     print(f"Initializing Gateway Link server (port {link_port})...")
-                    self.link_audio_source = LinkAudioSource(self.config, self)
-                    if self.link_audio_source.setup_audio():
-                        self.link_audio_source.enabled = True
-                        self.link_audio_source.muted = self.link_muted
-                        self.mixer.add_source(self.link_audio_source)
-                    def _link_on_ack(ack):
-                        # Track PTT state from endpoint ACKs
+                    self._load_link_settings()
+
+                    def _link_on_register(info):
+                        """Called when an endpoint registers — create its audio source."""
+                        name = info.get('name', '')
+                        if not name:
+                            return None
+                        src = LinkAudioSource(self.config, self, endpoint_name=name)
+                        src.setup_audio()
+                        src.enabled = True
+                        # Restore saved settings
+                        saved = self.link_endpoint_settings.get(name, {})
+                        src.muted = saved.get('rx_muted', False)
+                        src.server_connected = True
+                        self.mixer.add_source(src)
+                        self.link_endpoints[name] = src
+                        self._link_ptt_active[name] = False
+                        self._link_last_status[name] = {}
+                        self._link_tx_levels[name] = 0
+                        print(f"  [Link] Endpoint registered: {name} ({info.get('plugin', '?')})")
+                        return src  # server stores src.push_audio as audio callback
+
+                    def _link_on_disconnect(name):
+                        """Called when an endpoint disconnects — remove its audio source."""
+                        src = self.link_endpoints.pop(name, None)
+                        if src:
+                            src.server_connected = False
+                            self.mixer.remove_source(src.name)
+                        self._link_ptt_active.pop(name, None)
+                        self._link_last_status.pop(name, None)
+                        self._link_tx_levels.pop(name, None)
+                        print(f"  [Link] Endpoint disconnected: {name}")
+
+                    def _link_on_ack(name, ack):
+                        """Called when an endpoint sends an ACK."""
                         cmd = ack.get('cmd', '')
                         result = ack.get('result', {})
                         if cmd == 'ptt' and isinstance(result, dict):
-                            self._link_ptt_active = result.get('ptt', False)
+                            self._link_ptt_active[name] = result.get('ptt', False)
                         elif cmd == 'status' and isinstance(result, dict):
-                            self._link_last_status = result.get('status', result)
-                    self._link_ptt_active = False
-                    self._link_last_status = {}
-                    _las = self.link_audio_source
-                    def _link_on_register(info):
-                        print(f"  [Link] Endpoint registered: {info.get('name', '?')} ({info.get('plugin', '?')})")
-                        _las.server_connected = True
-                    def _link_on_disconnect():
-                        print("  [Link] Endpoint disconnected")
-                        _las.server_connected = False
+                            self._link_last_status[name] = result.get('status', result)
+
                     self.link_server = GatewayLinkServer(
                         port=link_port,
-                        on_audio=self.link_audio_source.push_audio,
                         on_register=_link_on_register,
                         on_disconnect=_link_on_disconnect,
                         on_ack=_link_on_ack,
                     )
-                    self.link_audio_source._link_server = self.link_server
                     self.link_server.start()
                     print(f"  Gateway Link listening on port {link_port}")
                 except Exception as e:
@@ -4953,21 +4992,28 @@ class RadioGateway:
                     except Exception:
                         pass
 
-                # Gateway Link: send mixed audio to remote endpoint
-                if self.link_server and self.link_server.connected and not self.link_tx_muted:
-                    try:
-                        self.link_server.send_audio(data)
-                        # Meter TX level for dashboard (VAD gated)
-                        _la = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-                        _lr = float(np.sqrt(np.mean(_la * _la))) if len(_la) > 0 else 0.0
-                        _ldb = 20 * _math_mod.log10(_lr / 32767.0) if _lr > 0 else -100.0
-                        if _ldb > getattr(self.config, 'VAD_THRESHOLD', -40):
-                            _ll = int(max(0, min(100, (_ldb + 60) * (100 / 60))))
-                            self._link_tx_level = _ll if _ll > getattr(self, '_link_tx_level', 0) else int(getattr(self, '_link_tx_level', 0) * 0.7 + _ll * 0.3)
-                        else:
-                            self._link_tx_level = max(0, int(getattr(self, '_link_tx_level', 0) * 0.7))
-                    except Exception:
-                        pass
+                # Gateway Link: send mixed audio to all connected endpoints
+                if self.link_server and self.link_endpoints:
+                    # Compute TX level once for all endpoints
+                    _la = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                    _lr = float(np.sqrt(np.mean(_la * _la))) if len(_la) > 0 else 0.0
+                    _ldb = 20 * _math_mod.log10(_lr / 32767.0) if _lr > 0 else -100.0
+                    _vad_t = getattr(self.config, 'VAD_THRESHOLD', -40)
+                    for _ep_name in list(self.link_endpoints.keys()):
+                        _ep_settings = self.link_endpoint_settings.get(_ep_name, {})
+                        if _ep_settings.get('tx_muted', False):
+                            self._link_tx_levels[_ep_name] = max(0, int(self._link_tx_levels.get(_ep_name, 0) * 0.7))
+                            continue
+                        try:
+                            self.link_server.send_audio_to(_ep_name, data)
+                            if _ldb > _vad_t:
+                                _ll = int(max(0, min(100, (_ldb + 60) * (100 / 60))))
+                                _prev = self._link_tx_levels.get(_ep_name, 0)
+                                self._link_tx_levels[_ep_name] = _ll if _ll > _prev else int(_prev * 0.7 + _ll * 0.3)
+                            else:
+                                self._link_tx_levels[_ep_name] = max(0, int(self._link_tx_levels.get(_ep_name, 0) * 0.7))
+                        except Exception:
+                            pass
 
                 if not self.mumble:
                     _tr_outcome = 'no_mumble'
@@ -5873,17 +5919,21 @@ class RadioGateway:
             'monitor_enabled': bool(self.web_monitor_source),
             'monitor_level': self.web_monitor_source.audio_level if self.web_monitor_source else 0,
             'link_enabled': bool(self.link_server),
-            'link_connected': bool(self.link_server and self.link_server.connected),
-            'link_endpoint_name': self.link_server.endpoint_info.get('name', '') if self.link_server and self.link_server.endpoint_info else '',
-            'link_endpoint_plugin': self.link_server.endpoint_info.get('plugin', '') if self.link_server and self.link_server.endpoint_info else '',
-            'link_capabilities': self.link_server.endpoint_info.get('capabilities', {}) if self.link_server and self.link_server.endpoint_info else {},
-            'link_level': self.link_audio_source.audio_level if self.link_audio_source else 0,
-            'link_muted': getattr(self, 'link_muted', False),
-            'link_rx_muted': getattr(self, 'link_rx_muted', False),
-            'link_tx_muted': getattr(self, 'link_tx_muted', False),
-            'link_ptt_active': getattr(self, '_link_ptt_active', False),
-            'link_tx_level': getattr(self, '_link_tx_level', 0),
-            'link_endpoint_status': getattr(self, '_link_last_status', {}),
+            'link_endpoints': [
+                {
+                    'name': name,
+                    'connected': True,
+                    'plugin': (self.link_server.get_endpoint_info(name) or {}).get('plugin', '') if self.link_server else '',
+                    'capabilities': (self.link_server.get_endpoint_info(name) or {}).get('capabilities', {}) if self.link_server else {},
+                    'level': src.audio_level,
+                    'rx_muted': src.muted,
+                    'tx_muted': self.link_endpoint_settings.get(name, {}).get('tx_muted', False),
+                    'ptt_active': self._link_ptt_active.get(name, False),
+                    'tx_level': self._link_tx_levels.get(name, 0),
+                    'endpoint_status': self._link_last_status.get(name, {}),
+                }
+                for name, src in list(self.link_endpoints.items())
+            ],
             'files': file_slots,
             'playback_enabled': bool(self.playback_source),
             'tts_enabled': bool(getattr(self, 'tts_engine', None)),

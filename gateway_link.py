@@ -107,37 +107,55 @@ class GatewayLinkProtocol:
 # Server (master gateway side)
 # ---------------------------------------------------------------------------
 
+class _EndpointConn:
+    """State for one connected endpoint."""
+    __slots__ = ('name', 'sock', 'send_lock', 'reader_thread', 'info',
+                 'capabilities', 'last_heartbeat', 'audio_sink')
+
+    def __init__(self, name, sock):
+        self.name = name
+        self.sock = sock
+        self.send_lock = threading.Lock()
+        self.reader_thread = None
+        self.info = {}
+        self.capabilities = {}
+        self.last_heartbeat = time.monotonic()
+        self.audio_sink = None  # set by on_register callback return value
+
+
 class GatewayLinkServer:
-    """Listens for a single endpoint connection and exchanges framed messages.
+    """Listens for multiple simultaneous endpoint connections and exchanges
+    framed messages.
+
+    Each endpoint is identified by a unique name from its REGISTER message.
+    Duplicate names are rejected.
 
     Callbacks (all optional, called from reader thread):
-        on_audio(pcm_bytes)
-        on_command(cmd_dict)
-        on_register(info_dict)
-        on_disconnect()
+        on_register(info_dict) -> object with .push_audio(pcm) method (or None)
+        on_command(name, cmd_dict)
+        on_disconnect(name)
+        on_ack(name, ack_dict)
     """
 
-    def __init__(self, port=9700, on_audio=None, on_command=None,
+    def __init__(self, port=9700, on_command=None,
                  on_register=None, on_disconnect=None, on_ack=None):
         self._port = port
-        self._on_audio = on_audio
         self._on_command = on_command
         self._on_register = on_register
         self._on_disconnect = on_disconnect
         self._on_ack = on_ack
 
         self._server_sock = None
-        self._client_sock = None
-        self._send_lock = threading.Lock()
         self._stop = threading.Event()
-        self._endpoint_info = None
-        self._endpoint_capabilities = {}
         self._start_time = time.monotonic()
-        self._last_endpoint_heartbeat = 0  # monotonic time of last received heartbeat
         self._DEAD_PEER_TIMEOUT = 15.0     # seconds without heartbeat before declaring dead
+        self._REGISTER_TIMEOUT = 10.0      # seconds to wait for REGISTER after connect
+
+        # dict keyed by endpoint name -> _EndpointConn
+        self._endpoints = {}
+        self._endpoints_lock = threading.RLock()
 
         self._accept_thread = None
-        self._reader_thread = None
         self._heartbeat_thread = None
 
     # -- public API ---------------------------------------------------------
@@ -148,7 +166,7 @@ class GatewayLinkServer:
         self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server_sock.settimeout(1.0)
         self._server_sock.bind(('', self._port))
-        self._server_sock.listen(1)
+        self._server_sock.listen(8)
         print(f"  [Link] Server listening on port {self._port}")
 
         self._stop.clear()
@@ -163,7 +181,11 @@ class GatewayLinkServer:
     def stop(self):
         """Shut down server, close all connections."""
         self._stop.set()
-        self._close_client()
+        # Close all endpoint connections
+        with self._endpoints_lock:
+            names = list(self._endpoints.keys())
+        for name in names:
+            self._remove_endpoint(name)
         if self._server_sock:
             try:
                 self._server_sock.close()
@@ -176,59 +198,70 @@ class GatewayLinkServer:
             self._heartbeat_thread.join(timeout=3)
         print("  [Link] Server stopped")
 
-    def send_audio(self, pcm):
-        """Send PCM audio to connected endpoint (thread-safe)."""
-        self._send(GatewayLinkProtocol.AUDIO, pcm)
+    def send_audio_to_all(self, pcm, exclude=None):
+        """Send PCM audio to all connected endpoints (thread-safe).
 
-    def send_command(self, cmd):
-        """Send a command dict to the endpoint."""
-        self._send(GatewayLinkProtocol.COMMAND,
-                   json.dumps(cmd).encode('utf-8'))
+        *exclude* is an optional set of endpoint names to skip.
+        """
+        with self._endpoints_lock:
+            snapshot = list(self._endpoints.values())
+        for ep in snapshot:
+            if exclude and ep.name in exclude:
+                continue
+            with ep.send_lock:
+                try:
+                    GatewayLinkProtocol.send_frame(ep.sock, GatewayLinkProtocol.AUDIO, pcm)
+                except (OSError, ConnectionError):
+                    pass  # reader thread handles disconnect
 
-    def send_status(self, status):
-        """Send a status dict to the endpoint."""
-        self._send(GatewayLinkProtocol.STATUS,
-                   json.dumps(status).encode('utf-8'))
+    def send_command_to(self, name, cmd):
+        """Send a command dict to a specific endpoint by name."""
+        self._send_to(name, GatewayLinkProtocol.COMMAND,
+                      json.dumps(cmd).encode('utf-8'))
+
+    def send_status_to(self, name, status):
+        """Send a status dict to a specific endpoint by name."""
+        self._send_to(name, GatewayLinkProtocol.STATUS,
+                      json.dumps(status).encode('utf-8'))
 
     @property
-    def connected(self):
-        return self._client_sock is not None
+    def connected_count(self):
+        """Number of currently connected endpoints."""
+        with self._endpoints_lock:
+            return len(self._endpoints)
 
-    @property
-    def endpoint_info(self):
-        """Registration dict from the connected endpoint, or None."""
-        return self._endpoint_info
+    def get_endpoint_names(self):
+        """Return list of connected endpoint names."""
+        with self._endpoints_lock:
+            return list(self._endpoints.keys())
 
-    @property
-    def endpoint_capabilities(self):
-        """Capabilities dict from the connected endpoint, or empty dict."""
-        return self._endpoint_capabilities
+    def get_endpoint_info(self, name):
+        """Return info dict for a specific endpoint, or None."""
+        with self._endpoints_lock:
+            ep = self._endpoints.get(name)
+            return dict(ep.info) if ep else None
 
     # -- internal -----------------------------------------------------------
 
-    def _send(self, frame_type, payload):
-        """Thread-safe send to the current client socket."""
-        with self._send_lock:
-            sock = self._client_sock
-            if sock is None:
-                return
+    def _send_to(self, name, frame_type, payload):
+        """Thread-safe send to a specific endpoint by name."""
+        with self._endpoints_lock:
+            ep = self._endpoints.get(name)
+        if ep is None:
+            return
+        with ep.send_lock:
             try:
-                GatewayLinkProtocol.send_frame(sock, frame_type, payload)
+                GatewayLinkProtocol.send_frame(ep.sock, frame_type, payload)
             except (OSError, ConnectionError):
-                # Don't close on send error — the reader thread handles disconnect.
-                # Closing here races with accept thread swapping in a new socket.
-                pass
+                pass  # reader thread handles disconnect
 
-    def _close_client(self):
-        """Close the current client connection."""
-        with self._send_lock:
-            sock = self._client_sock
-            self._client_sock = None
-            self._endpoint_info = None
-            self._endpoint_capabilities = {}
-        if sock:
+    def _remove_endpoint(self, name):
+        """Remove an endpoint from the dict and close its socket."""
+        with self._endpoints_lock:
+            ep = self._endpoints.pop(name, None)
+        if ep:
             try:
-                sock.close()
+                ep.sock.close()
             except OSError:
                 pass
 
@@ -245,21 +278,85 @@ class GatewayLinkServer:
                 continue
 
             print(f"  [Link] Endpoint connected from {addr[0]}:{addr[1]}")
-            # Close any previous connection
-            self._close_client()
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            with self._send_lock:
-                self._client_sock = conn
 
-            self._reader_thread = threading.Thread(
-                target=self._reader_loop, args=(conn,),
-                name="LinkReader", daemon=True)
-            self._reader_thread.start()
+            # Start a reader thread for this new socket — it will wait for
+            # REGISTER as its first frame.
+            t = threading.Thread(
+                target=self._reader_loop, args=(conn, addr),
+                name=f"LinkReader-{addr[0]}:{addr[1]}", daemon=True)
+            t.start()
 
-    def _reader_loop(self, sock):
-        """Read frames from the connected endpoint until disconnect."""
+    def _reader_loop(self, sock, addr):
+        """Read frames from a connected endpoint until disconnect.
+
+        The first frame must be REGISTER (within _REGISTER_TIMEOUT seconds).
+        After registration, frames are dispatched by type.
+        """
         P = GatewayLinkProtocol
+        ep_name = None
         try:
+            # --- Wait for REGISTER as first frame ---
+            sock.settimeout(self._REGISTER_TIMEOUT)
+            result = P.recv_frame(sock)
+            if result is None:
+                print(f"  [Link] {addr[0]}:{addr[1]} disconnected before REGISTER")
+                return
+            ftype, payload = result
+            if ftype != P.REGISTER:
+                print(f"  [Link] {addr[0]}:{addr[1]} first frame was not REGISTER (type={ftype}), closing")
+                try:
+                    P.send_frame(sock, P.COMMAND,
+                                 json.dumps({"error": "first frame must be REGISTER"}).encode('utf-8'))
+                except (OSError, ConnectionError):
+                    pass
+                return
+
+            sock.settimeout(None)
+
+            info = json.loads(payload)
+            ep_name = info.get('name', '')
+            if not ep_name:
+                print(f"  [Link] {addr[0]}:{addr[1]} REGISTER missing name, closing")
+                try:
+                    P.send_frame(sock, P.COMMAND,
+                                 json.dumps({"error": "REGISTER must include 'name'"}).encode('utf-8'))
+                except (OSError, ConnectionError):
+                    pass
+                return
+
+            # Check for duplicate name
+            with self._endpoints_lock:
+                if ep_name in self._endpoints:
+                    print(f"  [Link] Duplicate endpoint name '{ep_name}' from "
+                          f"{addr[0]}:{addr[1]}, rejecting")
+                    try:
+                        P.send_frame(sock, P.COMMAND,
+                                     json.dumps({"error": f"name '{ep_name}' already connected"}).encode('utf-8'))
+                    except (OSError, ConnectionError):
+                        pass
+                    return
+
+                # Build endpoint and store
+                ep = _EndpointConn(ep_name, sock)
+                ep.info = info
+                ep.reader_thread = threading.current_thread()
+                caps = info.get('capabilities', {})
+                ep.capabilities = caps if isinstance(caps, dict) else {}
+                self._endpoints[ep_name] = ep
+
+            enabled = [k for k, v in ep.capabilities.items() if v]
+            print(f"  [Link] Endpoint registered: {ep_name} "
+                  f"plugin={info.get('plugin', '?')} "
+                  f"v={info.get('version', '?')} "
+                  f"caps={enabled}")
+
+            # Call on_register — return value is the audio sink for this endpoint
+            if self._on_register:
+                audio_sink = self._on_register(info)
+                ep.audio_sink = audio_sink
+
+            # --- Main frame dispatch loop ---
             while not self._stop.is_set():
                 result = P.recv_frame(sock)
                 if result is None:
@@ -267,82 +364,85 @@ class GatewayLinkServer:
                 ftype, payload = result
                 try:
                     if ftype == P.AUDIO:
-                        if self._on_audio:
-                            self._on_audio(payload)
+                        if ep.audio_sink:
+                            ep.audio_sink.push_audio(payload)
                     elif ftype == P.COMMAND:
                         if self._on_command:
-                            self._on_command(json.loads(payload))
-                    elif ftype == P.REGISTER:
-                        info = json.loads(payload)
-                        self._endpoint_info = info
-                        self._last_endpoint_heartbeat = time.monotonic()
-                        caps = info.get('capabilities', {})
-                        if isinstance(caps, dict):
-                            self._endpoint_capabilities = caps
-                        else:
-                            self._endpoint_capabilities = {}
-                        enabled = [k for k, v in self._endpoint_capabilities.items() if v]
-                        print(f"  [Link] Endpoint registered: {info.get('name', '?')} "
-                              f"plugin={info.get('plugin', '?')} "
-                              f"v={info.get('version', '?')} "
-                              f"caps={enabled}")
-                        if self._on_register:
-                            self._on_register(info)
+                            self._on_command(ep_name, json.loads(payload))
                     elif ftype == P.ACK:
                         ack = json.loads(payload)
                         cmd_name = ack.get('cmd', ack.get('cmd_id', '?'))
                         ok = ack.get('ok', False)
-                        print(f"  [Link] ACK received: cmd={cmd_name} ok={ok}")
+                        print(f"  [Link] ACK received from {ep_name}: cmd={cmd_name} ok={ok}")
                         if self._on_ack:
                             try:
-                                self._on_ack(ack)
+                                self._on_ack(ep_name, ack)
                             except Exception as e:
                                 print(f"  [Link] ACK callback error: {e}")
                     elif ftype == P.STATUS:
-                        # Track endpoint heartbeat for dead-peer detection
-                        self._last_endpoint_heartbeat = time.monotonic()
+                        ep.last_heartbeat = time.monotonic()
+                    elif ftype == P.REGISTER:
+                        # Re-registration not allowed; ignore
+                        print(f"  [Link] Ignoring duplicate REGISTER from {ep_name}")
                 except json.JSONDecodeError as e:
-                    print(f"  [Link] Bad JSON from endpoint: {e}")
+                    print(f"  [Link] Bad JSON from {ep_name}: {e}")
                 except Exception as e:
-                    print(f"  [Link] Callback error: {e}")
+                    print(f"  [Link] Callback error for {ep_name}: {e}")
+
+        except socket.timeout:
+            print(f"  [Link] {addr[0]}:{addr[1]} REGISTER timeout, closing")
         except Exception as e:
             if not self._stop.is_set():
-                print(f"  [Link] Reader error: {e}")
+                print(f"  [Link] Reader error for {ep_name or addr}: {e}")
         finally:
-            # Only close our own socket — _client_sock may already point to a
-            # newer connection if accept_loop replaced us.
-            with self._send_lock:
-                if self._client_sock is sock:
-                    self._client_sock = None
-                    self._endpoint_info = None
-                    self._endpoint_capabilities = {}
+            # Remove from endpoints dict (only if this reader owns the entry)
+            if ep_name:
+                with self._endpoints_lock:
+                    existing = self._endpoints.get(ep_name)
+                    if existing is not None and existing.sock is sock:
+                        del self._endpoints[ep_name]
             try:
                 sock.close()
             except OSError:
                 pass
-            print("  [Link] Endpoint disconnected")
-            if self._on_disconnect:
-                try:
-                    self._on_disconnect()
-                except Exception:
-                    pass
+            if ep_name:
+                print(f"  [Link] Endpoint disconnected: {ep_name}")
+                if self._on_disconnect:
+                    try:
+                        self._on_disconnect(ep_name)
+                    except Exception:
+                        pass
 
     def _heartbeat_loop(self):
-        """Send heartbeat every 5s and check for dead peer (no heartbeat in 15s)."""
+        """Send heartbeat every 5s to all endpoints; detect dead peers."""
         while not self._stop.is_set():
             self._stop.wait(5.0)
             if self._stop.is_set():
                 break
-            if self._client_sock is not None:
-                uptime = time.monotonic() - self._start_time
-                self.send_status({"type": "heartbeat", "uptime": round(uptime, 1)})
+            uptime = time.monotonic() - self._start_time
+            hb_payload = json.dumps({"type": "heartbeat", "uptime": round(uptime, 1)}).encode('utf-8')
+            now = time.monotonic()
+
+            with self._endpoints_lock:
+                snapshot = list(self._endpoints.values())
+
+            dead = []
+            for ep in snapshot:
+                # Send heartbeat
+                with ep.send_lock:
+                    try:
+                        GatewayLinkProtocol.send_frame(ep.sock, GatewayLinkProtocol.STATUS, hb_payload)
+                    except (OSError, ConnectionError):
+                        pass  # reader thread handles disconnect
                 # Dead peer detection
-                if self._last_endpoint_heartbeat > 0:
-                    silence = time.monotonic() - self._last_endpoint_heartbeat
+                if ep.last_heartbeat > 0:
+                    silence = now - ep.last_heartbeat
                     if silence > self._DEAD_PEER_TIMEOUT:
-                        print(f"  [Link] Dead peer detected ({silence:.0f}s without heartbeat) — closing")
-                        self._close_client()
-                        self._last_endpoint_heartbeat = 0
+                        dead.append(ep.name)
+
+            for name in dead:
+                print(f"  [Link] Dead peer detected: {name} — closing")
+                self._remove_endpoint(name)
 
 
 # ---------------------------------------------------------------------------
