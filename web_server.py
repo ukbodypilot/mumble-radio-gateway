@@ -2451,8 +2451,21 @@ class WebConfigServer:
                         data = json_mod.loads(body)
                         gw = parent.gateway
                         if gw and gw.link_server and gw.link_server.connected:
+                            # Clear last status before sending so we can detect the new one
+                            cmd_name = data.get('cmd', '')
+                            if cmd_name == 'status':
+                                gw._link_last_status = {}
                             gw.link_server.send_command(data)
-                            result = {'ok': True, 'sent': data}
+                            # Wait briefly for ACK on status commands
+                            if cmd_name == 'status':
+                                import time as _time
+                                for _ in range(10):  # 1 second max
+                                    _time.sleep(0.1)
+                                    if gw._link_last_status:
+                                        break
+                                result = {'ok': True, 'status': gw._link_last_status}
+                            else:
+                                result = {'ok': True, 'sent': data}
                         else:
                             result = {'ok': False, 'error': 'link not connected'}
                     except Exception as e:
@@ -6717,17 +6730,30 @@ function linkPttToggle() {
   linkCmd({cmd:'ptt', state:_linkPttState});
 }
 function linkStatus() {
-  linkCmd({cmd:'status'}).then(function(){
-    // Status response comes via ACK — poll status in 1s to show it
-    setTimeout(function(){
-      fetch('/status').then(function(r){return r.json()}).then(function(s){
-        var info = document.getElementById('link-info');
-        if(info && s.link_ptt_active !== undefined) {
-          var extra = '<div class="st-item" style="margin-top:4px;"><span class="st-label">PTT:</span><span class="st-val '+(s.link_ptt_active?'red':'green')+'">'+(s.link_ptt_active?'ON':'OFF')+'</span></div>';
-          info.innerHTML += extra;
-        }
-      });
-    }, 500);
+  linkCmd({cmd:'status'}).then(function(d){
+    var info = document.getElementById('link-info');
+    if(!info || !d) return;
+    var st = (d.status && d.status.status) || d.status || {};
+    var extra = '';
+    for(var k in st) {
+      if(st.hasOwnProperty(k)) {
+        var v = st[k];
+        var col = (v===true)?'green':(v===false)?'red':'white';
+        var txt = (v===true)?'Yes':(v===false)?'No':String(v);
+        extra += '<div class="st-item"><span class="st-label">'+k+':</span><span class="st-val '+col+'">'+txt+'</span></div>';
+      }
+    }
+    if(extra) {
+      var row = document.createElement('div');
+      row.className = 'st-row';
+      row.style.marginTop = '6px';
+      row.style.borderTop = '1px solid var(--t-border)';
+      row.style.paddingTop = '6px';
+      row.innerHTML = extra;
+      info.parentNode.insertBefore(row, info.nextSibling.nextSibling);
+      // Remove after 5s
+      setTimeout(function(){ try{row.remove();}catch(e){} }, 5000);
+    }
   });
 }
 
