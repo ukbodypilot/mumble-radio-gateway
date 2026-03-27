@@ -671,3 +671,104 @@ class AudioPlugin(RadioPlugin):
                 continue
         print(f"  [Link] AudioPlugin: device '{name}' not found, using default")
         return None
+
+
+# ---------------------------------------------------------------------------
+# AIOCPlugin — AIOC USB (All-In-One-Cable) with GPIO PTT
+# ---------------------------------------------------------------------------
+
+class AIOCPlugin(AudioPlugin):
+    """AIOC USB device plugin — sound card audio + HID GPIO PTT.
+
+    The AIOC is a USB device that presents as both a sound card and a HID
+    device. Audio flows through the sound card (same as AudioPlugin).
+    PTT is controlled via HID GPIO output (5-byte report).
+
+    Config keys (in addition to AudioPlugin keys):
+        vid (str)         — USB vendor ID hex (default '1209')
+        pid (str)         — USB product ID hex (default '7388')
+        ptt_channel (int) — GPIO channel for PTT (1-3, default 3)
+    """
+
+    name = "aioc"
+    capabilities = ["audio_rx", "audio_tx", "ptt"]
+
+    def __init__(self):
+        super().__init__()
+        self._hid = None
+        self._vid = 0x1209
+        self._pid = 0x7388
+        self._ptt_channel = 3
+        self._ptt_on = False
+
+    def setup(self, config):
+        """Open AIOC audio device + HID for PTT."""
+        self._vid = int(config.get('vid', '1209'), 16)
+        self._pid = int(config.get('pid', '7388'), 16)
+        self._ptt_channel = int(config.get('ptt_channel', 3))
+
+        # Find AIOC audio device by name if not specified
+        if not config.get('device'):
+            config = dict(config)
+            config['device'] = 'AIOC'  # AIOC shows as "All-In-One-Cable" in ALSA
+
+        # Open audio streams via parent class
+        super().setup(config)
+
+        # Open HID for PTT
+        try:
+            import hid as _hid_mod
+            self._hid = _hid_mod.Device(vid=self._vid, pid=self._pid)
+            print(f"  [Link] AIOCPlugin: HID opened ({self._hid.product})")
+        except Exception as e:
+            print(f"  [Link] AIOCPlugin: HID open failed: {e}")
+            print(f"         PTT will not work. Check USB connection and permissions.")
+            self._hid = None
+
+    def teardown(self):
+        """Unkey PTT and close HID + audio."""
+        if self._ptt_on:
+            self._set_ptt(False)
+        if self._hid:
+            try:
+                self._hid.close()
+            except Exception:
+                pass
+            self._hid = None
+        super().teardown()
+
+    def execute(self, cmd):
+        """Handle commands from master gateway."""
+        action = cmd.get('cmd', '')
+        if action == 'ptt':
+            state = bool(cmd.get('state', False))
+            return self._set_ptt(state)
+        return {"ok": False, "error": f"unknown command: {action}"}
+
+    def get_status(self):
+        status = super().get_status()
+        status.update({
+            "plugin": self.name,
+            "hid_connected": self._hid is not None,
+            "ptt_active": self._ptt_on,
+            "ptt_channel": self._ptt_channel,
+        })
+        return status
+
+    def _set_ptt(self, state_on):
+        """Key or unkey the radio via AIOC HID GPIO."""
+        if not self._hid:
+            return {"ok": False, "error": "HID not connected"}
+        try:
+            import struct
+            state = 1 if state_on else 0
+            iomask = 1 << (self._ptt_channel - 1)
+            iodata = state << (self._ptt_channel - 1)
+            data = struct.pack("<BBBBB", 0, 0, iodata, iomask, 0)
+            self._hid.write(bytes(data))
+            self._ptt_on = state_on
+            print(f"  [Link] AIOCPlugin: PTT {'ON' if state_on else 'OFF'}")
+            return {"ok": True, "ptt": state_on}
+        except Exception as e:
+            print(f"  [Link] AIOCPlugin: PTT error: {e}")
+            return {"ok": False, "error": str(e)}

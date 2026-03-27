@@ -11,6 +11,7 @@ Usage:
 Examples:
     python3 tools/link_endpoint.py --server 192.168.2.140:9700 --name garage-radio
     python3 tools/link_endpoint.py --server 192.168.2.140:9700 --name garage-radio --plugin audio --device hw:1,0
+    python3 tools/link_endpoint.py --server 192.168.2.140:9700 --name garage-aioc --plugin aioc
     python3 tools/link_endpoint.py --server 192.168.2.140:9700 --name mobile-kv4p --plugin kv4p --device /dev/ttyUSB0
 """
 
@@ -27,7 +28,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from gateway_link import GatewayLinkClient, AudioPlugin, RadioPlugin
+    from gateway_link import GatewayLinkClient, AudioPlugin, AIOCPlugin, RadioPlugin
 except ImportError as e:
     print(f"[Endpoint] Failed to import gateway_link: {e}")
     print("[Endpoint] Make sure gateway_link.py is in the parent directory.")
@@ -40,6 +41,7 @@ except ImportError as e:
 
 _PLUGINS = {
     'audio': AudioPlugin,
+    'aioc': AIOCPlugin,
 }
 
 
