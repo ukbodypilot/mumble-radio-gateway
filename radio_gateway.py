@@ -470,6 +470,15 @@ class Config:
             'LINK_AUDIO_PRIORITY': 3,
             'LINK_AUDIO_BOOST': 1.0,
             'LINK_AUDIO_DISPLAY_GAIN': 1.0,
+
+            # Telegram Bot
+            'ENABLE_TELEGRAM': False,
+            'TELEGRAM_BOT_TOKEN': '',
+            'TELEGRAM_CHAT_ID': 0,
+            'TELEGRAM_TMUX_SESSION': 'claude-gateway',
+
+            # Advanced
+            'START_CLAUDE_CODE': False,
         }
         
         # Store defaults for type inference (used by WebConfigServer)

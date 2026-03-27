@@ -36,7 +36,7 @@ class WebConfigServer:
     """
 
     # Keys whose values should be masked in the UI
-    _SENSITIVE_KEYS = set()  # Show all values in plain text
+    _SENSITIVE_KEYS = {'TELEGRAM_BOT_TOKEN', 'STREAM_PASSWORD', 'EMAIL_APP_PASSWORD', 'WEB_CONFIG_PASSWORD'}
 
     # Keys that store hex integers
     _HEX_KEYS = {'AIOC_VID', 'AIOC_PID'}
@@ -509,8 +509,12 @@ class WebConfigServer:
             'ENABLE_WEB_MONITOR',
             'ENABLE_CLOUDFLARE_TUNNEL',
         ]),
+        ('telegram', 'Telegram Bot', [
+            'ENABLE_TELEGRAM', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
+            'TELEGRAM_TMUX_SESSION',
+        ]),
         ('advanced', 'Advanced / Diagnostics', [
-            'HEADLESS_MODE', 'LOG_BUFFER_LINES', 'LOG_FILE_DAYS',
+            'HEADLESS_MODE', 'START_CLAUDE_CODE', 'LOG_BUFFER_LINES', 'LOG_FILE_DAYS',
             'VERBOSE_LOGGING', 'STATUS_UPDATE_INTERVAL',
             'NETWORK_TIMEOUT', 'BUFFER_MANAGEMENT_VERBOSE',
         ]),
