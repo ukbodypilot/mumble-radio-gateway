@@ -2888,11 +2888,18 @@ class WebConfigServer:
                 values = {k: v[-1] for k, v in form.items() if k != '_action'}
                 action = form.get('_action', ['save'])[0]
 
-                # Checkboxes: unchecked boxes are absent from form data.
-                # We need to detect boolean keys and set them to 'false' if missing.
-                for key, default_val in parent._defaults.items():
-                    if isinstance(default_val, bool) and key not in values:
-                        values[key] = 'false'
+                # Checkboxes: the hidden fallback field ensures unchecked boxes
+                # submit 'false'. If a boolean key is completely absent from the
+                # form (page not fully loaded, truncated POST), do NOT force it
+                # to false — use the current running value instead.
+                # Only force false if we received a reasonable number of keys
+                # (full form submission has 200+ keys).
+                if len(values) > 100:
+                    for key, default_val in parent._defaults.items():
+                        if isinstance(default_val, bool) and key not in values:
+                            values[key] = 'false'
+                else:
+                    print(f"  [Config] WARNING: partial form ({len(values)} keys) — merging with current config")
 
                 parent._save_config(values)
                 # Reload config from file so the config page reflects saved values
