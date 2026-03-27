@@ -6869,7 +6869,7 @@ function updateStatus() {
               eh += '<div class="st-item"><span class="st-label">'+k+':</span><span class="st-val '+col+'">'+txt+'</span></div>';
             }
           }
-          if(eh) lh += '<div class="st-row">'+eh+'</div>';
+          if(eh) lh += '<div style="display:grid; grid-template-columns:repeat(auto-fill, 200px); gap:4px 12px;">'+eh+'</div>';
         }
         document.getElementById('link-info').innerHTML = lh;
         document.getElementById('link-status-badge').innerHTML = '<span style="color:#2ecc71">'+eps.length+' connected</span>';
