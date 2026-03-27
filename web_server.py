@@ -6684,7 +6684,7 @@ pollTimer = setInterval(pollStatus, 1000);
     <span id="link-status-badge" style="font-weight:bold;"></span>
   </div>
   <div class="st-row" id="link-info"></div>
-  <div id="link-controls" style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;"></div>
+  <div class="st-row" id="link-endpoint-status" style="margin-top:4px; border-top:1px solid var(--t-border); padding-top:6px; display:none;"></div>
 </div>
 
 <div id="usbip-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
@@ -6723,47 +6723,6 @@ pollTimer = setInterval(pollStatus, 1000);
 function openTmux() {
   fetch('/open_tmux', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
 }
-var _linkPttState = false;
-function linkCmd(cmd) {
-  return fetch('/linkcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cmd)})
-    .then(function(r){return r.json()}).then(function(d){
-      if(!d.ok) console.log('Link cmd error:', d.error);
-      return d;
-    }).catch(function(){});
-}
-function linkPttToggle() {
-  _linkPttState = !_linkPttState;
-  var btn = document.getElementById('link-ptt-btn');
-  if(btn) { btn.textContent = _linkPttState ? 'PTT ON' : 'PTT'; btn.style.background = _linkPttState ? 'var(--t-btn-active)' : 'var(--t-btn)'; btn.style.borderColor = _linkPttState ? 'var(--t-accent)' : 'var(--t-btn-border)'; btn.style.color = _linkPttState ? 'var(--t-accent)' : '#e0e0e0'; }
-  linkCmd({cmd:'ptt', state:_linkPttState});
-}
-function linkStatus() {
-  linkCmd({cmd:'status'}).then(function(d){
-    var info = document.getElementById('link-info');
-    if(!info || !d) return;
-    var st = (d.status && d.status.status) || d.status || {};
-    var extra = '';
-    for(var k in st) {
-      if(st.hasOwnProperty(k)) {
-        var v = st[k];
-        var col = (v===true)?'green':(v===false)?'red':'white';
-        var txt = (v===true)?'Yes':(v===false)?'No':String(v);
-        extra += '<div class="st-item"><span class="st-label">'+k+':</span><span class="st-val '+col+'">'+txt+'</span></div>';
-      }
-    }
-    if(extra) {
-      var row = document.createElement('div');
-      row.className = 'st-row';
-      row.style.marginTop = '6px';
-      row.style.borderTop = '1px solid var(--t-border)';
-      row.style.paddingTop = '6px';
-      row.innerHTML = extra;
-      info.parentNode.insertBefore(row, info.nextSibling.nextSibling);
-      // Remove after 5s
-      setTimeout(function(){ try{row.remove();}catch(e){} }, 5000);
-    }
-  });
-}
 
 var _lastNotifSeq = 0;
 function showToast(msg, level) {
@@ -6779,9 +6738,11 @@ function showToast(msg, level) {
 }
 
 var _statusBusy = false;
+var _statusPollCount = 0;
 function updateStatus() {
   if (_statusBusy) return;
   _statusBusy = true;
+  _statusPollCount++;
   var _ac = new AbortController(); setTimeout(function(){_ac.abort();}, 10000);
   fetch('/status', {signal:_ac.signal}).then(r=>r.json()).then(function(s) {
     _lostCount = 0;
@@ -6869,18 +6830,31 @@ function updateStatus() {
         if(s.link_endpoint_plugin) lh += '<div class="st-item"><span class="st-label">Plugin:</span><span class="st-val cyan">'+s.link_endpoint_plugin+'</span></div>';
       }
       document.getElementById('link-info').innerHTML = lh;
-      // Show controls based on capabilities
-      var caps = s.link_capabilities || {};
-      var lPtt = s.link_ptt_active;
-      var lc = '';
-      if(lConn) {
-        if(caps.ptt) {
-          var pttStyle = lPtt ? 'background:var(--t-btn-active);border-color:var(--t-accent);color:var(--t-accent);' : 'background:var(--t-btn);border-color:var(--t-btn-border);color:#e0e0e0;';
-          lc += '<button id="link-ptt-btn" onclick="linkPttToggle()" style="padding:8px 20px; border:1px solid; border-radius:4px; cursor:pointer; font-family:monospace; font-size:1em; '+pttStyle+'">'+(lPtt?'PTT ON':'PTT')+'</button>';
+      // Show endpoint status fields from last polled status
+      var lsDiv = document.getElementById('link-endpoint-status');
+      if(lsDiv) {
+        var es = s.link_endpoint_status || {};
+        var esKeys = Object.keys(es);
+        if(lConn && esKeys.length > 0) {
+          lsDiv.style.display = '';
+          var esh = '';
+          for(var ei=0; ei<esKeys.length; ei++) {
+            var ek = esKeys[ei];
+            var ev = es[ek];
+            var eCol = (ev===true)?'green':(ev===false)?'red':'white';
+            var eDot = (ev===true)?'<span style="color:#2ecc71">&#9679;</span> ':(ev===false)?'<span style="color:#e74c3c">&#9679;</span> ':'';
+            var eTxt = (ev===true)?'Yes':(ev===false)?'No':String(ev);
+            esh += '<div class="st-item"><span class="st-label">'+ek+':</span>'+eDot+'<span class="st-val '+eCol+'">'+eTxt+'</span></div>';
+          }
+          lsDiv.innerHTML = esh;
+        } else {
+          lsDiv.style.display = 'none';
         }
-        if(caps.status) lc += '<button onclick="linkStatus()" style="padding:8px 14px; background:var(--t-btn); border:1px solid var(--t-btn-border); color:#e0e0e0; border-radius:4px; cursor:pointer; font-family:monospace;">Status</button>';
       }
-      document.getElementById('link-controls').innerHTML = lc;
+      // Periodically poll endpoint status to keep it fresh (every 10s)
+      if(lConn && _statusPollCount % 10 === 0) {
+        fetch('/linkcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({cmd:'status'})}).catch(function(){});
+      }
     } else {
       linkPanel.style.display = 'none';
     }
@@ -7509,6 +7483,34 @@ updateTelegram();
     <button onclick="sendKey('d')" id="btn-d">Duck Toggle</button>
     <button onclick="sendKey('b')" id="btn-b">Rebroadcast</button>
   </div>
+  <div class="ctrl-group" id="link-ctrl-group" style="min-width:280px; display:none;">
+    <h3>Gateway Link</h3>
+    <div id="link-ctrl-status" style="margin-bottom:8px; font-size:0.85em; color:#888;">Disconnected</div>
+    <div style="display:flex; gap:10px; align-items:flex-start;">
+        <div style="display:flex; flex-direction:column; gap:4px; align-items:center;">
+            <button onclick="linkPttToggle()" id="link-ptt-btn" style="width:80px; height:50px; font-size:1.1em;">PTT</button>
+        </div>
+        <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <div style="display:flex; align-items:center; gap:6px;">
+                <span style="color:#888; width:2em; text-align:right; font-size:0.8em;">RX</span>
+                <div style="flex:1; height:12px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden;">
+                    <div id="link-rx-bar" style="height:100%; width:0%; background:#2ecc71; border-radius:2px;"></div>
+                </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+                <span style="color:#888; width:2em; text-align:right; font-size:0.8em;">TX</span>
+                <div style="flex:1; height:12px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden;">
+                    <div id="link-tx-bar" style="height:100%; width:0%; background:#e74c3c; border-radius:2px;"></div>
+                </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+                <label style="color:#888; font-size:0.8em; width:2em; text-align:right;">Vol</label>
+                <input id="link-vol" type="range" min="0" max="100" value="100" style="flex:1; accent-color:var(--t-accent);" oninput="linkVolChange(this.value)">
+                <span id="link-vol-val" style="color:#888; font-size:0.8em; width:3em;">100%</span>
+            </div>
+        </div>
+    </div>
+  </div>
 </div>
 
 <div id="playback-section" style="margin-top:10px; display:flex; flex-wrap:wrap; gap:10px; align-items:flex-start;">
@@ -7702,6 +7704,19 @@ function darkiceCmd(cmd) {
 }
 function openTmux() {
   fetch('/open_tmux', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+}
+var _linkPttState = false;
+function linkCmd(cmd) {
+  return fetch('/linkcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cmd)})
+    .then(function(r){return r.json()}).catch(function(){return {};});
+}
+function linkPttToggle() {
+  _linkPttState = !_linkPttState;
+  linkCmd({cmd:'ptt', state:_linkPttState});
+}
+function linkVolChange(val) {
+  document.getElementById('link-vol-val').textContent = val + '%';
+  linkCmd({cmd:'volume', level:parseInt(val)});
 }
 function sendAIText() {
   var text = document.getElementById('ai-text').value.trim();
@@ -7989,6 +8004,37 @@ function updateControls() {
       }
       setBtn('btn-bc-start', s.darkice_running, 'active');
       setBtn('btn-bc-stop', !s.darkice_running && s.streaming_enabled, 'muted');
+    }
+    // Gateway Link controls
+    var linkGrp = document.getElementById('link-ctrl-group');
+    if(linkGrp) {
+      if(s.link_enabled && s.link_connected) {
+        linkGrp.style.display = '';
+        document.getElementById('link-ctrl-status').textContent = s.link_endpoint_name + ' (' + (s.link_endpoint_plugin||'?') + ')';
+        // PTT button state
+        var pttBtn = document.getElementById('link-ptt-btn');
+        if(pttBtn) {
+          if(s.link_ptt_active) {
+            pttBtn.style.background = 'var(--t-btn-active)';
+            pttBtn.style.borderColor = 'var(--t-accent)';
+            pttBtn.style.color = 'var(--t-accent)';
+            pttBtn.textContent = 'PTT ON';
+          } else {
+            pttBtn.style.background = 'var(--t-btn)';
+            pttBtn.style.borderColor = 'var(--t-btn-border)';
+            pttBtn.style.color = '#e0e0e0';
+            pttBtn.textContent = 'PTT';
+          }
+        }
+        // Audio level bars
+        document.getElementById('link-rx-bar').style.width = (s.link_level||0) + '%';
+        // TX bar — no separate TX level yet
+      } else if(s.link_enabled) {
+        linkGrp.style.display = '';
+        document.getElementById('link-ctrl-status').textContent = 'Disconnected';
+      } else {
+        linkGrp.style.display = 'none';
+      }
     }
   }).catch(function(){}).finally(function(){ _ctrlBusy=false; });
 }

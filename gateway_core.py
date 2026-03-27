@@ -5873,6 +5873,7 @@ class RadioGateway:
             'link_level': self.link_audio_source.audio_level if self.link_audio_source else 0,
             'link_muted': getattr(self, 'link_muted', False),
             'link_ptt_active': getattr(self, '_link_ptt_active', False),
+            'link_endpoint_status': getattr(self, '_link_last_status', {}),
             'files': file_slots,
             'playback_enabled': bool(self.playback_source),
             'tts_enabled': bool(getattr(self, 'tts_engine', None)),
