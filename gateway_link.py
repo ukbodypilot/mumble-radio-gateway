@@ -117,18 +117,20 @@ class GatewayLinkServer:
     """
 
     def __init__(self, port=9700, on_audio=None, on_command=None,
-                 on_register=None, on_disconnect=None):
+                 on_register=None, on_disconnect=None, on_ack=None):
         self._port = port
         self._on_audio = on_audio
         self._on_command = on_command
         self._on_register = on_register
         self._on_disconnect = on_disconnect
+        self._on_ack = on_ack
 
         self._server_sock = None
         self._client_sock = None
         self._send_lock = threading.Lock()
         self._stop = threading.Event()
         self._endpoint_info = None
+        self._endpoint_capabilities = {}
         self._start_time = time.monotonic()
 
         self._accept_thread = None
@@ -194,6 +196,11 @@ class GatewayLinkServer:
         """Registration dict from the connected endpoint, or None."""
         return self._endpoint_info
 
+    @property
+    def endpoint_capabilities(self):
+        """Capabilities dict from the connected endpoint, or empty dict."""
+        return self._endpoint_capabilities
+
     # -- internal -----------------------------------------------------------
 
     def _send(self, frame_type, payload):
@@ -215,6 +222,7 @@ class GatewayLinkServer:
             sock = self._client_sock
             self._client_sock = None
             self._endpoint_info = None
+            self._endpoint_capabilities = {}
         if sock:
             try:
                 sock.close()
@@ -264,15 +272,28 @@ class GatewayLinkServer:
                     elif ftype == P.REGISTER:
                         info = json.loads(payload)
                         self._endpoint_info = info
+                        caps = info.get('capabilities', {})
+                        if isinstance(caps, dict):
+                            self._endpoint_capabilities = caps
+                        else:
+                            self._endpoint_capabilities = {}
+                        enabled = [k for k, v in self._endpoint_capabilities.items() if v]
                         print(f"  [Link] Endpoint registered: {info.get('name', '?')} "
                               f"plugin={info.get('plugin', '?')} "
-                              f"caps={info.get('capabilities', [])}")
+                              f"v={info.get('version', '?')} "
+                              f"caps={enabled}")
                         if self._on_register:
                             self._on_register(info)
                     elif ftype == P.ACK:
-                        # ACKs from endpoint — log for now
                         ack = json.loads(payload)
-                        print(f"  [Link] ACK received: cmd_id={ack.get('cmd_id')}")
+                        cmd_name = ack.get('cmd', ack.get('cmd_id', '?'))
+                        ok = ack.get('ok', False)
+                        print(f"  [Link] ACK received: cmd={cmd_name} ok={ok}")
+                        if self._on_ack:
+                            try:
+                                self._on_ack(ack)
+                            except Exception as e:
+                                print(f"  [Link] ACK callback error: {e}")
                     elif ftype == P.STATUS:
                         # Status from endpoint — just log
                         pass
@@ -290,6 +311,7 @@ class GatewayLinkServer:
                 if self._client_sock is sock:
                     self._client_sock = None
                     self._endpoint_info = None
+                    self._endpoint_capabilities = {}
             try:
                 sock.close()
             except OSError:
@@ -376,6 +398,18 @@ class GatewayLinkClient:
         self._send(GatewayLinkProtocol.STATUS,
                    json.dumps(status).encode('utf-8'))
 
+    def send_ack(self, cmd_name, result_dict):
+        """Send an ACK frame back to the server with command result."""
+        payload = {"cmd": cmd_name}
+        if isinstance(result_dict, dict):
+            payload["ok"] = result_dict.get("ok", False)
+            payload["result"] = result_dict
+        else:
+            payload["ok"] = False
+            payload["result"] = {}
+        self._send(GatewayLinkProtocol.ACK,
+                   json.dumps(payload).encode('utf-8'))
+
     @property
     def connected(self):
         return self._sock is not None
@@ -452,11 +486,14 @@ class GatewayLinkClient:
     def _reader_loop(self, sock):
         """Read frames from the server until disconnect."""
         P = GatewayLinkProtocol
+        _frame_count = 0
         try:
             while not self._stop.is_set():
                 result = P.recv_frame(sock)
                 if result is None:
+                    print(f"  [Link] recv_frame returned None after {_frame_count} frames")
                     break
+                _frame_count += 1
                 ftype, payload = result
                 try:
                     if ftype == P.AUDIO:
@@ -498,7 +535,17 @@ class RadioPlugin:
     """
 
     name = "base"
-    capabilities = []
+    capabilities = {
+        "audio_rx": False,
+        "audio_tx": False,
+        "ptt": False,
+        "frequency": False,
+        "ctcss": False,
+        "power": False,
+        "volume": False,
+        "smeter": False,
+        "status": True,  # all plugins support status
+    }
 
     def setup(self, config):
         """Initialize hardware.  *config* is a dict from command-line args."""
@@ -526,6 +573,9 @@ class RadioPlugin:
         *cmd* is a dict like ``{"cmd": "ptt", "state": true}``.
         Returns a result dict.
         """
+        action = cmd.get('cmd', '') if isinstance(cmd, dict) else ''
+        if action == 'status':
+            return {"ok": True, "status": self.get_status()}
         return {"ok": False, "error": "not implemented"}
 
     def get_status(self):
@@ -545,7 +595,17 @@ class AudioPlugin(RadioPlugin):
     """
 
     name = "audio"
-    capabilities = ["audio_rx", "audio_tx"]
+    capabilities = {
+        "audio_rx": True,
+        "audio_tx": True,
+        "ptt": False,
+        "frequency": False,
+        "ctcss": False,
+        "power": False,
+        "volume": True,
+        "smeter": False,
+        "status": True,
+    }
 
     RATE = 48000
     CHANNELS = 1
@@ -559,6 +619,7 @@ class AudioPlugin(RadioPlugin):
         self._in_stream = None
         self._out_stream = None
         self._device_name = ""
+        self._output_volume = 1.0  # 0.0-1.0 gain multiplier for output
 
     def setup(self, config):
         """Open PyAudio input + output streams.
@@ -635,13 +696,28 @@ class AudioPlugin(RadioPlugin):
             return None
 
     def put_audio(self, pcm):
-        """Write PCM audio to the output stream."""
+        """Write PCM audio to the output stream, applying output volume."""
         if not self._out_stream:
             return
         try:
+            if self._output_volume != 1.0:
+                pcm = self._apply_volume(pcm, self._output_volume)
             self._out_stream.write(pcm)
         except Exception as e:
             print(f"  [Link] AudioPlugin: write error: {e}")
+
+    def execute(self, cmd):
+        """Handle commands from master gateway."""
+        action = cmd.get('cmd', '') if isinstance(cmd, dict) else ''
+        if action == 'volume':
+            level = cmd.get('level', 100)
+            level = max(0, min(100, int(level)))
+            self._output_volume = level / 100.0
+            print(f"  [Link] AudioPlugin: volume set to {level}%")
+            return {"ok": True, "volume": level}
+        if action == 'status':
+            return {"ok": True, "status": self.get_status()}
+        return {"ok": False, "error": f"unknown command: {action}"}
 
     def get_status(self):
         return {
@@ -650,7 +726,24 @@ class AudioPlugin(RadioPlugin):
             "rate": self.RATE,
             "input_active": self._in_stream is not None,
             "output_active": self._out_stream is not None,
+            "volume": round(self._output_volume * 100),
         }
+
+    @staticmethod
+    def _apply_volume(pcm, gain):
+        """Apply a gain multiplier to 16-bit signed LE PCM audio."""
+        import struct as _struct
+        n_samples = len(pcm) // 2
+        samples = _struct.unpack(f'<{n_samples}h', pcm)
+        gained = []
+        for s in samples:
+            v = int(s * gain)
+            if v > 32767:
+                v = 32767
+            elif v < -32768:
+                v = -32768
+            gained.append(v)
+        return _struct.pack(f'<{n_samples}h', *gained)
 
     # -- helpers ------------------------------------------------------------
 
@@ -701,7 +794,17 @@ class AIOCPlugin(AudioPlugin):
     """
 
     name = "aioc"
-    capabilities = ["audio_rx", "audio_tx", "ptt"]
+    capabilities = {
+        "audio_rx": True,
+        "audio_tx": True,
+        "ptt": True,
+        "frequency": False,
+        "ctcss": False,
+        "power": False,
+        "volume": True,
+        "smeter": False,
+        "status": True,
+    }
 
     def __init__(self):
         super().__init__()
@@ -710,12 +813,16 @@ class AIOCPlugin(AudioPlugin):
         self._pid = 0x7388
         self._ptt_channel = 3
         self._ptt_on = False
+        self._ptt_timeout = 30  # seconds — safety auto-unkey
+        self._ptt_timer = None
+        self._ptt_timer_lock = threading.Lock()
 
     def setup(self, config):
         """Open AIOC audio device + HID for PTT."""
         self._vid = int(config.get('vid', '1209'), 16)
         self._pid = int(config.get('pid', '7388'), 16)
         self._ptt_channel = int(config.get('ptt_channel', 3))
+        self._ptt_timeout = int(config.get('ptt_timeout', 30))
 
         # Find AIOC audio device by name if not specified
         if not config.get('device'):
@@ -736,7 +843,8 @@ class AIOCPlugin(AudioPlugin):
             self._hid = None
 
     def teardown(self):
-        """Unkey PTT and close HID + audio."""
+        """Unkey PTT, cancel safety timer, and close HID + audio."""
+        self._cancel_ptt_timer()
         if self._ptt_on:
             self._set_ptt(False)
         if self._hid:
@@ -749,11 +857,18 @@ class AIOCPlugin(AudioPlugin):
 
     def execute(self, cmd):
         """Handle commands from master gateway."""
-        action = cmd.get('cmd', '')
+        action = cmd.get('cmd', '') if isinstance(cmd, dict) else ''
         if action == 'ptt':
             state = bool(cmd.get('state', False))
-            return self._set_ptt(state)
-        return {"ok": False, "error": f"unknown command: {action}"}
+            result = self._set_ptt(state)
+            if result.get('ok'):
+                if state:
+                    self._reset_ptt_timer()
+                else:
+                    self._cancel_ptt_timer()
+            return result
+        # volume and status handled by AudioPlugin.execute
+        return super().execute(cmd)
 
     def get_status(self):
         status = super().get_status()
@@ -762,6 +877,8 @@ class AIOCPlugin(AudioPlugin):
             "hid_connected": self._hid is not None,
             "ptt_active": self._ptt_on,
             "ptt_channel": self._ptt_channel,
+            "audio_input": self._in_stream is not None,
+            "audio_output": self._out_stream is not None,
         })
         return status
 
@@ -782,3 +899,26 @@ class AIOCPlugin(AudioPlugin):
         except Exception as e:
             print(f"  [Link] AIOCPlugin: PTT error: {e}")
             return {"ok": False, "error": str(e)}
+
+    def _reset_ptt_timer(self):
+        """Start or reset the PTT safety timeout timer."""
+        with self._ptt_timer_lock:
+            if self._ptt_timer:
+                self._ptt_timer.cancel()
+            self._ptt_timer = threading.Timer(self._ptt_timeout, self._ptt_timeout_fired)
+            self._ptt_timer.daemon = True
+            self._ptt_timer.start()
+
+    def _cancel_ptt_timer(self):
+        """Cancel the PTT safety timeout timer."""
+        with self._ptt_timer_lock:
+            if self._ptt_timer:
+                self._ptt_timer.cancel()
+                self._ptt_timer = None
+
+    def _ptt_timeout_fired(self):
+        """Called when PTT has been held too long — auto-unkey for safety."""
+        print(f"  [Link] AIOCPlugin: WARNING — PTT safety timeout ({self._ptt_timeout}s), auto-unkey")
+        self._set_ptt(False)
+        with self._ptt_timer_lock:
+            self._ptt_timer = None

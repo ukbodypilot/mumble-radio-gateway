@@ -5857,6 +5857,8 @@ class RadioGateway:
             'link_enabled': bool(self.link_server),
             'link_connected': bool(self.link_server and self.link_server.connected),
             'link_endpoint_name': self.link_server.endpoint_info.get('name', '') if self.link_server and self.link_server.endpoint_info else '',
+            'link_endpoint_plugin': self.link_server.endpoint_info.get('plugin', '') if self.link_server and self.link_server.endpoint_info else '',
+            'link_capabilities': self.link_server.endpoint_info.get('capabilities', {}) if self.link_server and self.link_server.endpoint_info else {},
             'link_level': self.link_audio_source.audio_level if self.link_audio_source else 0,
             'link_muted': getattr(self, 'link_muted', False),
             'files': file_slots,

@@ -234,6 +234,11 @@ def main():
         cmd_str = cmd.get('cmd', str(cmd)) if isinstance(cmd, dict) else str(cmd)
         ok = result.get('ok', False) if isinstance(result, dict) else False
         print(f"[Endpoint] Command: {cmd_str} -> {'OK' if ok else result}")
+        # Send ACK back to master with the result
+        try:
+            client.send_ack(cmd_str, result if isinstance(result, dict) else {"ok": False})
+        except Exception as e:
+            print(f"[Endpoint] ACK send error: {e}")
 
     def on_status_from_master(status):
         """Called from reader thread when master sends status/heartbeat."""

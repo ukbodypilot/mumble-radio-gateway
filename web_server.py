@@ -6646,6 +6646,15 @@ pollTimer = setInterval(pollStatus, 1000);
   <div style="font-size:0.85em; color:#aaa; margin-top:4px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;" id="tg-last-text"></div>
 </div>
 
+<div id="link-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px; font-family:monospace; font-size:0.9em; margin-top:10px; display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+    <h3 style="margin:0; color:#e67e22; font-size:1em;">Gateway Link</h3>
+    <span id="link-status-badge" style="font-weight:bold;"></span>
+  </div>
+  <div class="st-row" id="link-info"></div>
+  <div id="link-controls" style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;"></div>
+</div>
+
 <div id="usbip-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
     <h3 style="margin:0; color:var(--t-accent); font-size:1.1em;">USB/IP Remote Devices</h3>
@@ -6681,6 +6690,12 @@ pollTimer = setInterval(pollStatus, 1000);
 <script>
 function openTmux() {
   fetch('/open_tmux', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+}
+function linkCmd(cmd) {
+  fetch('/linkcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cmd)})
+    .then(function(r){return r.json()}).then(function(d){
+      if(!d.ok) console.log('Link cmd error:', d.error);
+    }).catch(function(){});
 }
 
 var _lastNotifSeq = 0;
@@ -6775,7 +6790,29 @@ function updateStatus() {
     }
     h += '</div>';
 
-
+    // Gateway Link panel
+    var linkPanel = document.getElementById('link-panel');
+    if(s.link_enabled) {
+      linkPanel.style.display = '';
+      var lConn = s.link_connected;
+      document.getElementById('link-status-badge').innerHTML = '<span style="color:'+(lConn?'#2ecc71':'#e74c3c')+'">'+(lConn?'Connected':'Disconnected')+'</span>';
+      var lh = '';
+      if(lConn && s.link_endpoint_name) {
+        lh += '<div class="st-item"><span class="st-label">Endpoint:</span><span class="st-val white">'+s.link_endpoint_name+'</span></div>';
+        if(s.link_endpoint_plugin) lh += '<div class="st-item"><span class="st-label">Plugin:</span><span class="st-val cyan">'+s.link_endpoint_plugin+'</span></div>';
+      }
+      document.getElementById('link-info').innerHTML = lh;
+      // Show controls based on capabilities
+      var caps = s.link_capabilities || {};
+      var lc = '';
+      if(lConn) {
+        if(caps.ptt) lc += '<button onclick="linkCmd({cmd:\\'ptt\\',state:true})" style="padding:6px 14px; background:var(--t-btn); border:1px solid var(--t-btn-border); color:#e0e0e0; border-radius:4px; cursor:pointer;">PTT ON</button><button onclick="linkCmd({cmd:\\'ptt\\',state:false})" style="padding:6px 14px; background:var(--t-btn); border:1px solid var(--t-btn-border); color:#e0e0e0; border-radius:4px; cursor:pointer;">PTT OFF</button>';
+        if(caps.status) lc += '<button onclick="linkCmd({cmd:\\'status\\'})" style="padding:6px 14px; background:var(--t-btn); border:1px solid var(--t-btn-border); color:#e0e0e0; border-radius:4px; cursor:pointer;">Status</button>';
+      }
+      document.getElementById('link-controls').innerHTML = lc;
+    } else {
+      linkPanel.style.display = 'none';
+    }
 
     document.getElementById('status').innerHTML = h;
 
