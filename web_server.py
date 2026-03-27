@@ -8028,7 +8028,7 @@ function updateControls() {
         }
         // Audio level bars
         document.getElementById('link-rx-bar').style.width = (s.link_level||0) + '%';
-        // TX bar — no separate TX level yet
+        document.getElementById('link-tx-bar').style.width = (s.link_tx_level||0) + '%';
       } else if(s.link_enabled) {
         linkGrp.style.display = '';
         document.getElementById('link-ctrl-status').textContent = 'Disconnected';
