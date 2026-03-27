@@ -3450,7 +3450,7 @@ class RadioGateway:
                         if cmd == 'ptt' and isinstance(result, dict):
                             self._link_ptt_active = result.get('ptt', False)
                         elif cmd == 'status' and isinstance(result, dict):
-                            self._link_last_status = result
+                            self._link_last_status = result.get('status', result)
                     self._link_ptt_active = False
                     self._link_last_status = {}
                     self.link_server = GatewayLinkServer(
