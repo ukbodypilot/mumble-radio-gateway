@@ -1887,6 +1887,8 @@ class RadioGateway:
         self.link_server = None           # GatewayLinkServer (duplex audio + commands)
         self.link_audio_source = None     # LinkAudioSource (mixer source for link)
         self.link_muted = False
+        self.link_rx_muted = getattr(config, 'LINK_RX_MUTED', False)   # Mute endpoint→gateway audio
+        self.link_tx_muted = getattr(config, 'LINK_TX_MUTED', False)   # Mute gateway→endpoint audio
         self.aioc_available = False  # Track if AIOC is connected
 
         # SDR rebroadcast — route mixed SDR audio to AIOC radio TX
@@ -4952,7 +4954,7 @@ class RadioGateway:
                         pass
 
                 # Gateway Link: send mixed audio to remote endpoint
-                if self.link_server and self.link_server.connected:
+                if self.link_server and self.link_server.connected and not self.link_tx_muted:
                     try:
                         self.link_server.send_audio(data)
                         # Meter TX level for dashboard (VAD gated)
@@ -5877,6 +5879,8 @@ class RadioGateway:
             'link_capabilities': self.link_server.endpoint_info.get('capabilities', {}) if self.link_server and self.link_server.endpoint_info else {},
             'link_level': self.link_audio_source.audio_level if self.link_audio_source else 0,
             'link_muted': getattr(self, 'link_muted', False),
+            'link_rx_muted': getattr(self, 'link_rx_muted', False),
+            'link_tx_muted': getattr(self, 'link_tx_muted', False),
             'link_ptt_active': getattr(self, '_link_ptt_active', False),
             'link_tx_level': getattr(self, '_link_tx_level', 0),
             'link_endpoint_status': getattr(self, '_link_last_status', {}),

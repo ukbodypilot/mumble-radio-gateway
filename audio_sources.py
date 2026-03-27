@@ -3524,7 +3524,7 @@ class LinkAudioSource(AudioSource):
         self._chunk_queue.append(pcm)
 
     def get_audio(self, chunk_size):
-        if not self.enabled or self.muted:
+        if not self.enabled or self.muted or getattr(self.gateway, 'link_rx_muted', False):
             self.audio_level = max(0, int(self.audio_level * 0.7))
             return None, False
         if not self.server_connected:

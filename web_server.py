@@ -494,6 +494,7 @@ class WebConfigServer:
             'ENABLE_GATEWAY_LINK', 'LINK_PORT',
             'LINK_AUDIO_DUCK', 'LINK_AUDIO_PRIORITY',
             'LINK_AUDIO_BOOST', 'LINK_AUDIO_DISPLAY_GAIN',
+            'LINK_RX_MUTED', 'LINK_TX_MUTED',
         ]),
         ('vad', 'Voice Activity Detection', [
             'ENABLE_VAD', 'VAD_THRESHOLD', 'VAD_ATTACK', 'VAD_RELEASE',
@@ -1789,6 +1790,8 @@ class WebConfigServer:
                                 'remote':   ('remote_audio_muted', 'remote_audio_source'),
                                 'announce': ('announce_input_muted', 'announce_input_source'),
                                 'speaker':  ('speaker_muted', None),
+                                'link_rx':  ('link_rx_muted', None),
+                                'link_tx':  ('link_tx_muted', None),
                             }
                             if source == 'global':
                                 current = gw.tx_muted and gw.rx_muted
@@ -7504,12 +7507,12 @@ updateTelegram();
                 </div>
             </div>
             <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
-                <label style="color:#888; font-size:0.8em; width:3em; text-align:right;">RX</label>
+                <button onclick="linkMuteToggle('rx')" id="link-rx-mute" style="width:3em; padding:4px; font-size:0.75em; border:1px solid var(--t-btn-border); border-radius:3px; background:var(--t-btn); color:#e0e0e0; cursor:pointer;">Mute</button>
                 <input id="link-rx-gain" type="range" min="-10" max="10" step="1" value="0" style="flex:1; accent-color:var(--t-accent);" oninput="linkGain('rx_gain',this.value)">
                 <span id="link-rx-gain-val" style="color:#888; font-size:0.8em; width:3.5em;">0 dB</span>
             </div>
             <div style="display:flex; align-items:center; gap:6px;">
-                <label style="color:#888; font-size:0.8em; width:3em; text-align:right;">TX</label>
+                <button onclick="linkMuteToggle('tx')" id="link-tx-mute" style="width:3em; padding:4px; font-size:0.75em; border:1px solid var(--t-btn-border); border-radius:3px; background:var(--t-btn); color:#e0e0e0; cursor:pointer;">Mute</button>
                 <input id="link-tx-gain" type="range" min="-10" max="10" step="1" value="0" style="flex:1; accent-color:var(--t-accent);" oninput="linkGain('tx_gain',this.value)">
                 <span id="link-tx-gain-val" style="color:#888; font-size:0.8em; width:3.5em;">0 dB</span>
             </div>
@@ -7723,6 +7726,10 @@ function linkGain(cmd, db) {
   var label = cmd === 'rx_gain' ? 'link-rx-gain-val' : 'link-tx-gain-val';
   document.getElementById(label).textContent = db + ' dB';
   linkCmd({cmd: cmd, db: parseInt(db)});
+}
+function linkMuteToggle(dir) {
+  fetch('/mixer', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'toggle', source:'link_'+dir})}).catch(function(){});
 }
 function sendAIText() {
   var text = document.getElementById('ai-text').value.trim();
@@ -8049,6 +8056,11 @@ function updateControls() {
             document.getElementById('link-tx-gain-val').textContent = ls.tx_gain_db + ' dB';
           }
         }
+        // Mute buttons
+        var rxm = document.getElementById('link-rx-mute');
+        var txm = document.getElementById('link-tx-mute');
+        if(rxm) { var rm = s.link_rx_muted; rxm.style.background = rm ? '#5c1a1a' : 'var(--t-btn)'; rxm.style.borderColor = rm ? '#c0392b' : 'var(--t-btn-border)'; rxm.style.color = rm ? '#ff6b6b' : '#e0e0e0'; rxm.textContent = rm ? 'RX M' : 'Mute'; }
+        if(txm) { var tm = s.link_tx_muted; txm.style.background = tm ? '#5c1a1a' : 'var(--t-btn)'; txm.style.borderColor = tm ? '#c0392b' : 'var(--t-btn-border)'; txm.style.color = tm ? '#ff6b6b' : '#e0e0e0'; txm.textContent = tm ? 'TX M' : 'Mute'; }
       } else if(s.link_enabled) {
         linkGrp.style.display = '';
         document.getElementById('link-ctrl-status').textContent = 'Disconnected';

@@ -470,6 +470,8 @@ class Config:
             'LINK_AUDIO_PRIORITY': 3,
             'LINK_AUDIO_BOOST': 1.0,
             'LINK_AUDIO_DISPLAY_GAIN': 1.0,
+            'LINK_RX_MUTED': False,
+            'LINK_TX_MUTED': False,
 
             # Telegram Bot
             'ENABLE_TELEGRAM': False,
