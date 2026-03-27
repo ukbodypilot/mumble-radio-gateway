@@ -2438,6 +2438,28 @@ class WebConfigServer:
                     except BrokenPipeError:
                         pass
                     return
+                elif self.path == '/linkcmd':
+                    # Gateway Link command endpoint — send commands to remote endpoint
+                    length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(length).decode('utf-8')
+                    result = {'ok': False}
+                    try:
+                        data = json_mod.loads(body)
+                        gw = parent.gateway
+                        if gw and gw.link_server and gw.link_server.connected:
+                            gw.link_server.send_command(data)
+                            result = {'ok': True, 'sent': data}
+                        else:
+                            result = {'ok': False, 'error': 'link not connected'}
+                    except Exception as e:
+                        result = {'ok': False, 'error': str(e)}
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(result).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
                 elif self.path == '/catcmd':
                     # CAT radio command endpoint
                     length = int(self.headers.get('Content-Length', 0))
