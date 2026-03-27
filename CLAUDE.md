@@ -36,3 +36,10 @@ Do NOT proceed with gateway work until the config file is present — the gatewa
 - Never commit the `bak/` directory
 - Only commit when the user explicitly asks
 - Never auto-push
+
+## Gateway Link (duplex audio + command protocol)
+- See `docs/gateway_link.md` for architecture, protocol, plugin system, and roadmap
+- See `CHANGELOG.md` for project-wide release history
+- MVP: single endpoint, duplex audio, generic AudioPlugin
+- Vision: all radios as plugins, gateway as mixer + protocol hub
+- Config: `ENABLE_GATEWAY_LINK`, `LINK_PORT` (default 9700)

@@ -119,6 +119,17 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **CRITICAL:** DRA818 38 tones (no 69.3 Hz) — off-by-one CTCSS with TH-9800's 39-tone list
 - **KV4P logging gated behind VERBOSE_LOGGING** (2026-03-26)
 
+## Gateway Link — Duplex Audio Protocol (2026-03-26)
+- **File:** `gateway_link.py` — protocol, server, client, plugin base, AudioPlugin
+- **Endpoint:** `tools/link_endpoint.py` — standalone, no gateway deps
+- **Protocol:** TCP framed `[type 1B][length 2B][payload]` — AUDIO/COMMAND/STATUS/REGISTER/ACK
+- **Plugin arch:** `RadioPlugin` base class → subclass per hardware type
+- **MVP:** single endpoint, duplex audio, AudioPlugin (generic sound card)
+- **Vision:** all radios become plugins; gateway is mixer + UI + protocol hub
+- **Config:** ENABLE_GATEWAY_LINK (default false), LINK_PORT=9700
+- **Integration:** LinkAudioSource in mixer, LINK bar (orange), status dict fields
+- **See:** `docs/gateway_link.md` for full architecture and roadmap; `CHANGELOG.md` for release history
+
 ## MCP Server (gateway_mcp.py) — AI Control Interface (2026-03-25)
 - **File:** `gateway_mcp.py` — stdio MCP server; 31 tools; talks to gateway HTTP API on port 8080
 - **CRITICAL:** MCP server is a Claude Code child process — restarting gateway does NOT restart MCP
