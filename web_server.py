@@ -6738,7 +6738,7 @@ function showToast(msg, level) {
 }
 
 var _statusBusy = false;
-var _statusPollCount = 0;
+var _statusPollCount = 9;
 function updateStatus() {
   if (_statusBusy) return;
   _statusBusy = true;
