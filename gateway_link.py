@@ -609,9 +609,11 @@ class GatewayLinkClient:
             # Run reader until disconnect
             self._reader_loop(sock)
             hb_stop.set()
+            self._close()  # Clean up socket before reconnect
 
             # Disconnected — retry
             if not self._stop.is_set():
+                print(f"  [Link] Disconnected from server")
                 print(f"  [Link] Reconnecting in 5s...")
                 if self._stop.wait(5.0):
                     break
@@ -620,11 +622,14 @@ class GatewayLinkClient:
         """Read frames from the server until disconnect."""
         P = GatewayLinkProtocol
         _frame_count = 0
+        # Recv timeout detects cable-pull (no RST reaches us).
+        # Server heartbeat every 5s — 10s timeout means dead connection.
+        sock.settimeout(10.0)
         try:
             while not self._stop.is_set():
                 result = P.recv_frame(sock)
                 if result is None:
-                    print(f"  [Link] recv_frame returned None after {_frame_count} frames")
+                    print(f"  [Link] Disconnected from server (after {_frame_count} frames)")
                     break
                 _frame_count += 1
                 ftype, payload = result
