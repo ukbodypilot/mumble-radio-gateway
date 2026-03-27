@@ -2477,6 +2477,7 @@ class WebConfigServer:
                         self.wfile.write(json_mod.dumps(result).encode('utf-8'))
                     except BrokenPipeError:
                         pass
+                    return
                 elif self.path == '/catcmd':
                     # CAT radio command endpoint
                     length = int(self.headers.get('Content-Length', 0))
