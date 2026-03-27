@@ -260,7 +260,7 @@ class GatewayLinkServer:
                 pass  # reader thread handles disconnect
 
     def _remove_endpoint(self, name):
-        """Remove an endpoint from the dict and close its socket."""
+        """Remove an endpoint from the dict, close socket, notify callback."""
         with self._endpoints_lock:
             ep = self._endpoints.pop(name, None)
         if ep:
@@ -268,6 +268,11 @@ class GatewayLinkServer:
                 ep.sock.close()
             except OSError:
                 pass
+            if self._on_disconnect:
+                try:
+                    self._on_disconnect(name)
+                except Exception:
+                    pass
 
     def _accept_loop(self):
         """Accept thread: wait for incoming connections."""
