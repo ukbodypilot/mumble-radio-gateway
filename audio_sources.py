@@ -3510,6 +3510,7 @@ class LinkAudioSource(AudioSource):
         self.display_gain = float(getattr(config, 'LINK_AUDIO_DISPLAY_GAIN', 1.0))
         self.server_connected = False
         self.muted = False
+        self.audio_level = 0
         self._chunk_bytes = int(getattr(config, 'AUDIO_RATE', 48000)) * 2 * int(getattr(config, 'AUDIO_CHANNELS', 1)) // 20  # 50ms
         self._chunk_queue = _queue_mod.deque(maxlen=16)
         self._sub_buffer = b''
