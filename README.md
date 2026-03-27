@@ -1,6 +1,6 @@
 # Radio Gateway
 
-A Linux gateway that bridges two-way radios to Mumble VoIP, Broadcastify streaming, and the internet. Handles multiple audio sources with priority-based mixing, SDR receivers, AI-powered announcements, full CAT radio control, and a live web dashboard — all from a single Python process on a Raspberry Pi or any Linux box.
+A Linux gateway that bridges two-way radios (directly and via the AIOC adapter) to a variety of digital endpoints including Mumble VoIP, Broadcastify streaming, and the internet. Handles multiple audio sources with priority-based mixing, SDR receivers, AI-powered announcements, full CAT radio control, and a live web dashboard — all from a single Python process on a Raspberry Pi or any Linux box.
 
 ## Highlights
 
