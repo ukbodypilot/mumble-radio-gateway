@@ -6342,20 +6342,27 @@ pollTimer = setInterval(pollStatus, 1000);
         info = {}
         try:
             # CPU usage — average across cores from /proc/stat delta
+            # Cache result for 1s minimum to prevent near-zero deltas from rapid polls
             if not hasattr(self, '_prev_cpu'):
                 self._prev_cpu = None
-            with open('/proc/stat', 'r') as f:
-                line = f.readline()  # cpu  user nice system idle iowait irq softirq ...
-            parts = line.split()
-            cur = [int(x) for x in parts[1:8]]
-            if self._prev_cpu:
-                d = [c - p for c, p in zip(cur, self._prev_cpu)]
-                total = sum(d) or 1
-                idle = d[3] + d[4]  # idle + iowait
-                info['cpu_pct'] = round(100.0 * (total - idle) / total, 1)
+                self._prev_cpu_time = 0
+                self._cached_cpu_pct = 0.0
+            now = time.monotonic()
+            if now - self._prev_cpu_time < 1.0:
+                info['cpu_pct'] = self._cached_cpu_pct
             else:
-                info['cpu_pct'] = 0.0
-            self._prev_cpu = cur
+                with open('/proc/stat', 'r') as f:
+                    line = f.readline()
+                parts = line.split()
+                cur = [int(x) for x in parts[1:8]]
+                if self._prev_cpu:
+                    d = [c - p for c, p in zip(cur, self._prev_cpu)]
+                    total = sum(d) or 1
+                    idle = d[3] + d[4]  # idle + iowait
+                    self._cached_cpu_pct = round(100.0 * (total - idle) / total, 1)
+                info['cpu_pct'] = self._cached_cpu_pct
+                self._prev_cpu = cur
+                self._prev_cpu_time = now
 
             # Per-core CPU count
             info['cpu_cores'] = os.cpu_count() or 1
