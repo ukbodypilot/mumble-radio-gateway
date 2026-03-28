@@ -496,7 +496,7 @@ def discover_gateway(timeout=5):
                 continue
             # Resolved line format: =;iface;protocol;name;type;domain;hostname;address;port;txt
             parts = line.split(';')
-            if len(parts) >= 9 and parts[0] == '=':
+            if len(parts) >= 9 and parts[0] == '=' and parts[2] == 'IPv4':
                 host = parts[7]
                 port = int(parts[8])
                 print(f"  [Link] mDNS: discovered gateway at {host}:{port}")
