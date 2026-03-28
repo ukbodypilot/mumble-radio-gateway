@@ -449,7 +449,17 @@ Output:
   ...
 ```
 
-**Connect with default audio device:**
+**Auto-discover gateway via mDNS (no IP needed):**
+
+```bash
+python3 tools/link_endpoint.py --name living-room --plugin aioc
+```
+
+The endpoint uses Avahi to find `_radiogateway._tcp` on the local network.
+Requires `avahi-utils` (Debian) or `avahi` (Arch). Falls back to error if
+no gateway found — use `--server` in that case.
+
+**Connect with explicit server address:**
 
 ```bash
 python3 tools/link_endpoint.py \

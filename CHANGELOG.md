@@ -4,18 +4,38 @@ All notable changes to Radio Gateway.
 
 ## [Unreleased]
 
+## [1.7.0] -- 2026-03-27
+
 ### Added
 - Gateway Link: duplex audio + command protocol with plugin architecture (`gateway_link.py`)
   - Framed TCP protocol: `[type 1B][length 2B][payload]` -- 5 frame types (AUDIO/COMMAND/STATUS/REGISTER/ACK)
-  - `GatewayLinkServer` (master side): single endpoint, frame dispatch, 5s heartbeat
-  - `GatewayLinkClient` (endpoint side): auto-reconnect with 5s backoff, registration
   - `RadioPlugin` base class for hardware abstraction (setup/teardown/get_audio/put_audio/execute/get_status)
   - `AudioPlugin`: generic sound card via PyAudio (any ALSA/PipeWire device)
+  - `AIOCPlugin`: finds AIOC device via `/proc/asound/cards` (not PyAudio)
   - `tools/link_endpoint.py`: standalone endpoint script with plugin registry, gain control, status reporter
   - `LinkAudioSource`: mixer integration with level metering, audio boost, duck support
-  - LINK audio bar (orange) on dashboard
   - Config: `ENABLE_GATEWAY_LINK`, `LINK_PORT`, `LINK_AUDIO_PRIORITY`, `LINK_AUDIO_DUCK`, `LINK_AUDIO_BOOST`, `LINK_AUDIO_DISPLAY_GAIN`
+- Multi-endpoint support: N simultaneous connections, dict keyed by endpoint name
+  - Dynamic `LinkAudioSource` creation/destruction per endpoint
+  - Per-endpoint controls on `/controls` page (PTT button, RX/TX level bars, gain sliders, mute buttons)
+  - Per-endpoint settings persisted to `~/.config/radio-gateway/link_endpoints.json`
+  - RX/TX gain controls in dB (-10 to +10), persisted per endpoint
+  - RX/TX mute (gateway-side, per-endpoint)
+  - VAD-gated level bars
+- Command language: `ptt`, `rx_gain`, `tx_gain`, `status` + ACK responses
+- PTT safety timeout (60s auto-unkey)
+- Bidirectional heartbeat (5s interval) with dead peer detection (15s)
+- 10s socket timeout on both sides for cable-pull detection
+- mDNS auto-discovery: gateway publishes `_radiogateway._tcp`, endpoint discovers via `avahi-browse`
+- Zero-config endpoint usage: `python3 link_endpoint.py --name pi-aioc --plugin aioc`
 - `docs/gateway_link.md`: comprehensive architecture and protocol documentation
+- LINK audio bar (orange) on dashboard
+
+### Fixed
+- Client deadlock: `_send` calling `_close` while holding lock
+- Reader cleanup: only calls `on_disconnect` if it owns the entry
+- `/linkcmd` missing `return` caused config wipes on POST
+- Config page `_CONFIG_LAYOUT` must include all sections or Save wipes unlisted ones
 
 ## [1.6.0] -- 2026-03-26
 

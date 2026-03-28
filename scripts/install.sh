@@ -55,7 +55,9 @@ if [ "$DISTRO" = "arch" ]; then
         ffmpeg \
         opus \
         git \
-        tmux
+        tmux \
+        avahi \
+        nss-mdns
 else
     sudo apt-get update -qq
     sudo apt-get install -y \
@@ -70,7 +72,9 @@ else
         libopus0 \
         libopus-dev \
         git \
-        tmux
+        tmux \
+        avahi-daemon \
+        avahi-utils
 fi
 
 echo "  ✓ System packages installed"

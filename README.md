@@ -14,6 +14,7 @@ A Linux gateway that bridges two-way radios (directly and via the AIOC adapter) 
 - **Room Monitor** — browser page and Android APK stream device mic to the gateway mixer over WebSocket
 - **MCP server** — 31 tools for AI control of the entire gateway (status, tuning, PTT, TTS, mixer, config, recordings)
 - **Telegram bot** — text commands via Claude Code in tmux, voice notes transmitted directly over radio
+- **Gateway Link** — connect remote radios over TCP with duplex audio, PTT, and commands. Plugin architecture for any hardware. mDNS auto-discovery — zero config
 - **Cloudflare tunnel** — free public HTTPS, no port forwarding or domain needed
 
 ## Screenshots
@@ -156,6 +157,7 @@ Priority 2           → KV4P HT          [→ Mumble TX, with ducking — confi
 Priority 3 (default) → SDRSV            [→ Mumble TX, Remote Audio Link client]
 Priority 4           → EchoLink         [→ Mumble TX]
 Priority 5           → Monitor          [→ Mixer only, no PTT — WebMonitorSource]
+Priority 3 (default) → Link endpoints   [→ Mixer, per-endpoint — Gateway Link]
 ```
 
 **Mumble RX and WebMic** bypass the mixer entirely — audio goes directly to radio TX with PTT.
@@ -411,6 +413,48 @@ Client (receives): REMOTE_AUDIO_ROLE = client, REMOTE_AUDIO_PORT = 9600
 ```
 
 Server dials out to client. Audio flows one way. Auto-reconnects on link drop. SDRSV participates in the duck/priority system — configurable priority vs local SDRs.
+
+## Gateway Link
+
+Connects remote radios to the gateway over TCP with duplex audio and structured commands. Any number of endpoints can connect simultaneously — each gets its own audio source in the mixer, control panel, and audio bars.
+
+### Architecture
+```
+Endpoint (Pi + AIOC + radio)     Gateway
+  link_endpoint.py          ←TCP→  GatewayLinkServer
+  ├── AIOCPlugin                    ├── LinkAudioSource per endpoint
+  │   ├── audio in/out              ├── per-endpoint controls (PTT, gain, mute)
+  │   └── HID PTT                   └── mDNS publish (_radiogateway._tcp)
+  └── mDNS discover
+```
+
+### Features
+- **Duplex audio** — endpoint mic → gateway mixer, gateway mix → endpoint speaker
+- **Plugin architecture** — `RadioPlugin` base class, `AudioPlugin` (generic sound card), `AIOCPlugin` (sound + PTT)
+- **mDNS discovery** — gateway publishes `_radiogateway._tcp`, endpoints find it automatically
+- **Per-endpoint controls** — PTT toggle, RX/TX gain (-10 to +10 dB), RX/TX mute
+- **Structured commands** — JSON over framed TCP with ACK responses
+- **Cable-pull resilient** — 10s socket timeout, bidirectional heartbeat, dead peer detection
+- **Settings persistence** — endpoint gains in `~/.config/link-endpoint/settings.json`, gateway mutes in `~/.config/radio-gateway/link_endpoints.json`
+- **PTT safety** — 60s auto-unkey timeout
+
+### Usage
+```bash
+# Endpoint (auto-discovers gateway on LAN):
+python3 tools/link_endpoint.py --name pi-aioc --plugin aioc
+
+# Endpoint (manual server):
+python3 tools/link_endpoint.py --server 192.168.2.140:9700 --name pi-aioc --plugin aioc
+```
+
+### Configuration
+```ini
+[link]
+ENABLE_GATEWAY_LINK = true
+LINK_PORT = 9700
+```
+
+See `docs/gateway_link.md` for full protocol spec, plugin development guide, and roadmap.
 
 ### Announcement Input (Port 9601)
 
@@ -1005,6 +1049,16 @@ radio-gateway/
 
 <details>
 <summary>Full changelog (click to expand)</summary>
+
+### v1.7.0
+
+- **Gateway Link** — multi-endpoint duplex audio + command protocol over TCP with plugin architecture
+- **AIOCPlugin** — first hardware plugin: AIOC USB audio + HID GPIO PTT
+- **mDNS auto-discovery** — gateway publishes `_radiogateway._tcp`, endpoints find it with zero config
+- **Multi-endpoint** — N simultaneous connections, each with own mixer source, controls, audio bars
+- **Command language** — PTT, RX/TX gain, status with ACK responses, 60s PTT safety timeout
+- **Cable-pull resilience** — 10s socket timeout, bidirectional heartbeat, dead peer detection
+- **Per-endpoint settings** — gains persisted on endpoint, mutes persisted on gateway
 
 ### v1.6.0
 
