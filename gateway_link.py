@@ -185,7 +185,7 @@ class GatewayLinkServer:
         with self._endpoints_lock:
             names = list(self._endpoints.keys())
         for name in names:
-            self._remove_endpoint(name)
+            self._remove_endpoint(name, reason="stop")
         if self._server_sock:
             try:
                 self._server_sock.close()
@@ -259,10 +259,12 @@ class GatewayLinkServer:
             except (OSError, ConnectionError):
                 pass  # reader thread handles disconnect
 
-    def _remove_endpoint(self, name):
+    def _remove_endpoint(self, name, reason=""):
         """Remove an endpoint from the dict, close socket, notify callback."""
         with self._endpoints_lock:
             ep = self._endpoints.pop(name, None)
+        if ep:
+            print(f"  [Link] _remove_endpoint({name}) reason={reason}")
         if ep:
             try:
                 ep.sock.close()
@@ -405,16 +407,19 @@ class GatewayLinkServer:
                 print(f"  [Link] Reader error for {ep_name or addr}: {e}")
         finally:
             # Remove from endpoints dict (only if this reader owns the entry)
+            _reader_removed = False
             if ep_name:
                 with self._endpoints_lock:
                     existing = self._endpoints.get(ep_name)
                     if existing is not None and existing.sock is sock:
                         del self._endpoints[ep_name]
+                        _reader_removed = True
+                print(f"  [Link] Reader cleanup: {ep_name} removed={_reader_removed} (entry={'exists' if existing else 'gone'})")
             try:
                 sock.close()
             except OSError:
                 pass
-            if ep_name:
+            if ep_name and _reader_removed:
                 print(f"  [Link] Endpoint disconnected: {ep_name}")
                 if self._on_disconnect:
                     try:
@@ -451,7 +456,7 @@ class GatewayLinkServer:
 
             for name in dead:
                 print(f"  [Link] Dead peer detected: {name} — closing")
-                self._remove_endpoint(name)
+                self._remove_endpoint(name, reason="dead_peer")
 
 
 # ---------------------------------------------------------------------------
