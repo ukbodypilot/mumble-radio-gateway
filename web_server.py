@@ -6705,7 +6705,7 @@ pollTimer = setInterval(pollStatus, 1000);
     <h3 style="margin:0; color:var(--t-accent); font-size:1.1em;">Gateway Link</h3>
     <span id="link-status-badge" style="font-weight:bold;"></span>
   </div>
-  <div class="st-row" id="link-info"></div>
+  <div id="link-info"></div>
 </div>
 
 <div id="usbip-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
