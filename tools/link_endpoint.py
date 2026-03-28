@@ -28,7 +28,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from gateway_link import GatewayLinkClient, AudioPlugin, AIOCPlugin, RadioPlugin
+    from gateway_link import GatewayLinkClient, AudioPlugin, AIOCPlugin, RadioPlugin, discover_gateway
 except ImportError as e:
     print(f"[Endpoint] Failed to import gateway_link: {e}")
     print("[Endpoint] Make sure gateway_link.py is in the parent directory.")
@@ -194,13 +194,18 @@ def main():
         list_audio_devices()
         sys.exit(0)
 
-    # Require --server and --name for normal operation
-    if not args.server:
-        parser.error('--server is required (e.g. --server 192.168.2.140:9700)')
+    # Resolve server address — auto-discover via mDNS if --server not given
+    if args.server:
+        host, port = parse_server(args.server)
+    else:
+        print("[Endpoint] No --server specified — discovering gateway via mDNS...")
+        result = discover_gateway(timeout=10)
+        if result:
+            host, port = result
+        else:
+            parser.error('Gateway not found via mDNS. Use --server HOST:PORT')
     if not args.name:
         parser.error('--name is required (e.g. --name garage-radio)')
-
-    host, port = parse_server(args.server)
 
     # Load and set up plugin
     print(f"[Endpoint] Loading plugin: {args.plugin}")

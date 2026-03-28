@@ -178,6 +178,17 @@ class GatewayLinkServer:
                                                   name="LinkHeartbeat", daemon=True)
         self._heartbeat_thread.start()
 
+        # Publish mDNS service for auto-discovery
+        self._mdns_proc = None
+        try:
+            import subprocess
+            self._mdns_proc = subprocess.Popen(
+                ['avahi-publish-service', 'RadioGateway', '_radiogateway._tcp', str(self._port)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"  [Link] mDNS: published _radiogateway._tcp on port {self._port}")
+        except Exception as e:
+            print(f"  [Link] mDNS: publish failed ({e}) — endpoints must use --server")
+
     def stop(self):
         """Shut down server, close all connections."""
         self._stop.set()
@@ -191,6 +202,12 @@ class GatewayLinkServer:
                 self._server_sock.close()
             except OSError:
                 pass
+        if self._mdns_proc:
+            try:
+                self._mdns_proc.terminate()
+            except Exception:
+                pass
+            self._mdns_proc = None
             self._server_sock = None
         if self._accept_thread:
             self._accept_thread.join(timeout=3)
@@ -457,6 +474,40 @@ class GatewayLinkServer:
             for name in dead:
                 print(f"  [Link] Dead peer detected: {name} — closing")
                 self._remove_endpoint(name, reason="dead_peer")
+
+
+# ---------------------------------------------------------------------------
+# mDNS Discovery
+# ---------------------------------------------------------------------------
+
+def discover_gateway(timeout=5):
+    """Discover a RadioGateway on the local network via mDNS.
+
+    Returns (host, port) or None if not found.
+    Requires avahi-browse to be installed.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['avahi-browse', '-t', '-r', '-p', '_radiogateway._tcp'],
+            capture_output=True, text=True, timeout=timeout)
+        for line in result.stdout.strip().split('\n'):
+            if not line or line.startswith('+'):
+                continue
+            # Resolved line format: =;iface;protocol;name;type;domain;hostname;address;port;txt
+            parts = line.split(';')
+            if len(parts) >= 9 and parts[0] == '=':
+                host = parts[7]
+                port = int(parts[8])
+                print(f"  [Link] mDNS: discovered gateway at {host}:{port}")
+                return (host, port)
+    except FileNotFoundError:
+        print("  [Link] mDNS: avahi-browse not installed — use --server")
+    except subprocess.TimeoutExpired:
+        print("  [Link] mDNS: no gateway found on local network")
+    except Exception as e:
+        print(f"  [Link] mDNS: discovery error: {e}")
+    return None
 
 
 # ---------------------------------------------------------------------------
