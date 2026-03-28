@@ -1183,3 +1183,170 @@ class AIOCPlugin(AudioPlugin):
         self._set_ptt(False)
         with self._ptt_timer_lock:
             self._ptt_timer = None
+
+
+# ---------------------------------------------------------------------------
+# FTMPlugin — Yaesu FTM radio via USB sound card + serial PTT
+# ---------------------------------------------------------------------------
+
+class FTMPlugin(AudioPlugin):
+    """Yaesu FTM plugin — USB sound card audio + serial PTT.
+
+    Audio flows through a USB sound card (C-Media or similar) connected to
+    the radio's speaker/mic breakout.  PTT is controlled via a Yaesu SCU-56
+    (or similar) USB serial cable.
+
+    Three PTT modes are supported:
+        rts  — toggle RTS line (default)
+        dtr  — toggle DTR line
+        cat  — Yaesu 5-byte CAT command (0x08 on / 0x88 off)
+
+    Config keys (in addition to AudioPlugin keys):
+        serial_port (str) — serial device path (default '/dev/ttyUSB0')
+        ptt_mode (str)    — 'rts', 'dtr', or 'cat' (default 'rts')
+        baud_rate (int)   — serial baud rate (default 9600)
+        ptt_timeout (int) — safety auto-unkey seconds (default 60)
+    """
+
+    name = "ftm"
+    capabilities = {
+        "audio_rx": True,
+        "audio_tx": True,
+        "ptt": True,
+        "frequency": False,
+        "ctcss": False,
+        "power": False,
+        "rx_gain": True,
+        "tx_gain": True,
+        "smeter": False,
+        "status": True,
+    }
+
+    def __init__(self):
+        super().__init__()
+        self._serial = None
+        self._serial_port = '/dev/ttyUSB0'
+        self._ptt_mode = 'rts'
+        self._baud_rate = 9600
+        self._ptt_on = False
+        self._ptt_timeout = 60
+        self._ptt_timer = None
+        self._ptt_timer_lock = threading.Lock()
+
+    def setup(self, config):
+        """Open USB sound card audio + serial port for PTT."""
+        self._serial_port = config.get('serial_port', '/dev/ttyUSB0')
+        self._ptt_mode = config.get('ptt_mode', 'rts').lower()
+        self._baud_rate = int(config.get('baud_rate', 9600))
+        self._ptt_timeout = int(config.get('ptt_timeout', 60))
+
+        if self._ptt_mode not in ('rts', 'dtr', 'cat'):
+            print(f"  [Link] FTMPlugin: unknown ptt_mode '{self._ptt_mode}', defaulting to 'rts'")
+            self._ptt_mode = 'rts'
+
+        # Open audio streams via parent class
+        super().setup(config)
+
+        # Open serial port for PTT
+        try:
+            import serial as _serial_mod
+            self._serial = _serial_mod.Serial(
+                port=self._serial_port,
+                baudrate=self._baud_rate,
+                bytesize=8,
+                parity='N',
+                stopbits=2,
+                timeout=1,
+                rtscts=False,
+                dsrdtr=False,
+            )
+            # Ensure PTT is off on connect
+            self._serial.rts = False
+            self._serial.dtr = False
+            print(f"  [Link] FTMPlugin: serial opened {self._serial_port} "
+                  f"@ {self._baud_rate} baud, PTT mode: {self._ptt_mode}")
+        except Exception as e:
+            print(f"  [Link] FTMPlugin: serial open failed: {e}")
+            print(f"         PTT will not work. Check cable and permissions.")
+            self._serial = None
+
+    def teardown(self):
+        """Unkey PTT, cancel safety timer, and close serial + audio."""
+        self._cancel_ptt_timer()
+        if self._ptt_on:
+            self._set_ptt(False)
+        if self._serial:
+            try:
+                self._serial.close()
+            except Exception:
+                pass
+            self._serial = None
+        super().teardown()
+
+    def execute(self, cmd):
+        """Handle commands from master gateway."""
+        action = cmd.get('cmd', '') if isinstance(cmd, dict) else ''
+        if action == 'ptt':
+            state = bool(cmd.get('state', False))
+            result = self._set_ptt(state)
+            if result.get('ok'):
+                if state:
+                    self._reset_ptt_timer()
+                else:
+                    self._cancel_ptt_timer()
+            return result
+        return super().execute(cmd)
+
+    def get_status(self):
+        status = super().get_status()
+        status.update({
+            "plugin": self.name,
+            "serial_port": self._serial_port,
+            "serial_connected": self._serial is not None,
+            "ptt_mode": self._ptt_mode,
+            "ptt_active": self._ptt_on,
+        })
+        return status
+
+    def _set_ptt(self, state_on):
+        """Key or unkey the radio via serial line or CAT command."""
+        if not self._serial:
+            return {"ok": False, "error": "serial not connected"}
+        try:
+            if self._ptt_mode == 'rts':
+                self._serial.rts = state_on
+            elif self._ptt_mode == 'dtr':
+                self._serial.dtr = state_on
+            elif self._ptt_mode == 'cat':
+                # Yaesu 5-byte CAT: [0x00, 0x00, 0x00, 0x00, opcode]
+                opcode = 0x08 if state_on else 0x88
+                self._serial.write(bytes([0x00, 0x00, 0x00, 0x00, opcode]))
+            self._ptt_on = state_on
+            print(f"  [Link] FTMPlugin: PTT {'ON' if state_on else 'OFF'} ({self._ptt_mode})")
+            return {"ok": True, "ptt": state_on}
+        except Exception as e:
+            print(f"  [Link] FTMPlugin: PTT error: {e}")
+            return {"ok": False, "error": str(e)}
+
+    def _reset_ptt_timer(self):
+        """Start or reset the PTT safety timeout timer."""
+        with self._ptt_timer_lock:
+            if self._ptt_timer:
+                self._ptt_timer.cancel()
+            self._ptt_timer = threading.Timer(self._ptt_timeout, self._ptt_timeout_fired)
+            self._ptt_timer.daemon = True
+            self._ptt_timer.start()
+
+    def _cancel_ptt_timer(self):
+        """Cancel the PTT safety timeout timer."""
+        with self._ptt_timer_lock:
+            if self._ptt_timer:
+                self._ptt_timer.cancel()
+                self._ptt_timer = None
+
+    def _ptt_timeout_fired(self):
+        """Called when PTT has been held too long — auto-unkey for safety."""
+        print(f"  [Link] FTMPlugin: WARNING — PTT safety timeout ({self._ptt_timeout}s), auto-unkey")
+        self._set_ptt(False)
+        with self._ptt_timer_lock:
+            self._ptt_timer = None

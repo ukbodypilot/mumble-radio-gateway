@@ -3555,6 +3555,7 @@ class LinkAudioSource(AudioSource):
             self.audio_level = display_level if display_level > self.audio_level else int(self.audio_level * 0.7 + display_level * 0.3)
         else:
             self.audio_level = max(0, int(self.audio_level * 0.7))
+            return None, False  # Gate silence — don't feed noise into mixer
 
         # Audio boost
         if self.audio_boost != 1.0:

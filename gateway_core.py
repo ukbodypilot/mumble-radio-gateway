@@ -3502,6 +3502,12 @@ class RadioGateway:
                             self._link_ptt_active[name] = result.get('ptt', False)
                         elif cmd == 'status' and isinstance(result, dict):
                             self._link_last_status[name] = result.get('status', result)
+                        elif cmd in ('rx_gain', 'tx_gain') and isinstance(result, dict):
+                            if name not in self._link_last_status:
+                                self._link_last_status[name] = {}
+                            for k in ('rx_gain_db', 'tx_gain_db'):
+                                if k in result:
+                                    self._link_last_status[name][k] = result[k]
 
                     self.link_server = GatewayLinkServer(
                         port=link_port,
