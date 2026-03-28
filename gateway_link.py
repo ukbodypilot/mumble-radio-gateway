@@ -323,7 +323,7 @@ class GatewayLinkServer:
                     pass
                 return
 
-            sock.settimeout(None)
+            sock.settimeout(10.0)  # 10s timeout for send+recv — detects cable pull
 
             info = json.loads(payload)
             ep_name = info.get('name', '')
