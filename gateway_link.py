@@ -538,6 +538,7 @@ class GatewayLinkClient:
 
     def _send(self, frame_type, payload):
         """Thread-safe send to the server socket."""
+        _need_close = False
         with self._send_lock:
             sock = self._sock
             if sock is None:
@@ -546,7 +547,13 @@ class GatewayLinkClient:
                 GatewayLinkProtocol.send_frame(sock, frame_type, payload)
             except (OSError, ConnectionError) as e:
                 print(f"  [Link] Client send error: {e}")
-                self._close()
+                self._sock = None  # Mark as disconnected
+                _need_close = True
+        if _need_close:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
     def _close(self):
         """Close the connection."""
