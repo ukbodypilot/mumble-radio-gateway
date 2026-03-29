@@ -9,7 +9,7 @@ any work on the mixer.
 **Design doc:** `docs/mixer-v2-design.md`
 **This file:** `docs/mixer-v2-progress.md`
 
-## Current Status: LISTENBUS BUILT — NEEDS TESTING
+## Current Status: LISTENBUS LIVE — PARITY VERIFIED
 
 ## Completed
 - [x] Discussed use cases with user (2026-03-29)
@@ -27,8 +27,9 @@ any work on the mixer.
 - [x] All 15 add_source call sites updated with bus_priority/duckable/deterministic
 - [x] Main loop 8-tuple replaced with BusOutput consumption
 
+- [x] Verified parity — gateway running on ListenBus, user confirmed working (2026-03-29)
+
 ## Next Steps (in order)
-7. [ ] Verify parity — gateway works identically with new code (NEEDS GATEWAY RESTART)
 8. [ ] Build SoloBus
 9. [ ] Build DuplexRepeaterBus
 10. [ ] Build SimplexRepeaterBus (lower priority)
@@ -56,7 +57,12 @@ any work on the mixer.
 ## Test Log
 | Date | Test | Result | Notes |
 |------|------|--------|-------|
-| (none yet) | | | |
+| 2026-03-29 | Gateway startup | PASS | No errors, all sources registered |
+| 2026-03-29 | SDR audio flow | PASS | SDR1/SDR2 levels 61-68%, audio reaching sinks |
+| 2026-03-29 | Mumble delivery | PASS | Connected, audio flowing |
+| 2026-03-29 | Broadcastify stream | PASS | DarkIce running, 518KB sent, healthy RTT |
+| 2026-03-29 | SDR peer ducking | PASS | SDR1 ducked by higher-priority SDR2 (correct) |
+| 2026-03-29 | User acceptance | PASS | User confirmed normal operation |
 
 ## Known Issues
 (none yet)
