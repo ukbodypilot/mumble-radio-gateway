@@ -13,7 +13,6 @@ Examples:
     python3 tools/link_endpoint.py --server 192.168.2.140:9700 --name garage-radio --plugin audio --device hw:1,0
     python3 tools/link_endpoint.py --server 192.168.2.140:9700 --name garage-aioc --plugin aioc
     python3 tools/link_endpoint.py --server 192.168.2.140:9700 --name mobile-kv4p --plugin kv4p --device /dev/ttyUSB0
-    python3 tools/link_endpoint.py --name pi-ftm --plugin ftm --device hw:3,0 --serial /dev/ttyUSB0 --ptt-mode rts
 """
 
 import argparse
@@ -29,7 +28,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from gateway_link import GatewayLinkClient, AudioPlugin, AIOCPlugin, FTMPlugin, RadioPlugin, discover_gateway
+    from gateway_link import GatewayLinkClient, AudioPlugin, AIOCPlugin, RadioPlugin, discover_gateway
 except ImportError as e:
     print(f"[Endpoint] Failed to import gateway_link: {e}")
     print("[Endpoint] Make sure gateway_link.py is in the parent directory.")
@@ -43,7 +42,6 @@ except ImportError as e:
 _PLUGINS = {
     'audio': AudioPlugin,
     'aioc': AIOCPlugin,
-    'ftm': FTMPlugin,
 }
 
 
@@ -186,13 +184,6 @@ def main():
                         help='Input gain multiplier (default: 1.0)')
     parser.add_argument('--status-interval', type=float, default=10.0,
                         help='Status report interval in seconds (default: 10)')
-    parser.add_argument('--serial', default='/dev/ttyUSB0',
-                        help='Serial port for PTT (FTM plugin, default: /dev/ttyUSB0)')
-    parser.add_argument('--ptt-mode', default='rts',
-                        choices=['rts', 'dtr', 'cat'],
-                        help='PTT method: rts, dtr, or cat (default: rts)')
-    parser.add_argument('--baud', type=int, default=9600,
-                        help='Serial baud rate (default: 9600)')
     parser.add_argument('--list-devices', action='store_true',
                         help='List available audio devices and exit')
 
@@ -224,9 +215,6 @@ def main():
         'device': args.device,
         'rate': args.rate,
         'gain': args.gain,
-        'serial_port': args.serial,
-        'ptt_mode': args.ptt_mode,
-        'baud_rate': args.baud,
     }
 
     try:
