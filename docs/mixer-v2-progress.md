@@ -1,0 +1,65 @@
+# Mixer v2.0 — Progress & Tracking Log
+
+## READ THIS FIRST
+This file tracks the progress of the v2.0 mixer rewrite. If you are a new
+Claude session, read this file AND `docs/mixer-v2-design.md` before doing
+any work on the mixer.
+
+**Branch:** `v2.0-mixer` (branched from `main` on 2026-03-29)
+**Design doc:** `docs/mixer-v2-design.md`
+**This file:** `docs/mixer-v2-progress.md`
+
+## Current Status: DESIGN COMPLETE — READY TO BUILD
+
+## Completed
+- [x] Discussed use cases with user (2026-03-29)
+- [x] Defined 4 bus types: duplex repeater, simplex repeater, listen, solo
+- [x] Agreed source processing stays on sources (not in busses)
+- [x] Agreed sources can be on multiple busses
+- [x] Wrote design doc (`docs/mixer-v2-design.md`)
+- [x] Branched `v2.0-mixer` from `main`
+
+## Next Steps (in order)
+1. [ ] Build `audio_bus.py` — base class + ListenBus
+2. [ ] Port ducking state machine from AudioMixer to ListenBus (generalized, no source names)
+3. [ ] Port signal detection (hysteresis attack/release) to bus module
+4. [ ] Port fade-in/fade-out to bus module
+5. [ ] Port `_mix_audio_streams` (additive + tanh limiter) to bus module
+6. [ ] Wire ListenBus into gateway_core.py replacing AudioMixer
+7. [ ] Verify parity — gateway works identically with new code
+8. [ ] Build SoloBus
+9. [ ] Build DuplexRepeaterBus
+10. [ ] Build SimplexRepeaterBus (lower priority)
+11. [ ] Update web UI — bus config page
+12. [ ] Merge to main when stable
+
+## Design Decisions Log
+| Date | Decision | Rationale |
+|------|----------|-----------|
+| 2026-03-29 | 4 bus types | Covers all current and planned use cases |
+| 2026-03-29 | Source processing stays on source | Bus shouldn't care about HPF/LPF/gate — it just routes clean PCM |
+| 2026-03-29 | Sources can be on multiple busses | Needed for e.g. D75 on solo + repeater |
+| 2026-03-29 | Ducking is per-bus, priority-based | No more hardcoded "AIOC ducks SDRs" rules |
+| 2026-03-29 | Duplex repeater is high priority | User needs it for cross-band linking |
+| 2026-03-29 | Solo bus is the building block | Every radio starts solo, then connects to other busses |
+
+## Open Questions (from design doc)
+1. Bus config format: INI or JSON? (not yet decided)
+2. Web UI: own page or on Controls? (not yet decided)
+3. Multiple listen busses? (not yet decided)
+4. Link endpoint auto-creates solo bus? (not yet decided)
+5. Announcement routing to specific bus or broadcast? (not yet decided)
+6. SDR rebroadcast: becomes duplex repeater or stays special? (not yet decided)
+
+## Test Log
+| Date | Test | Result | Notes |
+|------|------|--------|-------|
+| (none yet) | | | |
+
+## Known Issues
+(none yet)
+
+## Files Changed
+- `docs/mixer-v2-design.md` — architecture design doc
+- `docs/mixer-v2-progress.md` — this file
+- `audio_bus.py` — (not yet created) new bus module

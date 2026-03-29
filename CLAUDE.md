@@ -37,6 +37,20 @@ Do NOT proceed with gateway work until the config file is present — the gatewa
 - Only commit when the user explicitly asks
 - Never auto-push
 
+## Mixer v2.0 Rewrite (ACTIVE — branch: v2.0-mixer)
+**READ THESE FIRST if working on the mixer:**
+- `docs/mixer-v2-design.md` — architecture design (bus types, source/sink model, routing, API)
+- `docs/mixer-v2-progress.md` — progress tracking, decisions log, next steps, test results
+
+The v2.0 rewrite replaces the monolithic AudioMixer with a bus-based architecture:
+- **4 bus types:** duplex repeater, simplex repeater, listen, solo
+- **Sources own their processing** (gate/HPF/LPF/notch/gain) — busses just route clean PCM
+- **Ducking is per-bus, priority-based** — no hardcoded source name rules
+- **Sources can be on multiple busses**
+- **ListenBus replaces current AudioMixer** as the first migration step
+
+Update `docs/mixer-v2-progress.md` after every session with what was done, decisions made, and test results.
+
 ## Gateway Link (duplex audio + command protocol)
 - See `docs/gateway_link.md` for architecture, protocol, plugin system, and roadmap
 - See `CHANGELOG.md` for project-wide release history
