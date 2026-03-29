@@ -9,7 +9,7 @@ any work on the mixer.
 **Design doc:** `docs/mixer-v2-design.md`
 **This file:** `docs/mixer-v2-progress.md`
 
-## Current Status: DESIGN COMPLETE — READY TO BUILD
+## Current Status: LISTENBUS BUILT — NEEDS TESTING
 
 ## Completed
 - [x] Discussed use cases with user (2026-03-29)
@@ -18,15 +18,17 @@ any work on the mixer.
 - [x] Agreed sources can be on multiple busses
 - [x] Wrote design doc (`docs/mixer-v2-design.md`)
 - [x] Branched `v2.0-mixer` from `main`
+- [x] Built `audio_bus.py` — utilities, BusOutput, SourceSlot, DuckGroup, AudioBus base, ListenBus, stubs
+- [x] Ported ducking state machine (DuckGroup) — generalized, no source names
+- [x] Ported signal detection (hysteresis attack/release) to ListenBus
+- [x] Ported fade-in/fade-out to module-level utilities
+- [x] Ported `_mix_audio_streams` (additive + tanh limiter) to module-level utility
+- [x] Wired ListenBus into gateway_core.py replacing AudioMixer
+- [x] All 15 add_source call sites updated with bus_priority/duckable/deterministic
+- [x] Main loop 8-tuple replaced with BusOutput consumption
 
 ## Next Steps (in order)
-1. [ ] Build `audio_bus.py` — base class + ListenBus
-2. [ ] Port ducking state machine from AudioMixer to ListenBus (generalized, no source names)
-3. [ ] Port signal detection (hysteresis attack/release) to bus module
-4. [ ] Port fade-in/fade-out to bus module
-5. [ ] Port `_mix_audio_streams` (additive + tanh limiter) to bus module
-6. [ ] Wire ListenBus into gateway_core.py replacing AudioMixer
-7. [ ] Verify parity — gateway works identically with new code
+7. [ ] Verify parity — gateway works identically with new code (NEEDS GATEWAY RESTART)
 8. [ ] Build SoloBus
 9. [ ] Build DuplexRepeaterBus
 10. [ ] Build SimplexRepeaterBus (lower priority)
@@ -60,6 +62,7 @@ any work on the mixer.
 (none yet)
 
 ## Files Changed
+- `audio_bus.py` — NEW: bus module (ListenBus, DuckGroup, SourceSlot, utilities, stubs)
+- `gateway_core.py` — MODIFIED: imports ListenBus, replaces AudioMixer instantiation, 15 add_source calls updated, main loop 8-tuple replaced with BusOutput
 - `docs/mixer-v2-design.md` — architecture design doc
 - `docs/mixer-v2-progress.md` — this file
-- `audio_bus.py` — (not yet created) new bus module

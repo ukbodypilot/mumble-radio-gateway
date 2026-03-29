@@ -107,6 +107,7 @@ from audio_sources import (
     KV4PCATClient, KV4PAudioSource, NetworkAnnouncementSource,
     WebMicSource, WebMonitorSource, LinkAudioSource, StreamOutputSource, AudioMixer, generate_cw_pcm,
 )
+from audio_bus import ListenBus
 from ptt import RelayController, GPIORelayController
 from cat_client import RadioCATClient, D75CATClient
 from smart_announce import SmartAnnouncementManager
@@ -1869,8 +1870,8 @@ class RadioGateway:
         self._sync_sdr2_processor()
         self._sync_d75_processor()
         
-        # Initialize audio mixer and sources
-        self.mixer = AudioMixer(config)
+        # Initialize audio bus (v2.0 mixer replacement) and sources
+        self.mixer = ListenBus("monitor", config)
         self.radio_source = None  # Will be initialized after AIOC setup
         self.sdr_source = None  # SDR1 receiver audio source
         self.sdr_muted = False  # SDR1-specific mute
@@ -2976,7 +2977,7 @@ class RadioGateway:
             if self.aioc_available:
                 try:
                     self.radio_source = AIOCRadioSource(self.config, self)
-                    self.mixer.add_source(self.radio_source)
+                    self.mixer.add_source(self.radio_source, bus_priority=1, duckable=False)
                     if self.config.VERBOSE_LOGGING:
                         print("✓ Radio audio source added to mixer")
                 except Exception as source_err:
@@ -3019,7 +3020,7 @@ class RadioGateway:
             if self.config.ENABLE_PLAYBACK:
                 try:
                     self.playback_source = FilePlaybackSource(self.config, self)
-                    self.mixer.add_source(self.playback_source)
+                    self.mixer.add_source(self.playback_source, bus_priority=0, duckable=False, deterministic=True)
                     print("✓ File playback source added to mixer")
                     
                     # Show available audio files
@@ -3082,7 +3083,7 @@ class RadioGateway:
                         self.sdr_source.duck = self.config.SDR_DUCK
                         self.sdr_source.mix_ratio = self.config.SDR_MIX_RATIO
                         self.sdr_source.sdr_priority = _sdr1_mix_pri
-                        self.mixer.add_source(self.sdr_source)
+                        self.mixer.add_source(self.sdr_source, bus_priority=_sdr1_mix_pri + 10, duckable=self.config.SDR_DUCK)
                         print("✓ SDR1 audio source added to mixer")
                         print(f"  Device: {self.config.SDR_DEVICE_NAME}")
                         print(f"  Priority order: {_sdr_order} (SDR1 mixer pri={_sdr1_mix_pri})")
@@ -3114,7 +3115,7 @@ class RadioGateway:
                         self.sdr2_source.duck = self.config.SDR2_DUCK
                         self.sdr2_source.mix_ratio = self.config.SDR2_MIX_RATIO
                         self.sdr2_source.sdr_priority = _sdr2_mix_pri
-                        self.mixer.add_source(self.sdr2_source)
+                        self.mixer.add_source(self.sdr2_source, bus_priority=_sdr2_mix_pri + 10, duckable=self.config.SDR2_DUCK)
                         print("✓ SDR2 audio source added to mixer")
                         print(f"  Device: {self.config.SDR2_DEVICE_NAME}")
                         print(f"  Priority order: {_sdr_order} (SDR2 mixer pri={_sdr2_mix_pri})")
@@ -3166,7 +3167,7 @@ class RadioGateway:
                         self.remote_audio_source.enabled = True
                         self.remote_audio_source.duck = self.config.REMOTE_AUDIO_DUCK
                         self.remote_audio_source.sdr_priority = int(self.config.REMOTE_AUDIO_PRIORITY)
-                        self.mixer.add_source(self.remote_audio_source)
+                        self.mixer.add_source(self.remote_audio_source, bus_priority=int(self.config.REMOTE_AUDIO_PRIORITY) + 10, duckable=self.config.REMOTE_AUDIO_DUCK)
                         print(f"✓ Remote audio source (SDRSV) added to mixer")
                         print(f"  Priority: {self.config.REMOTE_AUDIO_PRIORITY}")
                         print(f"  Press 'c' to mute/unmute remote audio")
@@ -3185,7 +3186,7 @@ class RadioGateway:
                     print(f"Initializing announcement input (listening on {bind_host}:{port})...")
                     self.announce_input_source = NetworkAnnouncementSource(self.config, self)
                     if self.announce_input_source.setup_audio():
-                        self.mixer.add_source(self.announce_input_source)
+                        self.mixer.add_source(self.announce_input_source, bus_priority=0, duckable=False, deterministic=True)
                         print(f"✓ Announcement input (ANNIN) added to mixer")
                         if not self.aioc_available:
                             print("  ⚠ No AIOC — PTT will not activate (audio discarded)")
@@ -3201,7 +3202,7 @@ class RadioGateway:
                 try:
                     self.web_mic_source = WebMicSource(self.config, self)
                     if self.web_mic_source.setup_audio():
-                        self.mixer.add_source(self.web_mic_source)
+                        self.mixer.add_source(self.web_mic_source, bus_priority=0, duckable=False, deterministic=True)
                         print("✓ Web microphone source (WEBMIC) added to mixer")
                 except Exception as e:
                     print(f"⚠ Warning: Could not initialize web mic source: {e}")
@@ -3212,7 +3213,7 @@ class RadioGateway:
                 try:
                     self.web_monitor_source = WebMonitorSource(self.config, self)
                     if self.web_monitor_source.setup_audio():
-                        self.mixer.add_source(self.web_monitor_source)
+                        self.mixer.add_source(self.web_monitor_source, bus_priority=5, duckable=False)
                         print("✓ Web monitor source (MONITOR) added to mixer")
                 except Exception as e:
                     print(f"⚠ Warning: Could not initialize web monitor source: {e}")
@@ -3357,7 +3358,7 @@ class RadioGateway:
                                     self.d75_audio_source.muted = self.d75_muted
                                     self.d75_audio_source.duck = self.config.D75_AUDIO_DUCK
                                     self.d75_audio_source.sdr_priority = int(self.config.D75_AUDIO_PRIORITY)
-                                    self.mixer.add_source(self.d75_audio_source)
+                                    self.mixer.add_source(self.d75_audio_source, bus_priority=int(self.config.D75_AUDIO_PRIORITY) + 10, duckable=self.config.D75_AUDIO_DUCK)
                                     print(f"✓ D75 audio source added to mixer")
                                 else:
                                     print("⚠ D75 audio init failed")
@@ -3409,7 +3410,7 @@ class RadioGateway:
                                         gw.d75_audio_source.muted = gw.d75_muted
                                         gw.d75_audio_source.duck = gw.config.D75_AUDIO_DUCK
                                         gw.d75_audio_source.sdr_priority = int(gw.config.D75_AUDIO_PRIORITY)
-                                        gw.mixer.add_source(gw.d75_audio_source)
+                                        gw.mixer.add_source(gw.d75_audio_source, bus_priority=int(gw.config.D75_AUDIO_PRIORITY) + 10, duckable=gw.config.D75_AUDIO_DUCK)
                                 except Exception:
                                     gw.d75_audio_source = None
                             gw.d75_cat = _cat  # Make visible atomically after everything is set up
@@ -3448,7 +3449,7 @@ class RadioGateway:
                     if self.kv4p_cat.connect():
                         print(f"  Connected: fw v{self.kv4p_cat._firmware_version}, {self.kv4p_cat._rf_module}")
                         if self.kv4p_audio_source:
-                            self.mixer.add_source(self.kv4p_audio_source)
+                            self.mixer.add_source(self.kv4p_audio_source, bus_priority=int(getattr(self.config, 'KV4P_AUDIO_PRIORITY', 2)) + 10, duckable=getattr(self.config, 'KV4P_AUDIO_DUCK', True))
                             print(f"  KV4P audio source added to mixer")
                         self.kv4p_cat.start_polling()
                         print(f"  Tuned to {self.kv4p_cat._frequency:.4f} MHz")
@@ -3479,7 +3480,7 @@ class RadioGateway:
                         saved = self.link_endpoint_settings.get(name, {})
                         src.muted = saved.get('rx_muted', False)
                         src.server_connected = True
-                        self.mixer.add_source(src)
+                        self.mixer.add_source(src, bus_priority=int(getattr(self.config, 'LINK_AUDIO_PRIORITY', 3)) + 10, duckable=getattr(self.config, 'LINK_AUDIO_DUCK', False))
                         self.link_endpoints[name] = src
                         self._link_ptt_active[name] = False
                         self._link_last_status[name] = {}
@@ -3624,7 +3625,7 @@ class RadioGateway:
                     print("Initializing EchoLink integration...")
                     self.echolink_source = EchoLinkSource(self.config, self)
                     if self.echolink_source.connected:
-                        self.mixer.add_source(self.echolink_source)
+                        self.mixer.add_source(self.echolink_source, bus_priority=2, duckable=False)
                         print("✓ EchoLink source added to mixer")
                         print("  Audio routing:")
                         if self.config.ECHOLINK_TO_MUMBLE:
@@ -3747,7 +3748,7 @@ class RadioGateway:
                             # Initialize radio source first to get callback
                             try:
                                 self.radio_source = AIOCRadioSource(self.config, self)
-                                self.mixer.add_source(self.radio_source)
+                                self.mixer.add_source(self.radio_source, bus_priority=1, duckable=False)
                                 if self.config.VERBOSE_LOGGING:
                                     print("✓ Radio audio source added to mixer")
                             except Exception as source_err:
@@ -3771,7 +3772,7 @@ class RadioGateway:
                             if self.config.ENABLE_PLAYBACK:
                                 try:
                                     self.playback_source = FilePlaybackSource(self.config, self)
-                                    self.mixer.add_source(self.playback_source)
+                                    self.mixer.add_source(self.playback_source, bus_priority=0, duckable=False, deterministic=True)
                                     print("✓ File playback source added to mixer")
                                     # File mapping will be displayed later
                                     
@@ -4626,7 +4627,15 @@ class RadioGateway:
                     _tr_aioc_sb = len(self.radio_source._sub_buffer) if self.radio_source else -1
 
                     _tr_mixer_t0 = time.monotonic()
-                    data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked, sdr_only_audio = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
+                    _bus_out = self.mixer.tick(self.config.AUDIO_CHUNK_SIZE)
+                    data = _bus_out.mixed_audio
+                    ptt_required = _bus_out.ptt.get('_ptt_required', False)
+                    active_sources = _bus_out.active_sources
+                    sdr1_was_ducked = 'SDR1' in _bus_out.ducked_sources
+                    sdr2_was_ducked = 'SDR2' in _bus_out.ducked_sources
+                    sdrsv_was_ducked = 'SDRSV' in _bus_out.ducked_sources
+                    rx_audio = _bus_out.status.get('rx_audio')
+                    sdr_only_audio = _bus_out.status.get('duckee_only_audio')
                     _tr_mixer_ms = (time.monotonic() - _tr_mixer_t0) * 1000
 
                     # Store SDR ducked states for status bar display
