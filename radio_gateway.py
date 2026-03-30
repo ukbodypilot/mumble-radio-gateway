@@ -270,7 +270,7 @@ class Config:
             'ENABLE_SPEAKER_OUTPUT': True,
             'SPEAKER_OUTPUT_DEVICE': '',   # '' = system default; or partial name e.g. 'USB Audio', 'hw:2,0'
             'SPEAKER_VOLUME': 1.0,         # float multiplier
-            'SPEAKER_START_MUTED': True,   # Start with speaker muted (toggle with 's' key)
+            'SPEAKER_START_MUTED': False,  # Start with speaker unmuted
             # Remote Audio Link (server sends mixed audio to client over TCP)
             'REMOTE_AUDIO_ROLE': 'disabled',       # 'server', 'client', or 'disabled'
             'REMOTE_AUDIO_HOST': '',               # Server: bind addr; Client: server IP
