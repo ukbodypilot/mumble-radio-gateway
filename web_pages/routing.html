@@ -116,6 +116,33 @@
     flex-shrink: 0;
   }
 
+  /* Processing buttons on bus nodes */
+  .proc-buttons {
+    display: flex;
+    gap: 3px;
+    margin-top: 4px;
+  }
+  .proc-btn {
+    width: 22px;
+    height: 18px;
+    border: 1px solid #555;
+    border-radius: 3px;
+    background: #2a2a3e;
+    color: #666;
+    font-size: 0.65rem;
+    font-weight: bold;
+    cursor: pointer;
+    padding: 0;
+    text-align: center;
+    line-height: 18px;
+  }
+  .proc-btn:hover { border-color: var(--t-accent); color: var(--t-accent); }
+  .proc-btn.on {
+    background: var(--t-accent);
+    color: #fff;
+    border-color: var(--t-accent);
+  }
+
   /* Wider nodes to fit controls */
   .drawflow .drawflow-node { min-width: 180px; }
 
@@ -240,7 +267,15 @@ function rebuildEditor() {
   for (var i = 0; i < _state.busses.length; i++) {
     var b = _state.busses[i];
     var cls = 'bus-' + b.type;
-    var html = '<div class="box">' + b.type + ' bus</div>';
+    var proc = b.processing || {};
+    var html = '<div class="box">' + b.type + ' bus'
+      + '<div class="proc-buttons">'
+      + '<button class="proc-btn' + (proc.gate ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'gate\')" id="proc-' + b.id + '-gate">G</button>'
+      + '<button class="proc-btn' + (proc.hpf ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'hpf\')" id="proc-' + b.id + '-hpf">H</button>'
+      + '<button class="proc-btn' + (proc.lpf ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'lpf\')" id="proc-' + b.id + '-lpf">L</button>'
+      + '<button class="proc-btn' + (proc.notch ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'notch\')" id="proc-' + b.id + '-notch">N</button>'
+      + '</div>'
+      + '</div>';
     var nodeId = editor.addNode(b.id, 1, 1, xBus, yBus, cls, {id: b.id, type: b.type}, b.name + '\n' + html);
     _nodeMap['bus-' + b.id] = nodeId;
     yBus += spacing + 20;
@@ -424,6 +459,25 @@ function setGain(id, value) {
         if (d.ok) setStatus(id + ': gain ' + value + '%');
       });
   }, 200);
+}
+
+// Processing toggle
+function toggleProc(busId, filter) {
+  fetch('/routing/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cmd: 'toggle_proc', bus: busId, filter: filter})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        var btn = document.getElementById('proc-' + busId + '-' + filter);
+        if (btn) {
+          if (d.state) btn.classList.add('on');
+          else btn.classList.remove('on');
+        }
+        setStatus(busId + ': ' + filter + ' ' + (d.state ? 'ON' : 'OFF'));
+      }
+    });
 }
 
 // Poll audio levels and update bars

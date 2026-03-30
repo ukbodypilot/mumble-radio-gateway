@@ -3564,6 +3564,19 @@ class WebConfigServer:
                     return {'ok': True, 'warning': f'saved but reload failed: {e}'}
             return {'ok': True}
 
+        elif cmd == 'toggle_proc':
+            bus_id = data.get('bus', '')
+            filt = data.get('filter', '')
+            if filt not in ('gate', 'hpf', 'lpf', 'notch'):
+                return {'ok': False, 'error': f'invalid filter: {filt}'}
+            for b in busses:
+                if b['id'] == bus_id:
+                    proc = b.setdefault('processing', {})
+                    proc[filt] = not proc.get(filt, False)
+                    self._save_routing_config(busses, connections)
+                    return {'ok': True, 'state': proc[filt]}
+            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+
         elif cmd == 'mute':
             target_id = data.get('id', '')
             plugin = self._get_plugin_by_id(target_id)
