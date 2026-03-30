@@ -110,6 +110,12 @@ any work on the mixer.
 | 2026-03-30 | Alias cleanup | PASS | d75_cat/d75_audio_source/kv4p_cat/kv4p_audio_source removed |
 | 2026-03-30 | Utility extraction | PASS | DDNSUpdater/EmailNotifier/CloudflareTunnel etc → gateway_utils.py |
 | 2026-03-30 | Route consolidation | PASS | 13 static page routes → single _STATIC_PAGES lookup |
+| 2026-03-30 | Routing UI controls | PASS | Mute buttons + gain sliders in Drawflow nodes |
+| 2026-03-30 | Alias cleanup | PASS | All backward compat aliases eliminated |
+| 2026-03-30 | Utility extraction | PASS | DDNSUpdater/EmailNotifier/etc → gateway_utils.py |
+| 2026-03-30 | TH9800Plugin skeleton | DONE | Step 1: AIOC + CAT + relays + PTT in plugin |
+| 2026-03-30 | MumbleSource | DONE | Step 2: Mumble RX as bus source with PTT control |
+| 2026-03-30 | Step 3: Wire in | NEXT | Replace AIOC init with plugin, route Mumble through bus |
 
 ## Known Issues
 (none yet)
