@@ -19,15 +19,12 @@ __version__ = _get_version()
 import time
 import signal
 import threading
-import threading as _thr
 import subprocess
-import shutil
 import json as json_mod
 import collections
 import queue as _queue_mod
 from struct import Struct
 import socket
-import select
 import array as _array_mod
 import math as _math_mod
 import re
