@@ -356,12 +356,12 @@ class RadioGateway:
         # D75 CAT Control + Audio
         self.d75_plugin = None           # D75CATClient instance
         self.d75_plugin = None  # D75AudioSource instance
-        self.d75_muted = True         # D75 audio mute toggle (muted by default)
+        self.d75_muted = False        # D75 audio mute toggle
 
         # KV4P HT Radio
         self.kv4p_plugin = None           # KV4PCATClient instance
         self.kv4p_plugin = None  # KV4PAudioSource instance
-        self.kv4p_muted = True         # KV4P audio mute toggle (muted by default)
+        self.kv4p_muted = False        # KV4P audio mute toggle
         self.kv4p_processor = AudioProcessor("kv4p", config)
 
         # Mumble Server instances (local mumble-server/murmurd)
