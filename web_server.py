@@ -1701,6 +1701,7 @@ class WebConfigServer:
                             data['webmic'] = gw.web_mic_source.audio_level if gw.web_mic_source.client_connected else 0
                         if getattr(gw, 'web_monitor_source', None):
                             data['monitor'] = gw.web_monitor_source.audio_level
+                        data['mumble_rx'] = getattr(gw, 'rx_audio_level', 0)
                         # TX levels (radio destinations)
                         if gw.kv4p_plugin:
                             data['kv4p_tx'] = getattr(gw.kv4p_plugin, 'tx_audio_level', 0)
@@ -3438,6 +3439,10 @@ class WebConfigServer:
             if getattr(gw, 'web_monitor_source', None):
                 sources.append({**{'id': 'monitor', 'name': 'Room Monitor', 'enabled': True,
                                 'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(gw.web_monitor_source)})
+            if gw.mumble:
+                sources.append({'id': 'mumble_rx', 'name': 'Mumble [RX]', 'enabled': True,
+                                'can_rx': False, 'can_tx': True, 'can_ptt': True,
+                                'muted': False, 'gain': 100})
 
         # Build sink list (passive consumers + TX-capable radios)
         sinks = []
