@@ -931,16 +931,18 @@ devices:
         explicit tune/restart commands from the UI.
         """
         # Wait for sdrplay_apiService to be ready
-        for _w in range(10):
-            chk = subprocess.run(['pgrep', 'sdrplay_apiService'], capture_output=True, timeout=2)
-            if chk.returncode == 0:
+        for _w in range(15):
+            chk = subprocess.run(['systemctl', 'is-active', 'sdrplay.service'],
+                                 capture_output=True, text=True, timeout=2)
+            if chk.stdout.strip() == 'active':
+                time.sleep(2)  # Extra settle time after service reports active
                 break
             time.sleep(1)
         else:
-            print("  Warning: sdrplay_apiService not running — starting it")
+            print("  Warning: sdrplay.service not active — starting it")
             subprocess.run(['sudo', 'systemctl', 'start', 'sdrplay.service'],
                            capture_output=True, timeout=10)
-            time.sleep(5)
+            time.sleep(8)  # sdrplay needs time to initialize hardware
 
         # Start SDR1 (Master)
         subprocess.run(['rtl_airband', '-e', '-c', self.CONFIG_PATH],
