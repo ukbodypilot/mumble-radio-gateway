@@ -1,1 +1,27 @@
-{"busses":[],"connections":[]}
+{
+  "busses": [
+    {
+      "id": "test",
+      "name": "Test",
+      "type": "solo",
+      "sources": [
+        "playback"
+      ],
+      "sinks": [
+        "kv4p_tx"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "type": "source-bus",
+      "from": "playback",
+      "to": "test"
+    },
+    {
+      "type": "bus-sink",
+      "from": "test",
+      "to": "kv4p_tx"
+    }
+  ]
+}
