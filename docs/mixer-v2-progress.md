@@ -115,7 +115,12 @@ any work on the mixer.
 | 2026-03-30 | Utility extraction | PASS | DDNSUpdater/EmailNotifier/etc → gateway_utils.py |
 | 2026-03-30 | TH9800Plugin skeleton | DONE | Step 1: AIOC + CAT + relays + PTT in plugin |
 | 2026-03-30 | MumbleSource | DONE | Step 2: Mumble RX as bus source with PTT control |
-| 2026-03-30 | Step 3: Wire in | NEXT | Replace AIOC init with plugin, route Mumble through bus |
+| 2026-03-30 | TH9800Plugin wired | PASS | AIOC init replaced with plugin, clean audio flowing |
+| 2026-03-30 | Audio rewrite | PASS | Blocking reader replaces PortAudio callback (reliable) |
+| 2026-03-30 | Main loop fix | PASS | AttributeError on _chunk_queue was crashing every tick |
+| 2026-03-30 | SDR autostart fix | PASS | Wait for sdrplay_apiService before rtl_airband |
+| 2026-03-30 | All mute defaults | PASS | D75/KV4P/SDR2 default to unmuted |
+| 2026-03-30 | Step 3: Wire in | DONE | All 4 radios as plugins, all audio flowing |
 
 ## Known Issues
 (none yet)
