@@ -27,6 +27,8 @@ class BusManager:
         self.gateway = gateway
         self.config = gateway.config
         self._busses = {}          # id → AudioBus instance
+        self._bus_processors = {}  # id → AudioProcessor instance
+        self._bus_config = {}      # id → bus config dict (processing, pcm, mp3, vad)
         self._running = False
         self._thread = None
         self._config_path = os.path.join(
@@ -138,6 +140,19 @@ class BusManager:
                 continue
 
             self._busses[bus_id] = bus
+
+            # Create per-bus AudioProcessor from processing config
+            proc_cfg = bus_cfg.get('processing', {})
+            self._bus_config[bus_id] = proc_cfg
+            if any(proc_cfg.get(k) for k in ('gate', 'hpf', 'lpf', 'notch')):
+                proc = AudioProcessor(f"bus_{bus_id}", self.config)
+                proc.enable_noise_gate = proc_cfg.get('gate', False)
+                proc.enable_hpf = proc_cfg.get('hpf', False)
+                proc.enable_lpf = proc_cfg.get('lpf', False)
+                proc.enable_notch = proc_cfg.get('notch', False)
+                self._bus_processors[bus_id] = proc
+                print(f"  [BusManager] {bus_name}: processing [{' '.join(k.upper() for k in ('gate','hpf','lpf','notch') if proc_cfg.get(k))}]")
+
             print(f"  [BusManager] Created {bus_type} bus: {bus_name}")
 
     def _get_radio_plugin(self, sink_id):
@@ -184,8 +199,10 @@ class BusManager:
         return audio
 
     def _deliver_audio(self, bus_output, bus_id):
-        """Deliver a bus's audio output to connected sinks."""
+        """Deliver a bus's audio output to connected sinks + PCM/MP3 streams."""
         gw = self.gateway
+        bus_cfg = self._bus_config.get(bus_id, {})
+
         for sink_id, audio in bus_output.audio.items():
             if audio is None:
                 continue
@@ -218,6 +235,21 @@ class BusManager:
                 gw.d75_plugin.put_audio(audio)
             elif sink_id == 'aioc_tx' and getattr(gw, 'th9800_plugin', None):
                 gw.th9800_plugin.put_audio(audio)
+
+        # Feed PCM/MP3 streams based on per-bus flags
+        mixed = bus_output.mixed_audio
+        if mixed:
+            # PCM WebSocket stream
+            if bus_cfg.get('pcm', True):
+                ws = getattr(gw, 'web_config_server', None)
+                if ws and ws._ws_clients:
+                    ws.push_ws_audio(mixed)
+
+            # MP3 stream
+            if bus_cfg.get('mp3', True):
+                ws = getattr(gw, 'web_config_server', None)
+                if ws and ws._stream_subscribers:
+                    ws.push_audio(mixed)
 
     def _tick_loop(self):
         """Main bus tick loop — runs all non-primary busses."""
