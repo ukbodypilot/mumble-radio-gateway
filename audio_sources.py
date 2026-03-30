@@ -477,6 +477,8 @@ class FilePlaybackSource(AudioSource):
         self.ptt_control = True  # File playback triggers PTT
         self.volume = getattr(config, 'PLAYBACK_VOLUME', 4.0)
         
+        self.audio_level = 0      # Output level for routing display
+
         # Playback state
         self.current_file = None
         self.file_data = None
@@ -1144,6 +1146,7 @@ class FilePlaybackSource(AudioSource):
         
         # No file playing
         if not self.file_data:
+            self.audio_level = max(0, int(self.audio_level * 0.7))
             return None, False
 
         # Calculate chunk size in bytes (16-bit = 2 bytes per sample)
@@ -1200,11 +1203,25 @@ class FilePlaybackSource(AudioSource):
             arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
             chunk = np.clip(arr * self.volume, -32768, 32767).astype(np.int16).tobytes()
 
+        # Level metering for routing display
+        try:
+            _arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+            _rms = float(np.sqrt(np.mean(_arr * _arr))) if len(_arr) > 0 else 0.0
+            if _rms > 0:
+                _level = max(0, min(100, (20 * _math_mod.log10(_rms / 32767.0) + 60) * (100 / 60)))
+            else:
+                _level = 0
+            if _level > self.audio_level:
+                self.audio_level = int(_level)
+            else:
+                self.audio_level = int(self.audio_level * 0.7 + _level * 0.3)
+        except Exception:
+            pass
+
         # Small yield to prevent file playback from overwhelming other threads
-        # (especially important now that we removed priority scheduling)
         import time
-        time.sleep(0.001)  # 1ms - negligible latency but helps system balance
-        
+        time.sleep(0.001)
+
         # File playback triggers PTT - ALWAYS
         return chunk, True
     

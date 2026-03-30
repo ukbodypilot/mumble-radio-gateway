@@ -1808,6 +1808,10 @@ class WebConfigServer:
                             data['d75'] = getattr(gw.d75_plugin, 'audio_level', 0)
                         if getattr(gw, 'radio_source', None):
                             data['aioc'] = getattr(gw, 'tx_audio_level', 0)
+                        if getattr(gw, 'playback_source', None):
+                            data['playback'] = getattr(gw.playback_source, 'audio_level', 0)
+                        if getattr(gw, 'announce_input_source', None):
+                            data['announce'] = getattr(gw.announce_input_source, 'audio_level', 0)
                         if getattr(gw, 'web_mic_source', None):
                             data['webmic'] = gw.web_mic_source.audio_level if gw.web_mic_source.client_connected else 0
                         if getattr(gw, 'web_monitor_source', None):
