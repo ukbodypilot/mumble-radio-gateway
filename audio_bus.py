@@ -569,13 +569,117 @@ class ListenBus(AudioBus):
 # ---------------------------------------------------------------------------
 
 class SoloBus(AudioBus):
-    """Standalone control of a single radio with its own source/sink pipeline."""
+    """Standalone control of a single radio with its own source/sink pipeline.
+
+    One radio plugin sits at the center:
+    - TX sources (webmic, announcements, file playback) → mixed → radio.put_audio()
+    - Radio.get_audio() → routed to all registered sinks
+
+    PTT is controlled by whichever TX source has ptt_control=True and is
+    producing audio. When PTT audio stops, PTT releases after a hold time.
+
+    Sources are added with add_source(). The radio is set with set_radio().
+    Sinks are added with add_sink().
+    """
 
     def __init__(self, name, config):
         super().__init__(name, 'solo', config)
+        self._radio = None          # The radio plugin (has get_audio/put_audio)
+        self._tx_sources = []       # SourceSlots for TX sources (webmic, announce, etc.)
+        self._ptt_active = False
+        self._ptt_hold_until = 0.0
+        self._ptt_release_delay = float(getattr(config, 'PTT_RELEASE_DELAY', 1.0))
+        self.call_count = 0
+
+    def set_radio(self, radio_plugin):
+        """Set the radio plugin at the center of this bus."""
+        self._radio = radio_plugin
+
+    def add_tx_source(self, source, bus_priority=0):
+        """Add a TX source (webmic, announcements, etc.) that feeds the radio."""
+        slot = SourceSlot(source, bus_priority, duckable=False,
+                          deterministic=source.ptt_control)
+        self._tx_sources.append(slot)
+        self._tx_sources.sort(key=lambda s: s.bus_priority)
 
     def tick(self, chunk_size):
-        raise NotImplementedError("SoloBus not yet implemented")
+        """Process one audio cycle.
+
+        1. Collect audio from TX sources → mix → send to radio via put_audio()
+        2. Get audio from radio via get_audio() → deliver to sinks
+        3. Manage PTT state
+        """
+        self.call_count += 1
+        current_time = time.monotonic()
+
+        active_sources = []
+        ptt_needed = False
+        tx_audio = None
+
+        # ── Phase 1: Collect TX source audio ──
+        for slot in self._tx_sources:
+            if not slot.source.enabled:
+                continue
+            audio, ptt = slot.source.get_audio(chunk_size)
+            if audio is None:
+                continue
+            active_sources.append(slot.source.name)
+            if ptt and slot.source.ptt_control:
+                ptt_needed = True
+            if tx_audio is None:
+                tx_audio = audio
+            else:
+                tx_audio = mix_audio_streams(tx_audio, audio)
+
+        # ── Phase 2: PTT management ──
+        if ptt_needed:
+            self._ptt_hold_until = current_time + self._ptt_release_delay
+            if not self._ptt_active and self._radio:
+                # Key PTT
+                self._ptt_active = True
+                if hasattr(self._radio, 'execute'):
+                    self._radio.execute({'cmd': 'ptt', 'state': True})
+                elif hasattr(self._radio, 'ptt_on'):
+                    self._radio.ptt_on()
+
+        if self._ptt_active and current_time > self._ptt_hold_until:
+            # Release PTT
+            self._ptt_active = False
+            if self._radio and hasattr(self._radio, 'execute'):
+                self._radio.execute({'cmd': 'ptt', 'state': False})
+            elif self._radio and hasattr(self._radio, 'ptt_off'):
+                self._radio.ptt_off()
+
+        # ── Phase 3: Send TX audio to radio ──
+        if tx_audio is not None and self._radio and self._ptt_active:
+            if hasattr(self._radio, 'put_audio'):
+                self._radio.put_audio(tx_audio)
+            elif hasattr(self._radio, 'write_tx_audio'):
+                self._radio.write_tx_audio(tx_audio)
+
+        # ── Phase 4: Get RX audio from radio ──
+        rx_audio = None
+        if self._radio:
+            rx_audio, _rx_ptt = self._radio.get_audio(chunk_size)
+            if rx_audio is not None:
+                active_sources.append(self._radio.name)
+
+        # ── Phase 5: Build output ──
+        audio_dict = {sink: rx_audio for sink in self.sink_names}
+        if not self.sink_names:
+            audio_dict['_default'] = rx_audio
+
+        return BusOutput(
+            audio=audio_dict,
+            ptt={self._radio.name if self._radio else '_radio': self._ptt_active},
+            active_sources=active_sources,
+            ducked_sources=[],
+            status={
+                'tx_audio_active': tx_audio is not None,
+                'ptt_active': self._ptt_active,
+                'rx_audio': rx_audio,
+            },
+        )
 
 
 class DuplexRepeaterBus(AudioBus):
