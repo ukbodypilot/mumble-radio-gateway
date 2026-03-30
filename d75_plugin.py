@@ -138,7 +138,7 @@ class D75Plugin(RadioPlugin):
         self.duck = getattr(config, 'D75_AUDIO_DUCK', True)
         self.sdr_priority = int(getattr(config, 'D75_AUDIO_PRIORITY', 2))
         self.audio_boost = float(getattr(config, 'D75_AUDIO_BOOST', 1.0))
-        self.muted = True  # D75 starts muted by default
+        self.muted = False  # unmuted for bus routing
 
         # Processing
         self._processor = AudioProcessor("d75", config)

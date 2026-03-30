@@ -60,6 +60,24 @@
   .drawflow .drawflow-node.bus-simplex .title-box { background: #3e1a1a; border-color: #e74c3c; }
   .drawflow .drawflow-node.sink .title-box { background: #2a1a3e; border-color: #9b59b6; }
 
+  /* Level bars inside nodes */
+  .level-bar {
+    height: 6px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 3px;
+    margin-top: 4px;
+    overflow: hidden;
+  }
+  .level-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 3px;
+    background: #2ecc71;
+    transition: width 0.15s;
+  }
+  .sink .level-fill { background: #f39c12; }
+  .drawflow-node[class*="bus-"] .level-fill { background: #3498db; }
+
   /* Toolbar */
   .toolbar {
     display: flex;
@@ -145,7 +163,9 @@ function rebuildEditor() {
   // Add source nodes (output only — right side)
   for (var i = 0; i < _state.sources.length; i++) {
     var s = _state.sources[i];
-    var html = '<div class="box">' + (s.type || (s.can_rx ? 'RX' : 'TX')) + '</div>';
+    var html = '<div class="box">' + (s.type || (s.can_rx ? 'RX' : 'TX'))
+      + '<div class="level-bar" id="level-' + s.id + '"><div class="level-fill"></div></div>'
+      + '</div>';
     var nodeId = editor.addNode(s.id, 0, 1, xSource, ySource, 'source', {id: s.id}, s.name + '\n' + html);
     _nodeMap['src-' + s.id] = nodeId;
     ySource += spacing;
@@ -164,7 +184,9 @@ function rebuildEditor() {
   // Add sink nodes (input only — left side)
   for (var i = 0; i < _state.sinks.length; i++) {
     var s = _state.sinks[i];
-    var html = '<div class="box">' + (s.type || '') + '</div>';
+    var html = '<div class="box">' + (s.type || '')
+      + '<div class="level-bar" id="level-' + s.id + '"><div class="level-fill"></div></div>'
+      + '</div>';
     var nodeId = editor.addNode(s.id, 1, 0, xSink, ySink, 'sink', {id: s.id}, s.name + '\n' + html);
     _nodeMap['sink-' + s.id] = nodeId;
     ySink += spacing;
@@ -292,6 +314,29 @@ editor.on('nodeRemoved', function(nodeId) {
 });
 
 loadRouting();
+
+// Poll audio levels and update bars
+function pollLevels() {
+  fetch('/routing/levels')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      for (var id in d) {
+        var el = document.getElementById('level-' + id);
+        if (el) {
+          var fill = el.querySelector('.level-fill');
+          if (fill) fill.style.width = Math.min(100, d[id]) + '%';
+        }
+        // Also update TX sink bars (e.g. kv4p_tx uses kv4p level)
+        var txEl = document.getElementById('level-' + id + '_tx');
+        if (txEl) {
+          var txFill = txEl.querySelector('.level-fill');
+          if (txFill) txFill.style.width = Math.min(100, d[id]) + '%';
+        }
+      }
+    })
+    .catch(function() {});
+}
+setInterval(pollLevels, 200);
 </script>
 </body>
 </html>

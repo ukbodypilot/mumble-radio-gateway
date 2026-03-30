@@ -1794,6 +1794,33 @@ class WebConfigServer:
                     except BrokenPipeError:
                         pass
 
+                elif self.path == '/routing/levels':
+                    # Return audio levels for all sources/sinks
+                    data = {}
+                    gw = parent.gateway
+                    if gw:
+                        if gw.sdr_plugin:
+                            data['sdr'] = gw.sdr_plugin.audio_level
+                        if gw.kv4p_plugin:
+                            data['kv4p'] = gw.kv4p_plugin.audio_level
+                        if gw.d75_plugin:
+                            data['d75'] = getattr(gw.d75_plugin, 'audio_level', 0)
+                        if getattr(gw, 'radio_source', None):
+                            data['aioc'] = getattr(gw, 'tx_audio_level', 0)
+                        if getattr(gw, 'web_mic_source', None):
+                            data['webmic'] = gw.web_mic_source.audio_level if gw.web_mic_source.client_connected else 0
+                        if getattr(gw, 'web_monitor_source', None):
+                            data['monitor'] = gw.web_monitor_source.audio_level
+                        data['speaker'] = getattr(gw, 'speaker_audio_level', 0)
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-cache')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(data).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+
                 elif self.path == '/voice/status':
                     _vr_target = os.environ.get('TMUX_TARGET', 'claude-voice')
                     result = subprocess.run(

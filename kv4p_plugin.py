@@ -154,7 +154,7 @@ class KV4PPlugin(RadioPlugin):
         self.duck = getattr(config, 'KV4P_AUDIO_DUCK', True)
         self.sdr_priority = int(getattr(config, 'KV4P_AUDIO_PRIORITY', 2))
         self.audio_boost = float(getattr(config, 'KV4P_AUDIO_BOOST', 1.0))
-        self.muted = True  # muted by default
+        self.muted = False  # unmuted for bus routing
 
         # Processing chain
         self._processor = AudioProcessor("kv4p", config)
