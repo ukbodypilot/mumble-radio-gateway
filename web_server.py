@@ -1691,8 +1691,8 @@ class WebConfigServer:
                             data['kv4p'] = gw.kv4p_plugin.audio_level
                         if gw.d75_plugin:
                             data['d75'] = getattr(gw.d75_plugin, 'audio_level', 0)
-                        if getattr(gw, 'radio_source', None):
-                            data['aioc'] = getattr(gw, 'tx_audio_level', 0)
+                        if getattr(gw, 'th9800_plugin', None):
+                            data['aioc'] = gw.th9800_plugin.audio_level
                         if getattr(gw, 'playback_source', None):
                             data['playback'] = getattr(gw.playback_source, 'audio_level', 0)
                         if getattr(gw, 'announce_input_source', None):
@@ -1706,8 +1706,8 @@ class WebConfigServer:
                             data['kv4p_tx'] = getattr(gw.kv4p_plugin, 'tx_audio_level', 0)
                         if gw.d75_plugin:
                             data['d75_tx'] = getattr(gw.d75_plugin, 'tx_audio_level', 0)
-                        if getattr(gw, 'radio_source', None):
-                            data['aioc_tx'] = getattr(gw, 'rx_audio_level', 0)
+                        if getattr(gw, 'th9800_plugin', None):
+                            data['aioc_tx'] = getattr(gw.th9800_plugin, 'tx_audio_level', 0)
                         # Passive sinks
                         data['speaker'] = getattr(gw, 'speaker_audio_level', 0)
                     try:
@@ -3423,9 +3423,9 @@ class WebConfigServer:
             if gw.d75_plugin:
                 sources.append({**{'id': 'd75', 'name': 'TH-D75 [RX]', 'enabled': True,
                                 'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(gw.d75_plugin)})
-            if getattr(gw, 'radio_source', None):
+            if getattr(gw, 'th9800_plugin', None):
                 sources.append({**{'id': 'aioc', 'name': 'TH-9800 [RX]', 'enabled': True,
-                                'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(gw.radio_source)})
+                                'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(gw.th9800_plugin)})
             if getattr(gw, 'playback_source', None):
                 sources.append({**{'id': 'playback', 'name': 'File Playback', 'enabled': True,
                                 'can_rx': False, 'can_tx': True, 'can_ptt': True}, **_src_info(gw.playback_source)})
@@ -3454,8 +3454,8 @@ class WebConfigServer:
                 sinks.append({**{'id': 'kv4p_tx', 'name': 'KV4P [TX]', 'type': 'Radio TX', 'enabled': True}, **_src_info(gw.kv4p_plugin)})
             if gw.d75_plugin:
                 sinks.append({**{'id': 'd75_tx', 'name': 'TH-D75 [TX]', 'type': 'Radio TX', 'enabled': True}, **_src_info(gw.d75_plugin)})
-            if getattr(gw, 'radio_source', None):
-                sinks.append({**{'id': 'aioc_tx', 'name': 'TH-9800 [TX]', 'type': 'Radio TX', 'enabled': True}, **_src_info(gw.radio_source)})
+            if getattr(gw, 'th9800_plugin', None):
+                sinks.append({**{'id': 'aioc_tx', 'name': 'TH-9800 [TX]', 'type': 'Radio TX', 'enabled': True}, **_src_info(gw.th9800_plugin)})
 
         # Load bus config
         busses, connections = self._load_routing_config()
@@ -3589,8 +3589,8 @@ class WebConfigServer:
             'd75': gw.d75_plugin,
             'kv4p_tx': gw.kv4p_plugin,
             'd75_tx': gw.d75_plugin,
-            'aioc': getattr(gw, 'radio_source', None),
-            'aioc_tx': getattr(gw, 'radio_source', None),
+            'aioc': getattr(gw, 'th9800_plugin', None),
+            'aioc_tx': getattr(gw, 'th9800_plugin', None),
             'playback': getattr(gw, 'playback_source', None),
             'webmic': getattr(gw, 'web_mic_source', None),
             'announce': getattr(gw, 'announce_input_source', None),
