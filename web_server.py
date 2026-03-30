@@ -3620,6 +3620,17 @@ class WebConfigServer:
             self._save_routing_config(busses, connections)
             return {'ok': True}
 
+        elif cmd == 'save_all':
+            # Full save from Drawflow — replace connections + update bus sources/sinks
+            new_connections = data.get('connections', [])
+            bus_updates = data.get('bus_updates', {})
+            for b in busses:
+                upd = bus_updates.get(b['id'], {})
+                b['sources'] = upd.get('sources', [])
+                b['sinks'] = upd.get('sinks', [])
+            self._save_routing_config(busses, new_connections)
+            return {'ok': True}
+
         return {'ok': False, 'error': f'unknown command: {cmd}'}
 
     _ROUTING_CONFIG_PATH = None

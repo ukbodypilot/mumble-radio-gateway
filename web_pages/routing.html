@@ -5,338 +5,293 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Audio Routing</title>
 <link rel="stylesheet" href="/pages/common.css">
+<link rel="stylesheet" href="/pages/drawflow.min.css">
 <style>
-  body { padding: 10px; }
+  body { padding: 0; margin: 0; overflow: hidden; }
 
-  .routing-container {
-    display: flex;
-    gap: 12px;
-    min-height: calc(100vh - 40px);
+  #drawflow {
+    width: 100%;
+    height: calc(100vh - 36px);
+    background: var(--t-bg);
   }
 
-  .column {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .column-label {
-    font-size: 0.75rem;
-    color: #888;
-    text-align: center;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 4px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--t-border);
-  }
-
-  .card {
+  /* Drawflow theme overrides */
+  .drawflow .drawflow-node {
     background: var(--t-panel);
     border: 1px solid var(--t-border);
-    border-radius: 6px;
-    padding: 8px 10px;
-    font-size: 0.78rem;
-  }
-  .card .name { font-weight: 600; }
-  .card .type { font-size: 0.65rem; color: #888; }
-  .card.disabled { opacity: 0.4; }
-
-  /* Bus cards */
-  .bus-card {
-    background: var(--t-panel);
-    border: 2px solid var(--t-border);
     border-radius: 8px;
-    padding: 10px;
-    font-size: 0.78rem;
-  }
-  .bus-card .bus-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 6px;
-  }
-  .bus-card .name { font-weight: 700; font-size: 0.9rem; }
-  .badge {
-    display: inline-block;
-    font-size: 0.55rem;
-    padding: 1px 6px;
-    border-radius: 3px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-left: 6px;
-  }
-  .badge-listen { background: #3498db; color: #fff; }
-  .badge-solo { background: #f39c12; color: #000; }
-  .badge-duplex { background: #2ecc71; color: #000; }
-  .badge-simplex { background: #e74c3c; color: #fff; }
-
-  /* Connection tags inside bus cards */
-  .conn-section {
-    margin: 4px 0;
-    font-size: 0.7rem;
-  }
-  .conn-label { color: #888; font-size: 0.65rem; }
-  .conn-tag {
-    display: inline-block;
-    background: var(--t-btn);
-    border: 1px solid var(--t-btn-border);
-    border-radius: 3px;
-    padding: 2px 6px;
-    margin: 2px 2px;
-    font-size: 0.7rem;
-    cursor: pointer;
-  }
-  .conn-tag:hover { border-color: #e74c3c; color: #e74c3c; text-decoration: line-through; }
-  .conn-tag .x { color: #e74c3c; margin-left: 4px; font-weight: bold; }
-
-  /* Add dropdowns */
-  .add-row {
-    display: flex;
-    gap: 4px;
-    margin-top: 4px;
-  }
-  .add-row select {
-    flex: 1;
-    background: var(--t-btn);
-    border: 1px solid var(--t-btn-border);
     color: #e0e0e0;
-    border-radius: 3px;
-    padding: 3px 4px;
-    font-size: 0.7rem;
-  }
-  .add-row button {
-    background: var(--t-accent);
-    border: none;
-    color: #fff;
-    border-radius: 3px;
-    padding: 3px 8px;
-    font-size: 0.7rem;
-    cursor: pointer;
-  }
-
-  .btn-delete {
-    background: none;
-    border: 1px solid #e74c3c;
-    color: #e74c3c;
-    border-radius: 3px;
-    padding: 2px 8px;
-    font-size: 0.65rem;
-    cursor: pointer;
-  }
-  .btn-delete:hover { background: #e74c3c; color: #fff; }
-
-  /* Add bus button */
-  .add-bus-btn {
-    background: var(--t-btn);
-    border: 2px dashed var(--t-border);
-    border-radius: 8px;
-    padding: 12px;
-    text-align: center;
-    color: #888;
-    cursor: pointer;
+    min-width: 150px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
     font-size: 0.8rem;
   }
-  .add-bus-btn:hover { border-color: var(--t-accent); color: var(--t-accent); }
-
-  /* Mobile: stack */
-  @media (max-width: 600px) {
-    .routing-container { flex-direction: column; }
+  .drawflow .drawflow-node.selected {
+    border-color: var(--t-accent);
+    box-shadow: 0 0 8px rgba(52,152,219,0.4);
+  }
+  .drawflow .drawflow-node .title-box {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--t-border);
+    font-weight: 700;
+    font-size: 0.85rem;
+  }
+  .drawflow .drawflow-node .box {
+    padding: 6px 10px;
+    font-size: 0.75rem;
+    color: #aaa;
+  }
+  .drawflow .connection .main-path {
+    stroke: var(--t-accent);
+    stroke-width: 2;
+  }
+  .drawflow .drawflow-node .input, .drawflow .drawflow-node .output {
+    background: var(--t-accent);
+    border: 2px solid var(--t-accent);
+  }
+  .drawflow .drawflow-node .input:hover, .drawflow .drawflow-node .output:hover {
+    background: #fff;
   }
 
-  .status-bar {
-    position: fixed;
-    bottom: 0; left: 0; right: 0;
+  /* Node type colors */
+  .drawflow .drawflow-node.source .title-box { background: #1a3a2e; border-color: #2ecc71; }
+  .drawflow .drawflow-node.bus-listen .title-box { background: #1a2a3e; border-color: #3498db; }
+  .drawflow .drawflow-node.bus-solo .title-box { background: #3e2a1a; border-color: #f39c12; }
+  .drawflow .drawflow-node.bus-duplex .title-box { background: #1a3a2e; border-color: #2ecc71; }
+  .drawflow .drawflow-node.bus-simplex .title-box { background: #3e1a1a; border-color: #e74c3c; }
+  .drawflow .drawflow-node.sink .title-box { background: #2a1a3e; border-color: #9b59b6; }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    padding: 6px 12px;
     background: var(--t-panel);
-    border-top: 1px solid var(--t-border);
-    padding: 4px 12px;
-    font-size: 0.72rem;
-    color: #888;
-    z-index: 10;
+    border-bottom: 1px solid var(--t-border);
+    align-items: center;
+    font-size: 0.8rem;
   }
+  .toolbar button {
+    padding: 4px 12px;
+    border-radius: 4px;
+    border: 1px solid var(--t-btn-border);
+    background: var(--t-btn);
+    color: #e0e0e0;
+    cursor: pointer;
+    font-size: 0.78rem;
+  }
+  .toolbar button:hover { background: var(--t-btn-hover); }
+  .toolbar .spacer { flex: 1; }
+  .toolbar .status { color: #888; font-size: 0.72rem; }
+
+  /* Delete key hint */
+  .hint { color: #555; font-size: 0.65rem; margin-left: 8px; }
 </style>
 </head>
 <body>
 
-<div class="routing-container">
-  <!-- Sources column -->
-  <div class="column">
-    <div class="column-label">Sources (RX / Input)</div>
-    <div id="source-cards"></div>
-  </div>
-
-  <!-- Busses column -->
-  <div class="column">
-    <div class="column-label">Busses</div>
-    <div id="bus-cards"></div>
-    <div class="add-bus-btn" onclick="showAddBus()">+ Add Bus</div>
-  </div>
-
-  <!-- Sinks column -->
-  <div class="column">
-    <div class="column-label">Sinks / Destinations (TX)</div>
-    <div id="sink-cards"></div>
-  </div>
+<div class="toolbar">
+  <button onclick="addBusNode('listen')">+ Listen Bus</button>
+  <button onclick="addBusNode('solo')">+ Solo Bus</button>
+  <button onclick="addBusNode('duplex')">+ Duplex Bus</button>
+  <button onclick="addBusNode('simplex')">+ Simplex Bus</button>
+  <span class="hint">Drag outputs to inputs to connect. Select + Delete to remove.</span>
+  <span class="spacer"></span>
+  <button onclick="saveRouting()" style="background:#2ecc71;border-color:#27ae60;color:#000;font-weight:bold;">Save</button>
+  <button onclick="loadRouting()">Reload</button>
+  <span class="status" id="statusBar">Loading...</span>
 </div>
 
-<div class="status-bar" id="statusBar">Loading...</div>
+<div id="drawflow"></div>
 
+<script src="/pages/drawflow.min.js"></script>
 <script src="/pages/common.js"></script>
 <script>
-var _state = { sources: [], busses: [], sinks: [], connections: [] };
+var editor;
+var _state = {};
+var _nodeMap = {}; // id -> drawflow node id
 
 function setStatus(msg) { document.getElementById('statusBar').textContent = msg; }
 
+// Initialize Drawflow
+var container = document.getElementById('drawflow');
+editor = new Drawflow(container);
+editor.reroute = true;
+editor.start();
+
+// Load routing state and populate nodes
 function loadRouting() {
   fetch('/routing/status')
     .then(function(r) { return r.json(); })
     .then(function(d) {
       _state = d;
-      render();
-      setStatus('Connected — ' + d.sources.length + ' sources, ' + d.busses.length + ' busses, ' + d.sinks.length + ' sinks');
+      rebuildEditor();
+      setStatus('Loaded: ' + d.sources.length + ' sources, ' + d.busses.length + ' busses, ' + d.sinks.length + ' sinks');
     })
     .catch(function(e) { setStatus('Error: ' + e.message); });
 }
 
-function routingCmd(cmd, data) {
-  data = data || {};
-  data.cmd = cmd;
-  return fetch('/routing/cmd', {
+function rebuildEditor() {
+  editor.clear();
+  _nodeMap = {};
+
+  var ySource = 50;
+  var yBus = 50;
+  var ySink = 50;
+  var xSource = 50;
+  var xBus = 350;
+  var xSink = 650;
+  var spacing = 80;
+
+  // Add source nodes (output only — right side)
+  for (var i = 0; i < _state.sources.length; i++) {
+    var s = _state.sources[i];
+    var html = '<div class="box">' + (s.type || (s.can_rx ? 'RX' : 'TX')) + '</div>';
+    var nodeId = editor.addNode(s.id, 0, 1, xSource, ySource, 'source', {id: s.id}, s.name + '\n' + html);
+    _nodeMap['src-' + s.id] = nodeId;
+    ySource += spacing;
+  }
+
+  // Add bus nodes (input left, output right)
+  for (var i = 0; i < _state.busses.length; i++) {
+    var b = _state.busses[i];
+    var cls = 'bus-' + b.type;
+    var html = '<div class="box">' + b.type + ' bus</div>';
+    var nodeId = editor.addNode(b.id, 1, 1, xBus, yBus, cls, {id: b.id, type: b.type}, b.name + '\n' + html);
+    _nodeMap['bus-' + b.id] = nodeId;
+    yBus += spacing + 20;
+  }
+
+  // Add sink nodes (input only — left side)
+  for (var i = 0; i < _state.sinks.length; i++) {
+    var s = _state.sinks[i];
+    var html = '<div class="box">' + (s.type || '') + '</div>';
+    var nodeId = editor.addNode(s.id, 1, 0, xSink, ySink, 'sink', {id: s.id}, s.name + '\n' + html);
+    _nodeMap['sink-' + s.id] = nodeId;
+    ySink += spacing;
+  }
+
+  // Draw existing connections
+  for (var i = 0; i < _state.connections.length; i++) {
+    var c = _state.connections[i];
+    if (c.type === 'source-bus') {
+      var fromNode = _nodeMap['src-' + c.from];
+      var toNode = _nodeMap['bus-' + c.to];
+      if (fromNode && toNode) {
+        try { editor.addConnection(fromNode, toNode, 'output_1', 'input_1'); } catch(e) {}
+      }
+    } else if (c.type === 'bus-sink') {
+      var fromNode = _nodeMap['bus-' + c.from];
+      var toNode = _nodeMap['sink-' + c.to];
+      if (fromNode && toNode) {
+        try { editor.addConnection(fromNode, toNode, 'output_1', 'input_1'); } catch(e) {}
+      }
+    }
+  }
+}
+
+// Add a new bus node
+function addBusNode(type) {
+  var name = prompt('Bus name:');
+  if (!name) return;
+  fetch('/routing/cmd', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(data)
+    body: JSON.stringify({cmd: 'add_bus', name: name, type: type})
   }).then(function(r) { return r.json(); })
     .then(function(d) {
       if (d.ok) loadRouting();
-      else setStatus('Error: ' + (d.error || 'unknown'));
-      return d;
+      else alert('Error: ' + (d.error || 'unknown'));
     });
 }
 
-function render() {
-  renderSources();
-  renderBusses();
-  renderSinks();
-}
+// Save current connections to backend
+function saveRouting() {
+  // Extract connections from Drawflow
+  var data = editor.export();
+  var connections = [];
 
-function renderSources() {
-  var html = '';
-  for (var i = 0; i < _state.sources.length; i++) {
-    var s = _state.sources[i];
-    var cls = s.enabled ? '' : ' disabled';
-    var caps = [];
-    if (s.can_rx) caps.push('RX');
-    if (s.can_tx) caps.push('TX');
-    if (s.can_ptt) caps.push('PTT');
-    // Check which busses this source is connected to
-    var connected = [];
-    for (var j = 0; j < _state.connections.length; j++) {
-      var c = _state.connections[j];
-      if (c.type === 'source-bus' && c.from === s.id) connected.push(c.to);
-    }
-    var connHtml = '';
-    if (connected.length > 0) {
-      connHtml = '<div style="margin-top:3px;">';
-      for (var k = 0; k < connected.length; k++) {
-        connHtml += '<span class="conn-tag" onclick="routingCmd(\'disconnect\',{source:\'' + s.id + '\',bus:\'' + connected[k] + '\'})">' + connected[k] + '<span class="x">x</span></span>';
-      }
-      connHtml += '</div>';
-    }
-    html += '<div class="card' + cls + '"><div class="name">' + s.name + '</div><div class="type">' + caps.join(' / ') + '</div>' + connHtml + '</div>';
+  // Build reverse map: drawflow nodeId -> our id
+  var reverseMap = {};
+  for (var key in _nodeMap) {
+    reverseMap[_nodeMap[key]] = key;
   }
-  document.getElementById('source-cards').innerHTML = html;
-}
 
-function renderBusses() {
-  var html = '';
-  for (var i = 0; i < _state.busses.length; i++) {
-    var b = _state.busses[i];
-    var badge = '<span class="badge badge-' + b.type + '">' + b.type + '</span>';
+  // Walk all nodes and their outputs
+  var nodes = data.drawflow.Home.data;
+  for (var nodeId in nodes) {
+    var node = nodes[nodeId];
+    var ourId = reverseMap[parseInt(nodeId)];
+    if (!ourId) continue;
 
-    // Source connections
-    var srcTags = '';
-    var bSources = b.sources || [];
-    for (var j = 0; j < bSources.length; j++) {
-      srcTags += '<span class="conn-tag" onclick="routingCmd(\'disconnect\',{source:\'' + bSources[j] + '\',bus:\'' + b.id + '\'})">' + bSources[j] + '<span class="x">x</span></span>';
-    }
+    var outputs = node.outputs;
+    for (var outKey in outputs) {
+      var conns = outputs[outKey].connections;
+      for (var j = 0; j < conns.length; j++) {
+        var targetNodeId = conns[j].node;
+        var targetOurId = reverseMap[parseInt(targetNodeId)];
+        if (!targetOurId) continue;
 
-    // Sink connections
-    var sinkTags = '';
-    var bSinks = b.sinks || [];
-    for (var j = 0; j < bSinks.length; j++) {
-      sinkTags += '<span class="conn-tag" onclick="routingCmd(\'disconnect\',{bus:\'' + b.id + '\',sink:\'' + bSinks[j] + '\'})">' + bSinks[j] + '<span class="x">x</span></span>';
-    }
-
-    // Available sources not yet connected
-    var availSrc = '<option value="">+ source...</option>';
-    for (var j = 0; j < _state.sources.length; j++) {
-      var s = _state.sources[j];
-      if (bSources.indexOf(s.id) < 0) {
-        availSrc += '<option value="' + s.id + '">' + s.name + '</option>';
+        if (ourId.startsWith('src-') && targetOurId.startsWith('bus-')) {
+          connections.push({
+            type: 'source-bus',
+            from: ourId.substring(4),
+            to: targetOurId.substring(4)
+          });
+        } else if (ourId.startsWith('bus-') && targetOurId.startsWith('sink-')) {
+          connections.push({
+            type: 'bus-sink',
+            from: ourId.substring(4),
+            to: targetOurId.substring(4)
+          });
+        }
       }
     }
-
-    // Available sinks not yet connected
-    var availSink = '<option value="">+ sink...</option>';
-    for (var j = 0; j < _state.sinks.length; j++) {
-      var s = _state.sinks[j];
-      if (bSinks.indexOf(s.id) < 0) {
-        availSink += '<option value="' + s.id + '">' + s.name + '</option>';
-      }
-    }
-
-    html += '<div class="bus-card">'
-      + '<div class="bus-header"><div><span class="name">' + b.name + '</span>' + badge + '</div>'
-      + '<button class="btn-delete" onclick="deleteBus(\'' + b.id + '\')">Remove</button></div>'
-      + '<div class="conn-section"><span class="conn-label">Sources:</span> ' + (srcTags || '<span style="color:#555">none</span>') + '</div>'
-      + '<div class="add-row"><select onchange="if(this.value)routingCmd(\'connect\',{source:this.value,bus:\'' + b.id + '\'})">' + availSrc + '</select></div>'
-      + '<div class="conn-section" style="margin-top:6px;"><span class="conn-label">Sinks:</span> ' + (sinkTags || '<span style="color:#555">none</span>') + '</div>'
-      + '<div class="add-row"><select onchange="if(this.value)routingCmd(\'connect\',{bus:\'' + b.id + '\',sink:this.value})">' + availSink + '</select></div>'
-      + '</div>';
   }
-  document.getElementById('bus-cards').innerHTML = html;
-}
 
-function renderSinks() {
-  var html = '';
-  for (var i = 0; i < _state.sinks.length; i++) {
-    var s = _state.sinks[i];
-    var cls = s.enabled ? '' : ' disabled';
-    var connected = [];
-    for (var j = 0; j < _state.connections.length; j++) {
-      var c = _state.connections[j];
-      if (c.type === 'bus-sink' && c.to === s.id) connected.push(c.from);
+  // Also collect bus source/sink lists from connections
+  var busUpdates = {};
+  for (var i = 0; i < connections.length; i++) {
+    var c = connections[i];
+    if (c.type === 'source-bus') {
+      if (!busUpdates[c.to]) busUpdates[c.to] = {sources: [], sinks: []};
+      busUpdates[c.to].sources.push(c.from);
+    } else if (c.type === 'bus-sink') {
+      if (!busUpdates[c.from]) busUpdates[c.from] = {sources: [], sinks: []};
+      busUpdates[c.from].sinks.push(c.to);
     }
-    var connHtml = '';
-    if (connected.length > 0) {
-      connHtml = '<div style="margin-top:3px;">';
-      for (var k = 0; k < connected.length; k++) {
-        connHtml += '<span class="conn-tag" onclick="routingCmd(\'disconnect\',{bus:\'' + connected[k] + '\',sink:\'' + s.id + '\'})">' + connected[k] + '<span class="x">x</span></span>';
-      }
-      connHtml += '</div>';
-    }
-    html += '<div class="card' + cls + '"><div class="name">' + s.name + '</div><div class="type">' + (s.type || '') + '</div>' + connHtml + '</div>';
   }
-  document.getElementById('sink-cards').innerHTML = html;
+
+  // Send full state
+  fetch('/routing/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cmd: 'save_all', connections: connections, bus_updates: busUpdates})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) setStatus('Saved!');
+      else setStatus('Save error: ' + (d.error || 'unknown'));
+    });
 }
 
-function showAddBus() {
-  var name = prompt('Bus name:');
-  if (!name) return;
-  var type = prompt('Type (listen, solo, duplex, simplex):', 'listen');
-  if (!type) return;
-  routingCmd('add_bus', {name: name, type: type});
-}
-
-function deleteBus(id) {
-  if (!confirm('Remove bus "' + id + '"?')) return;
-  routingCmd('delete_bus', {id: id});
-}
+// Handle node deletion
+editor.on('nodeRemoved', function(nodeId) {
+  var reverseMap = {};
+  for (var key in _nodeMap) reverseMap[_nodeMap[key]] = key;
+  var ourId = reverseMap[nodeId];
+  if (ourId && ourId.startsWith('bus-')) {
+    var busId = ourId.substring(4);
+    fetch('/routing/cmd', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cmd: 'delete_bus', id: busId})
+    }).then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) setStatus('Bus removed');
+      });
+  }
+});
 
 loadRouting();
-setInterval(loadRouting, 5000);
 </script>
 </body>
 </html>
