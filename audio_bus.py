@@ -683,13 +683,158 @@ class SoloBus(AudioBus):
 
 
 class DuplexRepeaterBus(AudioBus):
-    """Full duplex cross-link between two radios."""
+    """Full duplex cross-link between two radios.
+
+    Side A and Side B are radio plugins. Audio flows both directions
+    simultaneously:
+      A.get_audio() → B.put_audio()  (A's RX becomes B's TX)
+      B.get_audio() → A.put_audio()  (B's RX becomes A's TX)
+
+    PTT on each side is keyed whenever the OTHER side has RX audio.
+    Both directions can be active at the same time (full duplex —
+    radios must be on different frequencies).
+
+    Optional sinks can be attached to receive a mix of both sides
+    (e.g. for recording the cross-link).
+    """
 
     def __init__(self, name, config):
         super().__init__(name, 'duplex_repeater', config)
+        self._side_a = None         # Radio plugin
+        self._side_b = None         # Radio plugin
+        self._a_ptt_active = False
+        self._b_ptt_active = False
+        self._a_ptt_hold_until = 0.0
+        self._b_ptt_hold_until = 0.0
+        self._ptt_hold_time = float(getattr(config, 'REPEATER_PTT_HOLD', 1.0))
+        self._signal_threshold = float(getattr(config, 'SDR_SIGNAL_THRESHOLD', -60.0))
+        self.call_count = 0
+
+    def set_side_a(self, radio_plugin):
+        """Set the Side A radio plugin."""
+        self._side_a = radio_plugin
+
+    def set_side_b(self, radio_plugin):
+        """Set the Side B radio plugin."""
+        self._side_b = radio_plugin
 
     def tick(self, chunk_size):
-        raise NotImplementedError("DuplexRepeaterBus not yet implemented")
+        """Process one audio cycle — cross-link both directions.
+
+        1. Get RX audio from both sides
+        2. Route A's RX → B's TX (with PTT)
+        3. Route B's RX → A's TX (with PTT)
+        4. Deliver mixed audio to sinks (for recording/monitoring)
+        """
+        self.call_count += 1
+        current_time = time.monotonic()
+        active_sources = []
+
+        # ── Phase 1: Get RX audio from both sides ──
+        a_rx = None
+        b_rx = None
+
+        if self._side_a:
+            a_rx, _a_ptt = self._side_a.get_audio(chunk_size)
+            if a_rx is not None:
+                active_sources.append(self._side_a.name)
+
+        if self._side_b:
+            b_rx, _b_ptt = self._side_b.get_audio(chunk_size)
+            if b_rx is not None:
+                active_sources.append(self._side_b.name)
+
+        # ── Phase 2: A's RX → B's TX ──
+        a_has_signal = check_signal_instant(a_rx, self._signal_threshold) if a_rx else False
+
+        if a_has_signal:
+            self._b_ptt_hold_until = current_time + self._ptt_hold_time
+            if not self._b_ptt_active and self._side_b:
+                # Key B's PTT
+                self._b_ptt_active = True
+                if hasattr(self._side_b, 'execute'):
+                    self._side_b.execute({'cmd': 'ptt', 'state': True})
+                elif hasattr(self._side_b, 'ptt_on'):
+                    self._side_b.ptt_on()
+
+        if self._b_ptt_active and self._side_b:
+            if a_rx is not None:
+                if hasattr(self._side_b, 'put_audio'):
+                    self._side_b.put_audio(a_rx)
+                elif hasattr(self._side_b, 'write_tx_audio'):
+                    self._side_b.write_tx_audio(a_rx)
+
+        if self._b_ptt_active and current_time > self._b_ptt_hold_until:
+            # Release B's PTT
+            self._b_ptt_active = False
+            if self._side_b:
+                if hasattr(self._side_b, 'execute'):
+                    self._side_b.execute({'cmd': 'ptt', 'state': False})
+                elif hasattr(self._side_b, 'ptt_off'):
+                    self._side_b.ptt_off()
+
+        # ── Phase 3: B's RX → A's TX ──
+        b_has_signal = check_signal_instant(b_rx, self._signal_threshold) if b_rx else False
+
+        if b_has_signal:
+            self._a_ptt_hold_until = current_time + self._ptt_hold_time
+            if not self._a_ptt_active and self._side_a:
+                # Key A's PTT
+                self._a_ptt_active = True
+                if hasattr(self._side_a, 'execute'):
+                    self._side_a.execute({'cmd': 'ptt', 'state': True})
+                elif hasattr(self._side_a, 'ptt_on'):
+                    self._side_a.ptt_on()
+
+        if self._a_ptt_active and self._side_a:
+            if b_rx is not None:
+                if hasattr(self._side_a, 'put_audio'):
+                    self._side_a.put_audio(b_rx)
+                elif hasattr(self._side_a, 'write_tx_audio'):
+                    self._side_a.write_tx_audio(b_rx)
+
+        if self._a_ptt_active and current_time > self._a_ptt_hold_until:
+            # Release A's PTT
+            self._a_ptt_active = False
+            if self._side_a:
+                if hasattr(self._side_a, 'execute'):
+                    self._side_a.execute({'cmd': 'ptt', 'state': False})
+                elif hasattr(self._side_a, 'ptt_off'):
+                    self._side_a.ptt_off()
+
+        # ── Phase 4: Build output ──
+        # Mix both RX streams for sink delivery (recording/monitoring)
+        if a_rx is not None and b_rx is not None:
+            mixed = mix_audio_streams(a_rx, b_rx)
+        elif a_rx is not None:
+            mixed = a_rx
+        elif b_rx is not None:
+            mixed = b_rx
+        else:
+            mixed = None
+
+        audio_dict = {sink: mixed for sink in self.sink_names}
+        if not self.sink_names:
+            audio_dict['_default'] = mixed
+
+        a_name = self._side_a.name if self._side_a else 'A'
+        b_name = self._side_b.name if self._side_b else 'B'
+
+        return BusOutput(
+            audio=audio_dict,
+            ptt={
+                a_name: self._a_ptt_active,
+                b_name: self._b_ptt_active,
+            },
+            active_sources=active_sources,
+            ducked_sources=[],
+            status={
+                'a_rx_signal': a_has_signal,
+                'b_rx_signal': b_has_signal,
+                'a_ptt': self._a_ptt_active,
+                'b_ptt': self._b_ptt_active,
+            },
+        )
 
 
 class SimplexRepeaterBus(AudioBus):
