@@ -190,7 +190,22 @@ class TH9800Plugin(RadioPlugin):
         chunk_size = chunk_size or self._config.AUDIO_CHUNK_SIZE
         audio, ptt = self._radio_source.get_audio(chunk_size)
         if audio is not None:
-            self.audio_level = self._radio_source.gateway.tx_audio_level
+            # Update level from the audio we got
+            try:
+                arr = np.frombuffer(audio, dtype=np.int16).astype(np.float32)
+                rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
+                if rms > 0:
+                    level = max(0, min(100, (20.0 * math.log10(rms / 32767.0) + 60) * (100 / 60)))
+                else:
+                    level = 0
+                if level > self.audio_level:
+                    self.audio_level = int(level)
+                else:
+                    self.audio_level = int(self.audio_level * 0.7 + level * 0.3)
+            except Exception:
+                pass
+        else:
+            self.audio_level = max(0, int(self.audio_level * 0.7))
         return audio, False  # RX audio never triggers PTT
 
     def put_audio(self, pcm):
@@ -611,14 +626,10 @@ class TH9800Plugin(RadioPlugin):
                 return pcm_data
 
             def check_vad(self, pcm_data):
-                # Simple threshold VAD
-                arr = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
-                rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
-                threshold = getattr(plugin._config, 'VAD_THRESHOLD', -40)
-                if rms > 0:
-                    db = 20.0 * math.log10(rms / 32767.0)
-                    return db > threshold
-                return False
+                # Always pass — the bus system handles gating/ducking.
+                # AIOCRadioSource uses this to decide whether to return audio.
+                # In plugin mode, we always return audio and let the bus decide.
+                return True
 
             def calculate_audio_level(self, pcm_data):
                 arr = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
