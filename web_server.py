@@ -3463,10 +3463,11 @@ class WebConfigServer:
                 sinks.append({**{'id': 'aioc_tx', 'name': 'TH-9800 [TX]', 'type': 'Radio TX', 'enabled': True}, **_src_info(gw.th9800_plugin)})
 
         # Load bus config
-        busses, connections = self._load_routing_config()
+        busses, connections, saved_layout = self._load_routing_config()
 
         return {
             'sources': sources,
+            'layout': saved_layout,
             'busses': busses,
             'sinks': sinks,
             'connections': connections,
@@ -3475,7 +3476,7 @@ class WebConfigServer:
     def _handle_routing_cmd(self, data):
         """Handle routing commands from the web UI."""
         cmd = data.get('cmd', '')
-        busses, connections = self._load_routing_config()
+        busses, connections, _layout = self._load_routing_config()
 
         if cmd == 'add_bus':
             name = data.get('name', '').strip()
@@ -3548,14 +3549,15 @@ class WebConfigServer:
             return {'ok': True}
 
         elif cmd == 'save_all':
-            # Full save from Drawflow — replace connections + update bus sources/sinks
+            # Full save from Drawflow — replace connections + update bus sources/sinks + layout
             new_connections = data.get('connections', [])
             bus_updates = data.get('bus_updates', {})
+            layout = data.get('layout')
             for b in busses:
                 upd = bus_updates.get(b['id'], {})
                 b['sources'] = upd.get('sources', [])
                 b['sinks'] = upd.get('sinks', [])
-            self._save_routing_config(busses, new_connections)
+            self._save_routing_config(busses, new_connections, layout=layout)
             # Reload bus manager to apply changes
             if self.gateway and hasattr(self.gateway, 'bus_manager') and self.gateway.bus_manager:
                 try:
@@ -3626,25 +3628,37 @@ class WebConfigServer:
         return self._ROUTING_CONFIG_PATH
 
     def _load_routing_config(self):
-        """Load bus config from JSON file."""
+        """Load bus config from JSON file. Returns (busses, connections, layout)."""
         import json, os
         path = self._routing_config_path()
         if os.path.exists(path):
             try:
                 with open(path) as f:
                     data = json.load(f)
-                return data.get('busses', []), data.get('connections', [])
+                return data.get('busses', []), data.get('connections', []), data.get('layout')
             except Exception:
                 pass
-        return [], []
+        return [], [], None
 
-    def _save_routing_config(self, busses, connections):
+    def _save_routing_config(self, busses, connections, layout=None):
         """Save bus config to JSON file."""
         import json
         path = self._routing_config_path()
         try:
+            data = {'busses': busses, 'connections': connections}
+            if layout:
+                data['layout'] = layout
+            else:
+                # Preserve existing layout if not provided
+                try:
+                    with open(path) as f:
+                        old = json.load(f)
+                    if 'layout' in old:
+                        data['layout'] = old['layout']
+                except Exception:
+                    pass
             with open(path, 'w') as f:
-                json.dump({'busses': busses, 'connections': connections}, f, indent=2)
+                json.dump(data, f, indent=2)
         except Exception as e:
             print(f"  [Routing] Failed to save config: {e}")
 

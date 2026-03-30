@@ -238,6 +238,25 @@ function rebuildEditor() {
   editor.clear();
   _nodeMap = {};
 
+  // If saved layout exists, restore it directly
+  if (_state.layout) {
+    try {
+      editor.import(_state.layout);
+      // Rebuild _nodeMap from imported nodes
+      var nodes = _state.layout.drawflow.Home.data;
+      for (var nid in nodes) {
+        var n = nodes[nid];
+        var cls = n.class || '';
+        if (cls === 'source') _nodeMap['src-' + n.name] = parseInt(nid);
+        else if (cls.startsWith('bus-')) _nodeMap['bus-' + n.name] = parseInt(nid);
+        else if (cls === 'sink') _nodeMap['sink-' + n.name] = parseInt(nid);
+      }
+      return;
+    } catch(e) {
+      console.warn('Layout restore failed, rebuilding:', e);
+    }
+  }
+
   var ySource = 20;
   var yBus = 20;
   var ySink = 20;
@@ -389,11 +408,14 @@ function saveRouting() {
     }
   }
 
+  // Save Drawflow layout (node positions)
+  var layout = editor.export();
+
   // Send full state
   fetch('/routing/cmd', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({cmd: 'save_all', connections: connections, bus_updates: busUpdates})
+    body: JSON.stringify({cmd: 'save_all', connections: connections, bus_updates: busUpdates, layout: layout})
   }).then(function(r) { return r.json(); })
     .then(function(d) {
       if (d.ok) setStatus('Saved!');
