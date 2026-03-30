@@ -5493,6 +5493,15 @@ class RadioGateway:
         self._status_thread = threading.Thread(target=self.status_monitor_loop, daemon=True)
         self._status_thread.start()
 
+        # Start Bus Manager (additional busses from routing config)
+        try:
+            from bus_manager import BusManager
+            self.bus_manager = BusManager(self)
+            self.bus_manager.start()
+        except Exception as e:
+            print(f"  [BusManager] Failed to start: {e}")
+            self.bus_manager = None
+
         # Start Automation Engine if enabled
         if getattr(self.config, 'ENABLE_AUTOMATION', False):
             try:

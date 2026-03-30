@@ -3629,6 +3629,12 @@ class WebConfigServer:
                 b['sources'] = upd.get('sources', [])
                 b['sinks'] = upd.get('sinks', [])
             self._save_routing_config(busses, new_connections)
+            # Reload bus manager to apply changes
+            if self.gateway and hasattr(self.gateway, 'bus_manager') and self.gateway.bus_manager:
+                try:
+                    self.gateway.bus_manager.reload()
+                except Exception as e:
+                    return {'ok': True, 'warning': f'saved but reload failed: {e}'}
             return {'ok': True}
 
         return {'ok': False, 'error': f'unknown command: {cmd}'}
