@@ -424,7 +424,7 @@ class SDRPlugin(RadioPlugin):
             self._master_sink, self._slave_sink = sink1, sink2
             self._master_proc, self._slave_proc = self._processor1, self._processor2
 
-        # Start rtl_airband if not already running (lightweight — no sdrplay restart)
+        # Start rtl_airband if not already running — retry in background if first attempt fails
         try:
             _chk = subprocess.run(['pgrep', 'rtl_airband'], capture_output=True, timeout=2)
             _already_running = _chk.returncode == 0
@@ -440,6 +440,31 @@ class SDRPlugin(RadioPlugin):
                 self._start_rtl_airband_only()
             except Exception as e:
                 print(f"  Warning: rtl_airband start issue: {e}")
+            # Verify it started — if not, retry in background
+            try:
+                _chk = subprocess.run(['pgrep', 'rtl_airband'], capture_output=True, timeout=2)
+                if _chk.returncode != 0:
+                    print("  rtl_airband not running — retrying in background")
+                    import threading
+                    def _retry():
+                        for attempt in range(6):
+                            time.sleep(10)
+                            try:
+                                _c = subprocess.run(['pgrep', 'rtl_airband'], capture_output=True, timeout=2)
+                                if _c.returncode == 0:
+                                    print(f"  [SDR] rtl_airband started (attempt {attempt+1})")
+                                    return
+                                self._start_rtl_airband_only()
+                                _c = subprocess.run(['pgrep', 'rtl_airband'], capture_output=True, timeout=2)
+                                if _c.returncode == 0:
+                                    print(f"  [SDR] rtl_airband started on retry {attempt+1}")
+                                    return
+                            except Exception:
+                                pass
+                        print("  [SDR] rtl_airband failed after 6 retries")
+                    threading.Thread(target=_retry, daemon=True, name="SDR-retry").start()
+            except Exception:
+                pass
 
         # Create tuner captures
         enable_sdr1 = getattr(config, 'ENABLE_SDR', True)
