@@ -930,6 +930,18 @@ devices:
         The heavy _restart_rtl_airband() (which kills sdrplay API) is only for
         explicit tune/restart commands from the UI.
         """
+        # Wait for sdrplay_apiService to be ready
+        for _w in range(10):
+            chk = subprocess.run(['pgrep', 'sdrplay_apiService'], capture_output=True, timeout=2)
+            if chk.returncode == 0:
+                break
+            time.sleep(1)
+        else:
+            print("  Warning: sdrplay_apiService not running — starting it")
+            subprocess.run(['sudo', 'systemctl', 'start', 'sdrplay.service'],
+                           capture_output=True, timeout=10)
+            time.sleep(5)
+
         # Start SDR1 (Master)
         subprocess.run(['rtl_airband', '-e', '-c', self.CONFIG_PATH],
                        capture_output=True, timeout=10)
