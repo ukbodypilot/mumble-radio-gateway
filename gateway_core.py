@@ -3885,23 +3885,8 @@ class RadioGateway:
                     if self.tx_audio_level < 3:
                         self.tx_audio_level = 0
                 
-                # Check audio health — restart if stalled
-                time_since_last_capture = current_time - self.last_audio_capture_time
-                if time_since_last_capture > 10.0 and self.aioc_available:
-                    if self.config.VERBOSE_LOGGING:
-                        print(f"  Audio capture stalled ({int(time_since_last_capture)}s) — restarting...")
-                    self.restart_audio_input()
-                    continue
-            
-            # Always check for stuck audio (even if status reporting is disabled)
-            elif status_check_interval == 0:
-                time_since_last_capture = current_time - self.last_audio_capture_time
-                if time_since_last_capture > 30.0:  # 30 seconds with no audio = stuck
-                    if self.config.VERBOSE_LOGGING:
-                        print(f"\n✗ Audio TX stuck (no audio for {int(time_since_last_capture)}s)")
-                        print("  Attempting to restart audio input...")
-                    self.restart_audio_input()
-                    time.sleep(5)  # Wait before checking again
+                # Audio stream health now handled by TH9800Plugin
+                pass
             
             # DarkIce health check (every 10s — pgrep spawns a process)
             if (self._darkice_was_running and
