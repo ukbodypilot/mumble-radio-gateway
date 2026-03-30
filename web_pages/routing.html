@@ -64,52 +64,59 @@
   .node-controls {
     display: flex;
     align-items: center;
-    gap: 4px;
-    margin-bottom: 3px;
+    gap: 6px;
+    margin-bottom: 4px;
+    padding: 0 2px;
   }
   .mute-btn {
-    width: 22px;
-    height: 18px;
-    border: 1px solid var(--t-btn-border);
+    width: 24px;
+    height: 20px;
+    border: 2px solid #555;
     border-radius: 3px;
-    background: var(--t-btn);
+    background: #2a2a3e;
     color: #888;
-    font-size: 0.6rem;
+    font-size: 0.65rem;
     font-weight: bold;
     cursor: pointer;
     padding: 0;
     line-height: 18px;
     text-align: center;
+    flex-shrink: 0;
   }
-  .mute-btn:hover { border-color: #e74c3c; }
+  .mute-btn:hover { border-color: #e74c3c; color: #e74c3c; }
   .mute-btn.muted {
     background: #e74c3c;
     color: #fff;
     border-color: #c0392b;
   }
   .gain-slider {
-    flex: 1;
+    width: 60px;
+    flex-shrink: 0;
     height: 4px;
     -webkit-appearance: none;
     appearance: none;
-    background: var(--t-btn-border);
+    background: #444;
     border-radius: 2px;
     outline: none;
   }
   .gain-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
     background: var(--t-accent);
     cursor: pointer;
   }
   .gain-val {
-    font-size: 0.55rem;
-    color: #888;
-    min-width: 28px;
+    font-size: 0.6rem;
+    color: #aaa;
+    min-width: 30px;
     text-align: right;
+    flex-shrink: 0;
   }
+
+  /* Wider nodes to fit controls */
+  .drawflow .drawflow-node { min-width: 180px; }
 
   /* Level bars inside nodes */
   .level-bar {
@@ -209,7 +216,7 @@ function rebuildEditor() {
   var xSource = 50;
   var xBus = 350;
   var xSink = 650;
-  var spacing = 80;
+  var spacing = 100;
 
   // Add source nodes (output only — right side)
   for (var i = 0; i < _state.sources.length; i++) {
@@ -217,7 +224,7 @@ function rebuildEditor() {
     var muted = s.muted ? ' muted' : '';
     var html = '<div class="box">'
       + '<div class="node-controls">'
-      + '<button class="mute-btn' + muted + '" onclick="toggleMute(\'' + s.id + '\')" id="mute-' + s.id + '">' + (s.muted ? 'M' : '') + '</button>'
+      + '<button class="mute-btn' + muted + '" onclick="toggleMute(\'' + s.id + '\')" id="mute-' + s.id + '">M</button>'
       + '<input type="range" class="gain-slider" min="0" max="200" value="' + (s.gain || 100) + '" oninput="setGain(\'' + s.id + '\',this.value)" title="Gain">'
       + '<span class="gain-val" id="gain-val-' + s.id + '">' + (s.gain || 100) + '%</span>'
       + '</div>'
@@ -244,7 +251,7 @@ function rebuildEditor() {
     var muted = s.muted ? ' muted' : '';
     var html = '<div class="box">'
       + '<div class="node-controls">'
-      + '<button class="mute-btn' + muted + '" onclick="toggleMute(\'' + s.id + '\')" id="mute-' + s.id + '">' + (s.muted ? 'M' : '') + '</button>'
+      + '<button class="mute-btn' + muted + '" onclick="toggleMute(\'' + s.id + '\')" id="mute-' + s.id + '">M</button>'
       + '<input type="range" class="gain-slider" min="0" max="200" value="' + (s.gain || 100) + '" oninput="setGain(\'' + s.id + '\',this.value)" title="Gain">'
       + '<span class="gain-val" id="gain-val-' + s.id + '">' + (s.gain || 100) + '%</span>'
       + '</div>'
@@ -391,10 +398,8 @@ function toggleMute(id) {
         if (btn) {
           if (d.muted) {
             btn.classList.add('muted');
-            btn.textContent = 'M';
           } else {
             btn.classList.remove('muted');
-            btn.textContent = '';
           }
         }
         setStatus(id + ': ' + (d.muted ? 'muted' : 'unmuted'));
