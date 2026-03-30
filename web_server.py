@@ -1518,12 +1518,18 @@ class WebConfigServer:
                         parent._unsubscribe_stream(ev)
                     return
                 elif self.path == '/':
-                    # Persistent shell page with PCM player + iframe
-                    html = parent._generate_shell_page()
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/html; charset=utf-8')
-                    self.end_headers()
-                    self.wfile.write(html.encode('utf-8'))
+                    import os as _os
+                    _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'web_pages', 'shell.html')
+                    try:
+                        with open(_p, 'rb') as _f:
+                            _body = _f.read()
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/html; charset=utf-8')
+                        self.end_headers()
+                        self.wfile.write(_body)
+                    except Exception:
+                        self.send_response(500)
+                        self.end_headers()
                 elif self.path == '/dashboard':
                     import os as _os
                     _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'web_pages', 'dashboard.html')
@@ -1675,12 +1681,18 @@ class WebConfigServer:
                     except BrokenPipeError:
                         pass
                 elif self.path == '/aircraft':
-                    # ADS-B aircraft map page (wraps dump1090-fa in iframe)
-                    html = parent._generate_aircraft_page()
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/html; charset=utf-8')
-                    self.end_headers()
-                    self.wfile.write(html.encode('utf-8'))
+                    import os as _os
+                    _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'web_pages', 'aircraft.html')
+                    try:
+                        with open(_p, 'rb') as _f:
+                            _body = _f.read()
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/html; charset=utf-8')
+                        self.end_headers()
+                        self.wfile.write(_body)
+                    except Exception:
+                        self.send_response(500)
+                        self.end_headers()
                 elif self.path == '/adsb' or self.path.startswith('/adsb/'):
                     # Reverse proxy to dump1090-fa web interface
                     import urllib.request as _ureq
@@ -1743,12 +1755,18 @@ class WebConfigServer:
                     self.wfile.write(html.encode('utf-8'))
 
                 elif self.path == '/voice':
-                    # Voice relay page
-                    html = parent._generate_voice_page()
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/html; charset=utf-8')
-                    self.end_headers()
-                    self.wfile.write(html.encode('utf-8'))
+                    import os as _os
+                    _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'web_pages', 'voice.html')
+                    try:
+                        with open(_p, 'rb') as _f:
+                            _body = _f.read()
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/html; charset=utf-8')
+                        self.end_headers()
+                        self.wfile.write(_body)
+                    except Exception:
+                        self.send_response(500)
+                        self.end_headers()
 
                 elif self.path == '/voice/status':
                     _vr_target = os.environ.get('TMUX_TARGET', 'claude-voice')
