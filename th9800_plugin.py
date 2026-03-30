@@ -390,12 +390,20 @@ class TH9800Plugin(RadioPlugin):
         """
         chunk_size = self._config.AUDIO_CHUNK_SIZE
 
+        _read_count = 0
         while self._rx_running:
             if not self._input_stream or self._restarting_stream:
                 time.sleep(0.05)
                 continue
             try:
                 data = self._input_stream.read(chunk_size, exception_on_overflow=False)
+                _read_count += 1
+                if _read_count <= 3 or _read_count % 500 == 0:
+                    rms = 0
+                    if data:
+                        arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                        rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0
+                    print(f"  [TH9800-RX] read #{_read_count}: {len(data) if data else 0} bytes, rms={rms:.0f}, q={self._rx_queue.qsize()}")
                 if not data:
                     continue
 
