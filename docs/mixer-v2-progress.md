@@ -30,11 +30,14 @@ any work on the mixer.
 - [x] Verified parity — gateway running on ListenBus, user confirmed working (2026-03-29)
 
 ## Next Steps (in order)
-8. [ ] Build SoloBus
-9. [ ] Build DuplexRepeaterBus
-10. [ ] Build SimplexRepeaterBus (lower priority)
-11. [ ] Update web UI — bus config page
-12. [ ] Merge to main when stable
+8. [ ] Define RadioPlugin base class (standard interface: get_audio/put_audio/setup/teardown/get_status)
+9. [ ] Refactor SDR into SDRPlugin (RSPduo dual tuner as single plugin, internal master/slave ducking)
+10. [ ] Refactor TH-9800, D75, KV4P into plugins
+11. [ ] Build SoloBus (takes a RadioPlugin)
+12. [ ] Build DuplexRepeaterBus (connects two RadioPlugins)
+13. [ ] Build routing UI page — column wiring view (sources | busses | sinks)
+14. [ ] Build SimplexRepeaterBus (lower priority)
+15. [ ] Merge to main when stable
 
 ## Design Decisions Log
 | Date | Decision | Rationale |
@@ -45,6 +48,11 @@ any work on the mixer.
 | 2026-03-29 | Ducking is per-bus, priority-based | No more hardcoded "AIOC ducks SDRs" rules |
 | 2026-03-29 | Duplex repeater is high priority | User needs it for cross-band linking |
 | 2026-03-29 | Solo bus is the building block | Every radio starts solo, then connects to other busses |
+| 2026-03-29 | Plugins replace source classes | Existing sources refactored (not wrapped) into RadioPlugin interface |
+| 2026-03-29 | RSPduo = single plugin | Dual tuner master/slave ducking handled inside plugin, bus sees one source |
+| 2026-03-29 | Plugins can be simple or complex | Standard interface for bus, hardware-specific methods for UI |
+| 2026-03-29 | UI: column wiring view | 3-column layout (sources/busses/sinks) with visual connections, stacks on mobile |
+| 2026-03-29 | Build plugins before busses | SDR plugin first, then SoloBus/DuplexRepeaterBus, then routing UI |
 
 ## Open Questions (from design doc)
 1. Bus config format: INI or JSON? (not yet decided)

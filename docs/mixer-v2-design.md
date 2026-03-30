@@ -103,23 +103,51 @@ pipeline.
 optionally connect it to other busses (listen, repeater) for cross-radio
 functionality.
 
-## Source Model
+## Plugin Model
 
-A source is anything that produces audio:
+A **plugin** is the uniform interface for all hardware. Existing source classes
+(SDRSource, D75AudioSource, KV4PAudioSource, etc.) are refactored into plugins
+rather than wrapped. Each plugin has two faces:
 
-```
-Source {
-    name: str                  # "AIOC", "SDR1", "D75", "WebMic", etc.
-    type: enum                 # radio, sdr, network, file, mic
+**Standard interface** (bus talks to these — required):
+```python
+class RadioPlugin:
+    name: str
     capabilities: set          # {rx, tx, ptt, frequency, ctcss, ...}
-    processing: ProcessChain   # gate → HPF → LPF → notch → gain (per-source)
-    bus_assignments: list      # which busses this source is on
-    priority: int              # used for ducking within listen busses
+    processing: ProcessChain   # gate -> HPF -> LPF -> notch -> gain (per-plugin)
     enabled: bool
-}
+
+    def setup(self) -> bool
+    def teardown(self)
+    def get_audio(self, chunk_size) -> (bytes, bool)  # (pcm, ptt_needed)
+    def put_audio(self, pcm: bytes)                   # TX audio in
+    def get_status(self) -> dict
 ```
 
-Processing is owned by the source. The bus receives clean, processed PCM.
+**Hardware-specific interface** (UI page talks to these — optional):
+```python
+class SDRPlugin(RadioPlugin):
+    # Everything RTLAirbandManager does today
+    def set_frequency(self, freq)
+    def set_squelch(self, threshold)
+    def restart_rtl_airband(self)
+    def get_sdr_status(self) -> dict
+    # RSPduo dual tuner: master/slave ducking handled internally
+    # Plugin outputs single mixed stream to bus
+```
+
+A plugin can be simple (audio + basic status only, like a Gateway Link
+endpoint) or complex (full radio control, like SDR or D75). The bus only
+calls the standard interface. The UI discovers what extra methods exist
+and renders controls accordingly.
+
+**Key design decision:** The RSPduo dual tuner (SDR1 + SDR2) is a single
+plugin. Master/slave ducking happens inside the plugin — master audio
+always flows, slave only flows when master is quiet. The bus sees one
+source, not two. Each tuner still has its own frequency, processing chain,
+and UI controls within the plugin.
+
+Processing is owned by the plugin. The bus receives clean, processed PCM.
 
 ## Sink Model
 
@@ -162,9 +190,11 @@ A source appearing on multiple busses (e.g., D75 on both "repeater-link" and
 
 ## What Moves Where
 
-### Stays in source classes (audio_sources.py):
-- `get_audio()` — produces processed PCM
-- Per-source processing chain (gate, HPF, LPF, notch, gain, boost)
+### Refactored into plugins:
+- Existing source classes become plugins (not wrapped — refactored)
+- `get_audio()` / `put_audio()` — standard audio interface
+- Per-plugin processing chain (gate, HPF, LPF, notch, gain, boost)
+- Hardware-specific methods stay on the plugin class (UI accesses directly)
 - Source-specific buffer management (ring buffers, blob handling)
 - Level metering
 
