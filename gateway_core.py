@@ -102,7 +102,7 @@ except ImportError:
 
 from audio_sources import (
     AudioSource, AudioProcessor, AIOCRadioSource, FilePlaybackSource,
-    EchoLinkSource, SDRSource, PipeWireSDRSource,
+    EchoLinkSource,
     RemoteAudioServer, RemoteAudioSource, D75AudioSource,
     KV4PCATClient, KV4PAudioSource, NetworkAnnouncementSource,
     WebMicSource, WebMonitorSource, LinkAudioSource, StreamOutputSource, generate_cw_pcm,
@@ -1289,381 +1289,7 @@ class USBIPManager:
 # RTL-AIRBAND / SDR MANAGER
 # ============================================================================
 
-class RTLAirbandManager:
-    """Manage RTLSDR-Airband process, config generation, and channel memory."""
-
-    ANTENNAS = ['Tuner 1 50 ohm', 'Tuner 1 Hi-Z', 'Tuner 2 50 ohm']
-    BANDWIDTHS = [0.2, 0.3, 0.6, 1.536, 5, 6, 7, 8]
-    SAMPLE_RATES = [0.5, 1.0, 2.0, 2.56, 6.0, 8.0, 10.66]
-    MODULATIONS = ['nfm', 'am']
-    CONFIG_PATH = '/etc/rtl_airband/rspduo_gateway.conf'
-    CONFIG_PATH_SDR2 = '/etc/rtl_airband/rspduo_gateway2.conf'
-    # RSPduo dual-tuner via Master/Slave API:
-    #   SDR1 opens as Master (rspduo_mode=4) → Tuner 1
-    #   SDR2 opens as Slave  (rspduo_mode=8) → Tuner 2 (only visible after Master is streaming)
-    MASTER_DEVICE_STRING = "driver=sdrplay,rspduo_mode=4"
-    SLAVE_DEVICE_STRING = "driver=sdrplay,rspduo_mode=8"
-
-    # All tunable setting keys with their types and defaults
-    _SETTING_KEYS = {
-        'frequency': (float, 446.64),
-        'modulation': (str, 'nfm'),
-        'sample_rate': (float, 2.56),
-        'antenna': (str, 'Tuner 1 50 ohm'),
-        'gain_mode': (str, 'agc'),
-        'rfgr': (int, 4),
-        'ifgr': (int, 40),
-        'agc_setpoint': (int, -30),
-        'squelch_threshold': (int, 0),
-        'correction': (float, 0.0),
-        'tau': (int, 200),
-        'ampfactor': (float, 1.0),
-        'lowpass': (int, 2500),
-        'highpass': (int, 100),
-        'notch': (float, 0.0),
-        'notch_q': (float, 10.0),
-        'channel_bw': (float, 0.0),
-        'bias_t': (bool, False),
-        'rf_notch': (bool, False),
-        'dab_notch': (bool, False),
-        'iq_correction': (bool, True),
-        'external_ref': (bool, False),
-        'continuous': (bool, True),
-        # SDR2 (Tuner 2) independent settings — gain/filters are per-tuner
-        'frequency2': (float, 462.550),
-        'modulation2': (str, 'nfm'),
-        'gain_mode2': (str, 'agc'),
-        'rfgr2': (int, 4),
-        'ifgr2': (int, 40),
-        'agc_setpoint2': (int, -30),
-        'squelch_threshold2': (int, 0),
-        'tau2': (int, 200),
-        'ampfactor2': (float, 1.0),
-        'lowpass2': (int, 2500),
-        'highpass2': (int, 100),
-        'notch2': (float, 0.0),
-        'notch_q2': (float, 10.0),
-        'channel_bw2': (float, 0.0),
-        'continuous2': (bool, True),
-    }
-
-    def __init__(self, gateway_dir):
-        self._gateway_dir = gateway_dir
-        self._channels_path = os.path.join(gateway_dir, 'sdr_channels.json')
-        self._process = None
-
-        # Set defaults for all settings
-        for key, (typ, default) in self._SETTING_KEYS.items():
-            setattr(self, key, default)
-
-        self._load_settings()
-
-    def _load_settings(self):
-        """Load current tuning state from JSON file."""
-        try:
-            if os.path.exists(self._channels_path):
-                with open(self._channels_path, 'r') as f:
-                    data = json_mod.load(f)
-                saved = data.get('current', {})
-                if 'bandwidth' in saved and 'sample_rate' not in saved:
-                    saved['sample_rate'] = saved.pop('bandwidth')
-                for key, (typ, default) in self._SETTING_KEYS.items():
-                    if key in saved:
-                        try:
-                            setattr(self, key, typ(saved[key]))
-                        except (ValueError, TypeError):
-                            pass
-        except Exception:
-            pass
-
-    def _save_settings(self):
-        """Persist current tuning state to JSON file."""
-        try:
-            with open(self._channels_path, 'w') as f:
-                json_mod.dump({'current': self._current_settings()}, f, indent=2)
-        except Exception as e:
-            print(f"  [SDR] Failed to save settings: {e}")
-
-    def _current_settings(self):
-        """Return current tuning state as a dict."""
-        return {key: getattr(self, key) for key in self._SETTING_KEYS}
-
-    def get_status(self):
-        """Return status dict for the /sdrstatus endpoint."""
-        alive = False
-        try:
-            result = subprocess.run(['pgrep', 'rtl_airband'], capture_output=True, timeout=2)
-            alive = result.returncode == 0
-        except Exception:
-            pass
-        d = self._current_settings()
-        d['process_alive'] = alive
-        return d
-
-    def apply_settings(self, **kwargs):
-        """Update SDR1 tuning state, rewrite both configs, restart both rtl_airband processes."""
-        for key, (typ, _default) in self._SETTING_KEYS.items():
-            if key in kwargs:
-                try:
-                    setattr(self, key, typ(kwargs[key]))
-                except (ValueError, TypeError):
-                    pass
-        try:
-            self._write_config()
-            self._write_config_sdr2()
-            self._restart_process()
-            self._save_settings()
-            return {'ok': True}
-        except Exception as e:
-            return {'ok': False, 'error': str(e)}
-
-    def apply_settings_sdr2(self, **kwargs):
-        """Update SDR2 (Tuner 2) settings and restart both processes."""
-        sdr2_keys = {'frequency2', 'modulation2', 'gain_mode2', 'rfgr2', 'ifgr2',
-                     'agc_setpoint2', 'squelch_threshold2', 'tau2', 'ampfactor2',
-                     'lowpass2', 'highpass2', 'notch2', 'notch_q2', 'channel_bw2',
-                     'continuous2'}
-        for key in sdr2_keys:
-            if key in kwargs:
-                typ = self._SETTING_KEYS[key][0]
-                try:
-                    setattr(self, key, typ(kwargs[key]))
-                except (ValueError, TypeError):
-                    pass
-        try:
-            self._write_config_sdr2()
-            self._restart_process()
-            self._save_settings()
-            return {'ok': True}
-        except Exception as e:
-            return {'ok': False, 'error': str(e)}
-
-    def _write_config(self):
-        """Generate and write the SDR1 (Master / Tuner 1) rtl_airband config file."""
-        device_string = self.MASTER_DEVICE_STRING
-
-        # Build gain line (omit entirely for AGC)
-        gain_line = ''
-        if self.gain_mode == 'manual':
-            gain_line = f'  gain = "RFGR={self.rfgr},IFGR={self.ifgr}";'
-
-        # Build device settings string for SoapySDR kwargs
-        settings_parts = []
-        settings_parts.append(f'biasT_ctrl={str(self.bias_t).lower()}')
-        settings_parts.append(f'rfnotch_ctrl={str(self.rf_notch).lower()}')
-        settings_parts.append(f'dabnotch_ctrl={str(self.dab_notch).lower()}')
-        settings_parts.append(f'iqcorr_ctrl={str(self.iq_correction).lower()}')
-        settings_parts.append(f'extref_ctrl={str(self.external_ref).lower()}')
-        settings_parts.append(f'agc_setpoint={self.agc_setpoint}')
-        device_settings = ','.join(settings_parts)
-
-        # Cap sample rate at 2 MSps — limit in RSPduo Master/Slave mode
-        sample_rate = min(self.sample_rate, 2.0)
-
-        # Build optional channel-level lines
-        ch_opts = ''
-        if self.squelch_threshold != 0:
-            ch_opts += f'      squelch_threshold = {self.squelch_threshold};\n'
-        if self.ampfactor != 1.0:
-            ch_opts += f'      ampfactor = {self.ampfactor};\n'
-        if self.lowpass != 2500:
-            ch_opts += f'      lowpass = {self.lowpass};\n'
-        if self.highpass != 100:
-            ch_opts += f'      highpass = {self.highpass};\n'
-        if self.notch > 0:
-            ch_opts += f'      notch = {self.notch};\n'
-            if self.notch_q != 10.0:
-                ch_opts += f'      notch_q = {self.notch_q};\n'
-        if self.channel_bw > 0:
-            ch_opts += f'      bandwidth = {self.channel_bw};\n'
-
-        # Build optional device-level lines
-        dev_opts = ''
-        if self.correction != 0.0:
-            dev_opts += f'  correction = {self.correction};\n'
-        if self.tau != 200:
-            dev_opts += f'  tau = {self.tau};\n'
-        if self.antenna:
-            dev_opts += f'  antenna = "{self.antenna}";\n'
-
-        conf = f'''# Auto-generated by Radio Gateway SDR Manager (SDR1 — Master / Tuner 1)
-# Do not edit manually — changes will be overwritten on next tune.
-
-devices:
-({{
-  type = "soapysdr";
-  device_string = "{device_string}";
-  device_settings = "{device_settings}";
-  mode = "multichannel";
-  centerfreq = {self.frequency};
-  sample_rate = {sample_rate};
-{gain_line}
-{dev_opts}
-  channels:
-  (
-    {{
-      freq = {self.frequency};
-      modulation = "{self.modulation}";
-{ch_opts}      outputs: (
-        {{
-          type = "pulse";
-          stream_name = "SDR {self.frequency:.3f} MHz";
-          sink = "sdr_capture";
-          continuous = {'true' if self.continuous else 'false'};
-        }}
-      );
-    }}
-  );
-}});
-'''
-        # Write via sudo tee
-        proc = subprocess.run(
-            ['sudo', 'tee', self.CONFIG_PATH],
-            input=conf.encode(), capture_output=True, timeout=5
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"Failed to write config: {proc.stderr.decode()}")
-
-    def _write_config_sdr2(self):
-        """Generate and write the SDR2 (Slave / Tuner 2) rtl_airband config file.
-
-        NOTE: SDR2 must be started AFTER SDR1 (Master) is already streaming.
-        The Slave device (rspduo_mode=8) only appears in the SoapySDR device list
-        once the Master process has opened the RSPduo.
-        """
-        device_string = self.SLAVE_DEVICE_STRING
-
-        # Gain line (omit for AGC)
-        gain_line = ''
-        if self.gain_mode2 == 'manual':
-            gain_line = f'  gain = "RFGR={self.rfgr2},IFGR={self.ifgr2}";\n'
-
-        # Device settings for AGC setpoint (always written — same as SDR1)
-        device_settings = f'agc_setpoint={self.agc_setpoint2}'
-
-        # Cap sample rate to match SDR1 (shared clock — Slave inherits from Master)
-        sample_rate = min(self.sample_rate, 2.0)
-
-        # Channel-level options
-        ch_opts = ''
-        if self.squelch_threshold2 != 0:
-            ch_opts += f'      squelch_threshold = {self.squelch_threshold2};\n'
-        if self.ampfactor2 != 1.0:
-            ch_opts += f'      ampfactor = {self.ampfactor2};\n'
-        if self.lowpass2 != 2500:
-            ch_opts += f'      lowpass = {self.lowpass2};\n'
-        if self.highpass2 != 100:
-            ch_opts += f'      highpass = {self.highpass2};\n'
-        if self.notch2 > 0:
-            ch_opts += f'      notch = {self.notch2};\n'
-            if self.notch_q2 != 10.0:
-                ch_opts += f'      notch_q = {self.notch_q2};\n'
-        if self.channel_bw2 > 0:
-            ch_opts += f'      bandwidth = {self.channel_bw2};\n'
-
-        # Device-level options
-        dev_opts = ''
-        if self.tau2 != 200:
-            dev_opts += f'  tau = {self.tau2};\n'
-
-        conf = f'''# Auto-generated by Radio Gateway SDR Manager (SDR2 — Slave / Tuner 2)
-# Do not edit manually — changes will be overwritten on next tune.
-
-devices:
-({{
-  type = "soapysdr";
-  device_string = "{device_string}";
-  device_settings = "{device_settings}";
-  mode = "multichannel";
-  centerfreq = {self.frequency2};
-  sample_rate = {sample_rate};
-{gain_line}{dev_opts}
-  channels:
-  (
-    {{
-      freq = {self.frequency2};
-      modulation = "{self.modulation2}";
-{ch_opts}      outputs: (
-        {{
-          type = "pulse";
-          stream_name = "SDR2 {self.frequency2:.3f} MHz";
-          sink = "sdr_capture2";
-          continuous = {'true' if self.continuous2 else 'false'};
-        }}
-      );
-    }}
-  );
-}});
-'''
-        proc = subprocess.run(
-            ['sudo', 'tee', self.CONFIG_PATH_SDR2],
-            input=conf.encode(), capture_output=True, timeout=5
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"Failed to write SDR2 config: {proc.stderr.decode()}")
-
-    def _restart_process(self):
-        """Kill existing rtl_airband processes and start SDR1 (Master) + SDR2 (Slave)."""
-        # Kill all existing rtl_airband — use SIGKILL since it may ignore SIGTERM
-        subprocess.run(['sudo', 'killall', '-9', 'rtl_airband'], capture_output=True, timeout=5)
-        self._process = None
-        time.sleep(1)
-
-        # Restart SDRplay API service — kill hard then start fresh
-        # (systemctl restart hangs because sdrplay_apiService ignores SIGTERM)
-        try:
-            subprocess.run(['sudo', 'systemctl', 'stop', 'sdrplay.service'],
-                           capture_output=True, timeout=3)
-        except subprocess.TimeoutExpired:
-            pass  # Expected — sdrplay_apiService ignores SIGTERM, killed below
-        subprocess.run(['sudo', 'killall', '-9', 'sdrplay_apiService'],
-                       capture_output=True, timeout=3)
-        time.sleep(1)
-        subprocess.run(['sudo', 'systemctl', 'start', 'sdrplay.service'],
-                       capture_output=True, timeout=10)
-        # Wait for sdrplay_apiService to be ready — 2s is not enough at boot
-        time.sleep(5)
-
-        # Start SDR1 (Tuner 1 / channel 0 — becomes RSPduo Master)
-        # -e routes daemon logs to stderr (syslog disabled); stdout has startup errors
-        proc = subprocess.run(
-            ['rtl_airband', '-e', '-c', self.CONFIG_PATH],
-            capture_output=True, timeout=10
-        )
-        # Verify SDR1 is running — retry for up to 5s
-        alive = False
-        for _ in range(5):
-            time.sleep(1)
-            chk = subprocess.run(['pgrep', 'rtl_airband'], capture_output=True, timeout=2)
-            if chk.returncode == 0:
-                alive = True
-                break
-        if not alive:
-            err = (proc.stdout.decode()[:200] or proc.stderr.decode()[:200]).strip()
-            raise RuntimeError(f"rtl_airband (SDR1) failed to start: {err}")
-
-        # Start SDR2 (Slave / Tuner 2) — must start AFTER SDR1 (Master) is streaming.
-        # The Slave device only appears in the SoapySDR list once Master is active.
-        time.sleep(3)
-        if os.path.exists(self.CONFIG_PATH_SDR2):
-            proc2 = subprocess.run(
-                ['rtl_airband', '-e', '-c', self.CONFIG_PATH_SDR2],
-                capture_output=True, timeout=10
-            )
-            # Check that we now have 2 rtl_airband processes
-            time.sleep(2)
-            chk2 = subprocess.run(['pgrep', '-a', 'rtl_airband'], capture_output=True, timeout=2)
-            pids = [l for l in chk2.stdout.decode().splitlines() if 'rtl_airband' in l]
-            if len(pids) < 2:
-                err2 = (proc2.stdout.decode()[:200] or proc2.stderr.decode()[:200]).strip()
-                print(f"  [SDR] Warning: SDR2 (Tuner 2) failed to start: {err2}")
-
-    def stop(self):
-        """Stop rtl_airband."""
-        subprocess.run(['sudo', 'killall', '-9', 'rtl_airband'], capture_output=True, timeout=5)
-        self._process = None
-
-
+# RTLAirbandManager removed — absorbed into SDRPlugin in sdr_plugin.py
 
 
 class StatusBarWriter:
@@ -1906,12 +1532,10 @@ class RadioGateway:
 
         # Per-source audio processors
         self.radio_processor = AudioProcessor("radio", config)
-        self.sdr_processor = AudioProcessor("sdr", config)
-        self.sdr2_processor = AudioProcessor("sdr2", config)
+        self.sdr_processor = AudioProcessor("sdr", config)    # placeholder, replaced by SDRPlugin's processor
+        self.sdr2_processor = AudioProcessor("sdr2", config)  # placeholder, replaced by SDRPlugin's processor
         self.d75_processor = AudioProcessor("d75", config)
         self._sync_radio_processor()
-        self._sync_sdr_processor()
-        self._sync_sdr2_processor()
         self._sync_d75_processor()
         
         # Initialize audio bus (v2.0 mixer replacement) and sources
@@ -2213,38 +1837,12 @@ class RadioGateway:
         p.gate_attack = self.config.NOISE_GATE_ATTACK
         p.gate_release = self.config.NOISE_GATE_RELEASE
 
-    def _sync_sdr_processor(self):
-        """Sync SDR-specific config flags into the SDR AudioProcessor instance."""
-        p = self.sdr_processor
-        p.enable_noise_gate = self.config.SDR_PROC_ENABLE_NOISE_GATE
-        p.gate_threshold = self.config.SDR_PROC_NOISE_GATE_THRESHOLD
-        p.gate_attack = self.config.SDR_PROC_NOISE_GATE_ATTACK
-        p.gate_release = self.config.SDR_PROC_NOISE_GATE_RELEASE
-        p.enable_hpf = self.config.SDR_PROC_ENABLE_HPF
-        p.hpf_cutoff = self.config.SDR_PROC_HPF_CUTOFF
-        p.enable_lpf = self.config.SDR_PROC_ENABLE_LPF
-        p.lpf_cutoff = self.config.SDR_PROC_LPF_CUTOFF
-        p.enable_notch = self.config.SDR_PROC_ENABLE_NOTCH
-        p.notch_freq = self.config.SDR_PROC_NOTCH_FREQ
-        p.notch_q = self.config.SDR_PROC_NOTCH_Q
-
-    def _sync_sdr2_processor(self):
-        """Sync SDR2-specific config flags into the SDR2 AudioProcessor instance.
-        Uses the same SDR_PROC_* keys as SDR1 — both share one processing config section.
-        SDR2 gets its OWN processor instance so IIR filter state is never shared with SDR1.
-        """
-        p = self.sdr2_processor
-        p.enable_noise_gate = self.config.SDR_PROC_ENABLE_NOISE_GATE
-        p.gate_threshold = self.config.SDR_PROC_NOISE_GATE_THRESHOLD
-        p.gate_attack = self.config.SDR_PROC_NOISE_GATE_ATTACK
-        p.gate_release = self.config.SDR_PROC_NOISE_GATE_RELEASE
-        p.enable_hpf = self.config.SDR_PROC_ENABLE_HPF
-        p.hpf_cutoff = self.config.SDR_PROC_HPF_CUTOFF
-        p.enable_lpf = self.config.SDR_PROC_ENABLE_LPF
-        p.lpf_cutoff = self.config.SDR_PROC_LPF_CUTOFF
-        p.enable_notch = self.config.SDR_PROC_ENABLE_NOTCH
-        p.notch_freq = self.config.SDR_PROC_NOTCH_FREQ
-        p.notch_q = self.config.SDR_PROC_NOTCH_Q
+    def _sync_sdr_plugin_processors(self):
+        """Sync SDR processing config into the SDRPlugin's processor instances."""
+        if self.sdr_plugin:
+            from sdr_plugin import SDRPlugin
+            SDRPlugin._sync_processor(self.sdr_plugin._processor1, self.config)
+            SDRPlugin._sync_processor(self.sdr_plugin._processor2, self.config)
 
     def _sync_d75_processor(self):
         """Sync D75-specific config flags into the D75 AudioProcessor instance."""
@@ -2316,18 +1914,8 @@ class RadioGateway:
         except Exception as e:
             print(f"  [Link] Failed to save settings: {e}")
 
-    def process_audio_for_sdr(self, pcm_data, source_name='SDR1'):
-        """Apply SDR-specific audio processing chain.
-        Each source gets its own processor instance so IIR filter state is isolated —
-        mixing SDR1 and SDR2 through a single shared processor caused filter-state
-        contamination at every 50ms chunk boundary (root cause of 5Hz clicks).
-        """
-        if source_name == 'SDR2':
-            self._sync_sdr2_processor()
-            return self.sdr2_processor.process(pcm_data)
-        self._sync_sdr_processor()
-        return self.sdr_processor.process(pcm_data)
-    
+    # process_audio_for_sdr removed — SDRPlugin handles processing internally
+
     def check_vad(self, pcm_data):
         """Voice Activity Detection - determines if audio should be sent to Mumble"""
         if not self.config.ENABLE_VAD:
@@ -3034,10 +2622,12 @@ class RadioGateway:
                     import traceback; traceback.print_exc()
                     self.sdr_plugin = None
 
-            # Backward compat: sdr_source/sdr2_source as thin views
+            # Backward compat: sdr_source/sdr2_source as thin views, processors from plugin
             if self.sdr_plugin:
                 self.sdr_source = _SDRTunerView(self.sdr_plugin, tuner=1)
                 self.sdr2_source = _SDRTunerView(self.sdr_plugin, tuner=2)
+                self.sdr_processor = self.sdr_plugin._processor1
+                self.sdr2_processor = self.sdr_plugin._processor2
             else:
                 self.sdr_source = None
                 self.sdr2_source = None
@@ -5566,7 +5156,7 @@ class RadioGateway:
                 'hpf':   'SDR_PROC_ENABLE_HPF',
                 'lpf':   'SDR_PROC_ENABLE_LPF',
                 'notch': 'SDR_PROC_ENABLE_NOTCH',
-            }, '_sync_sdr_processor'),
+            }, '_sync_sdr_plugin_processors'),
             'd75': ({
                 'gate':  'D75_PROC_ENABLE_NOISE_GATE',
                 'hpf':   'D75_PROC_ENABLE_HPF',
@@ -6094,7 +5684,7 @@ class RadioGateway:
                         current_sdr_level = 0
 
                     # Determine display state
-                    # Mirror SDRSource.get_audio(): discard when individually muted OR globally muted
+                    # Discard when individually muted OR globally muted
                     sdr_muted = self.sdr_muted or global_muted
                     # Only show DUCK when SDR has actual signal; silence on an idle
                     # loopback looks the same as "ducked signal" but means nothing.
@@ -6851,9 +6441,7 @@ class RadioGateway:
 
             # ── System info ──
             import platform
-            sdr_mode = "PipeWire" if any(
-                isinstance(s, PipeWireSDRSource)
-                for s in [self.sdr_source, self.sdr2_source] if s) else "ALSA"
+            sdr_mode = "SDRPlugin" if self.sdr_plugin else "none"
             f.write("SYSTEM\n")
             f.write(f"  version={__version__}\n")
             f.write(f"  os={platform.system()} {platform.release()} arch={platform.machine()}\n")
