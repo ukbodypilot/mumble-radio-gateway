@@ -20,9 +20,9 @@ import math as _math_mod
 import re
 import numpy as np
 
-from audio_sources import generate_cw_pcm, D75AudioSource
+from audio_sources import generate_cw_pcm
 from smart_announce import SmartAnnouncementManager
-from cat_client import RadioCATClient, D75CATClient
+from cat_client import RadioCATClient
 
 # ============================================================================
 # WEB CONFIGURATION UI
@@ -2167,45 +2167,22 @@ class WebConfigServer:
                             except Exception as e:
                                 result = {'ok': False, 'error': f'Service start error: {e}'}
                         elif cmd == 'reconnect':
-                            # Try to (re)connect gateway to D75 CAT server
-                            if gw:
+                            # (Re)connect via D75Plugin
+                            if gw and gw.d75_plugin:
+                                result = gw.d75_plugin.execute({'cmd': 'reconnect'})
+                            elif gw:
                                 try:
-                                    d75_host = str(gw.config.D75_HOST)
-                                    d75_port = int(gw.config.D75_PORT)
-                                    d75_pass = str(gw.config.D75_PASSWORD)
-                                    verbose = getattr(gw.config, 'VERBOSE_LOGGING', False)
-                                    if gw.d75_cat:
-                                        gw.d75_cat.close()
-                                    gw.d75_cat = D75CATClient(d75_host, d75_port, d75_pass, verbose=verbose)
-                                    if gw.d75_cat.connect():
-                                        gw.d75_cat.start_polling()
-                                        d75_mode = str(getattr(gw.config, 'D75_CONNECTION', 'bluetooth')).lower().strip()
-                                        if d75_mode == 'bluetooth':
-                                            if not gw.d75_audio_source:
-                                                try:
-                                                    gw.d75_audio_source = D75AudioSource(gw.config, gw)
-                                                    if gw.d75_audio_source.setup_audio():
-                                                        gw.d75_audio_source.enabled = True
-                                                        gw.d75_audio_source.duck = gw.config.D75_AUDIO_DUCK
-                                                        gw.d75_audio_source.sdr_priority = int(gw.config.D75_AUDIO_PRIORITY)
-                                                        gw.mixer.add_source(gw.d75_audio_source)
-                                                    else:
-                                                        gw.d75_audio_source = None
-                                                except Exception:
-                                                    gw.d75_audio_source = None
-                                            # Poll thread auto-triggers btstart if serial not connected
-                                            # Just mark btstart_in_progress so UI shows "Connecting..."
-                                            gw.d75_cat._btstart_in_progress = True
-                                            gw.d75_cat._bt_stopped = False
-                                        result = {'ok': True, 'response': 'Connected — poll thread will start BT link'}
+                                    from d75_plugin import D75Plugin
+                                    gw.d75_plugin = D75Plugin()
+                                    if gw.d75_plugin.setup(gw.config):
+                                        gw.d75_cat = gw.d75_plugin
+                                        gw.d75_audio_source = gw.d75_plugin
+                                        result = {'ok': True, 'response': 'D75 plugin initialized'}
                                     else:
-                                        # Keep client with poll thread for auto-retry instead of nulling it
-                                        gw.d75_cat.start_polling()
-                                        result = {'ok': False, 'error': 'Could not connect to D75 CAT server — poll thread will retry'}
+                                        gw.d75_plugin = None
+                                        result = {'ok': False, 'error': 'D75 plugin setup failed'}
                                 except Exception as e:
-                                    print(f"  [D75 CAT] Reconnect handler error: {e}")
-                                    # Don't null d75_cat — leave for poll thread retry
-                                    result = {'ok': False, 'error': f'Reconnect failed: {e}'}
+                                    result = {'ok': False, 'error': str(e)}
                             else:
                                 result = {'ok': False, 'error': 'Gateway not initialized'}
                         elif gw and gw.d75_cat:

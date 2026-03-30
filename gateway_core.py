@@ -103,13 +103,13 @@ except ImportError:
 from audio_sources import (
     AudioSource, AudioProcessor, AIOCRadioSource, FilePlaybackSource,
     EchoLinkSource,
-    RemoteAudioServer, RemoteAudioSource, D75AudioSource,
+    RemoteAudioServer, RemoteAudioSource,
     NetworkAnnouncementSource,
     WebMicSource, WebMonitorSource, LinkAudioSource, StreamOutputSource, generate_cw_pcm,
 )
 from audio_bus import ListenBus
 from ptt import RelayController, GPIORelayController
-from cat_client import RadioCATClient, D75CATClient
+from cat_client import RadioCATClient
 from smart_announce import SmartAnnouncementManager
 from web_server import WebConfigServer
 
@@ -1536,7 +1536,6 @@ class RadioGateway:
         self.sdr2_processor = AudioProcessor("sdr2", config)  # placeholder, replaced by SDRPlugin's processor
         self.d75_processor = AudioProcessor("d75", config)
         self._sync_radio_processor()
-        self._sync_d75_processor()
         
         # Initialize audio bus (v2.0 mixer replacement) and sources
         self.mixer = ListenBus("monitor", config)
@@ -1844,25 +1843,12 @@ class RadioGateway:
             SDRPlugin._sync_processor(self.sdr_plugin._processor1, self.config)
             SDRPlugin._sync_processor(self.sdr_plugin._processor2, self.config)
 
-    def _sync_d75_processor(self):
-        """Sync D75-specific config flags into the D75 AudioProcessor instance."""
-        p = self.d75_processor
-        p.enable_noise_gate = self.config.D75_PROC_ENABLE_NOISE_GATE
-        p.gate_threshold = self.config.D75_PROC_NOISE_GATE_THRESHOLD
-        p.gate_attack = self.config.D75_PROC_NOISE_GATE_ATTACK
-        p.gate_release = self.config.D75_PROC_NOISE_GATE_RELEASE
-        p.enable_hpf = self.config.D75_PROC_ENABLE_HPF
-        p.hpf_cutoff = self.config.D75_PROC_HPF_CUTOFF
-        p.enable_lpf = self.config.D75_PROC_ENABLE_LPF
-        p.lpf_cutoff = self.config.D75_PROC_LPF_CUTOFF
-        p.enable_notch = self.config.D75_PROC_ENABLE_NOTCH
-        p.notch_freq = self.config.D75_PROC_NOTCH_FREQ
-        p.notch_q = self.config.D75_PROC_NOTCH_Q
+    def _sync_d75_plugin_processor(self):
+        """Sync D75 processing config into the D75Plugin's processor."""
+        if self.d75_plugin and self.d75_plugin._processor:
+            self.d75_plugin._sync_processor()
 
-    def process_audio_for_d75(self, pcm_data):
-        """Apply D75-specific audio processing chain."""
-        self._sync_d75_processor()
-        return self.d75_processor.process(pcm_data)
+    # process_audio_for_d75 removed — D75Plugin handles processing internally
 
     def _sync_kv4p_plugin_processor(self):
         """Sync KV4P processing config into the KV4PPlugin's processor."""
@@ -2879,117 +2865,28 @@ class RadioGateway:
                     print(f"  CAT control error: {e}")
                     self.cat_client = None
 
-            # Initialize D75 CAT control + audio
+            # Initialize D75 (plugin)
+            self.d75_plugin = None
             if getattr(self.config, 'ENABLE_D75', False):
-                d75_mode = str(getattr(self.config, 'D75_CONNECTION', 'bluetooth')).lower().strip()
                 try:
-                    d75_host = str(self.config.D75_HOST)
-                    d75_port = int(self.config.D75_PORT)
-                    d75_pass = str(self.config.D75_PASSWORD)
-                    verbose = getattr(self.config, 'VERBOSE_LOGGING', False)
-                    print(f"Connecting to D75 CAT server ({d75_host}:{d75_port}, mode={d75_mode})...")
-                    self.d75_cat = D75CATClient(d75_host, d75_port, d75_pass, verbose=verbose)
-                    if self.d75_cat.connect():
-                        print("  Connected to D75 CAT server")
-                        if d75_mode == 'bluetooth':
-                            # BT mode: btstart connects BT audio + serial
-                            # Run in background thread so it doesn't block gateway startup
-                            self.d75_cat._btstart_in_progress = True
-                            def _d75_btstart_bg(cat):
-                                cat._send_cmd("!btstart")
-                                # poll_state() clears _btstart_in_progress when serial connects
-                                # (via serial_connected in status response). Wait with timeout.
-                                for _btwait in range(60):
-                                    time.sleep(1)
-                                    if not cat._btstart_in_progress:
-                                        print(f"\n  [D75] btstart OK (took {_btwait+1}s)")
-                                        return
-                                print(f"\n  [D75] btstart timeout — serial not connected after 60s")
-                                cat._btstart_in_progress = False
-                            threading.Thread(target=_d75_btstart_bg, args=(self.d75_cat,),
-                                             name="D75-btstart", daemon=True).start()
-                            print("  btstart initiated (running in background)")
-                        else:
-                            # USB mode: just connect serial (audio via AIOC)
-                            resp = self.d75_cat._send_cmd("!serial connect")
-                            if resp:
-                                print(f"  serial: {resp}")
-                        self.d75_cat.start_polling()
-                        # BT audio source (bluetooth mode only)
-                        if d75_mode == 'bluetooth':
-                            try:
-                                audio_port = int(self.config.D75_AUDIO_PORT)
-                                print(f"Initializing D75 audio source ({d75_host}:{audio_port})...")
-                                self.d75_audio_source = D75AudioSource(self.config, self)
-                                if self.d75_audio_source.setup_audio():
-                                    self.d75_audio_source.enabled = True
-                                    self.d75_audio_source.muted = self.d75_muted
-                                    self.d75_audio_source.duck = self.config.D75_AUDIO_DUCK
-                                    self.d75_audio_source.sdr_priority = int(self.config.D75_AUDIO_PRIORITY)
-                                    self.mixer.add_source(self.d75_audio_source, bus_priority=int(self.config.D75_AUDIO_PRIORITY) + 10, duckable=self.config.D75_AUDIO_DUCK)
-                                    print(f"✓ D75 audio source added to mixer")
-                                else:
-                                    print("⚠ D75 audio init failed")
-                                    self.d75_audio_source = None
-                            except Exception as e:
-                                print(f"⚠ D75 audio error: {e}")
-                                self.d75_audio_source = None
-                        else:
-                            print("  USB mode: audio via AIOC (no BT audio source)")
+                    from d75_plugin import D75Plugin
+                    print("Initializing D75 plugin...")
+                    self.d75_plugin = D75Plugin()
+                    if self.d75_plugin.setup(self.config):
+                        self.mixer.add_source(self.d75_plugin, bus_priority=int(getattr(self.config, 'D75_AUDIO_PRIORITY', 2)) + 10, duckable=getattr(self.config, 'D75_AUDIO_DUCK', True))
+                        print("✓ D75 plugin added to mixer")
                     else:
-                        print("  Failed to connect to D75 CAT server — will retry in background")
-                        self.d75_cat = None
+                        print("⚠ Warning: D75 plugin setup failed")
+                        self.d75_plugin = None
                 except Exception as e:
-                    print(f"  D75 CAT error: {e} — will retry in background")
-                    self.d75_cat = None
-
-                # Background retry loop: if initial connect failed, keep trying until proxy is up
-                def _d75_retry_loop(gw, host, port, password, mode, verbose):
-                    import time as _time
-                    while True:
-                        _time.sleep(10)
-                        if gw.d75_cat is not None:
-                            return  # Already connected — stop retrying
-                        try:
-                            _cat = D75CATClient(host, port, password, verbose=False)
-                            if not _cat.connect():
-                                continue
-                            print(f"\n[D75] Auto-reconnected to CAT server")
-                            if mode == 'bluetooth':
-                                _cat._btstart_in_progress = True
-                                def _bg(cat):
-                                    cat._send_cmd("!btstart")
-                                    # poll_state() will clear _btstart_in_progress on success;
-                                    # clear it after 40s timeout so the button comes back if BT never connects
-                                    for _w in range(40):
-                                        time.sleep(1)
-                                        if not cat._btstart_in_progress:
-                                            return
-                                    cat._btstart_in_progress = False
-                                threading.Thread(target=_bg, args=(_cat,), daemon=True, name="D75-auto-btstart").start()
-                            else:
-                                _cat._send_cmd("!serial connect")
-                            _cat.start_polling()
-                            if mode == 'bluetooth' and gw.d75_audio_source is None:
-                                try:
-                                    gw.d75_audio_source = D75AudioSource(gw.config, gw)
-                                    if gw.d75_audio_source.setup_audio():
-                                        gw.d75_audio_source.enabled = True
-                                        gw.d75_audio_source.muted = gw.d75_muted
-                                        gw.d75_audio_source.duck = gw.config.D75_AUDIO_DUCK
-                                        gw.d75_audio_source.sdr_priority = int(gw.config.D75_AUDIO_PRIORITY)
-                                        gw.mixer.add_source(gw.d75_audio_source, bus_priority=int(gw.config.D75_AUDIO_PRIORITY) + 10, duckable=gw.config.D75_AUDIO_DUCK)
-                                except Exception:
-                                    gw.d75_audio_source = None
-                            gw.d75_cat = _cat  # Make visible atomically after everything is set up
-                            return
-                        except Exception:
-                            pass
-                threading.Thread(
-                    target=_d75_retry_loop,
-                    args=(self, d75_host, d75_port, d75_pass, d75_mode, verbose),
-                    daemon=True, name="D75-retry"
-                ).start()
+                    print(f"⚠ D75 plugin error: {e}")
+                    import traceback; traceback.print_exc()
+                    self.d75_plugin = None
+            # Backward compat
+            self.d75_cat = self.d75_plugin
+            self.d75_audio_source = self.d75_plugin
+            if self.d75_plugin and self.d75_plugin._processor:
+                self.d75_processor = self.d75_plugin._processor
 
             # Initialize KV4P HT Radio (plugin)
             self.kv4p_plugin = None
@@ -5135,7 +5032,7 @@ class RadioGateway:
                 'hpf':   'D75_PROC_ENABLE_HPF',
                 'lpf':   'D75_PROC_ENABLE_LPF',
                 'notch': 'D75_PROC_ENABLE_NOTCH',
-            }, '_sync_d75_processor'),
+            }, '_sync_d75_plugin_processor'),
             'kv4p': ({
                 'gate':  'KV4P_PROC_ENABLE_NOISE_GATE',
                 'hpf':   'KV4P_PROC_ENABLE_HPF',
