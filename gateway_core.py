@@ -4054,12 +4054,8 @@ class RadioGateway:
         print("=" * 60)
         print()
         
-        # Initialize AIOC (optional - gateway can work without it)
-        self.aioc_available = self.setup_aioc()
-        if not self.aioc_available:
-            print("⚠ AIOC not found - continuing without radio interface")
-            print("  Gateway will operate in Mumble + SDR mode")
-        
+        # AIOC init now handled by TH9800Plugin in setup_audio()
+
         # Initialize Audio
         if not self.setup_audio():
             self.cleanup()
