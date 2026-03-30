@@ -23,7 +23,7 @@ import queue as _queue_mod
 
 import numpy as np
 
-from audio_sources import AudioProcessor, AIOCRadioSource
+from audio_sources import AudioProcessor
 from gateway_link import RadioPlugin
 from cat_client import RadioCATClient
 from ptt import RelayController, GPIORelayController
@@ -120,18 +120,18 @@ class TH9800Plugin(RadioPlugin):
         # Initialize AIOC HID device
         self._init_aioc()
 
-        # Create AIOCRadioSource BEFORE opening streams — the input stream
-        # needs the source's callback for PortAudio delivery.
-        # Pass the real gateway if available — AIOCRadioSource needs gateway.input_stream,
-        # gateway.check_vad(), etc. The plugin sets gateway.input_stream after stream init.
-        _source_gw = self._gateway if self._gateway else self._create_source_gateway_shim()
-        self._radio_source = AIOCRadioSource(config, _source_gw)
-
-        # Initialize PyAudio and audio streams (uses radio_source callback)
+        # Initialize PyAudio and audio streams (simple blocking reader, no callback)
         if not self._init_audio_streams():
             print("  TH-9800: audio stream init failed")
             return False
-        print("  TH-9800: RX source + audio streams ready")
+
+        # Start RX reader thread
+        self._rx_queue = _queue_mod.Queue(maxsize=16)
+        self._rx_running = True
+        self._rx_thread = threading.Thread(target=self._rx_reader_loop, daemon=True, name="TH9800-rx")
+        self._rx_thread.start()
+        print("  TH-9800: RX reader started")
+        self._radio_source = None  # not using AIOCRadioSource
 
         # Initialize CAT client
         self._init_cat()
@@ -143,6 +143,9 @@ class TH9800Plugin(RadioPlugin):
 
     def teardown(self):
         """Clean up all hardware resources."""
+        # Stop RX reader
+        self._rx_running = False
+
         # Unkey PTT
         if self._ptt_active:
             self._set_ptt(False)
@@ -187,41 +190,34 @@ class TH9800Plugin(RadioPlugin):
 
     # -- Standard plugin interface --
 
-    _get_audio_count = 0
-    _get_audio_got = 0
-
     def get_audio(self, chunk_size=None):
-        """Get RX audio from AIOC via AIOCRadioSource."""
-        self._get_audio_count += 1
-        if not self.enabled or self.muted or not self._radio_source:
+        """Get RX audio from the blocking reader queue."""
+        if not self.enabled or self.muted:
             return None, False
-        chunk_size = chunk_size or self._config.AUDIO_CHUNK_SIZE
-        audio, ptt = self._radio_source.get_audio(chunk_size)
-        if audio is not None:
-            self._get_audio_got += 1
-        if self._get_audio_count % 200 == 0:
-            q = self._radio_source._chunk_queue.qsize() if hasattr(self._radio_source, '_chunk_queue') else '?'
-            sb = len(self._radio_source._sub_buffer) if hasattr(self._radio_source, '_sub_buffer') else '?'
-            pb = self._radio_source._prebuffering if hasattr(self._radio_source, '_prebuffering') else '?'
-            print(f"  [TH9800] get_audio #{self._get_audio_count}: got={self._get_audio_got} q={q} sb={sb} prebuf={pb}")
-        if audio is not None:
-            # Update level from the audio we got
-            try:
-                arr = np.frombuffer(audio, dtype=np.int16).astype(np.float32)
-                rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
-                if rms > 0:
-                    level = max(0, min(100, (20.0 * math.log10(rms / 32767.0) + 60) * (100 / 60)))
-                else:
-                    level = 0
-                if level > self.audio_level:
-                    self.audio_level = int(level)
-                else:
-                    self.audio_level = int(self.audio_level * 0.7 + level * 0.3)
-            except Exception:
-                pass
-        else:
+
+        data = None
+        try:
+            data = self._rx_queue.get_nowait()
+        except _queue_mod.Empty:
             self.audio_level = max(0, int(self.audio_level * 0.7))
-        return audio, False  # RX audio never triggers PTT
+            return None, False
+
+        # Level metering
+        try:
+            arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+            rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
+            if rms > 0:
+                level = max(0, min(100, (20.0 * math.log10(rms / 32767.0) + 60) * (100 / 60)))
+            else:
+                level = 0
+            if level > self.audio_level:
+                self.audio_level = int(level)
+            else:
+                self.audio_level = int(self.audio_level * 0.7 + level * 0.3)
+        except Exception:
+            pass
+
+        return data, False
 
     def put_audio(self, pcm):
         """Send TX audio to AIOC output stream (radio mic input)."""
@@ -348,12 +344,16 @@ class TH9800Plugin(RadioPlugin):
             self._aioc_available = False
 
     def _init_audio_streams(self):
-        """Initialize PyAudio and open AIOC input/output streams."""
+        """Initialize PyAudio and open AIOC input/output streams.
+
+        Uses blocking mode (no callback) — the _rx_reader_loop thread reads
+        from the input stream. This is simpler and more reliable than the
+        PortAudio callback approach which silently dies on some USB devices.
+        """
         try:
             import pyaudio
             self._pyaudio = pyaudio.PyAudio()
 
-            # Find AIOC audio device
             input_idx, output_idx = self._find_aioc_device()
             if input_idx is None:
                 print("  TH-9800: AIOC audio device not found")
@@ -370,28 +370,63 @@ class TH9800Plugin(RadioPlugin):
                 output=True, output_device_index=output_idx,
                 frames_per_buffer=chunk)
 
-            # Input stream (radio → gateway) via callback
-            # frames_per_buffer=4×chunk sets ALSA period to 200ms blobs.
-            # AIOCRadioSource's prebuffer expects 200ms blobs for jitter absorption.
-            if self._radio_source:
-                cb = self._radio_source._audio_callback
-            else:
-                cb = None
+            # Input stream (radio → gateway) — blocking mode
             self._input_stream = self._pyaudio.open(
                 format=fmt, channels=channels, rate=rate,
                 input=True, input_device_index=input_idx,
-                frames_per_buffer=chunk * 4,
-                stream_callback=cb)
-
-            # Explicitly start the stream (may not auto-start with callback)
-            if not self._input_stream.is_active():
-                self._input_stream.start_stream()
+                frames_per_buffer=chunk)
 
             print(f"  TH-9800: Audio streams opened (device {input_idx})")
             return True
         except Exception as e:
             print(f"  TH-9800: Audio init error: {e}")
             return False
+
+    def _rx_reader_loop(self):
+        """Read audio from AIOC input stream in a blocking loop.
+
+        Simpler than PortAudio callback — just read, process, queue.
+        Runs in a daemon thread at ~50ms per read (AUDIO_CHUNK_SIZE samples).
+        """
+        chunk_size = self._config.AUDIO_CHUNK_SIZE
+
+        while self._rx_running:
+            if not self._input_stream or self._restarting_stream:
+                time.sleep(0.05)
+                continue
+            try:
+                data = self._input_stream.read(chunk_size, exception_on_overflow=False)
+                if not data:
+                    continue
+
+                # Apply audio processing (gate/HPF/LPF/notch)
+                if self._processor:
+                    self._sync_processor()
+                    data = self._processor.process(data)
+
+                # Queue for get_audio()
+                try:
+                    self._rx_queue.put_nowait(data)
+                except _queue_mod.Full:
+                    try:
+                        self._rx_queue.get_nowait()
+                    except _queue_mod.Empty:
+                        pass
+                    try:
+                        self._rx_queue.put_nowait(data)
+                    except _queue_mod.Full:
+                        pass
+
+            except IOError as e:
+                if e.errno == -9981:  # Input overflow
+                    try:
+                        self._input_stream.read(chunk_size * 2, exception_on_overflow=False)
+                    except Exception:
+                        pass
+                else:
+                    time.sleep(0.1)
+            except Exception:
+                time.sleep(0.1)
 
     def _find_aioc_device(self):
         """Find AIOC audio device indices by name."""
