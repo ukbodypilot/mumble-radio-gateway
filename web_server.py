@@ -1768,6 +1768,32 @@ class WebConfigServer:
                         self.send_response(500)
                         self.end_headers()
 
+                elif self.path == '/routing':
+                    import os as _os
+                    _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'web_pages', 'routing.html')
+                    try:
+                        with open(_p, 'rb') as _f:
+                            _body = _f.read()
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/html; charset=utf-8')
+                        self.end_headers()
+                        self.wfile.write(_body)
+                    except Exception:
+                        self.send_response(500)
+                        self.end_headers()
+
+                elif self.path == '/routing/status':
+                    # Return current routing state for the UI
+                    data = parent._get_routing_status()
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-cache')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(data).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+
                 elif self.path == '/voice/status':
                     _vr_target = os.environ.get('TMUX_TARGET', 'claude-voice')
                     result = subprocess.run(
@@ -2849,6 +2875,22 @@ class WebConfigServer:
                         parent.gateway.running = False
                     return
 
+                elif self.path == '/routing/cmd':
+                    import json as json_mod
+                    length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(length).decode('utf-8')
+                    result = {'ok': False, 'error': 'invalid'}
+                    try:
+                        data = json_mod.loads(body)
+                        result = parent._handle_routing_cmd(data)
+                    except Exception as e:
+                        result = {'ok': False, 'error': str(e)}
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json_mod.dumps(result).encode())
+                    return
+
                 elif self.path == '/voice/send':
                     import json as json_mod
                     length = int(self.headers.get('Content-Length', 0))
@@ -3439,6 +3481,170 @@ class WebConfigServer:
     # _generate_aircraft_page removed — now served as static HTML from web_pages/
 
     # _generate_sdr_page removed — now served as static HTML from web_pages/
+
+    # ── Routing API ──────────────────────────────────────────────────────
+
+    def _get_routing_status(self):
+        """Return current routing state for the web UI."""
+        import json as _json
+        gw = self.gateway
+
+        # Build source list from available plugins/sources
+        sources = []
+        if gw:
+            if gw.sdr_plugin:
+                sources.append({'id': 'sdr', 'name': 'SDR (RSPduo)', 'enabled': True,
+                                'can_rx': True, 'can_tx': False, 'can_ptt': False})
+            if gw.kv4p_plugin:
+                sources.append({'id': 'kv4p', 'name': 'KV4P HT', 'enabled': True,
+                                'can_rx': True, 'can_tx': True, 'can_ptt': True})
+            if gw.d75_plugin:
+                sources.append({'id': 'd75', 'name': 'TH-D75', 'enabled': True,
+                                'can_rx': True, 'can_tx': True, 'can_ptt': True})
+            if getattr(gw, 'radio_source', None):
+                sources.append({'id': 'aioc', 'name': 'AIOC/TH-9800', 'enabled': True,
+                                'can_rx': True, 'can_tx': True, 'can_ptt': True})
+            if getattr(gw, 'playback_source', None):
+                sources.append({'id': 'playback', 'name': 'File Playback', 'enabled': True,
+                                'can_rx': False, 'can_tx': True, 'can_ptt': True})
+            if getattr(gw, 'web_mic_source', None):
+                sources.append({'id': 'webmic', 'name': 'Web Mic', 'enabled': True,
+                                'can_rx': False, 'can_tx': True, 'can_ptt': True})
+            if getattr(gw, 'announce_input_source', None):
+                sources.append({'id': 'announce', 'name': 'Announcements', 'enabled': True,
+                                'can_rx': False, 'can_tx': True, 'can_ptt': True})
+            if getattr(gw, 'web_monitor_source', None):
+                sources.append({'id': 'monitor', 'name': 'Room Monitor', 'enabled': True,
+                                'can_rx': True, 'can_tx': False, 'can_ptt': False})
+
+        # Build sink list
+        sinks = []
+        sinks.append({'id': 'mumble', 'name': 'Mumble', 'type': 'VoIP',
+                      'enabled': bool(gw and gw.mumble)})
+        sinks.append({'id': 'broadcastify', 'name': 'Broadcastify', 'type': 'Stream',
+                      'enabled': bool(gw and getattr(gw, 'stream_output', None))})
+        sinks.append({'id': 'speaker', 'name': 'Speaker', 'type': 'Local',
+                      'enabled': bool(gw and getattr(gw, 'speaker_stream', None))})
+        sinks.append({'id': 'recording', 'name': 'Recording', 'type': 'File', 'enabled': True})
+
+        # Load bus config
+        busses, connections = self._load_routing_config()
+
+        return {
+            'sources': sources,
+            'busses': busses,
+            'sinks': sinks,
+            'connections': connections,
+        }
+
+    def _handle_routing_cmd(self, data):
+        """Handle routing commands from the web UI."""
+        cmd = data.get('cmd', '')
+        busses, connections = self._load_routing_config()
+
+        if cmd == 'add_bus':
+            name = data.get('name', '').strip()
+            bus_type = data.get('type', 'listen').strip()
+            if not name:
+                return {'ok': False, 'error': 'name required'}
+            if bus_type not in ('listen', 'solo', 'duplex', 'simplex'):
+                return {'ok': False, 'error': f'invalid type: {bus_type}'}
+            bus_id = name.lower().replace(' ', '_')
+            if any(b['id'] == bus_id for b in busses):
+                return {'ok': False, 'error': f'bus "{bus_id}" already exists'}
+            busses.append({'id': bus_id, 'name': name, 'type': bus_type, 'sources': [], 'sinks': []})
+            self._save_routing_config(busses, connections)
+            return {'ok': True}
+
+        elif cmd == 'delete_bus':
+            bus_id = data.get('id', '')
+            busses = [b for b in busses if b['id'] != bus_id]
+            connections = [c for c in connections if c.get('from') != bus_id and c.get('to') != bus_id]
+            self._save_routing_config(busses, connections)
+            return {'ok': True}
+
+        elif cmd == 'connect':
+            source = data.get('source')
+            bus = data.get('bus')
+            sink = data.get('sink')
+
+            if source and bus:
+                # Source → Bus connection
+                conn = {'type': 'source-bus', 'from': source, 'to': bus}
+                if conn not in connections:
+                    connections.append(conn)
+                    # Update bus sources list
+                    for b in busses:
+                        if b['id'] == bus and source not in b.get('sources', []):
+                            b.setdefault('sources', []).append(source)
+                self._save_routing_config(busses, connections)
+                return {'ok': True}
+
+            elif bus and sink:
+                # Bus → Sink connection
+                conn = {'type': 'bus-sink', 'from': bus, 'to': sink}
+                if conn not in connections:
+                    connections.append(conn)
+                    for b in busses:
+                        if b['id'] == bus and sink not in b.get('sinks', []):
+                            b.setdefault('sinks', []).append(sink)
+                self._save_routing_config(busses, connections)
+                return {'ok': True}
+
+            return {'ok': False, 'error': 'specify source+bus or bus+sink'}
+
+        elif cmd == 'disconnect':
+            source = data.get('source')
+            bus = data.get('bus')
+            sink = data.get('sink')
+
+            if source and bus:
+                connections = [c for c in connections if not (c['type'] == 'source-bus' and c['from'] == source and c['to'] == bus)]
+                for b in busses:
+                    if b['id'] == bus:
+                        b['sources'] = [s for s in b.get('sources', []) if s != source]
+            elif bus and sink:
+                connections = [c for c in connections if not (c['type'] == 'bus-sink' and c['from'] == bus and c['to'] == sink)]
+                for b in busses:
+                    if b['id'] == bus:
+                        b['sinks'] = [s for s in b.get('sinks', []) if s != sink]
+
+            self._save_routing_config(busses, connections)
+            return {'ok': True}
+
+        return {'ok': False, 'error': f'unknown command: {cmd}'}
+
+    _ROUTING_CONFIG_PATH = None
+
+    def _routing_config_path(self):
+        if not self._ROUTING_CONFIG_PATH:
+            import os
+            self._ROUTING_CONFIG_PATH = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'routing_config.json')
+        return self._ROUTING_CONFIG_PATH
+
+    def _load_routing_config(self):
+        """Load bus config from JSON file."""
+        import json, os
+        path = self._routing_config_path()
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                return data.get('busses', []), data.get('connections', [])
+            except Exception:
+                pass
+        return [], []
+
+    def _save_routing_config(self, busses, connections):
+        """Save bus config to JSON file."""
+        import json
+        path = self._routing_config_path()
+        try:
+            with open(path, 'w') as f:
+                json.dump({'busses': busses, 'connections': connections}, f, indent=2)
+        except Exception as e:
+            print(f"  [Routing] Failed to save config: {e}")
 
     def _get_sysinfo(self):
         """Gather system status: CPU, memory, disk I/O, network, temps, IPs."""
