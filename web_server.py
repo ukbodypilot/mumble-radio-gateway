@@ -1711,6 +1711,9 @@ class WebConfigServer:
                             data['aioc_tx'] = getattr(gw.th9800_plugin, 'tx_audio_level', 0)
                         # Passive sinks
                         data['speaker'] = getattr(gw, 'speaker_audio_level', 0)
+                        # Broadcastify — use the mixer output level (same audio goes to stream)
+                        if getattr(gw, 'stream_output', None) and getattr(gw.stream_output, 'connected', False):
+                            data['broadcastify'] = getattr(gw, 'stream_audio_level', getattr(gw, 'speaker_audio_level', 0))
                     try:
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')

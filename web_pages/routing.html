@@ -238,23 +238,15 @@ function rebuildEditor() {
   editor.clear();
   _nodeMap = {};
 
-  // If saved layout exists, restore it directly
+  // Extract saved node positions from layout (if available)
+  var savedPositions = {};
   if (_state.layout) {
     try {
-      editor.import(_state.layout);
-      // Rebuild _nodeMap from imported nodes
       var nodes = _state.layout.drawflow.Home.data;
       for (var nid in nodes) {
-        var n = nodes[nid];
-        var cls = n.class || '';
-        if (cls === 'source') _nodeMap['src-' + n.name] = parseInt(nid);
-        else if (cls.startsWith('bus-')) _nodeMap['bus-' + n.name] = parseInt(nid);
-        else if (cls === 'sink') _nodeMap['sink-' + n.name] = parseInt(nid);
+        savedPositions[nodes[nid].name] = {x: nodes[nid].pos_x, y: nodes[nid].pos_y};
       }
-      return;
-    } catch(e) {
-      console.warn('Layout restore failed, rebuilding:', e);
-    }
+    } catch(e) {}
   }
 
   var ySource = 20;
@@ -277,7 +269,8 @@ function rebuildEditor() {
       + '</div>'
       + '<div class="level-bar" id="level-' + s.id + '"><div class="level-fill"></div></div>'
       + '</div>';
-    var nodeId = editor.addNode(s.id, 0, 1, xSource, ySource, 'source', {id: s.id}, s.name + '\n' + html);
+    var pos = savedPositions[s.id] || {x: xSource, y: ySource};
+    var nodeId = editor.addNode(s.id, 0, 1, pos.x, pos.y, 'source', {id: s.id}, s.name + '\n' + html);
     _nodeMap['src-' + s.id] = nodeId;
     ySource += spacing;
   }
@@ -295,7 +288,8 @@ function rebuildEditor() {
       + '<button class="proc-btn' + (proc.notch ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'notch\')" id="proc-' + b.id + '-notch">N</button>'
       + '</div>'
       + '</div>';
-    var nodeId = editor.addNode(b.id, 1, 1, xBus, yBus, cls, {id: b.id, type: b.type}, b.name + '\n' + html);
+    var pos = savedPositions[b.id] || {x: xBus, y: yBus};
+    var nodeId = editor.addNode(b.id, 1, 1, pos.x, pos.y, cls, {id: b.id, type: b.type}, b.name + '\n' + html);
     _nodeMap['bus-' + b.id] = nodeId;
     yBus += spacing + 20;
   }
@@ -312,7 +306,8 @@ function rebuildEditor() {
       + '</div>'
       + '<div class="level-bar" id="level-' + s.id + '"><div class="level-fill"></div></div>'
       + '</div>';
-    var nodeId = editor.addNode(s.id, 1, 0, xSink, ySink, 'sink', {id: s.id}, s.name + '\n' + html);
+    var pos = savedPositions[s.id] || {x: xSink, y: ySink};
+    var nodeId = editor.addNode(s.id, 1, 0, pos.x, pos.y, 'sink', {id: s.id}, s.name + '\n' + html);
     _nodeMap['sink-' + s.id] = nodeId;
     ySink += spacing;
   }

@@ -3020,6 +3020,8 @@ class RadioGateway:
                 if self.stream_output and self.stream_output.connected:
                     try:
                         self.stream_output.send_audio(data)
+                        # Track stream audio level for routing page
+                        self.stream_audio_level = self.calculate_audio_level(data)
                     except Exception as stream_err:
                         if self.config.VERBOSE_LOGGING:
                             print(f"\n[Stream] Send error: {stream_err}")
