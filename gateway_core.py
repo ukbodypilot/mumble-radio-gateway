@@ -1548,13 +1548,7 @@ class RadioGateway:
                         self.mumble_server_2.state = MumbleServerManager.STATE_ERROR
                         self.mumble_server_2.error_msg = str(e)
 
-            # Validate PTT method setup
-            if ptt_method == 'relay' and not self.relay_ptt:
-                print("WARNING: PTT_METHOD = relay but PTT relay not available — PTT will not work!")
-            elif ptt_method == 'software' and not self.cat_client:
-                print("WARNING: PTT_METHOD = software but CAT client not connected — PTT will not work!")
-            elif ptt_method not in ('aioc', 'relay', 'software'):
-                print(f"WARNING: Unknown PTT_METHOD '{ptt_method}' — defaulting to AIOC")
+            # PTT validation now handled by TH9800Plugin
 
             # Initialize Smart Announcements (AI-powered)
             if getattr(self.config, 'ENABLE_SMART_ANNOUNCE', False):
