@@ -495,6 +495,10 @@ class CloudflareTunnel:
                     print(f"  [Tunnel] Stale tunnel URL detected — restarting cloudflared")
                     self._url = None
                     try:
+                        os.unlink(self.URL_FILE)
+                    except Exception:
+                        pass
+                    try:
                         subprocess.run(['pkill', '-x', 'cloudflared'], capture_output=True, timeout=5)
                         time.sleep(2)
                     except Exception:
