@@ -5190,6 +5190,8 @@ class RadioGateway:
             'kv4p_enabled': bool(self.kv4p_audio_source),
             'kv4p_level': self.kv4p_audio_source.audio_level if self.kv4p_audio_source else 0,
             'kv4p_muted': getattr(self, 'kv4p_muted', False),
+            'adsb_enabled': getattr(self.config, 'ENABLE_ADSB', False),
+            'telegram_enabled': getattr(self.config, 'ENABLE_TELEGRAM', False),
             'monitor_enabled': bool(self.web_monitor_source),
             'monitor_level': self.web_monitor_source.audio_level if self.web_monitor_source else 0,
             'link_enabled': bool(self.link_server),
