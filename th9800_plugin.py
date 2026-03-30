@@ -334,6 +334,8 @@ class TH9800Plugin(RadioPlugin):
                 frames_per_buffer=chunk)
 
             # Input stream (radio → gateway) via callback
+            # frames_per_buffer=4×chunk sets ALSA period to 200ms blobs.
+            # AIOCRadioSource's prebuffer expects 200ms blobs for jitter absorption.
             if self._radio_source:
                 cb = self._radio_source._audio_callback
             else:
@@ -341,8 +343,12 @@ class TH9800Plugin(RadioPlugin):
             self._input_stream = self._pyaudio.open(
                 format=fmt, channels=channels, rate=rate,
                 input=True, input_device_index=input_idx,
-                frames_per_buffer=chunk,
+                frames_per_buffer=chunk * 4,
                 stream_callback=cb)
+
+            # Explicitly start the stream (may not auto-start with callback)
+            if not self._input_stream.is_active():
+                self._input_stream.start_stream()
 
             print(f"  TH-9800: Audio streams opened (device {input_idx})")
             return True
