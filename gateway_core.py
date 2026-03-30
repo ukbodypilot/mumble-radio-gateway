@@ -2537,8 +2537,8 @@ class RadioGateway:
             if self.config.ENABLE_PLAYBACK:
                 try:
                     self.playback_source = FilePlaybackSource(self.config, self)
-                    self.mixer.add_source(self.playback_source, bus_priority=0, duckable=False, deterministic=True)
-                    print("✓ File playback source added to mixer")
+                    # NOT added to primary ListenBus — routed via BusManager
+                    print("✓ File playback source initialized (routed via bus manager)")
                     
                     # Show available audio files
                     import os
@@ -2779,8 +2779,8 @@ class RadioGateway:
                     print(f"Initializing KV4P plugin...")
                     self.kv4p_plugin = KV4PPlugin()
                     if self.kv4p_plugin.setup(self.config):
-                        self.mixer.add_source(self.kv4p_plugin, bus_priority=int(getattr(self.config, 'KV4P_AUDIO_PRIORITY', 2)) + 10, duckable=getattr(self.config, 'KV4P_AUDIO_DUCK', True))
-                        print("✓ KV4P plugin added to mixer")
+                        # NOT added to primary ListenBus — routed via BusManager
+                        print("✓ KV4P plugin initialized (routed via bus manager)")
                     else:
                         print("⚠ Warning: KV4P plugin setup failed")
                         self.kv4p_plugin = None
@@ -3106,8 +3106,8 @@ class RadioGateway:
                             if self.config.ENABLE_PLAYBACK:
                                 try:
                                     self.playback_source = FilePlaybackSource(self.config, self)
-                                    self.mixer.add_source(self.playback_source, bus_priority=0, duckable=False, deterministic=True)
-                                    print("✓ File playback source added to mixer")
+                                    # NOT added to primary ListenBus — routed via BusManager
+                                    print("✓ File playback source initialized (routed via bus manager)")
                                     # File mapping will be displayed later
                                     
                                 except Exception as playback_err:
