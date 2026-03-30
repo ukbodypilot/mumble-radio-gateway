@@ -35,7 +35,7 @@ any work on the mixer.
 9a. [x] Wired into gateway_core.py (replaces ~80 lines of SDR init with ~15 lines)
 9b. [x] Wired web_server.py /sdrstatus and /sdrcmd to plugin
 9c. [x] _SDRTunerView backward compat for sdr_source/sdr2_source references
-9d. [!] REVERTED — SIGSEGV in Pa_Initialize (libportaudio) when web UI polls. Native thread-safety crash. sdr_plugin.py kept but not wired in. Need to investigate PyAudio race condition before re-enabling.
+9d. [x] FIXED — SIGSEGV/SIGABRT was caused by _SDRTunerView missing attribute proxying. Status bar code accessed _chunk_queue, _prebuffering, _watchdog_restarts etc. on the view, causing AttributeError in threads that corrupted PortAudio state. Fixed with __getattr__ proxy + safe defaults. Also moved SDR init before AIOC to avoid fork-after-Pa_Initialize. SDRPlugin live and working (2026-03-29).
 10. [ ] Refactor TH-9800, D75, KV4P into plugins
 11. [ ] Build SoloBus (takes a RadioPlugin)
 12. [ ] Build DuplexRepeaterBus (connects two RadioPlugins)
@@ -75,6 +75,10 @@ any work on the mixer.
 | 2026-03-29 | Broadcastify stream | PASS | DarkIce running, 518KB sent, healthy RTT |
 | 2026-03-29 | SDR peer ducking | PASS | SDR1 ducked by higher-priority SDR2 (correct) |
 | 2026-03-29 | User acceptance | PASS | User confirmed normal operation |
+| 2026-03-29 | SDRPlugin startup | PASS | rtl_airband starts, both tuners active |
+| 2026-03-29 | SDRPlugin audio | PASS | SDR1 levels 60-73%, audio heard by user |
+| 2026-03-29 | SDRPlugin + web UI | PASS | No crash when opening web UI (was SIGABRT) |
+| 2026-03-29 | SDRPlugin stability | PASS | 150+ seconds stable with web UI polling |
 
 ## Known Issues
 (none yet)
