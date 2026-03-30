@@ -106,6 +106,10 @@ any work on the mixer.
 | 2026-03-30 | SoloBus live audio | PASS | File Playback → Solo Bus → KV4P TX over the air |
 | 2026-03-30 | Routing levels | PASS | RX/TX levels separated, all sources report levels |
 | 2026-03-30 | Drawflow level bars | PASS | Live level bars in source/sink nodes |
+| 2026-03-30 | Source level metering | PASS | File Playback, Announce, WebMic report levels |
+| 2026-03-30 | Alias cleanup | PASS | d75_cat/d75_audio_source/kv4p_cat/kv4p_audio_source removed |
+| 2026-03-30 | Utility extraction | PASS | DDNSUpdater/EmailNotifier/CloudflareTunnel etc → gateway_utils.py |
+| 2026-03-30 | Route consolidation | PASS | 13 static page routes → single _STATIC_PAGES lookup |
 
 ## Known Issues
 (none yet)
