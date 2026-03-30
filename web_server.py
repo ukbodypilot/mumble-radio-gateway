@@ -3493,17 +3493,17 @@ class WebConfigServer:
         sources = []
         if gw:
             if gw.sdr_plugin:
-                sources.append({'id': 'sdr', 'name': 'SDR (RSPduo)', 'enabled': True,
+                sources.append({'id': 'sdr', 'name': 'SDR [RX]', 'enabled': True,
                                 'can_rx': True, 'can_tx': False, 'can_ptt': False})
             if gw.kv4p_plugin:
-                sources.append({'id': 'kv4p', 'name': 'KV4P HT', 'enabled': True,
-                                'can_rx': True, 'can_tx': True, 'can_ptt': True})
+                sources.append({'id': 'kv4p', 'name': 'KV4P [RX]', 'enabled': True,
+                                'can_rx': True, 'can_tx': False, 'can_ptt': False})
             if gw.d75_plugin:
-                sources.append({'id': 'd75', 'name': 'TH-D75', 'enabled': True,
-                                'can_rx': True, 'can_tx': True, 'can_ptt': True})
+                sources.append({'id': 'd75', 'name': 'TH-D75 [RX]', 'enabled': True,
+                                'can_rx': True, 'can_tx': False, 'can_ptt': False})
             if getattr(gw, 'radio_source', None):
-                sources.append({'id': 'aioc', 'name': 'AIOC/TH-9800', 'enabled': True,
-                                'can_rx': True, 'can_tx': True, 'can_ptt': True})
+                sources.append({'id': 'aioc', 'name': 'TH-9800 [RX]', 'enabled': True,
+                                'can_rx': True, 'can_tx': False, 'can_ptt': False})
             if getattr(gw, 'playback_source', None):
                 sources.append({'id': 'playback', 'name': 'File Playback', 'enabled': True,
                                 'can_rx': False, 'can_tx': True, 'can_ptt': True})
@@ -3517,7 +3517,7 @@ class WebConfigServer:
                 sources.append({'id': 'monitor', 'name': 'Room Monitor', 'enabled': True,
                                 'can_rx': True, 'can_tx': False, 'can_ptt': False})
 
-        # Build sink list
+        # Build sink list (passive consumers + TX-capable radios)
         sinks = []
         sinks.append({'id': 'mumble', 'name': 'Mumble', 'type': 'VoIP',
                       'enabled': bool(gw and gw.mumble)})
@@ -3526,6 +3526,14 @@ class WebConfigServer:
         sinks.append({'id': 'speaker', 'name': 'Speaker', 'type': 'Local',
                       'enabled': bool(gw and getattr(gw, 'speaker_stream', None))})
         sinks.append({'id': 'recording', 'name': 'Recording', 'type': 'File', 'enabled': True})
+        # TX-capable radios as destinations
+        if gw:
+            if gw.kv4p_plugin:
+                sinks.append({'id': 'kv4p_tx', 'name': 'KV4P [TX]', 'type': 'Radio TX', 'enabled': True})
+            if gw.d75_plugin:
+                sinks.append({'id': 'd75_tx', 'name': 'TH-D75 [TX]', 'type': 'Radio TX', 'enabled': True})
+            if getattr(gw, 'radio_source', None):
+                sinks.append({'id': 'aioc_tx', 'name': 'TH-9800 [TX]', 'type': 'Radio TX', 'enabled': True})
 
         # Load bus config
         busses, connections = self._load_routing_config()
