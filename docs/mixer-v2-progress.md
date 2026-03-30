@@ -86,6 +86,11 @@ any work on the mixer.
 | 2026-03-29 | KV4PPlugin + web UI | PASS | /kv4pstatus returns full status, no crash |
 | 2026-03-29 | KV4PPlugin stability | PASS | 150s stable with SDR + KV4P + Mumble |
 | 2026-03-29 | KV4PPlugin PTT | PASS | Playback triggered PTT, audio transmitted OTA |
+| 2026-03-29 | D75Plugin startup | PASS | TCP+serial+audio connected, TH-D75 identified |
+| 2026-03-29 | D75Plugin commands | PASS | mute/ptt/btstart/CAT commands working |
+| 2026-03-29 | D75Plugin audio RX | PASS | Audio confirmed working (BT range issue, not code) |
+| 2026-03-29 | All 3 plugins stable | PASS | SDR+KV4P+D75 running simultaneously |
+| 2026-03-29 | Dead code cleanup | PASS | D75AudioSource + D75CATClient removed (618 lines) |
 
 ## Known Issues
 (none yet)
