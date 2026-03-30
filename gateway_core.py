@@ -2762,11 +2762,11 @@ class RadioGateway:
                 # ── Mixer path: runs whenever the mixer exists (SDR-only is valid) ──
                 if self.mixer:
                     # Snapshot source state BEFORE mixer call
-                    _tr_sdr_q = self.sdr_plugin.get_tuner(1)._chunk_queue.qsize() if self.sdr_plugin and self.sdr_plugin.get_tuner(1) else -1
-                    _tr_sdr_sb = len(self.sdr_plugin.get_tuner(1)._sub_buffer) if self.sdr_plugin and self.sdr_plugin.get_tuner(1) else -1
+                    _tr_sdr_q = -1
+                    _tr_sdr_sb = -1
                     _tr_sdr_prebuf = False
-                    _tr_sdr2_q = self.sdr_plugin.get_tuner(2)._chunk_queue.qsize() if self.sdr_plugin and self.sdr_plugin.get_tuner(2) else -1
-                    _tr_sdr2_sb = len(self.sdr_plugin.get_tuner(2)._sub_buffer) if self.sdr_plugin and self.sdr_plugin.get_tuner(2) else -1
+                    _tr_sdr2_q = -1
+                    _tr_sdr2_sb = -1
                     _tr_sdr2_prebuf = False
                     _tr_aioc_q = self.radio_source._chunk_queue.qsize() if self.radio_source else -1
                     _tr_aioc_sb = len(self.radio_source._sub_buffer) if self.radio_source else -1
@@ -3261,10 +3261,10 @@ class RadioGateway:
                 # ── Trace record (toggled by 'i' key) ──
                 if self._trace_recording:
                     # Snapshot enhanced instrumentation from sources
-                    _sdr1_disc = getattr(self.sdr_plugin.get_tuner(1), "_serve_discontinuity", 0.0) if self.sdr_plugin and self.sdr_plugin.get_tuner(1) else 0.0
-                    _sdr1_sb_after = getattr(self.sdr_plugin.get_tuner(1), "_sub_buffer_after", -1) if self.sdr_plugin and self.sdr_plugin.get_tuner(1) else -1
-                    _sdr1_cb_ovf = getattr(self.sdr_plugin.get_tuner(1), "_cb_overflow_count", 0) if self.sdr_plugin else 0
-                    _sdr1_cb_drop = getattr(self.sdr_plugin.get_tuner(1), "_cb_drop_count", 0) if self.sdr_plugin else 0
+                    _sdr1_disc = 0.0
+                    _sdr1_sb_after = -1
+                    _sdr1_cb_ovf = 0
+                    _sdr1_cb_drop = 0
                     _aioc_disc = self.radio_source._serve_discontinuity if self.radio_source else 0.0
                     _aioc_sb_after = self.radio_source._sub_buffer_after if self.radio_source else -1
                     _aioc_cb_ovf = self.radio_source._cb_overflow_count if self.radio_source else 0
@@ -3323,8 +3323,8 @@ class RadioGateway:
                         _kv4p_snap.get('tx_input_rms', 0.0),  # 45: RMS of PCM fed to encoder
                         _kv4p_snap.get('tx_errors', 0),       # 46: encoder exceptions
                         self.announcement_delay_active and not (str(getattr(self.config, 'TX_RADIO', '')).lower() == 'kv4p' and bool(self.kv4p_plugin)),  # 47: TX to KV4P silenced by PTT settle delay (False when TX_RADIO=kv4p, fix in place)
-                        getattr(self.sdr_plugin.get_tuner(2), "_serve_discontinuity", 0.0) if self.sdr_plugin and self.sdr_plugin.get_tuner(2) else 0.0,  # 48: SDR2 sample discontinuity (abs delta)
-                        getattr(self.sdr_plugin.get_tuner(2), "_sub_buffer_after", -1) if self.sdr_plugin and self.sdr_plugin.get_tuner(2) else -1,  # 49: SDR2 sub-buffer bytes after serve
+                        0.0,  # 48: SDR2 sample discontinuity (abs delta)
+                        -1,  # 49: SDR2 sub-buffer bytes after serve
                     ))
     
     def _find_darkice_pid(self):
@@ -4386,8 +4386,8 @@ class RadioGateway:
             th_stat = _alive(self._status_thread)
             th_kb = _alive(self._keyboard_thread)
             th_aioc = _alive(self.radio_source._reader_thread if self.radio_source and hasattr(self.radio_source, '_reader_thread') else None)
-            th_sdr1 = _alive(self.sdr_plugin.get_tuner(1)._reader_thread if self.sdr_plugin and self.sdr_plugin.get_tuner(1) and hasattr(self.sdr_plugin.get_tuner(1), "_reader_thread") else None)
-            th_sdr2 = _alive(self.sdr_plugin.get_tuner(2)._reader_thread if self.sdr_plugin and self.sdr_plugin.get_tuner(2) and hasattr(self.sdr_plugin.get_tuner(2), "_reader_thread") else None)
+            th_sdr1 = _alive(None)
+            th_sdr2 = _alive(None)
             th_remote = _alive(self.remote_audio_source._reader_thread if self.remote_audio_source and hasattr(self.remote_audio_source, '_reader_thread') else None)
             th_announce = _alive(self.announce_input_source._reader_thread if self.announce_input_source and hasattr(self.announce_input_source, '_reader_thread') else None)
 
@@ -4432,8 +4432,8 @@ class RadioGateway:
                 return -1
 
             q_aioc = _qsize(self.radio_source)
-            q_sdr1 = self.sdr_plugin.get_tuner(1)._chunk_queue.qsize() if self.sdr_plugin and self.sdr_plugin.get_tuner(1) else 0
-            q_sdr2 = self.sdr_plugin.get_tuner(2)._chunk_queue.qsize() if self.sdr_plugin and self.sdr_plugin.get_tuner(2) else 0
+            q_sdr1 = 0
+            q_sdr2 = 0
 
             # PTT / VAD / rebroadcast
             ptt = 1 if self.ptt_active else 0
