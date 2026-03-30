@@ -2206,16 +2206,25 @@ class WebConfigServer:
                                 gw.d75_cat._btstart_in_progress = False
                                 result = {'ok': True, 'response': resp or ''}
                             elif cmd == 'ptt':
-                                resp = gw.d75_cat.send_command("!ptt on" if not getattr(gw, '_d75_ptt', False) else "!ptt off")
-                                gw._d75_ptt = not getattr(gw, '_d75_ptt', False)
-                                result = {'ok': True, 'response': resp or ''}
+                                _d75p = getattr(gw, 'd75_plugin', None)
+                                if _d75p:
+                                    result = _d75p.execute({'cmd': 'ptt', 'state': not _d75p._ptt_on_state})
+                                else:
+                                    result = {'ok': False, 'error': 'D75 plugin not available'}
+                            elif cmd == 'mute':
+                                _d75p = getattr(gw, 'd75_plugin', None)
+                                if _d75p:
+                                    result = _d75p.execute({'cmd': 'mute'})
+                                    gw.d75_muted = _d75p.muted
+                                else:
+                                    result = {'ok': False, 'error': 'D75 plugin not available'}
                             elif cmd == 'vol':
-                                # Set gateway-side audio boost (percentage: 0-500)
                                 try:
                                     pct = int(args)
                                     pct = max(0, min(500, pct))
-                                    if gw.d75_audio_source:
-                                        gw.d75_audio_source.audio_boost = pct / 100.0
+                                    _d75p = getattr(gw, 'd75_plugin', None)
+                                    if _d75p:
+                                        _d75p.audio_boost = pct / 100.0
                                     result = {'ok': True, 'response': f'boost={pct}%'}
                                 except (ValueError, TypeError):
                                     result = {'ok': False, 'error': 'usage: vol 0-500 (percentage)'}
