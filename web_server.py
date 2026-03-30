@@ -769,8 +769,8 @@ class WebConfigServer:
                             data['service_running'] = _svc.stdout.strip() == 'active'
                         except Exception:
                             data['service_running'] = False
-                        if parent.gateway.d75_cat:
-                            cat = parent.gateway.d75_cat
+                        if parent.gateway.d75_plugin:
+                            cat = parent.gateway.d75_plugin
                             data.update(cat.get_radio_state())
                             data['d75_enabled'] = True
                             data['tcp_connected'] = cat._connected
@@ -778,7 +778,7 @@ class WebConfigServer:
                             data['serial_connected'] = getattr(cat, '_serial_connected', False) if cat._connected else False
                             data['af_gain'] = getattr(cat, '_af_gain', -1)
                         # Build status detail message
-                        _has_client = parent.gateway.d75_cat is not None
+                        _has_client = parent.gateway.d75_plugin is not None
                         if not data['d75_enabled']:
                             data['status_detail'] = 'D75 disabled in config (ENABLE_D75)'
                         elif not data.get('tcp_connected', False):
@@ -797,10 +797,10 @@ class WebConfigServer:
                         else:
                             data['status_detail'] = ''
                         # Include audio status
-                        if parent.gateway.d75_audio_source:
-                            data['audio_connected'] = parent.gateway.d75_audio_source.server_connected
-                            data['audio_level'] = parent.gateway.d75_audio_source.audio_level
-                            data['audio_boost'] = int(parent.gateway.d75_audio_source.audio_boost * 100)
+                        if parent.gateway.d75_plugin:
+                            data['audio_connected'] = parent.gateway.d75_plugin.server_connected
+                            data['audio_level'] = parent.gateway.d75_plugin.audio_level
+                            data['audio_boost'] = int(parent.gateway.d75_plugin.audio_boost * 100)
                         else:
                             data['audio_connected'] = False
                     try:
@@ -857,7 +857,7 @@ class WebConfigServer:
                     # D75 memory channel list — scans channels one at a time via !cat ME
                     import json as json_mod
                     channels = []
-                    cat = parent.gateway.d75_cat if parent.gateway else None
+                    cat = parent.gateway.d75_plugin if parent.gateway else None
                     _modes = {0: 'FM', 1: 'AM', 2: 'LSB', 3: 'USB', 4: 'CW', 5: 'DV'}
                     _shifts = {0: 'S', 1: '+', 2: '-'}
                     _ctcss = ["67.0","69.3","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
@@ -1924,8 +1924,8 @@ class WebConfigServer:
                             'duck': {
                                 'sdr1': s.get('sdr1_duck', False),
                                 'sdr2': gw.sdr2_source.duck if gw.sdr2_source and hasattr(gw.sdr2_source, 'duck') else False,
-                                'd75': gw.d75_audio_source.duck if gw.d75_audio_source and hasattr(gw.d75_audio_source, 'duck') else False,
-                                'kv4p': gw.kv4p_audio_source.duck if gw.kv4p_audio_source and hasattr(gw.kv4p_audio_source, 'duck') else False,
+                                'd75': gw.d75_plugin.duck if gw.d75_plugin and hasattr(gw.d75_plugin, 'duck') else False,
+                                'kv4p': gw.kv4p_plugin.duck if gw.kv4p_plugin and hasattr(gw.kv4p_plugin, 'duck') else False,
                                 'remote': gw.remote_audio_source.duck if gw.remote_audio_source and hasattr(gw.remote_audio_source, 'duck') else False,
                             }, 'ducked': {
                                 'sdr1': s.get('sdr1_ducked', False),
@@ -1939,8 +1939,8 @@ class WebConfigServer:
                                 'talkback': getattr(gw, 'tx_talkback', False),
                                 'manual_ptt': s.get('manual_ptt', False),
                             }, 'boost': {
-                                'd75': int(gw.d75_audio_source.audio_boost * 100) if gw.d75_audio_source and hasattr(gw.d75_audio_source, 'audio_boost') else 100,
-                                'kv4p': int(gw.kv4p_audio_source.audio_boost * 100) if gw.kv4p_audio_source and hasattr(gw.kv4p_audio_source, 'audio_boost') else 100,
+                                'd75': int(gw.d75_plugin.audio_boost * 100) if gw.d75_plugin and hasattr(gw.d75_plugin, 'audio_boost') else 100,
+                                'kv4p': int(gw.kv4p_plugin.audio_boost * 100) if gw.kv4p_plugin and hasattr(gw.kv4p_plugin, 'audio_boost') else 100,
                                 'remote': int(gw.remote_audio_source.audio_boost * 100) if gw.remote_audio_source and hasattr(gw.remote_audio_source, 'audio_boost') else 100,
                             }, 'processing': {
                                 'radio': gw.radio_processor.get_active_list() if hasattr(gw, 'radio_processor') else [],
@@ -1956,8 +1956,8 @@ class WebConfigServer:
                                 'rx':       ('rx_muted', None),
                                 'sdr1':     ('sdr_muted', 'sdr_source'),
                                 'sdr2':     ('sdr2_muted', 'sdr2_source'),
-                                'd75':      ('d75_muted', 'd75_audio_source'),
-                                'kv4p':     ('kv4p_muted', 'kv4p_audio_source'),
+                                'd75':      ('d75_muted', 'd75_plugin'),
+                                'kv4p':     ('kv4p_muted', 'kv4p_plugin'),
                                 'remote':   ('remote_audio_muted', 'remote_audio_source'),
                                 'announce': ('announce_input_muted', 'announce_input_source'),
                                 'speaker':  ('speaker_muted', None),
@@ -2024,7 +2024,7 @@ class WebConfigServer:
                             state = data.get('state')  # true/false or omit for toggle
                             _duck_map = {
                                 'sdr1': 'sdr_source', 'sdr2': 'sdr2_source',
-                                'd75': 'd75_audio_source', 'kv4p': 'kv4p_audio_source',
+                                'd75': 'd75_plugin', 'kv4p': 'kv4p_plugin',
                                 'remote': 'remote_audio_source',
                             }
                             if source in _duck_map:
@@ -2044,8 +2044,8 @@ class WebConfigServer:
                             # Set per-source audio boost (percentage 0-500)
                             pct = data.get('value', 100)
                             _boost_map = {
-                                'd75': 'd75_audio_source',
-                                'kv4p': 'kv4p_audio_source',
+                                'd75': 'd75_plugin',
+                                'kv4p': 'kv4p_plugin',
                                 'remote': 'remote_audio_source',
                             }
                             if source in _boost_map:
@@ -2339,8 +2339,6 @@ class WebConfigServer:
                                     from d75_plugin import D75Plugin
                                     gw.d75_plugin = D75Plugin()
                                     if gw.d75_plugin.setup(gw.config):
-                                        gw.d75_cat = gw.d75_plugin
-                                        gw.d75_audio_source = gw.d75_plugin
                                         result = {'ok': True, 'response': 'D75 plugin initialized'}
                                     else:
                                         gw.d75_plugin = None
@@ -2349,25 +2347,25 @@ class WebConfigServer:
                                     result = {'ok': False, 'error': str(e)}
                             else:
                                 result = {'ok': False, 'error': 'Gateway not initialized'}
-                        elif gw and gw.d75_cat:
+                        elif gw and gw.d75_plugin:
                             if cmd == 'cat':
-                                resp = gw.d75_cat.send_command(f"!cat {args}")
+                                resp = gw.d75_plugin.send_command(f"!cat {args}")
                                 result = {'ok': True, 'response': resp or ''}
                             elif cmd == 'btstart':
-                                gw.d75_cat._bt_stopped = False
-                                gw.d75_cat._btstart_in_progress = True
-                                if not gw.d75_cat._connected:
+                                gw.d75_plugin._bt_stopped = False
+                                gw.d75_plugin._btstart_in_progress = True
+                                if not gw.d75_plugin._connected:
                                     # TCP is down — poll thread will auto-btstart when it reconnects
                                     result = {'ok': True, 'response': 'TCP down — poll thread will connect and btstart'}
                                 else:
-                                    resp = gw.d75_cat.send_command("!btstart")
+                                    resp = gw.d75_plugin.send_command("!btstart")
                                     result = {'ok': True, 'response': resp or 'sent (no response)'}
                             elif cmd == 'btstop':
                                 # btstop takes several seconds — use longer timeout
-                                gw.d75_cat._bt_stopped = True
-                                resp = gw.d75_cat.send_command("!btstop", timeout=15.0)
-                                gw.d75_cat._serial_connected = False
-                                gw.d75_cat._btstart_in_progress = False
+                                gw.d75_plugin._bt_stopped = True
+                                resp = gw.d75_plugin.send_command("!btstop", timeout=15.0)
+                                gw.d75_plugin._serial_connected = False
+                                gw.d75_plugin._btstart_in_progress = False
                                 result = {'ok': True, 'response': resp or ''}
                             elif cmd == 'ptt':
                                 _d75p = getattr(gw, 'd75_plugin', None)
@@ -2393,7 +2391,7 @@ class WebConfigServer:
                                 except (ValueError, TypeError):
                                     result = {'ok': False, 'error': 'usage: vol 0-500 (percentage)'}
                             else:
-                                resp = gw.d75_cat.send_command(f"!{cmd} {args}".strip())
+                                resp = gw.d75_plugin.send_command(f"!{cmd} {args}".strip())
                                 result = {'ok': True, 'response': resp or ''}
                         else:
                             result = {'ok': False, 'error': 'D75 not connected — try Start Service then Reconnect'}
@@ -2468,8 +2466,8 @@ class WebConfigServer:
                                 from kv4p_plugin import KV4PPlugin
                                 parent.gateway.kv4p_plugin = KV4PPlugin()
                                 if parent.gateway.kv4p_plugin.setup(parent.gateway.config):
-                                    parent.gateway.kv4p_audio_source = parent.gateway.kv4p_plugin
-                                    parent.gateway.kv4p_cat = parent.gateway.kv4p_plugin
+                                    parent.gateway.kv4p_plugin = parent.gateway.kv4p_plugin
+                                    parent.gateway.kv4p_plugin = parent.gateway.kv4p_plugin
                                     result = {'ok': True, 'response': 'Reconnected'}
                                 else:
                                     parent.gateway.kv4p_plugin = None

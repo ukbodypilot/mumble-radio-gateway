@@ -1535,13 +1535,13 @@ class RadioGateway:
         self.cat_client = None  # RadioCATClient instance
 
         # D75 CAT Control + Audio
-        self.d75_cat = None           # D75CATClient instance
-        self.d75_audio_source = None  # D75AudioSource instance
+        self.d75_plugin = None           # D75CATClient instance
+        self.d75_plugin = None  # D75AudioSource instance
         self.d75_muted = True         # D75 audio mute toggle (muted by default)
 
         # KV4P HT Radio
-        self.kv4p_cat = None           # KV4PCATClient instance
-        self.kv4p_audio_source = None  # KV4PAudioSource instance
+        self.kv4p_plugin = None           # KV4PCATClient instance
+        self.kv4p_plugin = None  # KV4PAudioSource instance
         self.kv4p_muted = True         # KV4P audio mute toggle (muted by default)
         self.kv4p_processor = AudioProcessor("kv4p", config)
 
@@ -2052,8 +2052,8 @@ class RadioGateway:
             else:
                 cat.ptt_off()
                 # Discard any partial Opus frame so it doesn't bleed into next TX
-                if self.kv4p_audio_source:
-                    self.kv4p_audio_source._tx_buf = b''
+                if self.kv4p_plugin:
+                    self.kv4p_plugin._tx_buf = b''
             self._kv4p_ptt_on = state_on
             if self.config.VERBOSE_LOGGING:
                 print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (KV4P)")
@@ -2765,9 +2765,6 @@ class RadioGateway:
                     print(f"⚠ D75 plugin error: {e}")
                     import traceback; traceback.print_exc()
                     self.d75_plugin = None
-            # Backward compat
-            self.d75_cat = self.d75_plugin
-            self.d75_audio_source = self.d75_plugin
             if self.d75_plugin and self.d75_plugin._processor:
                 self.d75_processor = self.d75_plugin._processor
 
@@ -2788,9 +2785,6 @@ class RadioGateway:
                     print(f"⚠ KV4P plugin error: {e}")
                     import traceback; traceback.print_exc()
                     self.kv4p_plugin = None
-            # Backward compat
-            self.kv4p_audio_source = self.kv4p_plugin
-            self.kv4p_cat = self.kv4p_plugin
             if self.kv4p_plugin and self.kv4p_plugin._processor:
                 self.kv4p_processor = self.kv4p_plugin._processor
 
@@ -4128,8 +4122,8 @@ class RadioGateway:
                         # Send audio to radio output
                         _ptt_wrote = False
                         _tx_radio_cfg = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
-                        _use_d75_tx = (_tx_radio_cfg == 'd75' and self.d75_audio_source)
-                        _use_kv4p_tx = (_tx_radio_cfg == 'kv4p' and self.kv4p_audio_source)
+                        _use_d75_tx = (_tx_radio_cfg == 'd75' and self.d75_plugin)
+                        _use_kv4p_tx = (_tx_radio_cfg == 'kv4p' and self.kv4p_plugin)
                         if (_use_d75_tx or _use_kv4p_tx or self.output_stream) and not self.tx_muted:
                             try:
                                 # Suppress audio while the PTT relay is settling.
@@ -4144,9 +4138,9 @@ class RadioGateway:
                                     arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
                                     pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
                                 if _use_d75_tx:
-                                    self.d75_audio_source.write_tx_audio(pcm)
+                                    self.d75_plugin.write_tx_audio(pcm)
                                 elif _use_kv4p_tx:
-                                    self.kv4p_audio_source.write_tx_audio(pcm)
+                                    self.kv4p_plugin.write_tx_audio(pcm)
                                 else:
                                     try:
                                         self.output_stream.write(pcm, exception_on_overflow=False)
@@ -4458,7 +4452,7 @@ class RadioGateway:
                     _aioc_sb_after = self.radio_source._sub_buffer_after if self.radio_source else -1
                     _aioc_cb_ovf = self.radio_source._cb_overflow_count if self.radio_source else 0
                     _aioc_cb_drop = self.radio_source._cb_drop_count if self.radio_source else 0
-                    _kv4p_snap = self.kv4p_audio_source.get_trace_snapshot() if self.kv4p_audio_source else {}
+                    _kv4p_snap = self.kv4p_plugin.get_trace_snapshot() if self.kv4p_plugin else {}
 
                     _trace.append((
                         _tick_start - self._audio_trace_t0,  # 0: time (s)
@@ -4511,7 +4505,7 @@ class RadioGateway:
                         _kv4p_snap.get('tx_dropped', 0),      # 44: PCM bytes dropped (partial-frame remainder)
                         _kv4p_snap.get('tx_input_rms', 0.0),  # 45: RMS of PCM fed to encoder
                         _kv4p_snap.get('tx_errors', 0),       # 46: encoder exceptions
-                        self.announcement_delay_active and not (str(getattr(self.config, 'TX_RADIO', '')).lower() == 'kv4p' and bool(self.kv4p_audio_source)),  # 47: TX to KV4P silenced by PTT settle delay (False when TX_RADIO=kv4p, fix in place)
+                        self.announcement_delay_active and not (str(getattr(self.config, 'TX_RADIO', '')).lower() == 'kv4p' and bool(self.kv4p_plugin)),  # 47: TX to KV4P silenced by PTT settle delay (False when TX_RADIO=kv4p, fix in place)
                         self.sdr2_source._serve_discontinuity if self.sdr2_source and hasattr(self.sdr2_source, '_serve_discontinuity') else 0.0,  # 48: SDR2 sample discontinuity (abs delta)
                         self.sdr2_source._sub_buffer_after if self.sdr2_source and hasattr(self.sdr2_source, '_sub_buffer_after') else -1,  # 49: SDR2 sub-buffer bytes after serve
                     ))
@@ -4960,14 +4954,14 @@ class RadioGateway:
                 self.speaker_muted = not self.speaker_muted
                 self._trace_events.append((time.monotonic(), 'spk_mute', 'on' if self.speaker_muted else 'off'))
         elif char == 'w':
-            if self.d75_audio_source:
+            if self.d75_plugin:
                 self.d75_muted = not self.d75_muted
-                self.d75_audio_source.muted = self.d75_muted
+                self.d75_plugin.muted = self.d75_muted
                 self._trace_events.append((time.monotonic(), 'd75_mute', 'on' if self.d75_muted else 'off'))
         elif char == 'y':
-            if self.kv4p_audio_source:
+            if self.kv4p_plugin:
                 self.kv4p_muted = not self.kv4p_muted
-                self.kv4p_audio_source.muted = self.kv4p_muted
+                self.kv4p_plugin.muted = self.kv4p_muted
                 self._trace_events.append((time.monotonic(), 'kv4p_mute', 'on' if self.kv4p_muted else 'off'))
         elif char == 'l':
             if self.cat_client:
@@ -5181,14 +5175,14 @@ class RadioGateway:
             'ms1_state': self.mumble_server_1.state if self.mumble_server_1 else None,
             'ms2_state': self.mumble_server_2.state if self.mumble_server_2 else None,
             'cat_enabled': bool(self.cat_client) or getattr(self.config, 'ENABLE_CAT_CONTROL', False),
-            'd75_enabled': bool(self.d75_cat) or getattr(self.config, 'ENABLE_D75', False),
-            'd75_connected': bool(self.d75_cat and getattr(self.d75_cat, '_serial_connected', False)),
-            'd75_audio_connected': bool(self.d75_audio_source and self.d75_audio_source.server_connected),
+            'd75_enabled': bool(self.d75_plugin) or getattr(self.config, 'ENABLE_D75', False),
+            'd75_connected': bool(self.d75_plugin and getattr(self.d75_plugin, '_serial_connected', False)),
+            'd75_audio_connected': bool(self.d75_plugin and self.d75_plugin.server_connected),
             'd75_mode': str(getattr(self.config, 'D75_CONNECTION', 'bluetooth')).lower().strip(),
-            'd75_level': self.d75_audio_source.audio_level if self.d75_audio_source else 0,
+            'd75_level': self.d75_plugin.audio_level if self.d75_plugin else 0,
             'd75_muted': getattr(self, 'd75_muted', False),
-            'kv4p_enabled': bool(self.kv4p_audio_source),
-            'kv4p_level': self.kv4p_audio_source.audio_level if self.kv4p_audio_source else 0,
+            'kv4p_enabled': bool(self.kv4p_plugin),
+            'kv4p_level': self.kv4p_plugin.audio_level if self.kv4p_plugin else 0,
             'kv4p_muted': getattr(self, 'kv4p_muted', False),
             'adsb_enabled': getattr(self.config, 'ENABLE_ADSB', False),
             'telegram_enabled': getattr(self.config, 'ENABLE_TELEGRAM', False),
@@ -6526,17 +6520,17 @@ class RadioGateway:
             except Exception:
                 pass
 
-        if self.d75_cat:
+        if self.d75_plugin:
             try:
-                self.d75_cat.close()
+                self.d75_plugin.close()
                 if self.config.VERBOSE_LOGGING:
                     print("  D75 CAT client closed")
             except Exception:
                 pass
 
-        if self.d75_audio_source:
+        if self.d75_plugin:
             try:
-                self.d75_audio_source.cleanup()
+                self.d75_plugin.cleanup()
                 if self.config.VERBOSE_LOGGING:
                     print("  D75 audio source closed")
             except Exception:
