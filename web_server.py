@@ -1795,10 +1795,11 @@ class WebConfigServer:
                         pass
 
                 elif self.path == '/routing/levels':
-                    # Return audio levels for all sources/sinks
+                    # Return RX and TX audio levels separately
                     data = {}
                     gw = parent.gateway
                     if gw:
+                        # RX levels (sources)
                         if gw.sdr_plugin:
                             data['sdr'] = gw.sdr_plugin.audio_level
                         if gw.kv4p_plugin:
@@ -1811,6 +1812,14 @@ class WebConfigServer:
                             data['webmic'] = gw.web_mic_source.audio_level if gw.web_mic_source.client_connected else 0
                         if getattr(gw, 'web_monitor_source', None):
                             data['monitor'] = gw.web_monitor_source.audio_level
+                        # TX levels (radio destinations)
+                        if gw.kv4p_plugin:
+                            data['kv4p_tx'] = getattr(gw.kv4p_plugin, 'tx_audio_level', 0)
+                        if gw.d75_plugin:
+                            data['d75_tx'] = getattr(gw.d75_plugin, 'tx_audio_level', 0)
+                        if getattr(gw, 'radio_source', None):
+                            data['aioc_tx'] = getattr(gw, 'rx_audio_level', 0)
+                        # Passive sinks
                         data['speaker'] = getattr(gw, 'speaker_audio_level', 0)
                     try:
                         self.send_response(200)

@@ -91,7 +91,8 @@ class KV4PPlugin(RadioPlugin):
         self._buf_max = 0
         self._was_active = False
         self.server_connected = False
-        self.audio_level = 0
+        self.audio_level = 0      # RX level
+        self.tx_audio_level = 0   # TX level
         self.audio_boost = 1.0
 
         # TX state
@@ -315,7 +316,17 @@ class KV4PPlugin(RadioPlugin):
             buf = self._tx_buf
             try:
                 _arr = np.frombuffer(pcm_48k, dtype=np.int16).astype(np.float32)
-                self._trace_tx_input_rms = float(np.sqrt(np.mean(_arr * _arr))) if len(_arr) > 0 else 0.0
+                rms = float(np.sqrt(np.mean(_arr * _arr))) if len(_arr) > 0 else 0.0
+                self._trace_tx_input_rms = rms
+                if rms > 0:
+                    db = 20.0 * math.log10(rms / 32767.0)
+                    level = max(0, min(100, (db + 60) * (100 / 60)))
+                else:
+                    level = 0
+                if level > self.tx_audio_level:
+                    self.tx_audio_level = int(level)
+                else:
+                    self.tx_audio_level = int(self.tx_audio_level * 0.7 + level * 0.3)
             except Exception:
                 pass
             frames_sent = 0

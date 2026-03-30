@@ -104,7 +104,8 @@ class D75Plugin(RadioPlugin):
         self._reader_running = False
         self._reader_thread = None
         self.server_connected = False
-        self.audio_level = 0
+        self.audio_level = 0      # RX level
+        self.tx_audio_level = 0   # TX level
         self.audio_boost = 1.0
         self._reconnect_interval = 5.0
 
@@ -235,6 +236,18 @@ class D75Plugin(RadioPlugin):
             return
         try:
             arr = np.frombuffer(pcm_48k, dtype=np.int16)
+            # TX level metering
+            farr = arr.astype(np.float32)
+            rms = float(np.sqrt(np.mean(farr * farr))) if len(farr) > 0 else 0.0
+            if rms > 0:
+                db = 20.0 * _math_mod.log10(rms / 32767.0)
+                level = max(0, min(100, (db + 60) * (100 / 60)))
+            else:
+                level = 0
+            if level > self.tx_audio_level:
+                self.tx_audio_level = int(level)
+            else:
+                self.tx_audio_level = int(self.tx_audio_level * 0.7 + level * 0.3)
             arr_8k = arr[::6]
             self._audio_sock.sendall(arr_8k.tobytes())
         except (BrokenPipeError, ConnectionResetError, OSError):
