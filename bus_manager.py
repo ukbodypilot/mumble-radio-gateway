@@ -233,7 +233,8 @@ class BusManager:
                         if source:
                             _duck = getattr(source, 'duck', True)
                             _prio = getattr(source, 'sdr_priority', getattr(source, 'priority', 5))
-                            bus.add_source(source, bus_priority=_prio, duckable=_duck)
+                            _det = getattr(source, 'ptt_control', False)  # deterministic if PTT-capable
+                            bus.add_source(source, bus_priority=_prio, duckable=_duck, deterministic=_det)
                 for c in connections:
                     if c['type'] == 'bus-sink' and c['from'] == bus_id:
                         bus.add_sink(c['to'])

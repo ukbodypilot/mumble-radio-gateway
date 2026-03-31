@@ -2574,12 +2574,14 @@ class WebConfigServer:
                             _gw._audio_trace.clear()
                             _gw._spk_trace.clear()
                             _gw._trace_events.clear()
-                            _gw._audio_trace_t0 = time.monotonic()
+                            import time as _trace_time
+                            _gw._audio_trace_t0 = _trace_time.monotonic()
                             print(f"\n[Trace] Recording STARTED (via web UI)")
                         else:
                             print(f"\n[Trace] Recording STOPPED ({len(_gw._audio_trace)} ticks captured)")
                             _gw._dump_audio_trace()
-                        _gw._trace_events.append((time.monotonic(), 'trace', 'on' if _gw._trace_recording else 'off'))
+                        import time as _trace_time2
+                        _gw._trace_events.append((_trace_time2.monotonic(), 'trace', 'on' if _gw._trace_recording else 'off'))
                         result = {'ok': True, 'active': _gw._trace_recording}
                     elif _gw and trace_type == 'watchdog':
                         _gw._watchdog_active = not _gw._watchdog_active

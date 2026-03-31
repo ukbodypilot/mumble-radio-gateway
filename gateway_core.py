@@ -871,9 +871,13 @@ class RadioGateway:
 
     def sound_received_handler(self, user, soundchunk):
         """Called when audio is received from Mumble server"""
+        _t0 = time.monotonic()
+
         # Feed MumbleSource for routing system
         if hasattr(self, 'mumble_source') and self.mumble_source:
             self.mumble_source.push_audio(soundchunk.pcm)
+
+        _t1 = time.monotonic()
 
         # Track when we last received audio
         self.last_rx_audio_time = time.time()
@@ -882,18 +886,31 @@ class RadioGateway:
         current_level = self.calculate_audio_level(soundchunk.pcm)
         # Smooth the level display (fast attack, slow decay)
         if current_level > self.rx_audio_level:
-            self.rx_audio_level = current_level  # Fast attack
+            self.rx_audio_level = current_level
         else:
-            self.rx_audio_level = int(self.rx_audio_level * 0.7 + current_level * 0.3)  # Slow decay
-        
-        # Apply activation delay if configured
-        if self.config.PTT_ACTIVATION_DELAY > 0 and not self.ptt_active:
-            time.sleep(self.config.PTT_ACTIVATION_DELAY)
-        
+            self.rx_audio_level = int(self.rx_audio_level * 0.7 + current_level * 0.3)
+
+        _t2 = time.monotonic()
+
         # Update last sound time
         self.last_sound_time = time.time()
-        
-        # PTT and TX audio are now handled by the bus system (SoloBus).
+
+        _t3 = time.monotonic()
+        # Timing diagnostic
+        if not hasattr(self, '_srh_count'):
+            self._srh_count = 0
+            self._srh_max_ms = 0.0
+            self._srh_total_ms = 0.0
+        self._srh_count += 1
+        _elapsed = (_t3 - _t0) * 1000
+        _push_ms = (_t1 - _t0) * 1000
+        _level_ms = (_t2 - _t1) * 1000
+        self._srh_total_ms += _elapsed
+        if _elapsed > self._srh_max_ms:
+            self._srh_max_ms = _elapsed
+        if self._srh_count <= 3 or self._srh_count % 50 == 0:
+            _avg = self._srh_total_ms / self._srh_count
+            print(f"  [SRH] #{self._srh_count}: {_elapsed:.2f}ms (push={_push_ms:.2f} level={_level_ms:.2f}) avg={_avg:.2f}ms max={self._srh_max_ms:.2f}ms")
         # MumbleSource.push_audio() feeds the queue, SoloBus drains it
         # and calls put_audio() + PTT on the radio plugin.
         # Legacy direct path disabled to avoid double-writing to output stream.
@@ -1179,8 +1196,9 @@ class RadioGateway:
         for sid in should_be_on:
             plugin, prio, duck = source_map[sid]
             if plugin.name not in current_names:
-                self.mixer.add_source(plugin, bus_priority=prio, duckable=duck)
-                print(f"  [sync] Added {sid} to listen bus")
+                _det = getattr(plugin, 'ptt_control', False)
+                self.mixer.add_source(plugin, bus_priority=prio, duckable=duck, deterministic=_det)
+                print(f"  [sync] Added {sid} to listen bus (det={_det})")
 
         # Remove extras (only for sources we manage)
         for sid, (plugin, _, _) in source_map.items():
@@ -1840,7 +1858,7 @@ class RadioGateway:
                                 print(f"⚠ Warning: Could not initialize radio source: {source_err}")
                                 self.radio_source = None
 
-                            aioc_callback = self.radio_source._audio_callback if self.radio_source else None
+                            aioc_callback = getattr(self.radio_source, '_audio_callback', None) if self.radio_source else None
                             self.input_stream = self.pyaudio_instance.open(
                                 format=audio_format,
                                 channels=self.config.AUDIO_CHANNELS,
@@ -3238,10 +3256,10 @@ class RadioGateway:
                     _sdr1_sb_after = -1
                     _sdr1_cb_ovf = 0
                     _sdr1_cb_drop = 0
-                    _aioc_disc = self.radio_source._serve_discontinuity if self.radio_source else 0.0
-                    _aioc_sb_after = self.radio_source._sub_buffer_after if self.radio_source else -1
-                    _aioc_cb_ovf = self.radio_source._cb_overflow_count if self.radio_source else 0
-                    _aioc_cb_drop = self.radio_source._cb_drop_count if self.radio_source else 0
+                    _aioc_disc = getattr(self.radio_source, '_serve_discontinuity', 0.0) if self.radio_source else 0.0
+                    _aioc_sb_after = getattr(self.radio_source, '_sub_buffer_after', -1) if self.radio_source else -1
+                    _aioc_cb_ovf = getattr(self.radio_source, '_cb_overflow_count', 0) if self.radio_source else 0
+                    _aioc_cb_drop = getattr(self.radio_source, '_cb_drop_count', 0) if self.radio_source else 0
                     _kv4p_snap = self.kv4p_plugin.get_trace_snapshot() if self.kv4p_plugin else {}
 
                     _trace.append((
@@ -3255,7 +3273,7 @@ class RadioGateway:
                         ','.join(active_sources) if active_sources else '',  # 7: active sources
                         _tr_mixer_ms,                         # 8: mixer call duration (ms)
                         0.0,  # 9: SDR blocked (ms)
-                        self.radio_source._last_blocked_ms if self.radio_source else 0.0,  # 10: AIOC blocked (ms)
+                        getattr(self.radio_source, '_last_blocked_ms', 0.0) if self.radio_source else 0.0,  # 10: AIOC blocked (ms)
                         _tr_outcome,                          # 11: outcome (sent/no_mumble/no_sndout/no_codec/ptt/exception)
                         _tr_mumble_ms,                        # 12: Mumble add_sound time (ms)
                         _tr_spk_ok,                           # 13: speaker enqueue attempted?
@@ -3484,7 +3502,7 @@ class RadioGateway:
                 print(f"  [Diagnostic] Opening new input stream (device {input_idx})...")
                 restart_os.dup2(devnull_fd, stderr_fd)
             
-            aioc_callback = self.radio_source._audio_callback if self.radio_source else None
+            aioc_callback = getattr(self.radio_source, '_audio_callback', None) if self.radio_source else None
             try:
                 self.input_stream = self.pyaudio_instance.open(
                     format=audio_format,
@@ -3594,7 +3612,7 @@ class RadioGateway:
                 )
             
             if input_idx is not None:
-                aioc_callback = self.radio_source._audio_callback if self.radio_source else None
+                aioc_callback = getattr(self.radio_source, '_audio_callback', None) if self.radio_source else None
                 self.input_stream = self.pyaudio_instance.open(
                     format=audio_format,
                     channels=self.config.AUDIO_CHANNELS,

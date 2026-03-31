@@ -2079,6 +2079,14 @@ class MumbleSource(AudioSource):
 
     def push_audio(self, pcm_bytes):
         """Called by sound_received_handler to push Mumble RX audio."""
+        # Diagnostic
+        if not hasattr(self, '_push_count'):
+            self._push_count = 0
+        self._push_count += 1
+        if self._push_count <= 5 or self._push_count % 20 == 0:
+            _qd = self._chunk_queue.qsize()
+            _sb = len(getattr(self, '_sub_buffer', b''))
+            print(f"  [MumbleRX] push #{self._push_count}: {len(pcm_bytes)}B q={_qd} sub={_sb} id={id(self._chunk_queue)} self={id(self)}")
         # Track level here so it works even when not on a bus
         try:
             arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
@@ -2111,22 +2119,48 @@ class MumbleSource(AudioSource):
 
         cb = self._chunk_bytes  # target chunk size in bytes
 
-        # Accumulate Mumble frames (20ms each) until we have a full chunk (50ms)
+        # Accumulate Mumble frames into sub-buffer
         if not hasattr(self, '_sub_buffer'):
             self._sub_buffer = b''
 
+        _drained = 0
         while len(self._sub_buffer) < cb:
             try:
                 blob = self._chunk_queue.get_nowait()
                 self._sub_buffer += blob
+                _drained += 1
             except _queue_mod.Empty:
                 break
 
-        if len(self._sub_buffer) < cb:
+        if len(self._sub_buffer) == 0:
+            if not hasattr(self, '_get_count'):
+                self._get_count = 0
+                self._get_returned = 0
+                self._get_none = 0
+            self._get_count += 1
+            self._get_none += 1
+            if self._get_count <= 3 or self._get_count % 200 == 0:
+                print(f"  [MumbleRX] get #{self._get_count}: NONE q={self._chunk_queue.qsize()} id={id(self._chunk_queue)} none={self._get_none} ret={self._get_returned}")
             return None, False
 
-        data = self._sub_buffer[:cb]
-        self._sub_buffer = self._sub_buffer[cb:]
+        # Return whatever we have, padded to chunk size if needed.
+        _padded = len(self._sub_buffer) < cb
+        if len(self._sub_buffer) >= cb:
+            data = self._sub_buffer[:cb]
+            self._sub_buffer = self._sub_buffer[cb:]
+        else:
+            data = self._sub_buffer + b'\x00' * (cb - len(self._sub_buffer))
+            self._sub_buffer = b''
+
+        # Trace instrumentation
+        if not hasattr(self, '_get_count'):
+            self._get_count = 0
+            self._get_returned = 0
+            self._get_none = 0
+        self._get_count += 1
+        self._get_returned += 1
+        if self._get_count <= 10 or self._get_count % 200 == 0:
+            print(f"  [MumbleRX] get #{self._get_count}: {len(data)}B drained={_drained} padded={_padded} sub_rem={len(self._sub_buffer)} returned={self._get_returned} none={self._get_none}")
 
         # Apply volume
         if self.audio_boost != 1.0:
