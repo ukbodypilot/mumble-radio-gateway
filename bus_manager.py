@@ -374,6 +374,8 @@ class BusManager:
         next_tick = time.monotonic()
         _diag_counter = 0
         _diag_interval = 100  # every 5 seconds (100 ticks * 50ms)
+        # Per-bus tick trace: tracks audio/silence transitions for gap analysis
+        _bus_trace = {}  # bus_id → {had_audio_last: bool, gap_start: tick#, gaps: [(start,len)], audio_ticks: int, silence_ticks: int}
 
         while self._running:
             now = time.monotonic()
@@ -397,16 +399,41 @@ class BusManager:
                         _lv = 50 if _tx_active else 0
                     _prev = self._bus_levels.get(bus_id, 0)
                     self._bus_levels[bus_id] = _lv if _lv > _prev else max(0, int(_prev * 0.7))
+
+                    # Track audio/silence gaps per bus
+                    _has_audio = _mixed is not None
+                    if bus_id not in _bus_trace:
+                        _bus_trace[bus_id] = {'had_audio': False, 'gap_start': 0, 'gaps': [], 'audio': 0, 'silence': 0}
+                    _bt = _bus_trace[bus_id]
+                    if _has_audio:
+                        _bt['audio'] += 1
+                        if not _bt['had_audio'] and _bt['gap_start'] > 0:
+                            _gap_len = _diag_counter - _bt['gap_start']
+                            if _gap_len <= 10:  # only track short gaps (glitches), not idle silence
+                                _bt['gaps'].append((_bt['gap_start'], _gap_len))
+                        _bt['had_audio'] = True
+                    else:
+                        if _bt['had_audio']:
+                            _bt['gap_start'] = _diag_counter
+                        _bt['silence'] += 1
+                        _bt['had_audio'] = False
+
                     if _diag_counter % _diag_interval == 1:
                         _has_radio = getattr(bus, '_radio', None) is not None
                         _sinks = list(output.audio.keys())
-                        _has_audio = output.mixed_audio is not None
                         _cfg = self._bus_config.get(bus_id, {})
                         _tx_srcs = len(getattr(bus, '_tx_sources', []))
                         _tx_only = getattr(bus, '_tx_only', False)
                         _ptt = getattr(bus, '_ptt_active', False)
                         _extra = f" tx_srcs={_tx_srcs} tx_only={_tx_only} ptt={_ptt}" if _tx_srcs > 0 or _tx_only else ""
-                        print(f"  [BusManager] {bus_id}: radio={_has_radio} sinks={_sinks} audio={_has_audio} pcm={_cfg.get('pcm')} mp3={_cfg.get('mp3')}{_extra}")
+                        _gap_info = ""
+                        if bus_id in _bus_trace:
+                            _bt = _bus_trace[bus_id]
+                            _gap_info = f" a={_bt['audio']} s={_bt['silence']} gaps={len(_bt['gaps'])}"
+                            if _bt['gaps']:
+                                _gap_info += f" last_gap={_bt['gaps'][-1][1]}tks"
+                        print(f"  [BusManager] {bus_id}: radio={_has_radio} sinks={_sinks} audio={_has_audio} pcm={_cfg.get('pcm')} mp3={_cfg.get('mp3')}{_extra}{_gap_info}")
                     self._deliver_audio(output, bus_id)
                 except Exception as e:
                     print(f"  [BusManager] {bus_id} tick error: {e}")
+                    import traceback; traceback.print_exc()

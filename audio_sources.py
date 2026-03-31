@@ -2132,7 +2132,7 @@ class MumbleSource(AudioSource):
             except _queue_mod.Empty:
                 break
 
-        if len(self._sub_buffer) == 0:
+        if len(self._sub_buffer) < cb:
             if not hasattr(self, '_get_count'):
                 self._get_count = 0
                 self._get_returned = 0
@@ -2140,17 +2140,12 @@ class MumbleSource(AudioSource):
             self._get_count += 1
             self._get_none += 1
             if self._get_count <= 3 or self._get_count % 200 == 0:
-                print(f"  [MumbleRX] get #{self._get_count}: NONE q={self._chunk_queue.qsize()} id={id(self._chunk_queue)} none={self._get_none} ret={self._get_returned}")
+                print(f"  [MumbleRX] get #{self._get_count}: NONE q={self._chunk_queue.qsize()} sub={len(self._sub_buffer)} none={self._get_none} ret={self._get_returned}")
             return None, False
 
-        # Return whatever we have, padded to chunk size if needed.
-        _padded = len(self._sub_buffer) < cb
-        if len(self._sub_buffer) >= cb:
-            data = self._sub_buffer[:cb]
-            self._sub_buffer = self._sub_buffer[cb:]
-        else:
-            data = self._sub_buffer + b'\x00' * (cb - len(self._sub_buffer))
-            self._sub_buffer = b''
+        # Full chunk available — no padding, no clicks
+        data = self._sub_buffer[:cb]
+        self._sub_buffer = self._sub_buffer[cb:]
 
         # Trace instrumentation
         if not hasattr(self, '_get_count'):
@@ -2160,7 +2155,7 @@ class MumbleSource(AudioSource):
         self._get_count += 1
         self._get_returned += 1
         if self._get_count <= 10 or self._get_count % 200 == 0:
-            print(f"  [MumbleRX] get #{self._get_count}: {len(data)}B drained={_drained} padded={_padded} sub_rem={len(self._sub_buffer)} returned={self._get_returned} none={self._get_none}")
+            print(f"  [MumbleRX] get #{self._get_count}: {len(data)}B drained={_drained} sub_rem={len(self._sub_buffer)} returned={self._get_returned} none={self._get_none}")
 
         # Apply volume
         if self.audio_boost != 1.0:
