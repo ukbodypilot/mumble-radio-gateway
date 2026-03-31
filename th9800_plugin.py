@@ -424,8 +424,17 @@ class TH9800Plugin(RadioPlugin):
                             self.audio_level = int(_lv)
                         else:
                             self.audio_level = int(self.audio_level * 0.7 + _lv * 0.3)
-                    except Exception:
-                        pass
+                        if not hasattr(self, '_rx_level_count'):
+                            self._rx_level_count = 0
+                        self._rx_level_count += 1
+                        if self._rx_level_count <= 3 or self._rx_level_count % 500 == 0:
+                            print(f"  [TH9800-RX] level #{self._rx_level_count}: rms={rms:.0f} lv={_lv:.0f} audio_level={self.audio_level}")
+                    except Exception as _e:
+                        if not hasattr(self, '_rx_level_err'):
+                            self._rx_level_err = 0
+                        self._rx_level_err += 1
+                        if self._rx_level_err <= 3:
+                            print(f"  [TH9800-RX] level error: {_e}")
 
                     # Queue for get_audio()
                     try:

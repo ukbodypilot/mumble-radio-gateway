@@ -1687,12 +1687,18 @@ class WebConfigServer:
                         _all_connected = set()
                         for _sinks in _all_sinks.values():
                             _all_connected.update(_sinks)
-                        # Decay sink + source levels on each poll (200ms interval)
+                        # Decay all sink/source levels on each poll (200ms interval)
                         gw.speaker_audio_level = max(0, int(getattr(gw, 'speaker_audio_level', 0) * 0.8))
                         gw.stream_audio_level = max(0, int(getattr(gw, 'stream_audio_level', 0) * 0.8))
                         gw.mumble_tx_level = max(0, int(getattr(gw, 'mumble_tx_level', 0) * 0.8))
                         if getattr(gw, 'mumble_source', None):
                             gw.mumble_source.audio_level = max(0, int(gw.mumble_source.audio_level * 0.8))
+                        if gw.kv4p_plugin:
+                            gw.kv4p_plugin.tx_audio_level = max(0, int(getattr(gw.kv4p_plugin, 'tx_audio_level', 0) * 0.8))
+                        if gw.d75_plugin:
+                            gw.d75_plugin.tx_audio_level = max(0, int(getattr(gw.d75_plugin, 'tx_audio_level', 0) * 0.8))
+                        if getattr(gw, 'th9800_plugin', None):
+                            gw.th9800_plugin.tx_audio_level = max(0, int(getattr(gw.th9800_plugin, 'tx_audio_level', 0) * 0.8))
                         if 'speaker' in _all_connected:
                             data['speaker'] = gw.speaker_audio_level
                         if 'broadcastify' in _all_connected:

@@ -666,9 +666,11 @@ class SoloBus(AudioBus):
                 active_sources.append(self._radio.name)
 
         # ── Phase 5: Build output ──
-        audio_dict = {sink: rx_audio for sink in self.sink_names}
+        # If no radio, route TX audio directly to sinks (e.g. Mumble TX as sink)
+        _output_audio = rx_audio if self._radio else tx_audio
+        audio_dict = {sink: _output_audio for sink in self.sink_names}
         if not self.sink_names:
-            audio_dict['_default'] = rx_audio
+            audio_dict['_default'] = _output_audio
 
         return BusOutput(
             audio=audio_dict,
