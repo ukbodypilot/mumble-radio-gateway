@@ -776,54 +776,77 @@ class WebConfigServer:
                         self.end_headers()
                         self.wfile.write(b'APK not built yet')
                 elif self.path == '/d75status':
-                    # D75 CAT state endpoint
+                    # D75 CAT state endpoint — reads from link endpoint or legacy plugin
                     data = {'connected': False, 'd75_enabled': False, 'tcp_connected': False,
                             'serial_connected': False, 'btstart_in_progress': False,
                             'service_running': False, 'status_detail': ''}
                     if parent.gateway:
-                        data['d75_enabled'] = getattr(parent.gateway.config, 'ENABLE_D75', False)
-                        data['d75_mode'] = str(getattr(parent.gateway.config, 'D75_CONNECTION', 'bluetooth')).lower().strip()
-                        # Check if d75-cat systemd service is running
-                        try:
-                            _svc = subprocess.run(['systemctl', 'is-active', 'd75-cat'],
-                                                  capture_output=True, text=True, timeout=2)
-                            data['service_running'] = _svc.stdout.strip() == 'active'
-                        except Exception:
-                            data['service_running'] = False
-                        if parent.gateway.d75_plugin:
-                            cat = parent.gateway.d75_plugin
+                        gw = parent.gateway
+                        data['d75_enabled'] = getattr(gw.config, 'ENABLE_D75', False)
+                        data['d75_mode'] = str(getattr(gw.config, 'D75_CONNECTION', 'bluetooth')).lower().strip()
+
+                        # Check for D75 link endpoint first
+                        _link = getattr(gw, 'link_server', None)
+                        _d75_ep = None
+                        if _link:
+                            for ep_name in _link.get_endpoint_names():
+                                if 'd75' in ep_name.lower():
+                                    _d75_ep = ep_name
+                                    break
+
+                        if _d75_ep:
+                            # D75 is a link endpoint
+                            data['d75_enabled'] = True
+                            data['connected'] = True
+                            data['tcp_connected'] = True
+                            data['serial_connected'] = True
+                            data['d75_mode'] = 'link_endpoint'
+                            data['service_running'] = True
+                            data['status_detail'] = ''
+                            data['link_endpoint'] = _d75_ep
+                            # Forward all endpoint status fields into data
+                            _ep_status = getattr(gw, '_link_last_status', {}).get(_d75_ep, {})
+                            for _k, _v in _ep_status.items():
+                                if _k not in ('band', 'plugin', 'mac', 'uptime'):
+                                    data[_k] = _v
+                            # Band info: convert from array to band_0/band_1 with fixups
+                            _mm_names = {0: 'VFO', 1: 'Memory', 2: 'Call', 3: 'DV'}
+                            _bands = _ep_status.get('band', [{}, {}])
+                            for _bi, _bkey in enumerate(('band_0', 'band_1')):
+                                if _bi < len(_bands) and isinstance(_bands[_bi], dict):
+                                    _bd = dict(_bands[_bi])
+                                    if 'memory_mode' in _bd and isinstance(_bd['memory_mode'], int):
+                                        _bd['memory_mode'] = _mm_names.get(_bd['memory_mode'], '?')
+                                    # Map s_meter → signal (D75 page expects 'signal')
+                                    if 's_meter' in _bd and 'signal' not in _bd:
+                                        _bd['signal'] = _bd['s_meter']
+                                    data[_bkey] = _bd
+                            # Audio level from the link audio source
+                            for _src_name, _src in getattr(gw, 'link_endpoints', {}).items():
+                                if 'd75' in _src_name.lower():
+                                    data['audio_connected'] = True
+                                    data['audio_level'] = getattr(_src, 'audio_level', 0)
+                                    data['audio_boost'] = int(getattr(_src, 'audio_boost', 1.0) * 100)
+                                    break
+
+                        elif gw.d75_plugin:
+                            # Legacy path: direct D75Plugin
+                            cat = gw.d75_plugin
                             data.update(cat.get_radio_state())
                             data['d75_enabled'] = True
                             data['tcp_connected'] = cat._connected
-                            # If TCP is down, serial status is unknown — show as disconnected
                             data['serial_connected'] = getattr(cat, '_serial_connected', False) if cat._connected else False
                             data['af_gain'] = getattr(cat, '_af_gain', -1)
-                        # Build status detail message
-                        _has_client = parent.gateway.d75_plugin is not None
-                        if not data['d75_enabled']:
-                            data['status_detail'] = 'D75 disabled in config (ENABLE_D75)'
-                        elif not data.get('tcp_connected', False):
-                            if _has_client:
-                                # Gateway has a client object — poll thread is trying to connect
-                                data['status_detail'] = 'Connecting to D75 proxy...'
-                            elif not data['service_running']:
-                                data['status_detail'] = 'D75 CAT service not running'
+                            data['audio_connected'] = cat.server_connected
+                            data['audio_level'] = cat.audio_level
+                            data['audio_boost'] = int(cat.audio_boost * 100)
+
+                        # Build status detail
+                        if not _d75_ep and not gw.d75_plugin:
+                            if not data['d75_enabled']:
+                                data['status_detail'] = 'D75 disabled in config'
                             else:
-                                data['status_detail'] = 'Gateway cannot reach D75 CAT server (TCP)'
-                        elif not data.get('serial_connected', False):
-                            if data.get('btstart_in_progress', False):
-                                data['status_detail'] = 'Connecting BT — please wait...'
-                            else:
-                                data['status_detail'] = 'TCP connected — radio not responding (BT/serial down)'
-                        else:
-                            data['status_detail'] = ''
-                        # Include audio status
-                        if parent.gateway.d75_plugin:
-                            data['audio_connected'] = parent.gateway.d75_plugin.server_connected
-                            data['audio_level'] = parent.gateway.d75_plugin.audio_level
-                            data['audio_boost'] = int(parent.gateway.d75_plugin.audio_boost * 100)
-                        else:
-                            data['audio_connected'] = False
+                                data['status_detail'] = 'D75 not connected (no link endpoint or plugin)'
                     try:
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
@@ -851,10 +874,59 @@ class WebConfigServer:
                         pass
 
                 elif self.path == '/d75memlist':
-                    # D75 memory channel list — scans channels one at a time via !cat ME
+                    # D75 memory channel list — scans channels via endpoint or legacy plugin
                     import json as json_mod
                     channels = []
-                    cat = parent.gateway.d75_plugin if parent.gateway else None
+                    gw = parent.gateway
+                    cat = gw.d75_plugin if gw else None
+                    # Check for D75 link endpoint first
+                    _link = getattr(gw, 'link_server', None) if gw else None
+                    _d75_ep = None
+                    if _link:
+                        for ep_name in _link.get_endpoint_names():
+                            if 'd75' in ep_name.lower():
+                                _d75_ep = ep_name
+                                break
+                    if _d75_ep and _link:
+                        # Send memscan command and wait for ACK with results
+                        import threading
+                        _scan_result = [None]
+                        _scan_evt = threading.Event()
+                        _orig_ack = getattr(gw, '_link_scan_ack', None)
+                        def _scan_ack(name, ack):
+                            if name == _d75_ep and ack.get('cmd') == 'memscan':
+                                _scan_result[0] = ack.get('result', {})
+                                _scan_evt.set()
+                        # Temporarily hook the ACK callback
+                        gw._link_scan_ack = _scan_ack
+                        # Store original on_ack and wrap it
+                        _orig_on_ack = _link._on_ack
+                        def _wrapped_ack(name, ack):
+                            if _orig_on_ack:
+                                _orig_on_ack(name, ack)
+                            if gw._link_scan_ack:
+                                gw._link_scan_ack(name, ack)
+                        _link._on_ack = _wrapped_ack
+                        try:
+                            print(f"  [D75 Scan] Sending memscan to {_d75_ep}...")
+                            _link.send_command_to(_d75_ep, {'cmd': 'memscan'})
+                            _scan_evt.wait(timeout=60)  # scan can take a while
+                            print(f"  [D75 Scan] Got result: {len(_scan_result[0].get('channels', [])) if _scan_result[0] else 'timeout'}")
+                            if _scan_result[0] and _scan_result[0].get('ok'):
+                                channels = _scan_result[0].get('channels', [])
+                        finally:
+                            _link._on_ack = _orig_on_ack
+                            gw._link_scan_ack = None
+                        data = channels
+                        try:
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'application/json')
+                            self.send_header('Cache-Control', 'no-cache')
+                            self.end_headers()
+                            self.wfile.write(json_mod.dumps(data).encode('utf-8'))
+                        except BrokenPipeError:
+                            pass
+                        return
                     _modes = {0: 'FM', 1: 'AM', 2: 'LSB', 3: 'USB', 4: 'CW', 5: 'DV'}
                     _shifts = {0: 'S', 1: '+', 2: '-'}
                     _ctcss = ["67.0","69.3","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
@@ -1662,6 +1734,11 @@ class WebConfigServer:
                             data['kv4p'] = gw.kv4p_plugin.audio_level
                         if gw.d75_plugin:
                             data['d75'] = getattr(gw.d75_plugin, 'audio_level', 0)
+                        if not data.get('d75'):
+                            for _ln, _ls in gw.link_endpoints.items():
+                                if 'd75' in _ln.lower():
+                                    data['d75'] = getattr(_ls, 'audio_level', 0)
+                                    break
                         if getattr(gw, 'th9800_plugin', None):
                             data['aioc'] = gw.th9800_plugin.audio_level
                         if getattr(gw, 'playback_source', None):
@@ -1683,6 +1760,11 @@ class WebConfigServer:
                             data['kv4p_tx'] = getattr(gw.kv4p_plugin, 'tx_audio_level', 0)
                         if gw.d75_plugin:
                             data['d75_tx'] = getattr(gw.d75_plugin, 'tx_audio_level', 0)
+                        elif not data.get('d75_tx'):
+                            for _ln, _ls in gw.link_endpoints.items():
+                                if 'd75' in _ln.lower():
+                                    data['d75_tx'] = getattr(_ls, 'tx_audio_level', 0)
+                                    break
                         if getattr(gw, 'th9800_plugin', None):
                             data['aioc_tx'] = getattr(gw.th9800_plugin, 'tx_audio_level', 0)
                         # Passive sinks — only show level if connected to a bus
@@ -2204,7 +2286,7 @@ class WebConfigServer:
                     self.wfile.write(b'{"ok":true}')
                     return
                 elif self.path == '/d75cmd':
-                    # D75 CAT command endpoint
+                    # D75 CAT command endpoint — routes through link endpoint or legacy plugin
                     length = int(self.headers.get('Content-Length', 0))
                     body = self.rfile.read(length).decode('utf-8')
                     result = {'ok': False}
@@ -2213,82 +2295,86 @@ class WebConfigServer:
                         cmd = data.get('cmd', '')
                         args = data.get('args', '')
                         gw = parent.gateway
-                        if cmd == 'start_service':
-                            # Start d75-cat systemd service
-                            try:
-                                _r = subprocess.run(['sudo', 'systemctl', 'start', 'd75-cat'],
-                                                    capture_output=True, text=True, timeout=10)
-                                if _r.returncode == 0:
-                                    result = {'ok': True, 'response': 'D75 CAT service started'}
-                                else:
-                                    result = {'ok': False, 'error': f'Service start failed: {_r.stderr.strip()}'}
-                            except Exception as e:
-                                result = {'ok': False, 'error': f'Service start error: {e}'}
-                        elif cmd == 'reconnect':
-                            # (Re)connect via D75Plugin
-                            if gw and gw.d75_plugin:
-                                result = gw.d75_plugin.execute({'cmd': 'reconnect'})
-                            elif gw:
-                                try:
-                                    from d75_plugin import D75Plugin
-                                    gw.d75_plugin = D75Plugin()
-                                    if gw.d75_plugin.setup(gw.config):
-                                        result = {'ok': True, 'response': 'D75 plugin initialized'}
-                                    else:
-                                        gw.d75_plugin = None
-                                        result = {'ok': False, 'error': 'D75 plugin setup failed'}
-                                except Exception as e:
-                                    result = {'ok': False, 'error': str(e)}
-                            else:
-                                result = {'ok': False, 'error': 'Gateway not initialized'}
-                        elif gw and gw.d75_plugin:
+
+                        # Check for D75 link endpoint first (new path)
+                        _link = getattr(gw, 'link_server', None) if gw else None
+                        _d75_ep = None
+                        if _link:
+                            for ep_name in _link.get_endpoint_names():
+                                if 'd75' in ep_name.lower():
+                                    _d75_ep = ep_name
+                                    break
+
+                        if _d75_ep and _link:
+                            # Route through Gateway Link endpoint
                             if cmd == 'cat':
-                                resp = gw.d75_plugin.send_command(f"!cat {args}")
-                                result = {'ok': True, 'response': resp or ''}
-                            elif cmd == 'btstart':
-                                gw.d75_plugin._bt_stopped = False
-                                gw.d75_plugin._btstart_in_progress = True
-                                if not gw.d75_plugin._connected:
-                                    # TCP is down — poll thread will auto-btstart when it reconnects
-                                    result = {'ok': True, 'response': 'TCP down — poll thread will connect and btstart'}
-                                else:
-                                    resp = gw.d75_plugin.send_command("!btstart")
-                                    result = {'ok': True, 'response': resp or 'sent (no response)'}
-                            elif cmd == 'btstop':
-                                # btstop takes several seconds — use longer timeout
-                                gw.d75_plugin._bt_stopped = True
-                                resp = gw.d75_plugin.send_command("!btstop", timeout=15.0)
-                                gw.d75_plugin._serial_connected = False
-                                gw.d75_plugin._btstart_in_progress = False
-                                result = {'ok': True, 'response': resp or ''}
+                                _link.send_command_to(_d75_ep, {'cmd': 'cat', 'raw': args})
+                                result = {'ok': True, 'response': f'sent via link endpoint'}
                             elif cmd == 'ptt':
-                                _d75p = getattr(gw, 'd75_plugin', None)
-                                if _d75p:
-                                    result = _d75p.execute({'cmd': 'ptt', 'state': not _d75p._ptt_on_state})
-                                else:
-                                    result = {'ok': False, 'error': 'D75 plugin not available'}
+                                # Toggle: check current state from cached endpoint status
+                                _ptt_now = getattr(gw, '_link_ptt_active', {}).get(_d75_ep, False)
+                                _link.send_command_to(_d75_ep, {'cmd': 'ptt', 'state': not _ptt_now})
+                                result = {'ok': True, 'response': f'PTT {"off" if _ptt_now else "on"} via link'}
+                            elif cmd == 'freq':
+                                _link.send_command_to(_d75_ep, {'cmd': 'frequency', 'freq': args})
+                                result = {'ok': True, 'response': f'freq set via link'}
+                            elif cmd == 'status':
+                                _link.send_command_to(_d75_ep, {'cmd': 'status'})
+                                result = {'ok': True, 'response': 'status requested'}
+                            elif cmd in ('btstart', 'btstop', 'reconnect', 'start_service'):
+                                # BT lifecycle managed by the remote endpoint — not applicable
+                                result = {'ok': True, 'response': f'{cmd}: managed by link endpoint'}
                             elif cmd == 'mute':
-                                _d75p = getattr(gw, 'd75_plugin', None)
-                                if _d75p:
-                                    result = _d75p.execute({'cmd': 'mute'})
-                                    gw.d75_muted = _d75p.muted
+                                # Mute the link audio source on the gateway side
+                                _link_src = None
+                                for _src_name, _src in getattr(gw, 'link_endpoints', {}).items():
+                                    if 'd75' in _src_name.lower():
+                                        _link_src = _src
+                                        break
+                                if _link_src:
+                                    _link_src.muted = not _link_src.muted
+                                    result = {'ok': True, 'muted': _link_src.muted}
                                 else:
-                                    result = {'ok': False, 'error': 'D75 plugin not available'}
+                                    result = {'ok': True, 'response': 'mute toggled'}
                             elif cmd == 'vol':
                                 try:
                                     pct = int(args)
                                     pct = max(0, min(500, pct))
-                                    _d75p = getattr(gw, 'd75_plugin', None)
-                                    if _d75p:
-                                        _d75p.audio_boost = pct / 100.0
+                                    _link.send_command_to(_d75_ep, {'cmd': 'rx_gain', 'gain': pct / 100.0})
                                     result = {'ok': True, 'response': f'boost={pct}%'}
                                 except (ValueError, TypeError):
-                                    result = {'ok': False, 'error': 'usage: vol 0-500 (percentage)'}
+                                    result = {'ok': False, 'error': 'usage: vol 0-500'}
+                            elif cmd in ('tone', 'shift', 'offset'):
+                                # High-level FO-modify commands
+                                _link.send_command_to(_d75_ep, {'cmd': cmd, 'raw': args})
+                                result = {'ok': True, 'response': f'{cmd} sent via link'}
+                            else:
+                                # Pass through as raw CAT
+                                _link.send_command_to(_d75_ep, {'cmd': 'cat', 'raw': f'{cmd} {args}'.strip()})
+                                result = {'ok': True, 'response': f'sent via link'}
+
+                        elif gw and gw.d75_plugin:
+                            # Legacy path: direct D75Plugin
+                            if cmd == 'cat':
+                                resp = gw.d75_plugin.send_command(f"!cat {args}")
+                                result = {'ok': True, 'response': resp or ''}
+                            elif cmd == 'ptt':
+                                result = gw.d75_plugin.execute({'cmd': 'ptt', 'state': not gw.d75_plugin._ptt_on_state})
+                            elif cmd == 'mute':
+                                result = gw.d75_plugin.execute({'cmd': 'mute'})
+                                gw.d75_muted = gw.d75_plugin.muted
+                            elif cmd == 'vol':
+                                try:
+                                    pct = int(args)
+                                    gw.d75_plugin.audio_boost = max(0, min(500, pct)) / 100.0
+                                    result = {'ok': True, 'response': f'boost={pct}%'}
+                                except (ValueError, TypeError):
+                                    result = {'ok': False, 'error': 'usage: vol 0-500'}
                             else:
                                 resp = gw.d75_plugin.send_command(f"!{cmd} {args}".strip())
                                 result = {'ok': True, 'response': resp or ''}
                         else:
-                            result = {'ok': False, 'error': 'D75 not connected — try Start Service then Reconnect'}
+                            result = {'ok': False, 'error': 'D75 not connected (no link endpoint or plugin)'}
                     except Exception as e:
                         result = {'ok': False, 'error': str(e)}
                     try:

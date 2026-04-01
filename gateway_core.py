@@ -1631,11 +1631,17 @@ class RadioGateway:
                                 if k in result:
                                     self._link_last_status[name][k] = result[k]
 
+                    def _link_on_endpoint_status(name, status):
+                        """Called when an endpoint sends a STATUS frame."""
+                        if isinstance(status, dict) and status.get('type') != 'heartbeat':
+                            self._link_last_status[name] = status
+
                     self.link_server = GatewayLinkServer(
                         port=link_port,
                         on_register=_link_on_register,
                         on_disconnect=_link_on_disconnect,
                         on_ack=_link_on_ack,
+                        on_endpoint_status=_link_on_endpoint_status,
                     )
                     self.link_server.start()
                     print(f"  Gateway Link listening on port {link_port}")
@@ -3781,11 +3787,11 @@ class RadioGateway:
             'ms1_state': self.mumble_server_1.state if self.mumble_server_1 else None,
             'ms2_state': self.mumble_server_2.state if self.mumble_server_2 else None,
             'cat_enabled': bool(self.cat_client) or getattr(self.config, 'ENABLE_CAT_CONTROL', False),
-            'd75_enabled': bool(self.d75_plugin) or getattr(self.config, 'ENABLE_D75', False),
-            'd75_connected': bool(self.d75_plugin and getattr(self.d75_plugin, '_serial_connected', False)),
-            'd75_audio_connected': bool(self.d75_plugin and self.d75_plugin.server_connected),
-            'd75_mode': str(getattr(self.config, 'D75_CONNECTION', 'bluetooth')).lower().strip(),
-            'd75_level': self.d75_plugin.audio_level if self.d75_plugin else 0,
+            'd75_enabled': bool(self.d75_plugin) or getattr(self.config, 'ENABLE_D75', False) or any('d75' in n.lower() for n in self.link_endpoints.keys()),
+            'd75_connected': bool(self.d75_plugin and getattr(self.d75_plugin, '_serial_connected', False)) or any('d75' in n.lower() for n in self.link_endpoints.keys()),
+            'd75_audio_connected': bool(self.d75_plugin and self.d75_plugin.server_connected) or any('d75' in n.lower() for n in self.link_endpoints.keys()),
+            'd75_mode': 'link_endpoint' if any('d75' in n.lower() for n in self.link_endpoints.keys()) else str(getattr(self.config, 'D75_CONNECTION', 'bluetooth')).lower().strip(),
+            'd75_level': self.d75_plugin.audio_level if self.d75_plugin else next((src.audio_level for n, src in self.link_endpoints.items() if 'd75' in n.lower()), 0),
             'd75_muted': getattr(self, 'd75_muted', False),
             'kv4p_enabled': bool(self.kv4p_plugin),
             'kv4p_level': self.kv4p_plugin.audio_level if self.kv4p_plugin else 0,

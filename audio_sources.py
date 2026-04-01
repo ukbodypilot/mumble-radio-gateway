@@ -1607,6 +1607,20 @@ class LinkAudioSource(AudioSource):
     def push_audio(self, pcm):
         """Called by GatewayLinkServer reader thread when AUDIO frame arrives."""
         self._chunk_queue.append(pcm)
+        # Track level from incoming audio — shows on routing page even when unrouted
+        try:
+            arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+            rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
+            if rms > 0:
+                _lv = max(0, min(100, (20 * _math_mod.log10(rms / 32767.0) + 60) * (100 / 60)))
+            else:
+                _lv = 0
+            if _lv > self.audio_level:
+                self.audio_level = int(_lv)
+            else:
+                self.audio_level = int(self.audio_level * 0.7 + _lv * 0.3)
+        except Exception:
+            pass
 
     def get_audio(self, chunk_size):
         if not self.enabled or self.muted:

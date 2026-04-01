@@ -44,12 +44,29 @@ _PLUGINS = {
     'aioc': AIOCPlugin,
 }
 
+# Lazy-load optional plugins that have extra dependencies
+def _load_d75():
+    from d75_link_plugin import D75Plugin
+    return D75Plugin
+
+_LAZY_PLUGINS = {
+    'd75': _load_d75,
+}
+
 
 def load_plugin(name):
-    """Load a plugin by name. Built-in: 'audio'. Future: 'kv4p', 'd75', etc."""
+    """Load a plugin by name. Built-in: 'audio', 'aioc', 'd75'."""
     cls = _PLUGINS.get(name)
     if not cls:
-        available = ', '.join(sorted(_PLUGINS.keys()))
+        loader = _LAZY_PLUGINS.get(name)
+        if loader:
+            try:
+                cls = loader()
+            except ImportError as e:
+                print(f"[Endpoint] Plugin '{name}' import failed: {e}")
+                sys.exit(1)
+    if not cls:
+        available = ', '.join(sorted(list(_PLUGINS.keys()) + list(_LAZY_PLUGINS.keys())))
         print(f"[Endpoint] Unknown plugin: {name}. Available: {available}")
         sys.exit(1)
     return cls()
@@ -124,17 +141,25 @@ class StatusReporter:
             self._thread.join(timeout=3)
 
     def _run(self):
+        # Poll at 250ms intervals, send status when dirty or interval elapsed
+        _last_send = 0
         while not self._stop.is_set():
-            self._stop.wait(self._interval)
+            self._stop.wait(0.25)
             if self._stop.is_set():
                 break
-            if self._client.connected:
-                try:
-                    status = self._plugin.get_status()
-                    status['uptime'] = round(time.monotonic() - self._start_time, 1)
-                    self._client.send_status(status)
-                except Exception as e:
-                    print(f"[Endpoint] Status send error: {e}")
+            _dirty = getattr(self._plugin, '_status_dirty', False)
+            _elapsed = time.monotonic() - _last_send
+            if _dirty or _elapsed >= self._interval:
+                if _dirty:
+                    self._plugin._status_dirty = False
+                if self._client.connected:
+                    try:
+                        status = self._plugin.get_status()
+                        status['uptime'] = round(time.monotonic() - self._start_time, 1)
+                        self._client.send_status(status)
+                        _last_send = time.monotonic()
+                    except Exception as e:
+                        print(f"[Endpoint] Status send error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +303,9 @@ def main():
     client.start()
 
     # Start status reporter
-    reporter = StatusReporter(client, plugin, interval=args.status_interval)
+    # Use plugin's preferred interval if it declares one, otherwise CLI arg
+    _interval = getattr(plugin, 'status_interval', None) or args.status_interval
+    reporter = StatusReporter(client, plugin, interval=_interval)
     reporter.start()
 
     # Audio capture loop (main thread)

@@ -232,8 +232,8 @@ class SerialManager:
             empty = {'frequency': '', 'mode': 0, 'squelch': 0,
                      'power': 0, 's_meter': 0, 'freq_info': None,
                      'memory_mode': 0, 'channel': ''}
-            b0 = dict(self.band[0]) if self.band[0] else dict(empty)
-            b1 = dict(self.band[1]) if self.band[1] else dict(empty)
+            b0 = {**empty, **self.band[0]} if self.band[0] else dict(empty)
+            b1 = {**empty, **self.band[1]} if self.band[1] else dict(empty)
             d = {
                 'serial_connected': self._connected,
                 'model_id':      self.model_id if self._connected else '',

@@ -5,13 +5,11 @@
       "name": "SDR Mix",
       "type": "listen",
       "sources": [
-        "sdr",
-        "aioc"
+        "sdr"
       ],
       "sinks": [
         "broadcastify",
-        "remote_audio_tx",
-        "mumble"
+        "remote_audio_tx"
       ],
       "processing": {
         "pcm": true,
@@ -30,11 +28,22 @@
         "announce"
       ],
       "sinks": [
-        "d75_tx"
+        "aioc_tx"
       ],
       "processing": {
         "pcm": false
       }
+    },
+    {
+      "id": "th9800",
+      "name": "TH9800",
+      "type": "solo",
+      "sources": [
+        "aioc"
+      ],
+      "sinks": [
+        "mumble"
+      ]
     }
   ],
   "connections": [
@@ -46,7 +55,7 @@
     {
       "type": "source-bus",
       "from": "aioc",
-      "to": "sdr_mix"
+      "to": "th9800"
     },
     {
       "type": "source-bus",
@@ -70,13 +79,13 @@
     },
     {
       "type": "bus-sink",
-      "from": "sdr_mix",
-      "to": "mumble"
+      "from": "announce",
+      "to": "aioc_tx"
     },
     {
       "type": "bus-sink",
-      "from": "announce",
-      "to": "d75_tx"
+      "from": "th9800",
+      "to": "mumble"
     }
   ],
   "layout": {
@@ -156,7 +165,7 @@
               "output_1": {
                 "connections": [
                   {
-                    "node": "11",
+                    "node": "13",
                     "output": "input_1"
                   }
                 ]
@@ -299,10 +308,6 @@
                   {
                     "node": "1",
                     "input": "output_1"
-                  },
-                  {
-                    "node": "4",
-                    "input": "output_1"
                   }
                 ]
               }
@@ -311,22 +316,18 @@
               "output_1": {
                 "connections": [
                   {
-                    "node": "14",
+                    "node": "15",
                     "output": "input_1"
                   },
                   {
-                    "node": "17",
-                    "output": "input_1"
-                  },
-                  {
-                    "node": "13",
+                    "node": "18",
                     "output": "input_1"
                   }
                 ]
               }
             },
-            "pos_x": 370,
-            "pos_y": 20
+            "pos_x": 334,
+            "pos_y": 28
           },
           "12": {
             "id": 12,
@@ -356,17 +357,50 @@
               "output_1": {
                 "connections": [
                   {
-                    "node": "19",
+                    "node": "21",
                     "output": "input_1"
                   }
                 ]
               }
             },
-            "pos_x": 357,
-            "pos_y": 398
+            "pos_x": 347,
+            "pos_y": 422
           },
           "13": {
             "id": 13,
+            "name": "th9800",
+            "data": {
+              "id": "th9800",
+              "type": "solo"
+            },
+            "class": "bus-solo",
+            "html": "TH9800\n<div class=\"box\">solo bus<div class=\"proc-buttons\"><button class=\"proc-btn\" onclick=\"toggleProc('th9800','gate')\" id=\"proc-th9800-gate\" title=\"Noise Gate\">G</button><button class=\"proc-btn\" onclick=\"toggleProc('th9800','hpf')\" id=\"proc-th9800-hpf\" title=\"High Pass Filter\">H</button><button class=\"proc-btn\" onclick=\"toggleProc('th9800','lpf')\" id=\"proc-th9800-lpf\" title=\"Low Pass Filter\">L</button><button class=\"proc-btn\" onclick=\"toggleProc('th9800','notch')\" id=\"proc-th9800-notch\" title=\"Notch Filter\">N</button><span style=\"margin-left:6px;border-left:1px solid #555;padding-left:6px;\"></span><button class=\"proc-btn out-btn\" onclick=\"toggleProc('th9800','pcm')\" id=\"proc-th9800-pcm\" title=\"Feed PCM stream\">P</button><button class=\"proc-btn out-btn\" onclick=\"toggleProc('th9800','mp3')\" id=\"proc-th9800-mp3\" title=\"Feed MP3 stream\">M</button><button class=\"proc-btn out-btn\" onclick=\"toggleProc('th9800','vad')\" id=\"proc-th9800-vad\" title=\"VAD gate\">V</button><span style=\"flex-grow:1;\"></span><button class=\"mute-btn\" onclick=\"toggleBusMute('th9800')\" id=\"bus-mute-th9800\" title=\"Mute bus\">M</button></div><div class=\"level-bar\" id=\"level-bus_th9800\"><div class=\"level-fill\"></div></div></div>",
+            "typenode": false,
+            "inputs": {
+              "input_1": {
+                "connections": [
+                  {
+                    "node": "4",
+                    "input": "output_1"
+                  }
+                ]
+              }
+            },
+            "outputs": {
+              "output_1": {
+                "connections": [
+                  {
+                    "node": "14",
+                    "output": "input_1"
+                  }
+                ]
+              }
+            },
+            "pos_x": 325,
+            "pos_y": 187
+          },
+          "14": {
+            "id": 14,
             "name": "mumble",
             "data": {
               "id": "mumble"
@@ -378,18 +412,18 @@
               "input_1": {
                 "connections": [
                   {
-                    "node": "11",
+                    "node": "13",
                     "input": "output_1"
                   }
                 ]
               }
             },
             "outputs": {},
-            "pos_x": 700,
-            "pos_y": 20
+            "pos_x": 696,
+            "pos_y": 177
           },
-          "14": {
-            "id": 14,
+          "15": {
+            "id": 15,
             "name": "broadcastify",
             "data": {
               "id": "broadcastify"
@@ -408,11 +442,11 @@
               }
             },
             "outputs": {},
-            "pos_x": 700,
-            "pos_y": 100
+            "pos_x": 692,
+            "pos_y": 17
           },
-          "15": {
-            "id": 15,
+          "16": {
+            "id": 16,
             "name": "speaker",
             "data": {
               "id": "speaker"
@@ -429,8 +463,8 @@
             "pos_x": 708,
             "pos_y": 348
           },
-          "16": {
-            "id": 16,
+          "17": {
+            "id": 17,
             "name": "recording",
             "data": {
               "id": "recording"
@@ -447,8 +481,8 @@
             "pos_x": 709,
             "pos_y": 427
           },
-          "17": {
-            "id": 17,
+          "18": {
+            "id": 18,
             "name": "remote_audio_tx",
             "data": {
               "id": "remote_audio_tx"
@@ -467,11 +501,11 @@
               }
             },
             "outputs": {},
-            "pos_x": 701,
-            "pos_y": 184
+            "pos_x": 698,
+            "pos_y": 93
           },
-          "18": {
-            "id": 18,
+          "19": {
+            "id": 19,
             "name": "kv4p_tx",
             "data": {
               "id": "kv4p_tx"
@@ -485,11 +519,11 @@
               }
             },
             "outputs": {},
-            "pos_x": 711,
-            "pos_y": 268
+            "pos_x": 701,
+            "pos_y": 262
           },
-          "19": {
-            "id": 19,
+          "20": {
+            "id": 20,
             "name": "d75_tx",
             "data": {
               "id": "d75_tx"
@@ -499,20 +533,15 @@
             "typenode": false,
             "inputs": {
               "input_1": {
-                "connections": [
-                  {
-                    "node": "12",
-                    "input": "output_1"
-                  }
-                ]
+                "connections": []
               }
             },
             "outputs": {},
             "pos_x": 700,
             "pos_y": 500
           },
-          "20": {
-            "id": 20,
+          "21": {
+            "id": 21,
             "name": "aioc_tx",
             "data": {
               "id": "aioc_tx"
@@ -522,7 +551,12 @@
             "typenode": false,
             "inputs": {
               "input_1": {
-                "connections": []
+                "connections": [
+                  {
+                    "node": "12",
+                    "input": "output_1"
+                  }
+                ]
               }
             },
             "outputs": {},

@@ -385,6 +385,9 @@ function d75cmd(cmd, args, feedbackEl) {
         _d75flash('Error: ' + d.error, '#e74c3c');
       } else {
         _d75flash(cmd + ': OK', '#2ecc71');
+        // Quick re-poll to pick up the change faster
+        setTimeout(updateD75, 500);
+        setTimeout(updateD75, 1200);
       }
     }).catch(function(e){
       _d75flash('Send failed', '#e74c3c');
@@ -461,6 +464,7 @@ function d75setMode(band, mode) {
 }
 
 function d75setPower(band, pwr) {
+  _ctrlEditUntil = Date.now() + 3000;
   d75cmd('cat', 'PC ' + band + ',' + pwr);
 }
 
@@ -825,16 +829,15 @@ function updateD75() {
     // Band A
     var a = d.band_0 || {};
     document.getElementById('d75-a-freq').textContent = fmtFreq(a.frequency);
-    document.getElementById('d75-a-mode').textContent = _modes[a.mode] || '?';
-    document.getElementById('d75-a-power').textContent = _powers[a.power] || '';
+    document.getElementById('d75-a-mode').textContent = _modes[String(a.mode)] || '?';
+    document.getElementById('d75-a-power').textContent = _powers[String(a.power)] || '';
     var aSig = a.signal || 0;
     document.getElementById('d75-a-sig-bar').style.width = (aSig / 5 * 100) + '%';
     document.getElementById('d75-a-sig-text').textContent = 'S' + aSig;
     // Update selects (skip while user is editing)
-    var _pwrMap = {'H':0, 'M':1, 'L':2, 'EL':3};
-    if (Date.now() > _toneEditUntil[0]) {
-      document.getElementById('d75-a-mode-sel').value = a.mode || 0;
-      document.getElementById('d75-a-pwr-sel').value = (_pwrMap[a.power] !== undefined) ? _pwrMap[a.power] : (parseInt(a.power) || 0);
+    if (Date.now() > _toneEditUntil[0] && Date.now() > _ctrlEditUntil) {
+      document.getElementById('d75-a-mode-sel').value = a.mode != null ? a.mode : 0;
+      document.getElementById('d75-a-pwr-sel').value = a.power != null ? a.power : 0;
     }
     var asq = document.getElementById('d75-a-sq');
     if (!asq.matches(':active')) { asq.value = a.squelch || 0; document.getElementById('d75-a-sq-val').textContent = a.squelch || 0; }
@@ -842,28 +845,30 @@ function updateD75() {
     _updateToneDisplay(0, a.freq_info);
     var avfm = document.getElementById('d75-a-vfomode');
     var _vmMap = {'VFO':0, 'Memory':1, 'Call':2, 'DV':3};
-    if (avfm !== document.activeElement) avfm.value = _vmMap[a.memory_mode] !== undefined ? _vmMap[a.memory_mode] : 0;
+    var _amm = typeof a.memory_mode === 'number' ? a.memory_mode : (_vmMap[a.memory_mode] != null ? _vmMap[a.memory_mode] : 0);
+    if (avfm !== document.activeElement) avfm.value = _amm;
     var ach = document.getElementById('d75-a-ch');
     if (ach !== document.activeElement && a.channel) ach.value = a.channel;
 
     // Band B
     var b = d.band_1 || {};
     document.getElementById('d75-b-freq').textContent = fmtFreq(b.frequency);
-    document.getElementById('d75-b-mode').textContent = _modes[b.mode] || '?';
-    document.getElementById('d75-b-power').textContent = _powers[b.power] || '';
+    document.getElementById('d75-b-mode').textContent = _modes[String(b.mode)] || '?';
+    document.getElementById('d75-b-power').textContent = _powers[String(b.power)] || '';
     var bSig = b.signal || 0;
     document.getElementById('d75-b-sig-bar').style.width = (bSig / 5 * 100) + '%';
     document.getElementById('d75-b-sig-text').textContent = 'S' + bSig;
-    if (Date.now() > _toneEditUntil[1]) {
-      document.getElementById('d75-b-mode-sel').value = b.mode || 0;
-      document.getElementById('d75-b-pwr-sel').value = (_pwrMap[b.power] !== undefined) ? _pwrMap[b.power] : (parseInt(b.power) || 0);
+    if (Date.now() > _toneEditUntil[1] && Date.now() > _ctrlEditUntil) {
+      document.getElementById('d75-b-mode-sel').value = b.mode != null ? b.mode : 0;
+      document.getElementById('d75-b-pwr-sel').value = b.power != null ? b.power : 0;
     }
     var bsq = document.getElementById('d75-b-sq');
     if (!bsq.matches(':active')) { bsq.value = b.squelch || 0; document.getElementById('d75-b-sq-val').textContent = b.squelch || 0; }
     if (b.freq_info) _updateToneUI(1, b.freq_info);
     _updateToneDisplay(1, b.freq_info);
     var bvfm = document.getElementById('d75-b-vfomode');
-    if (bvfm !== document.activeElement) bvfm.value = _vmMap[b.memory_mode] !== undefined ? _vmMap[b.memory_mode] : 0;
+    var _bmm = typeof b.memory_mode === 'number' ? b.memory_mode : (_vmMap[b.memory_mode] != null ? _vmMap[b.memory_mode] : 0);
+    if (bvfm !== document.activeElement) bvfm.value = _bmm;
     var bch = document.getElementById('d75-b-ch');
     if (bch !== document.activeElement && b.channel) bch.value = b.channel;
 

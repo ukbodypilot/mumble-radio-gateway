@@ -580,6 +580,151 @@ class Config:
 from gateway_core import RadioGateway
 
 _GATEWAY_LOCK = '/tmp/gateway.lock'
+_STARTUP_LOG = '/tmp/gateway_startup.log'
+
+
+def _pre_flight(config):
+    """Pre-flight checks absorbed from start.sh.
+
+    Runs before RadioGateway init:
+    1. Kill stale processes from prior runs
+    2. Start TH-9800 CAT systemd service (if enabled)
+    3. Set CPU governor to performance
+    4. Reset AIOC USB device
+    """
+    import glob
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def _run(cmd, **kw):
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=10, **kw)
+
+    def _sudo(cmd):
+        try:
+            return _run(['sudo', '-n'] + cmd)
+        except Exception:
+            return None
+
+    print("=" * 42)
+    print(f"[{time.strftime('%H:%M:%S')}] Starting Radio Gateway")
+    print("=" * 42)
+
+    # 1. Kill stale processes
+    print(f"[{time.strftime('%H:%M:%S')}] [1/4] Checking for stale processes...")
+    for proc in ['darkice']:
+        try:
+            _run(['pkill', '-9', proc])
+        except Exception:
+            pass
+    # Kill stale gateway (but not us)
+    try:
+        result = _run(['pgrep', '-f', 'radio_gateway.py'])
+        if result.returncode == 0:
+            for pid_str in result.stdout.strip().split('\n'):
+                pid = int(pid_str.strip())
+                if pid != os.getpid():
+                    try:
+                        os.kill(pid, 9)
+                        print(f"  Killed stale gateway PID {pid}")
+                    except OSError:
+                        pass
+    except Exception:
+        pass
+    # Stop leftover mumble-server instances
+    for svc in ['mumble-server-gw1', 'mumble-server-gw2']:
+        try:
+            result = _run(['systemctl', 'is-active', '--quiet', f'{svc}.service'])
+            if result.returncode == 0:
+                _sudo(['systemctl', 'stop', f'{svc}.service'])
+                print(f"  Stopped {svc}")
+        except Exception:
+            pass
+
+    # 2. Start TH-9800 CAT service
+    print(f"[{time.strftime('%H:%M:%S')}] [2/4] Checking TH-9800 CAT control...")
+    if getattr(config, 'ENABLE_TH9800', False) or getattr(config, 'ENABLE_CAT_CONTROL', False):
+        try:
+            result = _run(['systemctl', 'is-active', '--quiet', 'th9800-cat.service'])
+            if result.returncode == 0:
+                _sudo(['systemctl', 'restart', 'th9800-cat.service'])
+            else:
+                _sudo(['systemctl', 'start', 'th9800-cat.service'])
+            # Wait for TCP port
+            cat_port = int(getattr(config, 'CAT_PORT', 9800))
+            for _ in range(20):
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(0.5)
+                    s.connect(('127.0.0.1', cat_port))
+                    s.close()
+                    print(f"  TH-9800 CAT service ready (port {cat_port})")
+                    break
+                except (ConnectionRefusedError, OSError):
+                    time.sleep(0.5)
+            else:
+                print(f"  TH-9800 CAT service failed to start")
+        except Exception as e:
+            print(f"  TH-9800 CAT error: {e}")
+    else:
+        print("  Disabled in config")
+
+    # 3. CPU governor
+    print(f"[{time.strftime('%H:%M:%S')}] [3/4] Setting CPU governor to performance...")
+    for gov_path in glob.glob('/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor'):
+        try:
+            _sudo(['tee', gov_path]).input = 'performance'
+            # Use shell for tee stdin
+            subprocess.run(f'echo performance | sudo -n tee {gov_path} > /dev/null 2>&1',
+                           shell=True, timeout=5)
+        except Exception:
+            pass
+    print("  CPU governor set (or unsupported)")
+
+    # 4. AIOC USB reset
+    print(f"[{time.strftime('%H:%M:%S')}] [4/4] Resetting AIOC USB device...")
+    aioc_path = None
+    for product_file in glob.glob('/sys/bus/usb/devices/*/product'):
+        try:
+            with open(product_file) as f:
+                if 'all-in-one' in f.read().lower():
+                    aioc_path = os.path.dirname(product_file)
+                    break
+        except Exception:
+            pass
+    if aioc_path:
+        auth_file = os.path.join(aioc_path, 'authorized')
+        if os.path.exists(auth_file):
+            print(f"  Found AIOC at {aioc_path}")
+            try:
+                subprocess.run(
+                    f'echo 0 | sudo -n tee {auth_file} > /dev/null && sleep 1 && echo 1 | sudo -n tee {auth_file} > /dev/null',
+                    shell=True, timeout=10)
+                time.sleep(2)  # USB re-enumeration
+                print("  AIOC USB reset complete")
+            except Exception as e:
+                print(f"  AIOC USB reset failed: {e}")
+        else:
+            print("  AIOC authorized file not found")
+    else:
+        print("  AIOC USB device not found (skipping reset)")
+
+    print(f"[{time.strftime('%H:%M:%S')}] Pre-flight complete")
+
+
+def _cleanup_services(config):
+    """Post-shutdown cleanup — stop services started by pre-flight."""
+    try:
+        if getattr(config, 'ENABLE_TH9800', False) or getattr(config, 'ENABLE_CAT_CONTROL', False):
+            subprocess.run(['sudo', '-n', 'systemctl', 'stop', 'th9800-cat.service'],
+                           capture_output=True, timeout=10)
+    except Exception:
+        pass
+    # Kill any rtl_airband processes (SDR plugin children)
+    try:
+        subprocess.run(['sudo', '-n', 'killall', '-9', 'rtl_airband'],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
 
 def _acquire_lock():
     """Write PID lockfile. Exit if another instance is already running."""
@@ -616,6 +761,9 @@ def main():
     # Load configuration
     config = Config(config_file)
 
+    # Pre-flight: kill stale procs, start CAT, set governor, reset AIOC
+    _pre_flight(config)
+
     # Create and run gateway
     gateway = RadioGateway(config)
 
@@ -627,18 +775,14 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     gateway.run()
+
+    # Post-shutdown cleanup
+    _cleanup_services(config)
     _release_lock()
 
     if gateway.restart_requested:
-        print("\nRestarting gateway via start.sh...")
-        start_sh = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'start.sh')
-        import subprocess as _sp
-        _sp.Popen(
-            ['bash', start_sh],
-            stdout=open('/tmp/gateway_startup.log', 'w'),
-            stderr=_sp.STDOUT,
-            start_new_session=True,
-        )
+        print("\nRestarting gateway...")
+        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
 
 if __name__ == "__main__":
     main()

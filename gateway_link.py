@@ -138,12 +138,14 @@ class GatewayLinkServer:
     """
 
     def __init__(self, port=9700, on_command=None,
-                 on_register=None, on_disconnect=None, on_ack=None):
+                 on_register=None, on_disconnect=None, on_ack=None,
+                 on_endpoint_status=None):
         self._port = port
         self._on_command = on_command
         self._on_register = on_register
         self._on_disconnect = on_disconnect
         self._on_ack = on_ack
+        self._on_endpoint_status = on_endpoint_status
 
         self._server_sock = None
         self._stop = threading.Event()
@@ -409,6 +411,12 @@ class GatewayLinkServer:
                                 print(f"  [Link] ACK callback error: {e}")
                     elif ftype == P.STATUS:
                         ep.last_heartbeat = time.monotonic()
+                        if self._on_endpoint_status:
+                            try:
+                                status = json.loads(payload)
+                                self._on_endpoint_status(ep_name, status)
+                            except (json.JSONDecodeError, Exception):
+                                pass
                     elif ftype == P.REGISTER:
                         # Re-registration not allowed; ignore
                         print(f"  [Link] Ignoring duplicate REGISTER from {ep_name}")
