@@ -4,6 +4,51 @@ All notable changes to Radio Gateway.
 
 ## [Unreleased]
 
+## [2.0.0] -- 2026-03-31
+
+### Architecture
+- Bus-based audio routing replacing monolithic AudioMixer
+  - 4 bus types: Listen, Solo, Duplex Repeater, Simplex Repeater
+  - Per-bus audio processing, ducking, and stream controls
+  - Bus mute, sink mute, source mute with visual feedback
+- All radios refactored as plugins: SDRPlugin, TH9800Plugin, D75Plugin, KV4PPlugin
+  - Standard `get_audio()`/`put_audio()` interface for bus routing
+  - Hardware-specific methods for UI controls
+  - Per-plugin processing chains (gate/HPF/LPF/notch/gain)
+- All sinks gated by routing connections (no implicit audio flow)
+- Visual routing UI with Drawflow node editor (sources | busses | sinks)
+  - Live level bars in source/sink nodes
+  - Mute buttons and gain sliders in nodes
+  - Save/load routing configurations
+
+### Added
+- Full duplex Remote Audio (Windows client on ports 9600/9602)
+- Direct Icecast streaming (replaced DarkIce/FFmpeg/ALSA loopback pipeline)
+- Mumble as routable source and sink (MumbleSource with PTT control)
+- Room Monitor as routable source with VAD
+- Web Mic in nav bar (accessible from all pages)
+- Speaker virtual mode (prevents PipeWire feedback loops)
+- 14 new MCP tools for routing and automation
+- BusManager: runs routing-configured busses alongside main loop
+
+### Removed
+- Console/terminal UI: StatusBar, keyboard handler, ANSI display (~650 lines)
+- Old AudioMixer and AIOCRadioSource (~900 lines)
+- 13 `_generate_*` web methods (~5400 lines from web_server.py)
+- Dead PTT code and old AIOC audio paths
+- Diagnostic trace prints
+- Backward compatibility aliases (d75_cat, d75_audio_source, kv4p_cat, kv4p_audio_source)
+
+### Changed
+- Web pages extracted to static HTML (13 pages in web_pages/)
+- Controls page streamlined
+- 13 static page routes consolidated to single `_STATIC_PAGES` lookup
+- Utility classes extracted to gateway_utils.py (DDNSUpdater, EmailNotifier, CloudflareTunnel)
+- TH-9800 AIOC init replaced with TH9800Plugin
+- SDR init simplified (~80 lines to ~15 lines via SDRPlugin)
+- Main loop 8-tuple replaced with BusOutput consumption
+- Blocking audio reader replaces PortAudio callback
+
 ## [1.7.0] -- 2026-03-27
 
 ### Added

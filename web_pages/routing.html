@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio Routing</title>
+<link rel="stylesheet" href="/pages/common.css">
+<link rel="stylesheet" href="/pages/drawflow.min.css">
+<style>
+  body { padding: 0; margin: 0; overflow: hidden; }
+
+  #drawflow {
+    width: 100%;
+    height: calc(100vh - 36px);
+    background: var(--t-bg);
+  }
+
+  /* Drawflow theme overrides */
+  .drawflow .drawflow-node {
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: 8px;
+    color: #e0e0e0;
+    min-width: 150px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    font-size: 0.8rem;
+  }
+  .drawflow .drawflow-node.selected {
+    border-color: #f39c12 !important;
+    box-shadow: 0 0 8px rgba(243,156,18,0.4) !important;
+    background: rgba(243,156,18,0.1) !important;
+  }
+  .drawflow .drawflow-node .title-box {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--t-border);
+    font-weight: 700;
+    font-size: 0.85rem;
+  }
+  .drawflow .drawflow-node .box {
+    padding: 1px 6px;
+    font-size: 0.65rem;
+    color: #aaa;
+  }
+  /* Source/sink nodes: tighter vertical spacing */
+  .drawflow .drawflow-node.source .box,
+  .drawflow .drawflow-node.sink .box {
+    padding: 0px 6px 1px;
+  }
+  /* Bus nodes: more vertical room */
+  .drawflow .drawflow-node[class*="bus-"] .box {
+    padding: 3px 8px 4px;
+  }
+  .drawflow .drawflow-node[class*="bus-"] .title-box {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+  }
+  .drawflow .drawflow-node[class*="bus-"] .proc-btn {
+    width: 22px;
+    height: 18px;
+    font-size: 0.65rem;
+    line-height: 18px;
+  }
+  .drawflow .drawflow-node[class*="bus-"] .proc-buttons {
+    gap: 3px;
+    margin-top: 3px;
+  }
+  .drawflow .drawflow-node[class*="bus-"] .mute-btn {
+    width: 22px;
+    height: 18px;
+    font-size: 0.65rem;
+    line-height: 18px;
+  }
+  .drawflow .connection .main-path {
+    stroke: var(--t-accent);
+    stroke-width: 2;
+  }
+  .drawflow .drawflow-node .input, .drawflow .drawflow-node .output {
+    background: var(--t-accent);
+    border: 2px solid var(--t-accent);
+  }
+  .drawflow .drawflow-node .input:hover, .drawflow .drawflow-node .output:hover {
+    background: #fff;
+  }
+
+  /* Node type colors */
+  .drawflow .drawflow-node.source .title-box { background: #1a3a2e; border-color: #2ecc71; }
+  .drawflow .drawflow-node.bus-listen .title-box { background: #1a2a3e; border-color: #3498db; }
+  .drawflow .drawflow-node.bus-solo .title-box { background: #3e2a1a; border-color: #f39c12; }
+  .drawflow .drawflow-node.bus-duplex .title-box { background: #1a3a2e; border-color: #2ecc71; }
+  .drawflow .drawflow-node.bus-simplex .title-box { background: #3e1a1a; border-color: #e74c3c; }
+  .drawflow .drawflow-node.sink .title-box { background: #2a1a3e; border-color: #9b59b6; }
+
+  /* Node controls (mute + gain) */
+  .node-controls {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-bottom: 1px;
+    padding: 0;
+  }
+  .mute-btn {
+    width: 18px;
+    height: 14px;
+    border: 1px solid #555;
+    border-radius: 2px;
+    background: #2a2a3e;
+    color: #888;
+    font-size: 0.55rem;
+    font-weight: bold;
+    cursor: pointer;
+    padding: 0;
+    line-height: 14px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .mute-btn:hover { border-color: #e74c3c; color: #e74c3c; }
+  .mute-btn.muted {
+    background: #e74c3c;
+    color: #fff;
+    border-color: #c0392b;
+  }
+  .gain-slider {
+    width: 40px;
+    flex-shrink: 0;
+    height: 2px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #444;
+    border-radius: 2px;
+    outline: none;
+  }
+  .gain-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--t-accent);
+    cursor: pointer;
+  }
+  .gain-val {
+    font-size: 0.5rem;
+    color: #aaa;
+    min-width: 30px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* Processing buttons on bus nodes */
+  .proc-buttons {
+    display: flex;
+    gap: 2px;
+    margin-top: 1px;
+  }
+  .proc-btn {
+    width: 18px;
+    height: 14px;
+    border: 1px solid #555;
+    border-radius: 2px;
+    background: #2a2a3e;
+    color: #666;
+    font-size: 0.55rem;
+    font-weight: bold;
+    cursor: pointer;
+    padding: 0;
+    text-align: center;
+    line-height: 14px;
+  }
+  .proc-btn:hover { border-color: var(--t-accent); color: var(--t-accent); }
+  .proc-btn.on {
+    background: var(--t-accent);
+    color: #fff;
+    border-color: var(--t-accent);
+  }
+  .proc-btn.out-btn.on {
+    background: #2ecc71;
+    border-color: #27ae60;
+  }
+
+  /* Wider nodes to fit controls */
+  .drawflow .drawflow-node { min-width: 170px; }
+  .drawflow .drawflow-node[class*="bus-"] { min-width: 260px; }
+  .drawflow .drawflow-node .title-box { padding: 2px 6px; font-size: 0.7rem; }
+  .drawflow .drawflow-node.source .title-box,
+  .drawflow .drawflow-node.sink .title-box { padding: 1px 6px; }
+
+  /* Level bars inside nodes */
+  .level-bar {
+    height: 3px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 1px;
+    margin-top: 1px;
+    overflow: hidden;
+  }
+  .drawflow-node[class*="bus-"] .level-bar {
+    height: 5px;
+    margin-top: 3px;
+  }
+  .level-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 3px;
+    background: #2ecc71;
+    transition: width 0.15s;
+  }
+  .sink .level-fill { background: #f39c12; }
+  .drawflow-node[class*="bus-"] .level-fill { background: #3498db; }
+  .drawflow-node.node-muted .level-fill { background: #e74c3c !important; }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--t-panel);
+    border-bottom: 1px solid var(--t-border);
+    align-items: center;
+    font-size: 0.8rem;
+  }
+  .toolbar button {
+    padding: 4px 12px;
+    border-radius: 4px;
+    border: 1px solid var(--t-btn-border);
+    background: var(--t-btn);
+    color: #e0e0e0;
+    cursor: pointer;
+    font-size: 0.78rem;
+  }
+  .toolbar button:hover { background: var(--t-btn-hover); }
+  .toolbar .spacer { flex: 1; }
+  .toolbar .status { color: #888; font-size: 0.72rem; }
+
+  /* Delete key hint */
+  .hint { color: #555; font-size: 0.65rem; margin-left: 8px; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <button onclick="addBusNode('listen')">+ Listen Bus</button>
+  <button onclick="addBusNode('solo')">+ Solo Bus</button>
+  <button onclick="addBusNode('duplex')">+ Duplex Bus</button>
+  <button onclick="addBusNode('simplex')">+ Simplex Bus</button>
+  <button onclick="deleteSelected()" style="background:#e74c3c;border-color:#c0392b;">Delete Selected</button>
+  <span class="hint">Click a connection to select it, then click Delete Selected (or right-click).</span>
+  <span class="spacer"></span>
+  <button onclick="saveRouting()" style="background:#2ecc71;border-color:#27ae60;color:#000;font-weight:bold;">Save</button>
+  <button onclick="loadRouting()">Reload</button>
+  <span class="status" id="statusBar">Loading...</span>
+</div>
+
+<div id="drawflow"></div>
+
+<script src="/pages/drawflow.min.js"></script>
+<script src="/pages/common.js"></script>
+<script>
+var editor;
+var _state = {};
+var _nodeMap = {}; // id -> drawflow node id
+
+function setStatus(msg) { document.getElementById('statusBar').textContent = msg; }
+
+// Initialize Drawflow
+var container = document.getElementById('drawflow');
+editor = new Drawflow(container);
+editor.reroute = true;
+editor.start();
+
+// Delete selected connection or node
+function deleteSelected() {
+  // Try to find a selected connection
+  var sel = document.querySelector('.main-path.selected');
+  if (sel) {
+    var parent = sel.closest('.connection');
+    if (parent) {
+      var classes = parent.classList;
+      // Extract node_out, node_in, output, input from class names
+      var nodeOut, nodeIn, outputClass, inputClass;
+      for (var i = 0; i < classes.length; i++) {
+        if (classes[i].startsWith('node_in_node-')) nodeIn = classes[i].replace('node_in_node-', '');
+        if (classes[i].startsWith('node_out_node-')) nodeOut = classes[i].replace('node_out_node-', '');
+        if (classes[i].startsWith('output_') && !classes[i].startsWith('node_out')) outputClass = classes[i];
+        if (classes[i].startsWith('input_') && !classes[i].startsWith('node_in')) inputClass = classes[i];
+      }
+      if (nodeOut && nodeIn && outputClass && inputClass) {
+        editor.removeSingleConnection(nodeOut, nodeIn, outputClass, inputClass);
+        setStatus('Connection removed');
+        return;
+      }
+    }
+  }
+  // Try selected node
+  var selNode = document.querySelector('.drawflow-node.selected');
+  if (selNode) {
+    var nid = selNode.id.replace('node-', '');
+    editor.removeNodeId('node-' + nid);
+    setStatus('Node removed');
+    return;
+  }
+  setStatus('Nothing selected — click a connection or node first');
+}
+
+// Right-click on connection to delete
+container.addEventListener('contextmenu', function(e) {
+  var path = e.target.closest('.connection');
+  if (path) {
+    e.preventDefault();
+    // Select then delete
+    var mainPath = path.querySelector('.main-path');
+    if (mainPath) {
+      // Click to select first
+      mainPath.classList.add('selected');
+      deleteSelected();
+    }
+  }
+});
+
+// Load routing state and populate nodes
+function loadRouting() {
+  fetch('/routing/status')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      _state = d;
+      rebuildEditor();
+      setStatus('Loaded: ' + d.sources.length + ' sources, ' + d.busses.length + ' busses, ' + d.sinks.length + ' sinks');
+    })
+    .catch(function(e) { setStatus('Error: ' + e.message); });
+}
+
+function rebuildEditor() {
+  editor.clear();
+  _nodeMap = {};
+
+  // Extract saved node positions from layout (if available)
+  var savedPositions = {};
+  if (_state.layout) {
+    try {
+      var nodes = _state.layout.drawflow.Home.data;
+      for (var nid in nodes) {
+        savedPositions[nodes[nid].name] = {x: nodes[nid].pos_x, y: nodes[nid].pos_y};
+      }
+    } catch(e) {}
+  }
+
+  var ySource = 20;
+  var yBus = 20;
+  var ySink = 20;
+  var xSource = 50;
+  var xBus = 350;
+  var xSink = 650;
+  var spacing = 75;
+
+  // Add source nodes (output only — right side)
+  for (var i = 0; i < _state.sources.length; i++) {
+    var s = _state.sources[i];
+    var muted = s.muted ? ' muted' : '';
+    var html = '<div class="box">'
+      + '<div class="node-controls">'
+      + '<button class="mute-btn' + muted + '" onclick="toggleMute(\'' + s.id + '\')" id="mute-' + s.id + '">M</button>'
+      + '<input type="range" class="gain-slider" min="0" max="200" value="' + (s.gain || 100) + '" oninput="setGain(\'' + s.id + '\',this.value)" title="Gain">'
+      + '<span class="gain-val" id="gain-val-' + s.id + '">' + (s.gain || 100) + '%</span>'
+      + '</div>'
+      + '<div class="level-bar" id="level-' + s.id + '"><div class="level-fill"></div></div>'
+      + '</div>';
+    var pos = savedPositions[s.id] || {x: xSource, y: ySource};
+    var srcCls = 'source' + (s.muted ? ' node-muted' : '');
+    var nodeId = editor.addNode(s.id, 0, 1, pos.x, pos.y, srcCls, {id: s.id}, s.name + '\n' + html);
+    _nodeMap['src-' + s.id] = nodeId;
+    ySource += spacing;
+  }
+
+  // Add bus nodes (input left, output right)
+  for (var i = 0; i < _state.busses.length; i++) {
+    var b = _state.busses[i];
+    var cls = 'bus-' + b.type;
+    var proc = b.processing || {};
+    var busMuted = b.muted ? ' muted' : '';
+    var html = '<div class="box">' + b.type + ' bus'
+      + '<div class="proc-buttons">'
+      + '<button class="proc-btn' + (proc.gate ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'gate\')" id="proc-' + b.id + '-gate" title="Noise Gate">G</button>'
+      + '<button class="proc-btn' + (proc.hpf ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'hpf\')" id="proc-' + b.id + '-hpf" title="High Pass Filter">H</button>'
+      + '<button class="proc-btn' + (proc.lpf ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'lpf\')" id="proc-' + b.id + '-lpf" title="Low Pass Filter">L</button>'
+      + '<button class="proc-btn' + (proc.notch ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'notch\')" id="proc-' + b.id + '-notch" title="Notch Filter">N</button>'
+      + '<span style="margin-left:6px;border-left:1px solid #555;padding-left:6px;"></span>'
+      + '<button class="proc-btn out-btn' + (proc.pcm === true ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'pcm\')" id="proc-' + b.id + '-pcm" title="Feed PCM stream">P</button>'
+      + '<button class="proc-btn out-btn' + (proc.mp3 === true ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'mp3\')" id="proc-' + b.id + '-mp3" title="Feed MP3 stream">M</button>'
+      + '<button class="proc-btn out-btn' + (proc.vad ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'vad\')" id="proc-' + b.id + '-vad" title="VAD gate">V</button>'
+      + '<span style="flex-grow:1;"></span>'
+      + '<button class="mute-btn' + busMuted + '" onclick="toggleBusMute(\'' + b.id + '\')" id="bus-mute-' + b.id + '" title="Mute bus">M</button>'
+      + '</div>'
+      + '<div class="level-bar" id="level-bus_' + b.id + '"><div class="level-fill"></div></div>'
+      + '</div>';
+    var pos = savedPositions[b.id] || {x: xBus, y: yBus};
+    var busCls = cls + (b.muted ? ' node-muted' : '');
+    var nodeId = editor.addNode(b.id, 1, 1, pos.x, pos.y, busCls, {id: b.id, type: b.type}, b.name + '\n' + html);
+    _nodeMap['bus-' + b.id] = nodeId;
+    yBus += spacing + 20;
+  }
+
+  // Add sink nodes (input only — left side)
+  for (var i = 0; i < _state.sinks.length; i++) {
+    var s = _state.sinks[i];
+    var muted = s.muted ? ' muted' : '';
+    var html = '<div class="box">'
+      + '<div class="node-controls">'
+      + '<button class="mute-btn' + muted + '" onclick="toggleMute(\'' + s.id + '\')" id="mute-' + s.id + '">M</button>'
+      + '<input type="range" class="gain-slider" min="0" max="200" value="' + (s.gain || 100) + '" oninput="setGain(\'' + s.id + '\',this.value)" title="Gain">'
+      + '<span class="gain-val" id="gain-val-' + s.id + '">' + (s.gain || 100) + '%</span>'
+      + '</div>'
+      + '<div class="level-bar" id="level-' + s.id + '"><div class="level-fill"></div></div>';
+    // Speaker mode selector — injected into title-box via JS after node creation
+    if (s.id === 'speaker') {
+      s._speaker_mode = (s.speaker_mode || 'virtual').toLowerCase();
+    }
+    html += '</div>';
+    var pos = savedPositions[s.id] || {x: xSink, y: ySink};
+    var sinkCls = 'sink' + (s.muted ? ' node-muted' : '');
+    var nodeId = editor.addNode(s.id, 1, 0, pos.x, pos.y, sinkCls, {id: s.id}, s.name + '\n' + html);
+    _nodeMap['sink-' + s.id] = nodeId;
+    ySink += spacing;
+  }
+
+  // Inject speaker mode buttons into title-box (top-right)
+  var spkSink = _state.sinks.find(function(s) { return s.id === 'speaker'; });
+  if (spkSink) {
+    var spkNodeId = _nodeMap['sink-speaker'];
+    if (spkNodeId) {
+      var spkEl = document.querySelector('#node-' + spkNodeId + ' .title-box');
+      if (spkEl) {
+        var sm = spkSink._speaker_mode || (spkSink.speaker_mode || 'virtual').toLowerCase();
+        spkEl.style.display = 'flex';
+        spkEl.style.justifyContent = 'space-between';
+        spkEl.style.alignItems = 'center';
+        var wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;gap:2px;margin-left:6px;';
+        wrap.innerHTML = '<button class="proc-btn' + (sm === 'virtual' ? ' on' : '') + '" onclick="setSpeakerMode(\'virtual\')" id="spk-virtual" title="Virtual (metering only)" style="width:16px;height:13px;font-size:0.5rem;line-height:13px;">V</button>'
+          + '<button class="proc-btn' + (sm === 'auto' ? ' on' : '') + '" onclick="setSpeakerMode(\'auto\')" id="spk-auto" title="Auto (try device, fallback virtual)" style="width:16px;height:13px;font-size:0.5rem;line-height:13px;">A</button>'
+          + '<button class="proc-btn' + (sm === 'real' ? ' on' : '') + '" onclick="setSpeakerMode(\'real\')" id="spk-real" title="Real (require audio device)" style="width:16px;height:13px;font-size:0.5rem;line-height:13px;">R</button>';
+        spkEl.appendChild(wrap);
+      }
+    }
+  }
+
+  // Draw existing connections
+  for (var i = 0; i < _state.connections.length; i++) {
+    var c = _state.connections[i];
+    if (c.type === 'source-bus') {
+      var fromNode = _nodeMap['src-' + c.from];
+      var toNode = _nodeMap['bus-' + c.to];
+      if (fromNode && toNode) {
+        try { editor.addConnection(fromNode, toNode, 'output_1', 'input_1'); } catch(e) {}
+      }
+    } else if (c.type === 'bus-sink') {
+      var fromNode = _nodeMap['bus-' + c.from];
+      var toNode = _nodeMap['sink-' + c.to];
+      if (fromNode && toNode) {
+        try { editor.addConnection(fromNode, toNode, 'output_1', 'input_1'); } catch(e) {}
+      }
+    }
+  }
+}
+
+// Add a new bus node
+function addBusNode(type) {
+  var name = prompt('Bus name:');
+  if (!name) return;
+  fetch('/routing/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cmd: 'add_bus', name: name, type: type})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) loadRouting();
+      else alert('Error: ' + (d.error || 'unknown'));
+    });
+}
+
+// Save current connections to backend
+function saveRouting() {
+  // Extract connections from Drawflow
+  var data = editor.export();
+  var connections = [];
+
+  // Build reverse map: drawflow nodeId -> our id
+  var reverseMap = {};
+  for (var key in _nodeMap) {
+    reverseMap[_nodeMap[key]] = key;
+  }
+
+  // Walk all nodes and their outputs
+  var nodes = data.drawflow.Home.data;
+  for (var nodeId in nodes) {
+    var node = nodes[nodeId];
+    var ourId = reverseMap[parseInt(nodeId)];
+    if (!ourId) continue;
+
+    var outputs = node.outputs;
+    for (var outKey in outputs) {
+      var conns = outputs[outKey].connections;
+      for (var j = 0; j < conns.length; j++) {
+        var targetNodeId = conns[j].node;
+        var targetOurId = reverseMap[parseInt(targetNodeId)];
+        if (!targetOurId) continue;
+
+        if (ourId.startsWith('src-') && targetOurId.startsWith('bus-')) {
+          connections.push({
+            type: 'source-bus',
+            from: ourId.substring(4),
+            to: targetOurId.substring(4)
+          });
+        } else if (ourId.startsWith('bus-') && targetOurId.startsWith('sink-')) {
+          connections.push({
+            type: 'bus-sink',
+            from: ourId.substring(4),
+            to: targetOurId.substring(5)
+          });
+        }
+      }
+    }
+  }
+
+  // Also collect bus source/sink lists from connections
+  var busUpdates = {};
+  for (var i = 0; i < connections.length; i++) {
+    var c = connections[i];
+    if (c.type === 'source-bus') {
+      if (!busUpdates[c.to]) busUpdates[c.to] = {sources: [], sinks: []};
+      busUpdates[c.to].sources.push(c.from);
+    } else if (c.type === 'bus-sink') {
+      if (!busUpdates[c.from]) busUpdates[c.from] = {sources: [], sinks: []};
+      busUpdates[c.from].sinks.push(c.to);
+    }
+  }
+
+  // Save Drawflow layout (node positions)
+  var layout = editor.export();
+
+  // Send full state
+  fetch('/routing/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cmd: 'save_all', connections: connections, bus_updates: busUpdates, layout: layout})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) setStatus('Saved!');
+      else setStatus('Save error: ' + (d.error || 'unknown'));
+    });
+}
+
+// Handle node deletion
+editor.on('nodeRemoved', function(nodeId) {
+  var reverseMap = {};
+  for (var key in _nodeMap) reverseMap[_nodeMap[key]] = key;
+  var ourId = reverseMap[nodeId];
+  if (ourId && ourId.startsWith('bus-')) {
+    var busId = ourId.substring(4);
+    fetch('/routing/cmd', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cmd: 'delete_bus', id: busId})
+    }).then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) setStatus('Bus removed');
+      });
+  }
+});
+
+loadRouting();
+
+// Mute toggle
+function toggleMute(id) {
+  fetch('/routing/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cmd: 'mute', id: id})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        var btn = document.getElementById('mute-' + id);
+        if (btn) {
+          if (d.muted) {
+            btn.classList.add('muted');
+          } else {
+            btn.classList.remove('muted');
+          }
+          // Toggle red level bar on the parent node
+          var node = btn.closest('.drawflow-node');
+          if (node) {
+            if (d.muted) { node.classList.add('node-muted'); }
+            else { node.classList.remove('node-muted'); }
+          }
+        }
+        setStatus(id + ': ' + (d.muted ? 'muted' : 'unmuted'));
+      }
+    });
+}
+
+// Bus mute toggle
+function toggleBusMute(busId) {
+  fetch('/routing/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cmd: 'bus_mute', bus: busId})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        var btn = document.getElementById('bus-mute-' + busId);
+        if (btn) {
+          if (d.muted) { btn.classList.add('muted'); }
+          else { btn.classList.remove('muted'); }
+          var node = btn.closest('.drawflow-node');
+          if (node) {
+            if (d.muted) { node.classList.add('node-muted'); }
+            else { node.classList.remove('node-muted'); }
+          }
+        }
+        setStatus(busId + ': ' + (d.muted ? 'muted' : 'unmuted'));
+      }
+    });
+}
+
+// Gain control
+function setGain(id, value) {
+  var label = document.getElementById('gain-val-' + id);
+  if (label) label.textContent = value + '%';
+  // Debounce — only send after slider stops moving
+  clearTimeout(setGain._timer);
+  setGain._timer = setTimeout(function() {
+    fetch('/routing/cmd', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cmd: 'gain', id: id, value: parseInt(value)})
+    }).then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) setStatus(id + ': gain ' + value + '%');
+      });
+  }, 200);
+}
+
+// Processing toggle
+function toggleProc(busId, filter) {
+  fetch('/routing/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cmd: 'toggle_proc', bus: busId, filter: filter})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        var btn = document.getElementById('proc-' + busId + '-' + filter);
+        if (btn) {
+          if (d.state) btn.classList.add('on');
+          else btn.classList.remove('on');
+        }
+        setStatus(busId + ': ' + filter + ' ' + (d.state ? 'ON' : 'OFF'));
+      }
+    });
+}
+
+// Speaker mode selector
+function setSpeakerMode(mode) {
+  fetch('/routing/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cmd: 'speaker_mode', mode: mode})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        ['virtual','auto','real'].forEach(function(m) {
+          var b = document.getElementById('spk-' + m);
+          if (b) { if (m === d.mode) b.classList.add('on'); else b.classList.remove('on'); }
+        });
+        setStatus('Speaker: ' + d.mode + (d.device ? ' (' + d.device + ')' : ''));
+      } else {
+        setStatus('Speaker mode error: ' + (d.error || 'unknown'));
+      }
+    });
+}
+
+// Poll audio levels and update bars
+function pollLevels() {
+  fetch('/routing/levels')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      for (var id in d) {
+        var el = document.getElementById('level-' + id);
+        if (el) {
+          var fill = el.querySelector('.level-fill');
+          if (fill) fill.style.width = Math.min(100, d[id]) + '%';
+        }
+        // Also update TX sink bars for radio plugins (e.g. kv4p level → kv4p_tx bar)
+        // Skip for sources that have independent TX sinks (remote_audio, mumble)
+        if (id !== 'remote_audio' && id !== 'mumble_rx') {
+          var txEl = document.getElementById('level-' + id + '_tx');
+          if (txEl) {
+            var txFill = txEl.querySelector('.level-fill');
+            if (txFill) txFill.style.width = Math.min(100, d[id]) + '%';
+          }
+        }
+      }
+    })
+    .catch(function() {});
+}
+setInterval(pollLevels, 200);
+</script>
+</body>
+</html>

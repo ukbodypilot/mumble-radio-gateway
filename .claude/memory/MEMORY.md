@@ -146,6 +146,15 @@ Radio-to-Mumble gateway. AIOC USB device handles radio RX/TX audio and PTT. Opti
 - **Reader cleanup:** only calls `on_disconnect` if it owns the entry
 - **See:** `docs/gateway_link.md` for full architecture and roadmap; `CHANGELOG.md` for release history
 
+## Mixer v2.0 Rewrite (ACTIVE — branch: v2.0-mixer, started 2026-03-29)
+- **Design:** `docs/mixer-v2-design.md` — bus architecture, source/sink model, routing, API
+- **Progress:** `docs/mixer-v2-progress.md` — tracking, decisions, tests, next steps
+- **CLAUDE.md updated** with pointer to both docs
+- 4 bus types: duplex repeater, simplex repeater, listen, solo
+- Sources own processing; busses route clean PCM; ducking is per-bus priority-based
+- Migration: ListenBus first (replaces AudioMixer), then Solo, then DuplexRepeater
+- User is cautious about refactoring — tower of cards works, don't break it
+
 ## MCP Server (gateway_mcp.py) — AI Control Interface (2026-03-25)
 - **File:** `gateway_mcp.py` — stdio MCP server; 31 tools; talks to gateway HTTP API on port 8080
 - **CRITICAL:** MCP server is a Claude Code child process — restarting gateway does NOT restart MCP

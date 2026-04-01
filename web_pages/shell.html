@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dell - Radio Gateway</title>
+<style>
+  :root {
+    --t-bg: #1a1a2e; --t-panel: #16213e; --t-border: #0f3460;
+    --t-accent: #00d4ff; --t-btn: #0d1b2a; --t-btn-border: #1b3a5c;
+    --t-btn-hover: #1a2744; --t-btn-active: #0f3460;
+    --t-checkbox: #00d4ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+         background: var(--t-bg); color: #e0e0e0; display: flex; flex-direction: column; height: 100vh; }
+  #shell-bar {
+    background: var(--t-panel); border-bottom: 1px solid var(--t-border);
+    padding: 6px 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    flex-shrink: 0; min-height: 40px; z-index: 100;
+  }
+  #shell-bar a { color: var(--t-accent); text-decoration: none; font-size: 0.8em; }
+  #shell-bar a:hover { text-decoration: underline; }
+  #shell-bar a.active { font-weight: bold; border-bottom: 2px solid var(--t-accent); }
+  #shell-bar a.nav-disabled { color: #555; cursor: default; pointer-events: none; text-decoration: none; }
+  .shell-nav { display: flex; flex-wrap: wrap; gap: 0; align-items: center; }
+  .shell-nav a { padding: 3px 10px; }
+  .shell-nav a + a { border-left: 1px solid #444; }
+  .shell-pcm { display: inline-flex; gap: 4px; align-items: center; padding-left: 6px; border-left: 1px solid #444; margin-left: 2px; }
+  .shell-pcm button {
+    background: var(--t-btn); border: 1px solid var(--t-btn-border); color: #e0e0e0;
+    border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 0.85em;
+  }
+  .shell-pcm button:hover { background: var(--t-btn-hover); }
+  #shell-frame { flex: 1; border: none; width: 100%; }
+  #shell-bars {
+    background: var(--t-panel); border-bottom: 1px solid var(--t-border);
+    padding: 2px 14px; display: flex; flex-wrap: wrap; gap: 2px 14px;
+    align-items: center; flex-shrink: 0; font-family: monospace; font-size: 0.8em;
+    min-height: 20px;
+  }
+  #shell-bars .sb { display: flex; gap: 4px; align-items: center; white-space: nowrap; width: 190px; }
+  #shell-bars .sb-label { color: #888; width: 3.2em; text-align: right; flex-shrink: 0; }
+  #shell-bars .sb-pct { width: 3.2em; text-align: right; flex-shrink: 0; }
+  #shell-bars .sb-track { width: 100px; height: 10px; background: rgba(255,255,255,0.05); border-radius: 2px; flex-shrink: 0; overflow: hidden; }
+  #shell-bars .sb-bar { display: block; height: 100%; border-radius: 2px; }
+  .sb-rx { background: #2ecc71; } .sb-tx { background: #e74c3c; }
+  .sb-sdr1 { background: var(--t-accent); } .sb-sdr2 { background: #e056a0; }
+  .sb-sv { background: #f1c40f; } .sb-cl { background: #2ecc71; }
+  .sb-sp { background: var(--t-accent); } .sb-an { background: #e74c3c; } .sb-mon { background: #9b59b6; } .sb-link { background: #e67e22; }
+  .sb-d75 { background: #f39c12; } .sb-kv4p { background: #1abc9c; }
+  #shell-status { color: #888; font-size: 0.75em; white-space: nowrap; }
+</style>
+</head><body>
+<div id="shell-bar">
+  <div class="shell-nav">
+    <a href="/dashboard" target="content" onclick="setActive(this)">Dashboard</a><a href="/routing" target="content" onclick="setActive(this)">Routing</a><a href="/controls" target="content" onclick="setActive(this)">Controls</a><a href="/radio" target="content" onclick="setActive(this)" id="nav-radio">TH-9800</a><a href="/d75" target="content" onclick="setActive(this)" id="nav-d75">TH-D75</a><a href="/kv4p" target="content" onclick="setActive(this)" id="nav-kv4p">KV4P</a><a href="/sdr" target="content" onclick="setActive(this)" id="nav-sdr">SDR</a><a href="/aircraft" target="content" onclick="setActive(this)" id="nav-adsb">ADS-B</a><a href="/telegram" target="content" onclick="setActive(this)" id="nav-telegram">Telegram</a><a href="/monitor" target="content" onclick="setActive(this)">Monitor</a><a href="/recordings" target="content" onclick="setActive(this)">Recordings</a><a href="/config" target="content" onclick="setActive(this)">Config</a><a href="/logs" target="content" onclick="setActive(this)">Logs</a><a href="/voice" target="content" onclick="setActive(this)">Voice</a>
+    <span class="shell-pcm">
+      <button id="play-btn" onclick="toggleStream()" style="min-width:52px; text-align:center;">&#9654; MP3</button>
+      <input id="vol-slider" type="range" min="0" max="100" value="100" style="width:40px; accent-color:var(--t-accent);" oninput="setVolume(this.value)">
+      <span id="stream-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:var(--t-accent); box-shadow:0 0 6px var(--t-accent);"></span>
+      <span id="stream-status" style="font-size:0.75em;"></span>
+      <span style="color:var(--t-border);">|</span>
+      <button id="ws-btn" onclick="toggleWS()" style="min-width:52px; text-align:center;">&#9654; PCM</button>
+      <input id="ws-vol" type="range" min="0" max="100" value="100" style="width:40px; accent-color:var(--t-accent);" oninput="setWSVol(this.value)">
+      <span id="ws-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:var(--t-accent); box-shadow:0 0 6px var(--t-accent);"></span>
+      <span id="ws-status" style="font-size:0.75em;"></span>
+      <span style="color:var(--t-border);">|</span>
+      <button id="mic-btn" onclick="toggleMic()" style="min-width:52px; text-align:center;">&#127908; MIC</button>
+      <span id="mic-indicator" style="display:none; width:8px; height:8px; border-radius:50%; background:#e74c3c; box-shadow:0 0 6px #e74c3c;"></span>
+      <span id="mic-status" style="font-size:0.75em;"></span>
+    </span>
+  </div>
+</div>
+<div id="shell-bars"></div>
+<iframe id="shell-frame" name="content" src="/dashboard"></iframe>
+<script>
+var _T = {accent:'#00d4ff',btnBorder:'#1b3a5c'};
+
+function setActive(el) {
+  document.querySelectorAll('.shell-nav a').forEach(function(a){ a.classList.remove('active'); });
+  el.classList.add('active');
+}
+function shellCmd(key) {
+  fetch('/key', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:key})});
+}
+
+// --- MP3 stream player ---
+var _audio = null;
+var _playing = false;
+var _streamTimer = null;
+var _streamStart = 0;
+function toggleStream() {
+  if (_playing) { stopStream(); } else { startStream(); }
+}
+function startStream() {
+  if (_audio) { try { _audio.onplaying = null; _audio.onerror = null; _audio.onended = null; _audio.pause(); _audio.src = ''; } catch(e){} _audio = null; }
+  if (_streamTimer) { clearInterval(_streamTimer); _streamTimer = null; }
+
+  var btn = document.getElementById('play-btn');
+  var ind = document.getElementById('stream-indicator');
+  var st = document.getElementById('stream-status');
+  _playing = true;
+  btn.innerHTML = '&#9724; MP3'; btn.style.color = '#f39c12'; btn.style.borderColor = '#f39c12';
+  st.innerHTML = '<span style="color:#f39c12">Buffering...</span>';
+
+  _audio = new Audio('/stream');
+  _audio.volume = document.getElementById('vol-slider').value / 100;
+
+  _audio.onplaying = function() {
+    _playing = true;
+    _streamStart = Date.now();
+    btn.innerHTML = '&#9724; MP3'; btn.style.color = _T.accent; btn.style.borderColor = _T.accent;
+    ind.style.display = 'inline-block';
+    st.innerHTML = '<span style="color:' + _T.accent + '">0:00</span>';
+    _streamTimer = setInterval(function() {
+      var s = Math.floor((Date.now() - _streamStart) / 1000);
+      st.innerHTML = '<span style="color:' + _T.accent + '">' + Math.floor(s/60) + ':' + (s%60<10?'0':'') + s%60 + '</span>';
+    }, 1000);
+  };
+
+  _audio.onerror = function() {
+    st.innerHTML = '<span style="color:#e74c3c">Stream error</span>';
+    stopStream();
+  };
+
+  _audio.onended = function() { stopStream(); };
+
+  _audio.play().catch(function(e) {
+    st.innerHTML = '<span style="color:#e74c3c">' + e.message + '</span>';
+    stopStream();
+  });
+}
+function stopStream() {
+  if (_streamTimer) { clearInterval(_streamTimer); _streamTimer = null; }
+  if (_audio) { try { _audio.pause(); _audio.src = ''; } catch(e){} _audio = null; }
+  _playing = false;
+  document.getElementById('play-btn').innerHTML = '&#9654; MP3';
+  document.getElementById('play-btn').style.color = '#e0e0e0';
+  document.getElementById('play-btn').style.borderColor = _T.btnBorder;
+  document.getElementById('stream-indicator').style.display = 'none';
+  document.getElementById('stream-status').innerHTML = '';
+}
+function setVolume(v) {
+  if (_audio) _audio.volume = v / 100;
+}
+
+// Highlight nav on iframe load
+document.getElementById('shell-frame').addEventListener('load', function() {
+  try {
+    var path = this.contentWindow.location.pathname;
+    document.querySelectorAll('.shell-nav a').forEach(function(a) {
+      a.classList.toggle('active', a.getAttribute('href') === path);
+    });
+  } catch(e) {}
+});
+
+// --- Low-latency WebSocket PCM player ---
+var _ws = null;
+var _wsCtx = null;
+var _wsGain = null;
+var _wsPlaying = false;
+var _wsTimer = null;
+var _wsStart = 0;
+var _wsBytes = 0;
+var _wsWorklet = null;
+var _wakeLock = null;
+
+function toggleWS() {
+  if (_wsPlaying) { stopWS(); } else { startWS(); }
+}
+
+function startWS() {
+  var btn = document.getElementById('ws-btn');
+  var ind = document.getElementById('ws-indicator');
+  var st = document.getElementById('ws-status');
+  btn.innerHTML = '&#9724; PCM';
+  btn.style.color = '#f39c12';
+  btn.style.borderColor = '#f39c12';
+  st.innerHTML = '<span style="color:#f39c12">Connecting...</span>';
+
+  if (_wsCtx) { stopWS(); return; }
+
+  try {
+    _wsCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 48000});
+  } catch(e) {
+    st.innerHTML = '<span style="color:#e74c3c">No AudioContext</span>';
+    btn.innerHTML = '&#9654; PCM'; btn.style.color = '#e0e0e0';
+    return;
+  }
+  if (_wsCtx.state === 'suspended') { _wsCtx.resume(); }
+
+  _wsGain = _wsCtx.createGain();
+  _wsGain.gain.value = document.getElementById('ws-vol').value / 100;
+  _wsGain.connect(_wsCtx.destination);
+
+  var _pcmBuf = [];
+  var _pcmPos = 0;
+  var _pcmTotal = 0;
+  var _pcmReady = false;
+
+  function _drainPCM(output) {
+    var w = 0, need = output.length;
+    if (!_pcmReady) {
+      if (_pcmTotal < 2400) { for (w = 0; w < need; w++) output[w] = 0; return; }
+      _pcmReady = true;
+    }
+    while (_pcmTotal > 9600 && _pcmBuf.length > 1) { _pcmTotal -= _pcmBuf[0].length; _pcmBuf.shift(); _pcmPos = 0; }
+    while (w < need) {
+      if (!_pcmBuf.length) { for (; w < need; w++) output[w] = 0; break; }
+      var cur = _pcmBuf[0], avail = cur.length - _pcmPos;
+      var take = Math.min(avail, need - w);
+      for (var j = 0; j < take; j++) output[w++] = cur[_pcmPos++];
+      if (_pcmPos >= cur.length) { _pcmTotal -= cur.length; _pcmBuf.shift(); _pcmPos = 0; }
+    }
+  }
+
+  function _connectWS() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _ws = new WebSocket(proto + '//' + location.host + '/ws_audio');
+    _ws.binaryType = 'arraybuffer';
+    _ws.onopen = function() {
+      _wsPlaying = true;
+      _wsStart = Date.now();
+      _wsBytes = 0;
+      if (navigator.wakeLock) { navigator.wakeLock.request('screen').then(function(wl) { _wakeLock = wl; }).catch(function(){}); }
+      btn.innerHTML = '&#9724; PCM';
+      btn.style.color = _T.accent;
+      btn.style.borderColor = _T.accent;
+      ind.style.display = 'inline-block';
+      st.innerHTML = '<span style="color:' + _T.accent + '">0:00</span>';
+      _wsTimer = setInterval(function() {
+        var secs = Math.floor((Date.now() - _wsStart) / 1000);
+        var m = Math.floor(secs / 60);
+        var s = secs % 60;
+        var t = m + ':' + (s < 10 ? '0' : '') + s;
+        var kb = (_wsBytes / 1024).toFixed(0);
+        var unit = 'KB';
+        if (_wsBytes >= 1048576) { kb = (_wsBytes / 1048576).toFixed(1); unit = 'MB'; }
+        st.innerHTML = '<span style="color:' + _T.accent + '">' + t + '</span> <span style="color:#666">' + kb + unit + '</span>';
+      }, 1000);
+    };
+
+    var _srcRate = 48000;
+    var _dstRate = _wsCtx.sampleRate;
+    var _resample = (_dstRate !== _srcRate);
+
+    _ws.onmessage = function(ev) {
+      if (ev.data instanceof ArrayBuffer) {
+        _wsBytes += ev.data.byteLength;
+        var int16 = new Int16Array(ev.data);
+        var float32 = new Float32Array(int16.length);
+        for (var i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
+        if (_resample) {
+          var ratio = _srcRate / _dstRate;
+          var outLen = Math.round(float32.length / ratio);
+          var resampled = new Float32Array(outLen);
+          for (var i = 0; i < outLen; i++) {
+            var srcIdx = i * ratio;
+            var idx0 = Math.floor(srcIdx);
+            var frac = srcIdx - idx0;
+            var s0 = float32[idx0] || 0;
+            var s1 = float32[Math.min(idx0 + 1, float32.length - 1)] || 0;
+            resampled[i] = s0 + frac * (s1 - s0);
+          }
+          float32 = resampled;
+        }
+        if (_wsWorklet && _wsWorklet.port) {
+          _wsWorklet.port.postMessage(float32);
+        } else {
+          _pcmBuf.push(float32);
+          _pcmTotal += float32.length;
+          while (_pcmBuf.length > 4) { _pcmTotal -= _pcmBuf[0].length; _pcmBuf.shift(); _pcmPos = 0; }
+        }
+      }
+    };
+    _ws.onerror = function() { stopWS(); };
+    _ws.onclose = function() { if (_wsPlaying) stopWS(); };
+  }
+
+  if (_wsCtx.audioWorklet) {
+    var workletCode = 'class P extends AudioWorkletProcessor{constructor(){super();this.b=[];this.p=0;this.tot=0;this.ready=false;this.port.onmessage=e=>{this.b.push(e.data);this.tot+=e.data.length;if(!this.ready&&this.tot>=2400)this.ready=true;if(this.tot>9600){while(this.tot>2400&&this.b.length>1){this.tot-=this.b[0].length;this.b.shift()}this.p=0}}}process(i,o){var c=o[0][0];if(!c)return true;var n=c.length,w=0;if(!this.ready){for(w=0;w<n;w++)c[w]=0;return true}while(w<n){if(!this.b.length){for(;w<n;w++)c[w]=0;break}var r=this.b[0],a=r.length-this.p,t=Math.min(a,n-w);for(var j=0;j<t;j++)c[w++]=r[this.p++];if(this.p>=r.length){this.b.shift();this.p=0;this.tot-=r.length}}return true}}registerProcessor("p",P)';
+    var blob = new Blob([workletCode], {type: 'application/javascript'});
+    var blobURL = URL.createObjectURL(blob);
+    _wsCtx.audioWorklet.addModule(blobURL).then(function() {
+      URL.revokeObjectURL(blobURL);
+      _wsWorklet = new AudioWorkletNode(_wsCtx, 'p', {outputChannelCount:[1], numberOfOutputs:1});
+      _wsWorklet.connect(_wsGain);
+      _connectWS();
+    }).catch(function(e) {
+      URL.revokeObjectURL(blobURL);
+      var sp = _wsCtx.createScriptProcessor(2048, 0, 1);
+      sp.onaudioprocess = function(ev) { _drainPCM(ev.outputBuffer.getChannelData(0)); };
+      sp.connect(_wsGain);
+      _wsWorklet = sp;
+      _connectWS();
+    });
+  } else {
+    var sp = _wsCtx.createScriptProcessor(2048, 0, 1);
+    sp.onaudioprocess = function(ev) { _drainPCM(ev.outputBuffer.getChannelData(0)); };
+    sp.connect(_wsGain);
+    _wsWorklet = sp;
+    _connectWS();
+  }
+}
+
+function stopWS() {
+  if (_wsTimer) { clearInterval(_wsTimer); _wsTimer = null; }
+  if (_ws) { try { _ws.close(); } catch(e){} _ws = null; }
+  if (_wsWorklet) { try { _wsWorklet.disconnect(); } catch(e){} _wsWorklet = null; }
+  if (_wsGain) { try { _wsGain.disconnect(); } catch(e){} _wsGain = null; }
+  if (_wsCtx) { try { _wsCtx.close(); } catch(e){} _wsCtx = null; }
+  _wsPlaying = false;
+  if (_wakeLock) { try { _wakeLock.release(); } catch(e){} _wakeLock = null; }
+  document.getElementById('ws-btn').innerHTML = '&#9654; PCM';
+  document.getElementById('ws-btn').style.color = '#e0e0e0';
+  document.getElementById('ws-btn').style.borderColor = _T.btnBorder;
+  document.getElementById('ws-indicator').style.display = 'none';
+  document.getElementById('ws-status').innerHTML = '';
+}
+
+function setWSVol(v) {
+  if (_wsGain) _wsGain.gain.value = v / 100;
+}
+
+// --- Browser Mic → WebMicSource ---
+var _micWs=null, _micStream=null, _micCtx=null, _micProc=null, _micActive=false;
+
+function toggleMic() {
+  if (_micActive) { stopMic(); return; }
+  // Ensure clean state before starting
+  stopMic();
+  _micActive = true;
+  var btn=document.getElementById('mic-btn'), st=document.getElementById('mic-status'), ind=document.getElementById('mic-indicator');
+  btn.innerHTML = '&#9724; MIC'; btn.style.color='#e74c3c'; btn.style.borderColor='#e74c3c';
+  st.textContent='...'; st.style.color='#f39c12';
+
+  navigator.mediaDevices.getUserMedia({audio:{sampleRate:48000,channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}})
+  .then(function(stream) {
+    _micStream = stream;
+    var proto = location.protocol==='https:' ? 'wss:' : 'ws:';
+    _micWs = new WebSocket(proto+'//'+location.host+'/ws_mic');
+    _micWs.binaryType = 'arraybuffer';
+    _micWs.onopen = function() {
+      st.textContent='TX'; st.style.color='#e74c3c';
+      ind.style.display='inline-block';
+      _micCtx = new AudioContext({sampleRate:48000});
+      var src = _micCtx.createMediaStreamSource(stream);
+      var proc = _micCtx.createScriptProcessor(2048,1,1);
+      proc.onaudioprocess = function(e) {
+        if (!_micWs || _micWs.readyState!==1) return;
+        var f32=e.inputBuffer.getChannelData(0), buf=new ArrayBuffer(f32.length*2), i16=new Int16Array(buf);
+        for (var i=0;i<f32.length;i++) { var s=Math.max(-1,Math.min(1,f32[i])); i16[i]=s<0?s*32768:s*32767; }
+        _micWs.send(buf);
+      };
+      src.connect(proc); proc.connect(_micCtx.destination); _micProc=proc;
+    };
+    _micWs.onerror = function() { if (_micActive) stopMic(); };
+    _micWs.onclose = function() { if (_micActive) stopMic(); };
+  }).catch(function() {
+    st.textContent='denied'; st.style.color='#e74c3c';
+    _micActive=false;
+    btn.innerHTML='&#127908; MIC'; btn.style.color='#e0e0e0'; btn.style.borderColor=_T.btnBorder;
+  });
+}
+
+function stopMic() {
+  _micActive=false;
+  if(_micProc){_micProc.disconnect();_micProc=null;}
+  if(_micCtx){_micCtx.close().catch(function(){});_micCtx=null;}
+  if(_micStream){_micStream.getTracks().forEach(function(t){t.stop();});_micStream=null;}
+  if(_micWs){try{_micWs.close();}catch(e){}_micWs=null;}
+  var btn=document.getElementById('mic-btn');
+  btn.innerHTML='&#127908; MIC'; btn.style.color='#e0e0e0'; btn.style.borderColor=_T.btnBorder;
+  document.getElementById('mic-indicator').style.display='none';
+  document.getElementById('mic-status').textContent='';
+}
+
+// --- Audio level bars (always visible) ---
+function _sbBar(pct, cls, ducked) {
+  var w = Math.round(Math.min(Math.max(pct, 0), 100));
+  var col = ducked ? '#e74c3c' : '#2ecc71';
+  return '<span class="sb-pct" style="color:'+col+'">'+pct+'%</span><span class="sb-track"><span class="sb-bar '+cls+'" style="width:'+w+'%"></span></span>';
+}
+var _sbBusy = false;
+function _updateBars() {
+  if (_sbBusy) return;
+  _sbBusy = true;
+  fetch('/status').then(function(r){return r.json()}).then(function(s){
+    var h = '';
+    h += '<div class="sb"><span class="sb-label">RX:</span>'+_sbBar(s.radio_rx,'sb-rx')+'</div>';
+    h += '<div class="sb"><span class="sb-label">TX:</span>'+_sbBar(s.radio_tx,'sb-tx')+'</div>';
+    if(s.kv4p_enabled) h += '<div class="sb"><span class="sb-label">KV4P:</span>'+_sbBar(s.kv4p_level,'sb-kv4p')+(s.kv4p_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+'</div>';
+    if(s.d75_enabled) h += '<div class="sb"><span class="sb-label">D75:</span>'+_sbBar(s.d75_level,'sb-d75')+(s.d75_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+'</div>';
+    if(s.sdr1_enabled) h += '<div class="sb"><span class="sb-label">SDR1:</span>'+_sbBar(s.sdr1_level,'sb-sdr1',s.sdr1_ducked)+'</div>';
+    if(s.sdr2_enabled) h += '<div class="sb"><span class="sb-label">SDR2:</span>'+_sbBar(s.sdr2_level,'sb-sdr2',s.sdr2_ducked)+'</div>';
+    if(s.remote_enabled) h += '<div class="sb"><span class="sb-label">'+s.remote_mode+':</span>'+_sbBar(s.remote_level, s.remote_mode==='SV'?'sb-sv':'sb-cl', s.remote_mode==='CL'&&s.cl_ducked)+'</div>';
+    if(s.announce_enabled) h += '<div class="sb"><span class="sb-label">AN:</span>'+_sbBar(s.an_level,'sb-an')+'</div>';
+    if(s.speaker_enabled) h += '<div class="sb"><span class="sb-label">SP:</span>'+_sbBar(s.speaker_level,'sb-sp')+'</div>';
+    if(s.monitor_enabled) h += '<div class="sb"><span class="sb-label">MON:</span>'+_sbBar(s.monitor_level,'sb-mon')+'</div>';
+    if(s.link_enabled && s.link_endpoints) { for(var i=0; i<s.link_endpoints.length; i++) { var le = s.link_endpoints[i]; h += '<div class="sb"><span class="sb-label">'+le.name+':</span>'+_sbBar(le.level,'sb-link')+(le.rx_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+'</div>'; } }
+    document.getElementById('shell-bars').innerHTML = h;
+  }).catch(function(){}).finally(function(){_sbBusy=false});
+}
+setInterval(_updateBars, 1000);
+_updateBars();
+
+// Grey out nav links for disabled radios
+function _updateNav() {
+  fetch('/status').then(function(r){return r.json()}).then(function(s) {
+    var checks = {
+      'nav-radio': s.cat_enabled !== false,
+      'nav-d75': s.d75_enabled !== false,
+      'nav-kv4p': s.kv4p_enabled !== false,
+      'nav-sdr': s.sdr1_enabled !== false,
+      'nav-adsb': s.adsb_enabled !== false,
+      'nav-telegram': s.telegram_enabled !== false
+    };
+    for (var id in checks) {
+      var el = document.getElementById(id);
+      if (el) {
+        if (checks[id]) {
+          el.classList.remove('nav-disabled');
+        } else {
+          el.classList.add('nav-disabled');
+        }
+      }
+    }
+  }).catch(function(){});
+}
+_updateNav();
+</script>
+</body></html>

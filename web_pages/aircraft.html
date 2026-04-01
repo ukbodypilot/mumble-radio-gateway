@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html style="height:100%;margin:0;padding:0"><head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; background: #1a1a2e; }
+  #adsb-frame { width: 100%; height: 100%; border: none; display: block; }
+  #adsb-error {
+    display: none; height: 100%; align-items: center; justify-content: center;
+    flex-direction: column; gap: 12px; color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    background: #1a1a2e;
+  }
+  #adsb-error h2 { color: #e74c3c; }
+  #adsb-error code { color: #00d4ff; }
+</style>
+</head><body>
+<div id="adsb-error">
+  <h2>ADS-B Unavailable</h2>
+  <p>dump1090-fa is not running on port 30080</p>
+  <p style="color:#888">Start it with:</p>
+  <code>sudo systemctl start dump1090-fa</code>
+</div>
+<iframe id="adsb-frame" src="/adsb/"
+  onload="document.getElementById('adsb-error').style.display='none';this.style.display='block';"
+  onerror="document.getElementById('adsb-error').style.display='flex';this.style.display='none';">
+</iframe>
+</body></html>

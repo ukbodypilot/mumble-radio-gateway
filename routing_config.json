@@ -1,0 +1,54 @@
+{
+  "busses": [
+    {
+      "id": "main",
+      "name": "Main",
+      "type": "solo",
+      "sources": [
+        "playback"
+      ],
+      "sinks": [
+        "kv4p_tx"
+      ]
+    },
+    {
+      "id": "listen",
+      "name": "listen",
+      "type": "listen",
+      "sources": [
+        "sdr",
+        "aioc"
+      ],
+      "sinks": [
+        "broadcastify"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "type": "source-bus",
+      "from": "sdr",
+      "to": "listen"
+    },
+    {
+      "type": "source-bus",
+      "from": "aioc",
+      "to": "listen"
+    },
+    {
+      "type": "source-bus",
+      "from": "playback",
+      "to": "main"
+    },
+    {
+      "type": "bus-sink",
+      "from": "main",
+      "to": "kv4p_tx"
+    },
+    {
+      "type": "bus-sink",
+      "from": "listen",
+      "to": "broadcastify"
+    }
+  ]
+}

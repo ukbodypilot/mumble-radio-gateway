@@ -1480,6 +1480,5 @@ echo "  Updates on startup and then every DDNS_UPDATE_INTERVAL seconds"
 echo
 echo "DOCS:"
 echo "  README.md                       — full documentation"
-echo "  docs/MANUAL.txt                 — user guide"
 echo "  docs/TTS_TEXT_COMMANDS_GUIDE.md — Mumble text commands"
 echo

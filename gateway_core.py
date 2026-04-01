@@ -19,15 +19,12 @@ __version__ = _get_version()
 import time
 import signal
 import threading
-import threading as _thr
 import subprocess
-import shutil
 import json as json_mod
 import collections
 import queue as _queue_mod
 from struct import Struct
 import socket
-import select
 import array as _array_mod
 import math as _math_mod
 import re
@@ -101,1555 +98,34 @@ except ImportError:
     sys.exit(1)
 
 from audio_sources import (
-    AudioSource, AudioProcessor, AIOCRadioSource, FilePlaybackSource,
-    EchoLinkSource, SDRSource, PipeWireSDRSource,
-    RemoteAudioServer, RemoteAudioSource, D75AudioSource,
-    KV4PCATClient, KV4PAudioSource, NetworkAnnouncementSource,
-    WebMicSource, WebMonitorSource, LinkAudioSource, StreamOutputSource, AudioMixer, generate_cw_pcm,
+    AudioSource, AudioProcessor, FilePlaybackSource,
+    EchoLinkSource,
+    RemoteAudioServer, RemoteAudioSource,
+    NetworkAnnouncementSource,
+    WebMicSource, WebMonitorSource, LinkAudioSource, StreamOutputSource, generate_cw_pcm,
 )
+from audio_bus import ListenBus
+from gateway_utils import DDNSUpdater, EmailNotifier, CloudflareTunnel, MumbleServerManager, USBIPManager
 from ptt import RelayController, GPIORelayController
-from cat_client import RadioCATClient, D75CATClient
+from cat_client import RadioCATClient
 from smart_announce import SmartAnnouncementManager
 from web_server import WebConfigServer
 
-class DDNSUpdater:
-    """Dynamic DNS updater (No-IP compatible protocol).
+class LogWriter:
+    """Wraps sys.stdout to capture all output into a ring buffer for the web log viewer.
 
-    Runs a background thread that periodically updates a DDNS hostname
-    with the machine's current public IP via the No-IP update API.
+    Timestamps each line and stores in a deque. No terminal status bar —
+    all status display is via the web UI.
     """
 
-    def __init__(self, config):
-        self.config = config
-        self._stop = False
-        self._thread = None
-        self._last_ip = None
-        self._last_status = None   # 'good', 'nochg', or error string
-        self._last_update = 0      # time.time() of last update attempt
-
-    def start(self):
-        username = str(getattr(self.config, 'DDNS_USERNAME', '') or '')
-        password = str(getattr(self.config, 'DDNS_PASSWORD', '') or '')
-        hostname = str(getattr(self.config, 'DDNS_HOSTNAME', '') or '')
-        if not username or not password or not hostname:
-            print("  [DDNS] Missing username, password, or hostname — skipping")
-            return
-        self._stop = False
-        self._thread = threading.Thread(target=self._update_loop, daemon=True,
-                                        name="ddns-updater")
-        self._thread.start()
-        print(f"  [DDNS] Updater started for {hostname} "
-              f"(every {self.config.DDNS_UPDATE_INTERVAL}s)")
-
-    def stop(self):
-        self._stop = True
-
-    def get_status(self):
-        """Return compact status string for the status bar."""
-        if self._last_ip and self._last_status in ('good', 'nochg'):
-            return self._last_ip
-        elif self._last_status:
-            return 'ERR'
-        return '...'
-
-    def _update_loop(self):
-        import urllib.request
-        import base64
-
-        username = str(self.config.DDNS_USERNAME)
-        password = str(self.config.DDNS_PASSWORD)
-        hostname = str(self.config.DDNS_HOSTNAME)
-        url_base = str(getattr(self.config, 'DDNS_UPDATE_URL',
-                                'https://dynupdate.no-ip.com/nic/update') or
-                       'https://dynupdate.no-ip.com/nic/update')
-        interval = max(60, int(getattr(self.config, 'DDNS_UPDATE_INTERVAL', 300)))
-        creds = base64.b64encode(f"{username}:{password}".encode()).decode()
-
-        while not self._stop:
-            try:
-                url = f"{url_base}?hostname={hostname}"
-                req = urllib.request.Request(url)
-                req.add_header('Authorization', f'Basic {creds}')
-                req.add_header('User-Agent', 'RadioGateway/1.0 radio_gateway.py')
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    result = resp.read().decode().strip()
-            except Exception as e:
-                result = f"error: {e}"
-
-            # Parse response: "good IP", "nochg IP", or error codes
-            parts = result.split()
-            code = parts[0] if parts else result
-            ip = parts[1] if len(parts) > 1 else ''
-
-            self._last_update = time.time()
-            self._last_status = code
-            if code in ('good', 'nochg'):
-                if code == 'good' or self._last_ip is None:
-                    print(f"\n[DDNS] {hostname} → {ip}")
-                self._last_ip = ip
-            else:
-                print(f"\n[DDNS] Update failed: {result}")
-
-            # Sleep in small increments so stop is responsive
-            for _ in range(int(interval)):
-                if self._stop:
-                    return
-                time.sleep(1)
-
-
-class EmailNotifier:
-    """Gmail SMTP email sender for gateway notifications."""
-
-    def __init__(self, config, gateway=None):
-        self.config = config
-        self.gateway = gateway
-        self._address = str(getattr(config, 'EMAIL_ADDRESS', '') or '').strip()
-        self._password = str(getattr(config, 'EMAIL_APP_PASSWORD', '') or '').strip()
-        self._recipient = str(getattr(config, 'EMAIL_RECIPIENT', '') or '').strip() or self._address
-
-    def is_configured(self):
-        return bool(self._address and self._password)
-
-    def send(self, subject, body):
-        """Send an email. Returns True on success."""
-        import smtplib
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
-
-        if not self.is_configured():
-            print("  [Email] Not configured (missing EMAIL_ADDRESS or EMAIL_APP_PASSWORD)")
-            return False
-
-        msg = MIMEMultipart('alternative')
-        msg['From'] = self._address
-        msg['To'] = self._recipient
-        msg['Subject'] = subject
-
-        # Plain text version
-        msg.attach(MIMEText(body, 'plain'))
-
-        # HTML version (makes URLs clickable)
-        # Linkify URLs BEFORE inserting <br> tags, otherwise <br> gets captured in the URL
-        import re
-        html_body = re.sub(r'((?:https?|wss?)://\S+)', r'<a href="\1">\1</a>', body)
-        html_body = html_body.replace('\n', '<br>\n')
-        msg.attach(MIMEText(f'<html><body style="font-family:monospace;font-size:14px">{html_body}</body></html>', 'html'))
-
-        try:
-            with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=15) as server:
-                server.login(self._address, self._password)
-                server.sendmail(self._address, self._recipient, msg.as_string())
-            print(f"  [Email] Sent to {self._recipient}: {subject}")
-            return True
-        except Exception as e:
-            print(f"  [Email] Failed: {e}")
-            return False
-
-    def send_startup_status(self):
-        """Send a status email with gateway info and tunnel URL."""
-        import datetime
-        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        lines = [f"Radio Gateway started at {now}", ""]
-
-        # Tunnel URL
-        if self.gateway and self.gateway.cloudflare_tunnel:
-            url = self.gateway.cloudflare_tunnel.get_url()
-            if url:
-                lines.append(f"Gateway:   {url}")
-                lines.append(f"Config:    {url}/config")
-                lines.append(f"Monitor:   {url}/monitor")
-                lines.append(f"Monitor App: {url}/ws_monitor")
-                # Voice-to-tmux (remote via tunnel)
-                tunnel_base = url.rstrip('/')
-                lines.append(f"Voice Tmux: {tunnel_base}/voice")
-                lines.append("")
-
-        # LAN link
-        port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
-        try:
-            import socket
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(('8.8.8.8', 80))
-            lan_ip = s.getsockname()[0]
-            s.close()
-            lines.append(f"LAN:       http://{lan_ip}:{port}")
-            lines.append(f"LAN App:   http://{lan_ip}:{port}/ws_monitor")
-            lines.append(f"LAN Voice: http://{lan_ip}:{port}/voice")
-        except Exception:
-            pass
-        lines.append(f"Local:     http://localhost:{port}")
-        lines.append("")
-
-        # Mumble server
-        mumble_srv = str(getattr(self.config, 'MUMBLE_SERVER', '') or '')
-        mumble_port = int(getattr(self.config, 'MUMBLE_PORT', 64738))
-        if mumble_srv:
-            lines.append(f"Mumble:    {mumble_srv}:{mumble_port}")
-
-        # DDNS
-        ddns_host = str(getattr(self.config, 'DDNS_HOSTNAME', '') or '')
-        if ddns_host:
-            lines.append(f"DDNS:      {ddns_host}")
-
-        lines.append("")
-        lines.append("-- Radio Gateway")
-
-        # Detailed status dump
-        lines.append("")
-        lines += self._build_status_dump()
-
-        # Log dump
-        lines.append("")
-        lines.append("--- Recent Log ---")
-        try:
-            import sys as _sys
-            writer = _sys.stdout
-            if hasattr(writer, 'get_log_lines'):
-                import re as _re
-                _ansi_re = _re.compile(r'\x1b\[[0-9;]*m')
-                log_lines = writer.get_log_lines(after_seq=0, limit=200)
-                for _seq, text in log_lines:
-                    lines.append(_ansi_re.sub('', text))
-            else:
-                lines.append("(log not available)")
-        except Exception as e:
-            lines.append(f"(log error: {e})")
-
-        hostname = ''
-        try:
-            import socket
-            hostname = socket.gethostname()
-        except Exception:
-            pass
-
-        subject = f"Gateway Online{' — ' + hostname if hostname else ''}"
-        self.send(subject, '\n'.join(lines))
-
-    def _build_status_dump(self):
-        """Build a list of lines with a detailed gateway and system status dump."""
-        lines = []
-        lines.append("--- Gateway Status ---")
-
-        if self.gateway:
-            try:
-                s = self.gateway.get_status_dict()
-
-                gw_name = getattr(self.gateway.config, 'GATEWAY_NAME', '') or ''
-                if gw_name:
-                    lines.append(f"Name:          {gw_name}")
-                lines.append(f"Version:       {__version__}")
-                lines.append(f"Uptime:        {s.get('uptime', '?')}")
-
-                # Mumble servers
-                ms1 = s.get('ms1_state', None)
-                ms2 = s.get('ms2_state', None)
-                if ms1 is not None:
-                    lines.append(f"Mumble 1:      {ms1}")
-                if ms2 is not None:
-                    lines.append(f"Mumble 2:      {ms2}")
-                mumble_client = 'connected' if s.get('mumble') else 'disconnected'
-                lines.append(f"Mumble client: {mumble_client}")
-
-                # CAT serial
-                cat = s.get('cat', '')
-                if cat:
-                    rel = s.get('cat_reliability', {})
-                    sent = rel.get('sent', 0)
-                    missed = rel.get('missed', 0)
-                    cat_line = f"CAT serial:    {cat}"
-                    if sent:
-                        cat_line += f"  ({sent} cmd, {missed} missed)"
-                    lines.append(cat_line)
-
-                # PTT
-                ptt_m = s.get('ptt_method', '?')
-                ptt_a = ' [ACTIVE]' if s.get('ptt_active') else ''
-                lines.append(f"PTT:           {ptt_m}{ptt_a}")
-
-                # VAD
-                vad_state = 'ON' if s.get('vad_enabled') else 'off'
-                lines.append(f"VAD:           {vad_state}")
-
-                # Mute/audio states
-                mutes = []
-                if s.get('tx_muted'):
-                    mutes.append('TX')
-                if s.get('rx_muted'):
-                    mutes.append('RX')
-                if s.get('d75_muted'):
-                    mutes.append('D75')
-                if s.get('kv4p_muted'):
-                    mutes.append('KV4P')
-                if s.get('sdr1_muted'):
-                    mutes.append('SDR1')
-                if s.get('sdr2_muted'):
-                    mutes.append('SDR2')
-                if s.get('remote_muted'):
-                    mutes.append('Remote')
-                if s.get('announce_muted'):
-                    mutes.append('Announce')
-                if s.get('speaker_muted'):
-                    mutes.append('Speaker')
-                lines.append(f"Mutes:         {', '.join(mutes) if mutes else 'none'}")
-
-                # KV4P
-                if s.get('kv4p_enabled'):
-                    kv4p_conn = 'connected' if s.get('kv4p_connected') else 'enabled'
-                    kv4p_freq = getattr(self.gateway.config, 'KV4P_FREQ', '') if self.gateway else ''
-                    kv4p_ctcss = getattr(self.gateway.config, 'KV4P_CTCSS_TX', 0) if self.gateway else 0
-                    kv4p_line = f"KV4P:          {kv4p_conn}"
-                    if kv4p_freq:
-                        kv4p_line += f"  {kv4p_freq} MHz"
-                    if kv4p_ctcss and str(kv4p_ctcss) != '0':
-                        kv4p_line += f"  CTCSS:{kv4p_ctcss}"
-                    lines.append(kv4p_line)
-
-                # D75
-                if s.get('d75_enabled'):
-                    d75_conn = 'connected' if s.get('d75_connected') else 'enabled'
-                    d75_mode = s.get('d75_mode', '')
-                    d75_line = f"D75:           {d75_conn}"
-                    if d75_mode:
-                        d75_line += f"  ({d75_mode})"
-                    lines.append(d75_line)
-
-                # SDR
-                if s.get('sdr1_enabled'):
-                    sdr_name = getattr(self.gateway.config, 'SDR_DEVICE_NAME', '') if self.gateway else ''
-                    sdr_line = f"SDR1:          enabled"
-                    if sdr_name:
-                        sdr_line += f"  ({sdr_name})"
-                    lines.append(sdr_line)
-
-                # Streaming
-                if s.get('streaming_enabled'):
-                    stream_ok = s.get('stream_pipe_ok', False)
-                    lines.append(f"Broadcastify:  {'live' if stream_ok else 'pipe disconnected'}")
-
-                # DDNS
-                ddns = s.get('ddns', '')
-                if ddns:
-                    lines.append(f"DDNS:          {ddns}")
-
-                # Charger
-                charger = s.get('charger', '')
-                if charger:
-                    lines.append(f"Charger:       {charger}")
-
-            except Exception as e:
-                lines.append(f"(status error: {e})")
-        else:
-            lines.append("(gateway not available)")
-
-        # System stats
-        lines.append("")
-        lines.append("--- System ---")
-
-        try:
-            with open('/proc/loadavg', 'r') as f:
-                parts = f.read().split()
-            lines.append(f"Load (1/5/15): {parts[0]} / {parts[1]} / {parts[2]}")
-        except Exception:
-            pass
-
-        try:
-            mem = {}
-            with open('/proc/meminfo', 'r') as f:
-                for line in f:
-                    p = line.split()
-                    k = p[0].rstrip(':')
-                    if k in ('MemTotal', 'MemAvailable', 'SwapTotal', 'SwapFree'):
-                        mem[k] = int(p[1])
-            total = mem.get('MemTotal', 0)
-            avail = mem.get('MemAvailable', 0)
-            used_mb = (total - avail) // 1024
-            total_mb = total // 1024
-            pct = round(100.0 * (total - avail) / total) if total else 0
-            lines.append(f"RAM:           {used_mb} MB / {total_mb} MB ({pct}%)")
-            swap_total = mem.get('SwapTotal', 0)
-            swap_free = mem.get('SwapFree', 0)
-            if swap_total:
-                swap_used = (swap_total - swap_free) // 1024
-                lines.append(f"Swap:          {swap_used} MB / {swap_total // 1024} MB")
-        except Exception:
-            pass
-
-        try:
-            import shutil as _shutil
-            total, used, free = _shutil.disk_usage('/')
-            gb = 1024 ** 3
-            pct = round(100.0 * used / total) if total else 0
-            lines.append(f"Disk (/):      {used // gb} GB / {total // gb} GB ({pct}%)")
-        except Exception:
-            pass
-
-        try:
-            import glob as _glob
-            zones = sorted(_glob.glob('/sys/class/thermal/thermal_zone*/temp'))
-            temps = []
-            for zp in zones:
-                try:
-                    with open(zp, 'r') as f:
-                        t = int(f.read().strip()) / 1000
-                    if t > 0:
-                        temps.append(f"{t:.0f}°C")
-                except Exception:
-                    pass
-            if temps:
-                lines.append(f"Temps:         {', '.join(temps)}")
-        except Exception:
-            pass
-
-        try:
-            import socket as _socket
-            s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-            s.connect(('8.8.8.8', 80))
-            lan_ip = s.getsockname()[0]
-            s.close()
-            lines.append(f"LAN IP:        {lan_ip}")
-        except Exception:
-            pass
-
-        return lines
-
-    def send_startup_delayed(self):
-        """Wait for tunnel URL (up to 60s) then send startup email."""
-        def _delayed():
-            # Wait for tunnel URL if tunnel is enabled
-            if self.gateway and self.gateway.cloudflare_tunnel:
-                for _ in range(60):
-                    if self.gateway.cloudflare_tunnel.get_url():
-                        break
-                    time.sleep(1)
-            self.send_startup_status()
-
-        t = threading.Thread(target=_delayed, daemon=True, name="email-startup")
-        t.start()
-
-
-class CloudflareTunnel:
-    """Cloudflare quick tunnel — free public HTTPS access with no port forwarding.
-
-    Launches `cloudflared tunnel --url http://localhost:PORT` as a subprocess.
-    Output is redirected to a log file (not a pipe) so cloudflared survives
-    gateway restarts without dying from SIGPIPE when the parent is killed.
-    start_new_session=True fully detaches cloudflared from the gateway's process
-    group, so it is never killed when the gateway is restarted.
-
-    On start(), if an existing cloudflared is already running we adopt it and
-    read the cached URL from URL_FILE or the log file.
-    """
-
-    URL_FILE = '/tmp/cloudflare_tunnel_url'
-    LOG_FILE = '/tmp/cloudflared_output.log'
-
-    def __init__(self, config):
-        self.config = config
-        self._process = None  # only set if WE launched it
-        self._url = None
-        self._thread = None
-        self._adopted = False  # True if we reused an existing process
-
-    def start(self):
-        import subprocess
-        port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
-
-        # Check if cloudflared is already running
-        try:
-            result = subprocess.run(
-                ['pgrep', '-x', 'cloudflared'],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                # Existing cloudflared found — adopt it
-                self._adopted = True
-                # Try URL file first, then scan log file
-                try:
-                    with open(self.URL_FILE, 'r') as f:
-                        self._url = f.read().strip() or None
-                except FileNotFoundError:
-                    pass
-                if not self._url:
-                    self._url = self._scan_log_for_url()
-                    if self._url:
-                        try:
-                            with open(self.URL_FILE, 'w') as f:
-                                f.write(self._url)
-                        except Exception:
-                            pass
-                if self._url:
-                    print(f"  [Tunnel] Reusing existing cloudflared (URL: {self._url})")
-                else:
-                    print(f"  [Tunnel] Reusing existing cloudflared (URL not yet cached)")
-                    # Tail log/URL file in background until URL appears
-                    self._thread = threading.Thread(target=self._tail_log, daemon=True,
-                                                    name="cf-tunnel")
-                    self._thread.start()
-                return
-        except Exception:
-            pass
-
-        # No existing process — launch a new one.
-        # Clear stale URL so send_startup_delayed waits for the fresh URL.
-        self._url = None
-        try:
-            os.unlink(self.URL_FILE)
-        except Exception:
-            pass
-
-        self._do_launch(port)
-
-    def _do_launch(self, port):
-        """Launch cloudflared, redirecting output to LOG_FILE so it survives restarts."""
-        import subprocess
-        try:
-            with open(self.LOG_FILE, 'w') as log_f:
-                self._process = subprocess.Popen(
-                    ['cloudflared', 'tunnel', '--url', f'http://localhost:{port}'],
-                    stdout=log_f, stderr=log_f,
-                    start_new_session=True  # detach from gateway session/group
-                )
-        except FileNotFoundError:
-            print("  [Tunnel] cloudflared not found — install with: sudo pacman -S cloudflared")
-            return
-        except Exception as e:
-            print(f"  [Tunnel] Failed to start: {e}")
-            return
-
-        print(f"  [Tunnel] Starting Cloudflare tunnel for port {port}...")
-
-        # Background thread: detect immediate failures and retry, then tail log for URL
-        self._thread = threading.Thread(target=self._run_thread, args=(port,),
-                                        daemon=True, name="cf-tunnel")
-        self._thread.start()
-
-    def stop(self):
-        # Don't kill cloudflared — leave it running so the URL survives gateway restarts
-        pass
-
-    def get_url(self):
-        if self._url:
-            return self._url
-        # Fallback: re-check URL file (updated by _tail_log thread)
-        try:
-            with open(self.URL_FILE, 'r') as f:
-                url = f.read().strip()
-            if url:
-                self._url = url
-        except FileNotFoundError:
-            pass
-        return self._url
-
-    def _scan_log_for_url(self):
-        """Scan the full log file for a tunnel URL (used during adoption)."""
-        import re
-        try:
-            with open(self.LOG_FILE, 'r') as f:
-                content = f.read()
-            m = re.search(r'(https://[a-zA-Z0-9-]+\.trycloudflare\.com)', content)
-            if m:
-                return m.group(1)
-        except Exception:
-            pass
-        return None
-
-    def _run_thread(self, port):
-        """Retry cloudflared if it exits immediately (code 1 port conflict), then tail log."""
-        import subprocess
-        for attempt in range(1, 4):
-            time.sleep(1)
-            if self._process.poll() is None:
-                break  # Running fine — proceed to log tailing
-
-            exit_code = self._process.returncode
-            if exit_code != 0 and attempt < 3:
-                print(f"  [Tunnel] cloudflared exited immediately (code {exit_code}), "
-                      f"retrying in 5s... (attempt {attempt})")
-                time.sleep(5)
-
-                # Check if another cloudflared appeared (previous one finally released port)
-                try:
-                    result = subprocess.run(['pgrep', '-x', 'cloudflared'],
-                                            capture_output=True, text=True, timeout=5)
-                    if result.returncode == 0 and result.stdout.strip():
-                        self._adopted = True
-                        try:
-                            with open(self.URL_FILE, 'r') as f:
-                                self._url = f.read().strip() or None
-                        except FileNotFoundError:
-                            pass
-                        if not self._url:
-                            self._url = self._scan_log_for_url()
-                        if self._url:
-                            print(f"  [Tunnel] Found existing cloudflared (URL: {self._url})")
-                            return
-                        print(f"  [Tunnel] Found existing cloudflared (URL not yet cached)")
-                        break  # Fall through to tail log
-                except Exception:
-                    pass
-
-                # Relaunch
-                try:
-                    with open(self.LOG_FILE, 'w') as log_f:
-                        self._process = subprocess.Popen(
-                            ['cloudflared', 'tunnel', '--url', f'http://localhost:{port}'],
-                            stdout=log_f, stderr=log_f,
-                            start_new_session=True
-                        )
-                    print(f"  [Tunnel] Retry {attempt}: Starting cloudflared...")
-                except Exception as e:
-                    print(f"  [Tunnel] Retry {attempt} failed: {e}")
-                    return
-            else:
-                if exit_code != 0:
-                    print(f"\n[Tunnel] cloudflared failed after {attempt} attempt(s) "
-                          f"(code {exit_code})")
-                return
-
-        self._tail_log()
-
-    def _tail_log(self):
-        """Read cloudflared log file and capture tunnel URL as it appears."""
-        import re
-        try:
-            with open(self.LOG_FILE, 'r') as f:
-                while True:
-                    line = f.readline()
-                    if not line:
-                        # Also poll URL_FILE as fallback (handles old-style adopted processes)
-                        try:
-                            with open(self.URL_FILE, 'r') as uf:
-                                url = uf.read().strip()
-                            if url and url != self._url:
-                                self._url = url
-                                print(f"  [Tunnel] Public URL: {self._url}")
-                                return
-                        except FileNotFoundError:
-                            pass
-                        if self._process and self._process.poll() is not None:
-                            break
-                        time.sleep(0.2)
-                        continue
-                    m = re.search(r'(https://[a-zA-Z0-9-]+\.trycloudflare\.com)', line)
-                    if m:
-                        self._url = m.group(1)
-                        try:
-                            with open(self.URL_FILE, 'w') as f:
-                                f.write(self._url)
-                        except Exception:
-                            pass
-                        print(f"  [Tunnel] Public URL: {self._url}")
-        except Exception:
-            pass
-        if self._process and self._process.poll() is not None and self._process.returncode != 0:
-            print(f"\n[Tunnel] cloudflared exited (code {self._process.returncode})")
-
-
-class MumbleServerManager:
-    """Manages local mumble-server (murmurd) instances.
-
-    Each instance gets its own config file and systemd service override.
-    Config files are written to /etc/mumble-server-gw{n}.ini and managed
-    via systemd (mumble-server-gw{n}.service).
-    """
-
-    # State constants
-    STATE_DISABLED = 'disabled'
-    STATE_CONFIGURED = 'configured'
-    STATE_RUNNING = 'running'
-    STATE_ERROR = 'error'
-
-    def __init__(self, instance_num, config):
-        self.num = instance_num
-        self.prefix = f'MUMBLE_SERVER_{instance_num}'
-        self.config = config
-        self.state = self.STATE_DISABLED
-        self.error_msg = ''
-        self._service_name = f'mumble-server-gw{instance_num}'
-        self._config_path = f'/etc/mumble-server-gw{instance_num}.ini'
-        self._db_path = f'/var/lib/mumble-server/mumble-server-gw{instance_num}.sqlite'
-        self._log_path = f'/var/log/mumble-server/mumble-server-gw{instance_num}.log'
-        self._pid_path = f'/var/run/mumble-server/mumble-server-gw{instance_num}.pid'
-
-    def _get_cfg(self, key):
-        """Get a config value for this instance."""
-        return getattr(self.config, f'{self.prefix}_{key}', None)
-
-    def is_enabled(self):
-        return getattr(self.config, f'ENABLE_{self.prefix}', False)
-
-    def write_config(self):
-        """Write the mumble-server .ini file for this instance."""
-        port = int(self._get_cfg('PORT') or 64738)
-        password = str(self._get_cfg('PASSWORD') or '')
-        max_users = int(self._get_cfg('MAX_USERS') or 10)
-        max_bw = int(self._get_cfg('MAX_BANDWIDTH') or 72000)
-        welcome = str(self._get_cfg('WELCOME') or '')
-        reg_name = str(self._get_cfg('REGISTER_NAME') or '')
-        allow_html = self._get_cfg('ALLOW_HTML')
-        opus_thresh = int(self._get_cfg('OPUS_THRESHOLD') or 0)
-
-        lines = [
-            '# Auto-generated by Radio Gateway',
-            f'# Instance: Mumble Server {self.num}',
-            f'# Do not edit — regenerated on each gateway start',
-            '',
-            f'port={port}',
-            f'serverpassword={password}',
-            f'bandwidth={max_bw}',
-            f'users={max_users}',
-            f'opusthreshold={opus_thresh}',
-            f'allowhtml={"true" if allow_html else "false"}',
-            f'welcometext={welcome}',
-            f'registerName={reg_name}',
-            f'bonjour=false',
-            '',
-            '# Disable autoban (gateway pymumble reconnects trigger it)',
-            'autobanAttempts=0',
-            '',
-            '# Long client timeout (pymumble protocol 1.2.4 ping may not satisfy newer murmur)',
-            'timeout=300',
-            '',
-            f'database={self._db_path}',
-            f'logfile={self._log_path}',
-            f'pidfile={self._pid_path}',
-            '',
-            '# Auto-generated SSL (mumble-server creates self-signed on first run)',
-            '',
-        ]
-
-        try:
-            import subprocess
-            content = '\n'.join(lines) + '\n'
-            result = subprocess.run(
-                ['sudo', 'tee', self._config_path],
-                input=content, capture_output=True, text=True, timeout=5
-            )
-            if result.returncode != 0:
-                self.state = self.STATE_ERROR
-                self.error_msg = f'Failed to write config: {result.stderr.strip()}'
-                return False
-            return True
-        except Exception as e:
-            self.state = self.STATE_ERROR
-            self.error_msg = f'Config write error: {e}'
-            return False
-
-    def _setup_systemd_service(self):
-        """Create a systemd service override for this instance."""
-        import subprocess
-
-        service_file = f'/etc/systemd/system/{self._service_name}.service'
-        murmurd_bin = None
-        for candidate in ['/usr/sbin/murmurd', '/usr/bin/murmurd',
-                          '/usr/sbin/mumble-server', '/usr/bin/mumble-server']:
-            try:
-                result = subprocess.run(['test', '-x', candidate],
-                                        capture_output=True, timeout=2)
-                if result.returncode == 0:
-                    murmurd_bin = candidate
-                    break
-            except Exception:
-                pass
-
-        if not murmurd_bin:
-            # Try 'which' as fallback
-            try:
-                result = subprocess.run(['which', 'murmurd'], capture_output=True,
-                                        text=True, timeout=2)
-                if result.returncode == 0:
-                    murmurd_bin = result.stdout.strip()
-            except Exception:
-                pass
-            if not murmurd_bin:
-                try:
-                    result = subprocess.run(['which', 'mumble-server'],
-                                            capture_output=True, text=True, timeout=2)
-                    if result.returncode == 0:
-                        murmurd_bin = result.stdout.strip()
-                except Exception:
-                    pass
-
-        if not murmurd_bin:
-            self.state = self.STATE_ERROR
-            self.error_msg = 'murmurd/mumble-server binary not found'
-            return False
-
-        # Detect the service user: Arch uses '_mumble-server', Debian uses 'mumble-server'
-        import pwd
-        svc_user = None
-        for candidate_user in ['_mumble-server', 'mumble-server']:
-            try:
-                pwd.getpwnam(candidate_user)
-                svc_user = candidate_user
-                break
-            except KeyError:
-                pass
-        if not svc_user:
-            self.state = self.STATE_ERROR
-            self.error_msg = 'mumble-server system user not found (need _mumble-server or mumble-server)'
-            return False
-
-        unit = '\n'.join([
-            '[Unit]',
-            f'Description=Mumble Server (Gateway Instance {self.num})',
-            'After=network.target',
-            '',
-            '[Service]',
-            'Type=simple',
-            f'ExecStart={murmurd_bin} -fg -ini {self._config_path}',
-            f'User={svc_user}',
-            f'Group={svc_user}',
-            'Restart=on-failure',
-            'RestartSec=5',
-            '',
-            '[Install]',
-            'WantedBy=multi-user.target',
-            '',
-        ])
-
-        try:
-            result = subprocess.run(
-                ['sudo', 'tee', service_file],
-                input=unit, capture_output=True, text=True, timeout=5
-            )
-            if result.returncode != 0:
-                self.state = self.STATE_ERROR
-                self.error_msg = f'Failed to write service: {result.stderr.strip()}'
-                return False
-            subprocess.run(['sudo', 'systemctl', 'daemon-reload'],
-                           capture_output=True, timeout=5)
-            return True
-        except Exception as e:
-            self.state = self.STATE_ERROR
-            self.error_msg = f'Service setup error: {e}'
-            return False
-
-    def start(self):
-        """Write config, set up service, and start the mumble-server instance."""
-        import subprocess
-
-        if not self.is_enabled():
-            self.state = self.STATE_DISABLED
-            return
-
-        self.state = self.STATE_CONFIGURED
-        self.error_msg = ''
-
-        # Check if mumble-server package is installed
-        try:
-            result = subprocess.run(['which', 'murmurd'], capture_output=True,
-                                    text=True, timeout=2)
-            if result.returncode != 0:
-                result = subprocess.run(['which', 'mumble-server'],
-                                        capture_output=True, text=True, timeout=2)
-            if result.returncode != 0:
-                self.state = self.STATE_ERROR
-                self.error_msg = 'mumble-server not installed (run scripts/install.sh)'
-                return
-        except Exception as e:
-            self.state = self.STATE_ERROR
-            self.error_msg = f'Cannot check for mumble-server: {e}'
-            return
-
-        # Stop any existing instance first so config changes (especially port)
-        # take effect.  systemctl start is a no-op if the service is already
-        # running, so we must explicitly stop+start (restart) every time.
-        try:
-            subprocess.run(
-                ['sudo', 'systemctl', 'stop', f'{self._service_name}.service'],
-                capture_output=True, timeout=10
-            )
-        except Exception:
-            pass
-
-        # Ensure directories exist
-        for d in ['/var/lib/mumble-server', '/var/log/mumble-server',
-                  '/var/run/mumble-server']:
-            try:
-                subprocess.run(['sudo', 'mkdir', '-p', d],
-                               capture_output=True, timeout=3)
-            except Exception:
-                pass
-
-        # Write config file
-        if not self.write_config():
-            return
-
-        # Set up systemd service
-        if not self._setup_systemd_service():
-            return
-
-        autostart = self._get_cfg('AUTOSTART')
-        if autostart is False:
-            # Configured but not auto-started
-            print(f"  Mumble Server {self.num}: configured (autostart=false)")
-            return
-
-        # Start the service
-        try:
-            result = subprocess.run(
-                ['sudo', 'systemctl', 'start', f'{self._service_name}.service'],
-                capture_output=True, text=True, timeout=10
-            )
-            if result.returncode != 0:
-                self.state = self.STATE_ERROR
-                self.error_msg = result.stderr.strip() or 'systemctl start failed'
-                return
-            # Brief pause then verify
-            time.sleep(0.5)
-            self._check_running()
-        except Exception as e:
-            self.state = self.STATE_ERROR
-            self.error_msg = f'Start error: {e}'
-
-    def stop(self):
-        """Stop the mumble-server instance."""
-        import subprocess
-        try:
-            subprocess.run(
-                ['sudo', 'systemctl', 'stop', f'{self._service_name}.service'],
-                capture_output=True, timeout=10
-            )
-        except Exception:
-            pass
-        self.state = self.STATE_CONFIGURED if self.is_enabled() else self.STATE_DISABLED
-
-    def _check_running(self):
-        """Check if the service is actively running."""
-        import subprocess
-        try:
-            result = subprocess.run(
-                ['systemctl', 'is-active', f'{self._service_name}.service'],
-                capture_output=True, text=True, timeout=3
-            )
-            if result.stdout.strip() == 'active':
-                self.state = self.STATE_RUNNING
-            elif self.state != self.STATE_ERROR:
-                self.state = self.STATE_ERROR
-                # Try to get reason from journal
-                try:
-                    jr = subprocess.run(
-                        ['journalctl', '-u', f'{self._service_name}.service',
-                         '-n', '3', '--no-pager', '-q'],
-                        capture_output=True, text=True, timeout=3
-                    )
-                    last_line = jr.stdout.strip().split('\n')[-1] if jr.stdout.strip() else ''
-                    self.error_msg = last_line[:80] if last_line else 'service not active'
-                except Exception:
-                    self.error_msg = 'service not active'
-        except Exception as e:
-            if self.state != self.STATE_ERROR:
-                self.state = self.STATE_ERROR
-                self.error_msg = f'status check failed: {e}'
-
-    def check_health(self):
-        """Periodic health check — call from status_monitor_loop."""
-        if not self.is_enabled():
-            self.state = self.STATE_DISABLED
-            return
-        if self.state == self.STATE_DISABLED:
-            return
-        self._check_running()
-
-    def get_status(self):
-        """Return (state, port) tuple for status bar."""
-        port = int(self._get_cfg('PORT') or 64738)
-        return self.state, port
-
-
-# ============================================================================
-# USB/IP MANAGER
-# ============================================================================
-
-class USBIPManager:
-    """Attach remote USB devices from a USB/IP server (usbipd) over TCP.
-
-    Server side: run scripts/setup_usbip_server.sh on the remote machine,
-    configure /usr/local/bin/usbip-bind-devices with the device IDs to share.
-
-    Client side (this class): loads vhci-hcd, attaches configured bus IDs,
-    monitors attachment health, re-attaches on disconnect.
-
-    Config keys:
-        ENABLE_USBIP   (bool)   — enable this manager
-        USBIP_SERVER   (str)    — IP/hostname of the usbipd server
-        USBIP_DEVICES  (str)    — comma-separated bus IDs to attach, e.g. "1-1.4,1-1.3"
-                                  leave empty to attach all exported devices automatically
-    """
-
-    POLL_INTERVAL   = 15    # seconds between health checks
-    ATTACH_TIMEOUT  = 10    # seconds for usbip commands
-
-    def __init__(self, config):
-        self.config  = config
-        self._thread = None
-        self._stop   = threading.Event()
-        self._lock   = threading.Lock()
-
-        # Status reported to web UI
-        self.server_reachable = False
-        self.exported_devices = []   # [{bus_id, description, attached}]
-        self.last_error       = ''
-        self.last_check_time  = 0.0
-
-    # ------------------------------------------------------------------ start/stop
-
-    def start(self):
-        if not getattr(self.config, 'ENABLE_USBIP', False):
-            return
-        server = str(getattr(self.config, 'USBIP_SERVER', '')).strip()
-        if not server:
-            print('[USBIP] ENABLE_USBIP=true but USBIP_SERVER is empty — not starting')
-            return
-        self._ensure_vhci()
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name='USBIPManager', daemon=True)
-        self._thread.start()
-        print(f'[USBIP] Manager started → server {server}')
-
-    def stop(self):
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    # ------------------------------------------------------------------ internals
-
-    def _ensure_vhci(self):
-        """Load vhci-hcd kernel module if not already present."""
-        import subprocess
-        result = subprocess.run(['lsmod'], capture_output=True, text=True)
-        if 'vhci_hcd' not in result.stdout:
-            r = subprocess.run(['sudo', 'modprobe', 'vhci-hcd'],
-                               capture_output=True, text=True)
-            if r.returncode == 0:
-                print('[USBIP] Loaded vhci-hcd kernel module')
-            else:
-                print(f'[USBIP] WARNING: could not load vhci-hcd: {r.stderr.strip()}')
-
-    def _run_cmd(self, args, timeout=None):
-        """Run a usbip command, return (stdout, stderr, returncode)."""
-        import subprocess
-        timeout = timeout or self.ATTACH_TIMEOUT
-        try:
-            r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-            return r.stdout, r.stderr, r.returncode
-        except subprocess.TimeoutExpired:
-            return '', 'timeout', -1
-        except Exception as e:
-            return '', str(e), -1
-
-    def _list_remote(self, server):
-        """Return list of {bus_id, description} dicts exported by server."""
-        stdout, stderr, rc = self._run_cmd(['usbip', 'list', '-r', server])
-        devices = []
-        if rc != 0:
-            return None, stderr.strip() or 'usbip list failed'
-        for line in stdout.splitlines():
-            # Format: "        1-1.4: Vendor : Product (vid:pid)"
-            m = __import__('re').match(r'^\s+([\d\-\.]+):\s+(.+)$', line)
-            if m:
-                devices.append({'bus_id': m.group(1).strip(),
-                                 'description': m.group(2).strip(),
-                                 'attached': False})
-        return devices, ''
-
-    def _list_attached(self):
-        """Return set of bus IDs currently attached on this client."""
-        stdout, _, rc = self._run_cmd(['usbip', 'port'])
-        if rc != 0:
-            return set()
-        attached = set()
-        for line in stdout.splitlines():
-            # "    2-1: Realtek ...  at Remote(192.168.x.x) Bus(1-1.4)"
-            m = __import__('re').search(r'Bus\(([\d\-\.]+)\)', line)
-            if m:
-                attached.add(m.group(1))
-        return attached
-
-    def _attach(self, server, bus_id):
-        """Attach a single device. Returns True on success."""
-        stdout, stderr, rc = self._run_cmd(
-            ['sudo', 'usbip', 'attach', '-r', server, '-b', bus_id])
-        if rc == 0:
-            print(f'[USBIP] Attached {bus_id} from {server}')
-            return True
-        err = (stdout + stderr).strip()
-        print(f'[USBIP] Failed to attach {bus_id}: {err}')
-        return False
-
-    def _run(self):
-        import time
-        server = str(getattr(self.config, 'USBIP_SERVER', '')).strip()
-        wanted_raw = str(getattr(self.config, 'USBIP_DEVICES', '')).strip()
-        wanted = {b.strip() for b in wanted_raw.split(',') if b.strip()} if wanted_raw else set()
-
-        while not self._stop.is_set():
-            try:
-                exported, err = self._list_remote(server)
-                with self._lock:
-                    self.last_check_time = time.time()
-                    if exported is None:
-                        self.server_reachable = False
-                        self.last_error = err
-                        self._stop.wait(self.POLL_INTERVAL)
-                        continue
-
-                    self.server_reachable = True
-                    self.last_error = ''
-
-                    # Filter to wanted bus IDs (or all if USBIP_DEVICES empty)
-                    targets = [d for d in exported
-                               if not wanted or d['bus_id'] in wanted]
-
-                    attached = self._list_attached()
-                    for dev in targets:
-                        dev['attached'] = dev['bus_id'] in attached
-
-                    self.exported_devices = targets
-
-                # Attach anything not yet attached
-                for dev in targets:
-                    if not dev['attached']:
-                        ok = self._attach(server, dev['bus_id'])
-                        with self._lock:
-                            dev['attached'] = ok
-
-            except Exception as e:
-                with self._lock:
-                    self.last_error = str(e)
-                print(f'[USBIP] Manager error: {e}')
-
-            self._stop.wait(self.POLL_INTERVAL)
-
-    # ------------------------------------------------------------------ status for web UI
-
-    def get_status(self):
-        """Return dict for /usbipstatus JSON endpoint."""
-        import time
-        with self._lock:
-            return {
-                'enabled':          getattr(self.config, 'ENABLE_USBIP', False),
-                'server':           str(getattr(self.config, 'USBIP_SERVER', '')),
-                'server_reachable': self.server_reachable,
-                'devices':          list(self.exported_devices),
-                'last_error':       self.last_error,
-                'last_check':       round(time.time() - self.last_check_time, 0)
-                                    if self.last_check_time else None,
-            }
-
-
-# ============================================================================
-# RTL-AIRBAND / SDR MANAGER
-# ============================================================================
-
-class RTLAirbandManager:
-    """Manage RTLSDR-Airband process, config generation, and channel memory."""
-
-    ANTENNAS = ['Tuner 1 50 ohm', 'Tuner 1 Hi-Z', 'Tuner 2 50 ohm']
-    BANDWIDTHS = [0.2, 0.3, 0.6, 1.536, 5, 6, 7, 8]
-    SAMPLE_RATES = [0.5, 1.0, 2.0, 2.56, 6.0, 8.0, 10.66]
-    MODULATIONS = ['nfm', 'am']
-    CONFIG_PATH = '/etc/rtl_airband/rspduo_gateway.conf'
-    CONFIG_PATH_SDR2 = '/etc/rtl_airband/rspduo_gateway2.conf'
-    # RSPduo dual-tuner via Master/Slave API:
-    #   SDR1 opens as Master (rspduo_mode=4) → Tuner 1
-    #   SDR2 opens as Slave  (rspduo_mode=8) → Tuner 2 (only visible after Master is streaming)
-    MASTER_DEVICE_STRING = "driver=sdrplay,rspduo_mode=4"
-    SLAVE_DEVICE_STRING = "driver=sdrplay,rspduo_mode=8"
-
-    # All tunable setting keys with their types and defaults
-    _SETTING_KEYS = {
-        'frequency': (float, 446.64),
-        'modulation': (str, 'nfm'),
-        'sample_rate': (float, 2.56),
-        'antenna': (str, 'Tuner 1 50 ohm'),
-        'gain_mode': (str, 'agc'),
-        'rfgr': (int, 4),
-        'ifgr': (int, 40),
-        'agc_setpoint': (int, -30),
-        'squelch_threshold': (int, 0),
-        'correction': (float, 0.0),
-        'tau': (int, 200),
-        'ampfactor': (float, 1.0),
-        'lowpass': (int, 2500),
-        'highpass': (int, 100),
-        'notch': (float, 0.0),
-        'notch_q': (float, 10.0),
-        'channel_bw': (float, 0.0),
-        'bias_t': (bool, False),
-        'rf_notch': (bool, False),
-        'dab_notch': (bool, False),
-        'iq_correction': (bool, True),
-        'external_ref': (bool, False),
-        'continuous': (bool, True),
-        # SDR2 (Tuner 2) independent settings — gain/filters are per-tuner
-        'frequency2': (float, 462.550),
-        'modulation2': (str, 'nfm'),
-        'gain_mode2': (str, 'agc'),
-        'rfgr2': (int, 4),
-        'ifgr2': (int, 40),
-        'agc_setpoint2': (int, -30),
-        'squelch_threshold2': (int, 0),
-        'tau2': (int, 200),
-        'ampfactor2': (float, 1.0),
-        'lowpass2': (int, 2500),
-        'highpass2': (int, 100),
-        'notch2': (float, 0.0),
-        'notch_q2': (float, 10.0),
-        'channel_bw2': (float, 0.0),
-        'continuous2': (bool, True),
-    }
-
-    def __init__(self, gateway_dir):
-        self._gateway_dir = gateway_dir
-        self._channels_path = os.path.join(gateway_dir, 'sdr_channels.json')
-        self._process = None
-
-        # Set defaults for all settings
-        for key, (typ, default) in self._SETTING_KEYS.items():
-            setattr(self, key, default)
-
-        self._load_settings()
-
-    def _load_settings(self):
-        """Load current tuning state from JSON file."""
-        try:
-            if os.path.exists(self._channels_path):
-                with open(self._channels_path, 'r') as f:
-                    data = json_mod.load(f)
-                saved = data.get('current', {})
-                if 'bandwidth' in saved and 'sample_rate' not in saved:
-                    saved['sample_rate'] = saved.pop('bandwidth')
-                for key, (typ, default) in self._SETTING_KEYS.items():
-                    if key in saved:
-                        try:
-                            setattr(self, key, typ(saved[key]))
-                        except (ValueError, TypeError):
-                            pass
-        except Exception:
-            pass
-
-    def _save_settings(self):
-        """Persist current tuning state to JSON file."""
-        try:
-            with open(self._channels_path, 'w') as f:
-                json_mod.dump({'current': self._current_settings()}, f, indent=2)
-        except Exception as e:
-            print(f"  [SDR] Failed to save settings: {e}")
-
-    def _current_settings(self):
-        """Return current tuning state as a dict."""
-        return {key: getattr(self, key) for key in self._SETTING_KEYS}
-
-    def get_status(self):
-        """Return status dict for the /sdrstatus endpoint."""
-        alive = False
-        try:
-            result = subprocess.run(['pgrep', 'rtl_airband'], capture_output=True, timeout=2)
-            alive = result.returncode == 0
-        except Exception:
-            pass
-        d = self._current_settings()
-        d['process_alive'] = alive
-        return d
-
-    def apply_settings(self, **kwargs):
-        """Update SDR1 tuning state, rewrite both configs, restart both rtl_airband processes."""
-        for key, (typ, _default) in self._SETTING_KEYS.items():
-            if key in kwargs:
-                try:
-                    setattr(self, key, typ(kwargs[key]))
-                except (ValueError, TypeError):
-                    pass
-        try:
-            self._write_config()
-            self._write_config_sdr2()
-            self._restart_process()
-            self._save_settings()
-            return {'ok': True}
-        except Exception as e:
-            return {'ok': False, 'error': str(e)}
-
-    def apply_settings_sdr2(self, **kwargs):
-        """Update SDR2 (Tuner 2) settings and restart both processes."""
-        sdr2_keys = {'frequency2', 'modulation2', 'gain_mode2', 'rfgr2', 'ifgr2',
-                     'agc_setpoint2', 'squelch_threshold2', 'tau2', 'ampfactor2',
-                     'lowpass2', 'highpass2', 'notch2', 'notch_q2', 'channel_bw2',
-                     'continuous2'}
-        for key in sdr2_keys:
-            if key in kwargs:
-                typ = self._SETTING_KEYS[key][0]
-                try:
-                    setattr(self, key, typ(kwargs[key]))
-                except (ValueError, TypeError):
-                    pass
-        try:
-            self._write_config_sdr2()
-            self._restart_process()
-            self._save_settings()
-            return {'ok': True}
-        except Exception as e:
-            return {'ok': False, 'error': str(e)}
-
-    def _write_config(self):
-        """Generate and write the SDR1 (Master / Tuner 1) rtl_airband config file."""
-        device_string = self.MASTER_DEVICE_STRING
-
-        # Build gain line (omit entirely for AGC)
-        gain_line = ''
-        if self.gain_mode == 'manual':
-            gain_line = f'  gain = "RFGR={self.rfgr},IFGR={self.ifgr}";'
-
-        # Build device settings string for SoapySDR kwargs
-        settings_parts = []
-        settings_parts.append(f'biasT_ctrl={str(self.bias_t).lower()}')
-        settings_parts.append(f'rfnotch_ctrl={str(self.rf_notch).lower()}')
-        settings_parts.append(f'dabnotch_ctrl={str(self.dab_notch).lower()}')
-        settings_parts.append(f'iqcorr_ctrl={str(self.iq_correction).lower()}')
-        settings_parts.append(f'extref_ctrl={str(self.external_ref).lower()}')
-        settings_parts.append(f'agc_setpoint={self.agc_setpoint}')
-        device_settings = ','.join(settings_parts)
-
-        # Cap sample rate at 2 MSps — limit in RSPduo Master/Slave mode
-        sample_rate = min(self.sample_rate, 2.0)
-
-        # Build optional channel-level lines
-        ch_opts = ''
-        if self.squelch_threshold != 0:
-            ch_opts += f'      squelch_threshold = {self.squelch_threshold};\n'
-        if self.ampfactor != 1.0:
-            ch_opts += f'      ampfactor = {self.ampfactor};\n'
-        if self.lowpass != 2500:
-            ch_opts += f'      lowpass = {self.lowpass};\n'
-        if self.highpass != 100:
-            ch_opts += f'      highpass = {self.highpass};\n'
-        if self.notch > 0:
-            ch_opts += f'      notch = {self.notch};\n'
-            if self.notch_q != 10.0:
-                ch_opts += f'      notch_q = {self.notch_q};\n'
-        if self.channel_bw > 0:
-            ch_opts += f'      bandwidth = {self.channel_bw};\n'
-
-        # Build optional device-level lines
-        dev_opts = ''
-        if self.correction != 0.0:
-            dev_opts += f'  correction = {self.correction};\n'
-        if self.tau != 200:
-            dev_opts += f'  tau = {self.tau};\n'
-        if self.antenna:
-            dev_opts += f'  antenna = "{self.antenna}";\n'
-
-        conf = f'''# Auto-generated by Radio Gateway SDR Manager (SDR1 — Master / Tuner 1)
-# Do not edit manually — changes will be overwritten on next tune.
-
-devices:
-({{
-  type = "soapysdr";
-  device_string = "{device_string}";
-  device_settings = "{device_settings}";
-  mode = "multichannel";
-  centerfreq = {self.frequency};
-  sample_rate = {sample_rate};
-{gain_line}
-{dev_opts}
-  channels:
-  (
-    {{
-      freq = {self.frequency};
-      modulation = "{self.modulation}";
-{ch_opts}      outputs: (
-        {{
-          type = "pulse";
-          stream_name = "SDR {self.frequency:.3f} MHz";
-          sink = "sdr_capture";
-          continuous = {'true' if self.continuous else 'false'};
-        }}
-      );
-    }}
-  );
-}});
-'''
-        # Write via sudo tee
-        proc = subprocess.run(
-            ['sudo', 'tee', self.CONFIG_PATH],
-            input=conf.encode(), capture_output=True, timeout=5
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"Failed to write config: {proc.stderr.decode()}")
-
-    def _write_config_sdr2(self):
-        """Generate and write the SDR2 (Slave / Tuner 2) rtl_airband config file.
-
-        NOTE: SDR2 must be started AFTER SDR1 (Master) is already streaming.
-        The Slave device (rspduo_mode=8) only appears in the SoapySDR device list
-        once the Master process has opened the RSPduo.
-        """
-        device_string = self.SLAVE_DEVICE_STRING
-
-        # Gain line (omit for AGC)
-        gain_line = ''
-        if self.gain_mode2 == 'manual':
-            gain_line = f'  gain = "RFGR={self.rfgr2},IFGR={self.ifgr2}";\n'
-
-        # Device settings for AGC setpoint (always written — same as SDR1)
-        device_settings = f'agc_setpoint={self.agc_setpoint2}'
-
-        # Cap sample rate to match SDR1 (shared clock — Slave inherits from Master)
-        sample_rate = min(self.sample_rate, 2.0)
-
-        # Channel-level options
-        ch_opts = ''
-        if self.squelch_threshold2 != 0:
-            ch_opts += f'      squelch_threshold = {self.squelch_threshold2};\n'
-        if self.ampfactor2 != 1.0:
-            ch_opts += f'      ampfactor = {self.ampfactor2};\n'
-        if self.lowpass2 != 2500:
-            ch_opts += f'      lowpass = {self.lowpass2};\n'
-        if self.highpass2 != 100:
-            ch_opts += f'      highpass = {self.highpass2};\n'
-        if self.notch2 > 0:
-            ch_opts += f'      notch = {self.notch2};\n'
-            if self.notch_q2 != 10.0:
-                ch_opts += f'      notch_q = {self.notch_q2};\n'
-        if self.channel_bw2 > 0:
-            ch_opts += f'      bandwidth = {self.channel_bw2};\n'
-
-        # Device-level options
-        dev_opts = ''
-        if self.tau2 != 200:
-            dev_opts += f'  tau = {self.tau2};\n'
-
-        conf = f'''# Auto-generated by Radio Gateway SDR Manager (SDR2 — Slave / Tuner 2)
-# Do not edit manually — changes will be overwritten on next tune.
-
-devices:
-({{
-  type = "soapysdr";
-  device_string = "{device_string}";
-  device_settings = "{device_settings}";
-  mode = "multichannel";
-  centerfreq = {self.frequency2};
-  sample_rate = {sample_rate};
-{gain_line}{dev_opts}
-  channels:
-  (
-    {{
-      freq = {self.frequency2};
-      modulation = "{self.modulation2}";
-{ch_opts}      outputs: (
-        {{
-          type = "pulse";
-          stream_name = "SDR2 {self.frequency2:.3f} MHz";
-          sink = "sdr_capture2";
-          continuous = {'true' if self.continuous2 else 'false'};
-        }}
-      );
-    }}
-  );
-}});
-'''
-        proc = subprocess.run(
-            ['sudo', 'tee', self.CONFIG_PATH_SDR2],
-            input=conf.encode(), capture_output=True, timeout=5
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"Failed to write SDR2 config: {proc.stderr.decode()}")
-
-    def _restart_process(self):
-        """Kill existing rtl_airband processes and start SDR1 (Master) + SDR2 (Slave)."""
-        # Kill all existing rtl_airband — use SIGKILL since it may ignore SIGTERM
-        subprocess.run(['sudo', 'killall', '-9', 'rtl_airband'], capture_output=True, timeout=5)
-        self._process = None
-        time.sleep(1)
-
-        # Restart SDRplay API service — kill hard then start fresh
-        # (systemctl restart hangs because sdrplay_apiService ignores SIGTERM)
-        try:
-            subprocess.run(['sudo', 'systemctl', 'stop', 'sdrplay.service'],
-                           capture_output=True, timeout=3)
-        except subprocess.TimeoutExpired:
-            pass  # Expected — sdrplay_apiService ignores SIGTERM, killed below
-        subprocess.run(['sudo', 'killall', '-9', 'sdrplay_apiService'],
-                       capture_output=True, timeout=3)
-        time.sleep(1)
-        subprocess.run(['sudo', 'systemctl', 'start', 'sdrplay.service'],
-                       capture_output=True, timeout=10)
-        # Wait for sdrplay_apiService to be ready — 2s is not enough at boot
-        time.sleep(5)
-
-        # Start SDR1 (Tuner 1 / channel 0 — becomes RSPduo Master)
-        # -e routes daemon logs to stderr (syslog disabled); stdout has startup errors
-        proc = subprocess.run(
-            ['rtl_airband', '-e', '-c', self.CONFIG_PATH],
-            capture_output=True, timeout=10
-        )
-        # Verify SDR1 is running — retry for up to 5s
-        alive = False
-        for _ in range(5):
-            time.sleep(1)
-            chk = subprocess.run(['pgrep', 'rtl_airband'], capture_output=True, timeout=2)
-            if chk.returncode == 0:
-                alive = True
-                break
-        if not alive:
-            err = (proc.stdout.decode()[:200] or proc.stderr.decode()[:200]).strip()
-            raise RuntimeError(f"rtl_airband (SDR1) failed to start: {err}")
-
-        # Start SDR2 (Slave / Tuner 2) — must start AFTER SDR1 (Master) is streaming.
-        # The Slave device only appears in the SoapySDR list once Master is active.
-        time.sleep(3)
-        if os.path.exists(self.CONFIG_PATH_SDR2):
-            proc2 = subprocess.run(
-                ['rtl_airband', '-e', '-c', self.CONFIG_PATH_SDR2],
-                capture_output=True, timeout=10
-            )
-            # Check that we now have 2 rtl_airband processes
-            time.sleep(2)
-            chk2 = subprocess.run(['pgrep', '-a', 'rtl_airband'], capture_output=True, timeout=2)
-            pids = [l for l in chk2.stdout.decode().splitlines() if 'rtl_airband' in l]
-            if len(pids) < 2:
-                err2 = (proc2.stdout.decode()[:200] or proc2.stderr.decode()[:200]).strip()
-                print(f"  [SDR] Warning: SDR2 (Tuner 2) failed to start: {err2}")
-
-    def stop(self):
-        """Stop rtl_airband."""
-        subprocess.run(['sudo', 'killall', '-9', 'rtl_airband'], capture_output=True, timeout=5)
-        self._process = None
-
-
-
-
-class StatusBarWriter:
-    """Wraps sys.stdout so that any print() clears the status bar first.
-
-    The status monitor loop calls draw_status() to paint the bar on the
-    last terminal line.  When any other thread calls print() (which goes
-    through write()), this wrapper:
-      1. Clears the current status bar line (\r + spaces + \r)
-      2. Writes the log text (which scrolls the terminal up)
-      3. Lets the next draw_status() tick repaint the bar below
-
-    In headless mode, the status bar is suppressed but all output is still
-    captured in the ring buffer and written to the log file.
-    """
-
-    def __init__(self, original, headless=False, buffer_lines=2000, log_file=None):
+    def __init__(self, original, buffer_lines=2000, log_file=None, **_kwargs):
         self._orig = original
         self._lock = threading.Lock()
-        self._last_status = ""   # last status bar text (for redraw)
-        self._bar_drawn = False  # True when status bar is on screen
-        self._bar_lines = 1     # how many lines the status bar occupies
-        self._at_line_start = True  # track whether next write starts a new line
-        self._headless = headless
-        # Ring buffer for web log viewer
+        self._at_line_start = True
         import collections
         self._log_buffer = collections.deque(maxlen=buffer_lines)
-        self._log_seq = 0  # monotonic sequence number for polling
-        # Rolling log file
-        self._log_file = log_file  # file object (set up externally)
-        # Forward all attributes that print() and other code might check
+        self._log_seq = 0
+        self._log_file = log_file
         for attr in ('encoding', 'errors', 'mode', 'name', 'newlines',
                      'fileno', 'isatty', 'readable', 'seekable', 'writable'):
             if hasattr(original, attr):
@@ -1691,26 +167,6 @@ class StatusBarWriter:
 
     def write(self, text):
         with self._lock:
-            if not self._headless and self._bar_drawn and text and text != '\n':
-                # Clear status bar lines before printing log text
-                try:
-                    import shutil as _sh
-                    cols = _sh.get_terminal_size().columns
-                except Exception:
-                    cols = 120
-                blank = ' ' * cols
-                if self._bar_lines == 3:
-                    self._orig.write(f"\n\n\r{blank}\r\033[A\r{blank}\r\033[A\r{blank}\r")
-                elif self._bar_lines == 2:
-                    self._orig.write(f"\n\r{blank}\r\033[A\r{blank}\r")
-                else:
-                    self._orig.write(f"\r{blank}\r")
-                self._bar_drawn = False
-                # Strip leading \n — it was only there to push past the old
-                # status bar; the wrapper now clears the bar instead.
-                if text.startswith('\n'):
-                    text = text[1:]
-            # Prepend system time at the start of each new line
             if text:
                 import datetime as _dt
                 lines = text.split('\n')
@@ -1728,47 +184,12 @@ class StatusBarWriter:
                         else:
                             out_parts.append(line)
                         self._at_line_start = False
-                # If text ended with \n, next write starts a new line
                 if text.endswith('\n'):
                     self._at_line_start = True
-                if not self._headless:
-                    self._orig.write(''.join(out_parts))
+                self._orig.write(''.join(out_parts))
             else:
-                if not self._headless:
-                    self._orig.write(text)
+                self._orig.write(text)
         return len(text)
-
-    def draw_status(self, status_line, line2=None, line3=None):
-        """Called by the status monitor to paint the bar (no newline).
-
-        Supports up to 3 lines.  The cursor is left on line 1 so that
-        the next draw_status or write() can overwrite cleanly.
-        In headless mode or when there is no terminal, the status bar is
-        suppressed (web dashboard shows status instead).
-        """
-        if self._headless:
-            self._last_status = status_line
-            return
-        # No terminal attached — suppress status bar to avoid polluting logs
-        try:
-            if not self._orig.isatty():
-                self._last_status = status_line
-                return
-        except Exception:
-            pass
-        with self._lock:
-            if line3 and line2:
-                self._orig.write(f"\r{status_line}\n\r{line2}\n\r{line3}\033[2A\r")
-                self._bar_lines = 3
-            elif line2:
-                self._orig.write(f"\r{status_line}\n\r{line2}\033[A\r")
-                self._bar_lines = 2
-            else:
-                self._orig.write(f"\r{status_line}")
-                self._bar_lines = 1
-            self._orig.flush()
-            self._last_status = status_line
-            self._bar_drawn = True
 
     def flush(self):
         self._orig.flush()
@@ -1861,22 +282,19 @@ class RadioGateway:
 
         # Per-source audio processors
         self.radio_processor = AudioProcessor("radio", config)
-        self.sdr_processor = AudioProcessor("sdr", config)
-        self.sdr2_processor = AudioProcessor("sdr2", config)
+        self.sdr_processor = AudioProcessor("sdr", config)    # placeholder, replaced by SDRPlugin's processor
+        self.sdr2_processor = AudioProcessor("sdr2", config)  # placeholder, replaced by SDRPlugin's processor
         self.d75_processor = AudioProcessor("d75", config)
         self._sync_radio_processor()
-        self._sync_sdr_processor()
-        self._sync_sdr2_processor()
-        self._sync_d75_processor()
         
-        # Initialize audio mixer and sources
-        self.mixer = AudioMixer(config)
+        # Initialize audio bus (v2.0 mixer replacement) and sources
+        self.mixer = ListenBus("monitor", config)
         self.radio_source = None  # Will be initialized after AIOC setup
-        self.sdr_source = None  # SDR1 receiver audio source
+        # sdr_source removed — use sdr_plugin  # SDR1 receiver audio source
         self.sdr_muted = False  # SDR1-specific mute
         self.sdr_ducked = False  # Is SDR1 currently being ducked (status display)
         self.sdr_audio_level = 0  # SDR1 audio level for status bar
-        self.sdr2_source = None  # SDR2 receiver audio source
+        # sdr2_source removed — use sdr_plugin  # SDR2 receiver audio source
         self.sdr2_muted = False  # SDR2-specific mute
         self.sdr2_ducked = False  # Is SDR2 currently being ducked (status display)
         self.sdr2_audio_level = 0  # SDR2 audio level for status bar
@@ -1936,14 +354,14 @@ class RadioGateway:
         self.cat_client = None  # RadioCATClient instance
 
         # D75 CAT Control + Audio
-        self.d75_cat = None           # D75CATClient instance
-        self.d75_audio_source = None  # D75AudioSource instance
-        self.d75_muted = True         # D75 audio mute toggle (muted by default)
+        self.d75_plugin = None           # D75CATClient instance
+        self.d75_plugin = None  # D75AudioSource instance
+        self.d75_muted = False        # D75 audio mute toggle
 
         # KV4P HT Radio
-        self.kv4p_cat = None           # KV4PCATClient instance
-        self.kv4p_audio_source = None  # KV4PAudioSource instance
-        self.kv4p_muted = True         # KV4P audio mute toggle (muted by default)
+        self.kv4p_plugin = None           # KV4PCATClient instance
+        self.kv4p_plugin = None  # KV4PAudioSource instance
+        self.kv4p_muted = False        # KV4P audio mute toggle
         self.kv4p_processor = AudioProcessor("kv4p", config)
 
         # Mumble Server instances (local mumble-server/murmurd)
@@ -2026,54 +444,6 @@ class RadioGateway:
         else:
             self.sv_audio_level = int(self.sv_audio_level * 0.7 + current * 0.3)
 
-    def format_level_bar(self, level, muted=False, ducked=False, color='green'):
-        """Format audio level as a visual bar (0-100 scale) with optional color
-        
-        Args:
-            level: Audio level 0-100
-            muted: Whether this channel is muted
-            ducked: Whether this channel is being ducked (SDR only)
-            color: 'green' for RX, 'red' for TX, 'cyan' for SDR
-        
-        Returns a fixed-width string (same width regardless of muted/ducked/normal state)
-        """
-        # ANSI color codes
-        YELLOW = '\033[93m'
-        GREEN = '\033[92m'
-        RED = '\033[91m'
-        CYAN = '\033[96m'
-        MAGENTA = '\033[95m'
-        WHITE = '\033[97m'
-        RESET = '\033[0m'
-        
-        # Choose bar color
-        if color == 'red':
-            bar_color = RED
-        elif color == 'cyan':
-            bar_color = CYAN
-        elif color == 'magenta':
-            bar_color = MAGENTA
-        elif color == 'yellow':
-            bar_color = YELLOW
-        else:
-            bar_color = GREEN
-        
-        # All return paths have EXACTLY the same visible character width:
-        # 4 chars (% value) + space + 6-char bar = 11 visible characters total
-
-        # Show MUTE if muted (fixed width, colored)
-        if muted:
-            return f"{bar_color}M   {RESET} {bar_color}-MUTE-{RESET}"
-
-        # Create a 6-character bar graph
-        bar_length = 6
-        filled = int((level / 100.0) * bar_length)
-        bar = '█' * filled + '-' * (bar_length - filled)
-
-        # % value to the LEFT of the bar: RED when ducked, GREEN when passing
-        pct_color = RED if ducked else GREEN
-        return f"{pct_color}{level:3d}%{RESET} {bar_color}{bar}{RESET}"
-    
     def apply_highpass_filter(self, pcm_data):
         """Apply high-pass filter to remove low-frequency rumble"""
         try:
@@ -2168,78 +538,26 @@ class RadioGateway:
         p.gate_attack = self.config.NOISE_GATE_ATTACK
         p.gate_release = self.config.NOISE_GATE_RELEASE
 
-    def _sync_sdr_processor(self):
-        """Sync SDR-specific config flags into the SDR AudioProcessor instance."""
-        p = self.sdr_processor
-        p.enable_noise_gate = self.config.SDR_PROC_ENABLE_NOISE_GATE
-        p.gate_threshold = self.config.SDR_PROC_NOISE_GATE_THRESHOLD
-        p.gate_attack = self.config.SDR_PROC_NOISE_GATE_ATTACK
-        p.gate_release = self.config.SDR_PROC_NOISE_GATE_RELEASE
-        p.enable_hpf = self.config.SDR_PROC_ENABLE_HPF
-        p.hpf_cutoff = self.config.SDR_PROC_HPF_CUTOFF
-        p.enable_lpf = self.config.SDR_PROC_ENABLE_LPF
-        p.lpf_cutoff = self.config.SDR_PROC_LPF_CUTOFF
-        p.enable_notch = self.config.SDR_PROC_ENABLE_NOTCH
-        p.notch_freq = self.config.SDR_PROC_NOTCH_FREQ
-        p.notch_q = self.config.SDR_PROC_NOTCH_Q
+    def _sync_sdr_plugin_processors(self):
+        """Sync SDR processing config into the SDRPlugin's processor instances."""
+        if self.sdr_plugin:
+            from sdr_plugin import SDRPlugin
+            SDRPlugin._sync_processor(self.sdr_plugin._processor1, self.config)
+            SDRPlugin._sync_processor(self.sdr_plugin._processor2, self.config)
 
-    def _sync_sdr2_processor(self):
-        """Sync SDR2-specific config flags into the SDR2 AudioProcessor instance.
-        Uses the same SDR_PROC_* keys as SDR1 — both share one processing config section.
-        SDR2 gets its OWN processor instance so IIR filter state is never shared with SDR1.
-        """
-        p = self.sdr2_processor
-        p.enable_noise_gate = self.config.SDR_PROC_ENABLE_NOISE_GATE
-        p.gate_threshold = self.config.SDR_PROC_NOISE_GATE_THRESHOLD
-        p.gate_attack = self.config.SDR_PROC_NOISE_GATE_ATTACK
-        p.gate_release = self.config.SDR_PROC_NOISE_GATE_RELEASE
-        p.enable_hpf = self.config.SDR_PROC_ENABLE_HPF
-        p.hpf_cutoff = self.config.SDR_PROC_HPF_CUTOFF
-        p.enable_lpf = self.config.SDR_PROC_ENABLE_LPF
-        p.lpf_cutoff = self.config.SDR_PROC_LPF_CUTOFF
-        p.enable_notch = self.config.SDR_PROC_ENABLE_NOTCH
-        p.notch_freq = self.config.SDR_PROC_NOTCH_FREQ
-        p.notch_q = self.config.SDR_PROC_NOTCH_Q
+    def _sync_d75_plugin_processor(self):
+        """Sync D75 processing config into the D75Plugin's processor."""
+        if self.d75_plugin and self.d75_plugin._processor:
+            self.d75_plugin._sync_processor()
 
-    def _sync_d75_processor(self):
-        """Sync D75-specific config flags into the D75 AudioProcessor instance."""
-        p = self.d75_processor
-        p.enable_noise_gate = self.config.D75_PROC_ENABLE_NOISE_GATE
-        p.gate_threshold = self.config.D75_PROC_NOISE_GATE_THRESHOLD
-        p.gate_attack = self.config.D75_PROC_NOISE_GATE_ATTACK
-        p.gate_release = self.config.D75_PROC_NOISE_GATE_RELEASE
-        p.enable_hpf = self.config.D75_PROC_ENABLE_HPF
-        p.hpf_cutoff = self.config.D75_PROC_HPF_CUTOFF
-        p.enable_lpf = self.config.D75_PROC_ENABLE_LPF
-        p.lpf_cutoff = self.config.D75_PROC_LPF_CUTOFF
-        p.enable_notch = self.config.D75_PROC_ENABLE_NOTCH
-        p.notch_freq = self.config.D75_PROC_NOTCH_FREQ
-        p.notch_q = self.config.D75_PROC_NOTCH_Q
+    # process_audio_for_d75 removed — D75Plugin handles processing internally
 
-    def process_audio_for_d75(self, pcm_data):
-        """Apply D75-specific audio processing chain."""
-        self._sync_d75_processor()
-        return self.d75_processor.process(pcm_data)
+    def _sync_kv4p_plugin_processor(self):
+        """Sync KV4P processing config into the KV4PPlugin's processor."""
+        if self.kv4p_plugin and self.kv4p_plugin._processor:
+            self.kv4p_plugin._sync_processor()
 
-    def _sync_kv4p_processor(self):
-        """Sync KV4P-specific config flags into the KV4P AudioProcessor instance."""
-        p = self.kv4p_processor
-        p.enable_noise_gate = getattr(self.config, 'KV4P_PROC_ENABLE_NOISE_GATE', False)
-        p.gate_threshold = getattr(self.config, 'KV4P_PROC_NOISE_GATE_THRESHOLD', -40)
-        p.gate_attack = getattr(self.config, 'KV4P_PROC_NOISE_GATE_ATTACK', 0.01)
-        p.gate_release = getattr(self.config, 'KV4P_PROC_NOISE_GATE_RELEASE', 0.1)
-        p.enable_hpf = getattr(self.config, 'KV4P_PROC_ENABLE_HPF', True)
-        p.hpf_cutoff = getattr(self.config, 'KV4P_PROC_HPF_CUTOFF', 300)
-        p.enable_lpf = getattr(self.config, 'KV4P_PROC_ENABLE_LPF', False)
-        p.lpf_cutoff = getattr(self.config, 'KV4P_PROC_LPF_CUTOFF', 3000)
-        p.enable_notch = getattr(self.config, 'KV4P_PROC_ENABLE_NOTCH', False)
-        p.notch_freq = getattr(self.config, 'KV4P_PROC_NOTCH_FREQ', 1000)
-        p.notch_q = getattr(self.config, 'KV4P_PROC_NOTCH_Q', 30.0)
-
-    def process_audio_for_kv4p(self, pcm_data):
-        """Apply KV4P-specific audio processing chain."""
-        self._sync_kv4p_processor()
-        return self.kv4p_processor.process(pcm_data)
+    # process_audio_for_kv4p removed — KV4PPlugin handles processing internally
 
     def process_audio_for_mumble(self, pcm_data):
         """Apply all enabled audio processing to clean up radio audio before sending to Mumble.
@@ -2271,18 +589,8 @@ class RadioGateway:
         except Exception as e:
             print(f"  [Link] Failed to save settings: {e}")
 
-    def process_audio_for_sdr(self, pcm_data, source_name='SDR1'):
-        """Apply SDR-specific audio processing chain.
-        Each source gets its own processor instance so IIR filter state is isolated —
-        mixing SDR1 and SDR2 through a single shared processor caused filter-state
-        contamination at every 50ms chunk boundary (root cause of 5Hz clicks).
-        """
-        if source_name == 'SDR2':
-            self._sync_sdr2_processor()
-            return self.sdr2_processor.process(pcm_data)
-        self._sync_sdr_processor()
-        return self.sdr_processor.process(pcm_data)
-    
+    # process_audio_for_sdr removed — SDRPlugin handles processing internally
+
     def check_vad(self, pcm_data):
         """Voice Activity Detection - determines if audio should be sent to Mumble"""
         if not self.config.ENABLE_VAD:
@@ -2418,25 +726,14 @@ class RadioGateway:
             return True  # On error, allow transmission
         
     def set_ptt_state(self, state_on):
-        """Control PTT via configured method (aioc, relay, or software).
-
-        TX_RADIO selects which radio to key:
-          - 'th9800' (default): uses PTT_METHOD (aioc/relay/software via TH-9800 CAT)
-          - 'd75': uses D75 CAT !ptt (software PTT via D75 CAT client)
-        """
+        """Control PTT — routes to the configured TX radio plugin."""
         tx_radio = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
-        if tx_radio == 'd75':
-            self._ptt_d75(state_on)
-        elif tx_radio == 'kv4p':
-            self._ptt_kv4p(state_on)
-        else:
-            method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
-            if method == 'relay':
-                self._ptt_relay(state_on)
-            elif method == 'software':
-                self._ptt_software(state_on)
-            else:
-                self._ptt_aioc(state_on)
+        if tx_radio == 'd75' and self.d75_plugin:
+            self.d75_plugin.execute({'cmd': 'ptt', 'state': state_on})
+        elif tx_radio == 'kv4p' and self.kv4p_plugin:
+            self.kv4p_plugin.execute({'cmd': 'ptt', 'state': state_on})
+        elif self.th9800_plugin:
+            self.th9800_plugin.execute({'cmd': 'ptt', 'state': state_on})
         self.ptt_active = state_on
 
     def _ptt_aioc(self, state_on):
@@ -2529,7 +826,7 @@ class RadioGateway:
         for the socket lock and response parsing, causing 1-5s delays
         that starve the audio mixer.
         """
-        d75 = getattr(self, 'd75_cat', None)
+        d75 = getattr(self, 'd75_plugin', None)
         if not d75 or not d75._connected:
             if state_on:
                 self.notify("PTT failed: D75 not connected")
@@ -2550,7 +847,7 @@ class RadioGateway:
 
     def _ptt_kv4p(self, state_on):
         """PTT via KV4P HT serial — direct ptt_on/ptt_off."""
-        cat = getattr(self, 'kv4p_cat', None)
+        cat = getattr(self, 'kv4p_plugin', None)
         if not cat:
             if state_on:
                 self.notify("PTT failed: KV4P not connected")
@@ -2563,8 +860,8 @@ class RadioGateway:
             else:
                 cat.ptt_off()
                 # Discard any partial Opus frame so it doesn't bleed into next TX
-                if self.kv4p_audio_source:
-                    self.kv4p_audio_source._tx_buf = b''
+                if self.kv4p_plugin:
+                    self.kv4p_plugin._tx_buf = b''
             self._kv4p_ptt_on = state_on
             if self.config.VERBOSE_LOGGING:
                 print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (KV4P)")
@@ -2574,50 +871,49 @@ class RadioGateway:
 
     def sound_received_handler(self, user, soundchunk):
         """Called when audio is received from Mumble server"""
+        _t0 = time.monotonic()
+
+        # Feed MumbleSource for routing system
+        if hasattr(self, 'mumble_source') and self.mumble_source:
+            self.mumble_source.push_audio(soundchunk.pcm)
+
+        _t1 = time.monotonic()
+
         # Track when we last received audio
         self.last_rx_audio_time = time.time()
-        
+
         # Calculate audio level (with smoothing)
         current_level = self.calculate_audio_level(soundchunk.pcm)
         # Smooth the level display (fast attack, slow decay)
         if current_level > self.rx_audio_level:
-            self.rx_audio_level = current_level  # Fast attack
+            self.rx_audio_level = current_level
         else:
-            self.rx_audio_level = int(self.rx_audio_level * 0.7 + current_level * 0.3)  # Slow decay
-        
-        # Apply activation delay if configured
-        if self.config.PTT_ACTIVATION_DELAY > 0 and not self.ptt_active:
-            time.sleep(self.config.PTT_ACTIVATION_DELAY)
-        
+            self.rx_audio_level = int(self.rx_audio_level * 0.7 + current_level * 0.3)
+
+        _t2 = time.monotonic()
+
         # Update last sound time
         self.last_sound_time = time.time()
-        
-        # Key PTT if not already active AND TX is not muted
-        # Don't key the radio if we're muted - that would broadcast silence!
-        # Also don't auto-key if manual PTT mode is active
-        if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
-            # Queue the HID write to the audio thread (between audio reads) to
-            # avoid concurrent USB HID + isochronous audio on the AIOC device.
-            # Set ptt_active immediately so repeated Mumble callbacks don't
-            # queue a second activation before the first is processed.
-            self.ptt_active = True
-            self._pending_ptt_state = True
-            self._ptt_change_time = time.monotonic()
-        
-        # Play sound to AIOC output (to radio mic input)
-        # But only if TX is not muted
-        if self.output_stream and not self.tx_muted:
-            try:
-                # Apply output volume
-                pcm = soundchunk.pcm
-                if self.config.OUTPUT_VOLUME != 1.0:
-                    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-                    pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
-                
-                self.output_stream.write(pcm)
-            except Exception as e:
-                if self.config.VERBOSE_LOGGING:
-                    print(f"\nError playing audio: {e}")
+
+        _t3 = time.monotonic()
+        # Timing diagnostic
+        if not hasattr(self, '_srh_count'):
+            self._srh_count = 0
+            self._srh_max_ms = 0.0
+            self._srh_total_ms = 0.0
+        self._srh_count += 1
+        _elapsed = (_t3 - _t0) * 1000
+        _push_ms = (_t1 - _t0) * 1000
+        _level_ms = (_t2 - _t1) * 1000
+        self._srh_total_ms += _elapsed
+        if _elapsed > self._srh_max_ms:
+            self._srh_max_ms = _elapsed
+        if self._srh_count <= 3 or self._srh_count % 50 == 0:
+            _avg = self._srh_total_ms / self._srh_count
+            print(f"  [SRH] #{self._srh_count}: {_elapsed:.2f}ms (push={_push_ms:.2f} level={_level_ms:.2f}) avg={_avg:.2f}ms max={self._srh_max_ms:.2f}ms")
+        # MumbleSource.push_audio() feeds the queue, SoloBus drains it
+        # and calls put_audio() + PTT on the radio plugin.
+        # Legacy direct path disabled to avoid double-writing to output stream.
     
     def find_usb_device_path(self):
         """Find the USB device path for the AIOC"""
@@ -2752,7 +1048,7 @@ class RadioGateway:
 
         # Only suppress if not verbose
         if not self.config.VERBOSE_LOGGING:
-            # Hardcode fd 2 — sys.stderr may be StatusBarWriter (fileno→stdout)
+            # Hardcode fd 2 — sys.stderr may be LogWriter (fileno→stdout)
             saved_stderr = os.dup(2)
             try:
                 devnull = os.open(os.devnull, os.O_WRONLY)
@@ -2828,26 +1124,122 @@ class RadioGateway:
         print(f"Warning: Speaker output device '{spec}' not found -- using system default")
         return None, 'system default'
 
-    def _speaker_enqueue(self, data):
-        """Apply SPEAKER_VOLUME and enqueue audio for the speaker output thread.
-        Non-blocking: if queue is full, drop oldest chunk to absorb clock drift
-        between software timer and speaker hardware clock."""
-        if not self.speaker_queue or self.speaker_muted or not data:
+    def _source_on_listen_bus(self, source_id):
+        """Check if a source is connected to the PRIMARY listen bus in routing config.
+
+        Only the first listen bus is the primary (handled by main loop mixer).
+        Secondary listen busses are handled by BusManager.
+        """
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'routing_config.json')
+            with open(config_path) as f:
+                data = json_mod.load(f)
+            # Find the primary listen bus (first one)
+            primary_id = None
+            for b in data.get('busses', []):
+                if b.get('type') == 'listen':
+                    primary_id = b['id']
+                    break
+            if not primary_id:
+                print(f"  [routing] {source_id}: no listen bus found")
+                return False
+            for c in data.get('connections', []):
+                if c['type'] == 'source-bus' and c['from'] == source_id and c['to'] == primary_id:
+                    print(f"  [routing] {source_id} → primary listen bus '{primary_id}' ✓")
+                    return True
+            print(f"  [routing] {source_id} not on primary listen bus '{primary_id}'")
+        except Exception as e:
+            print(f"  [routing] _source_on_listen_bus error for {source_id}: {e}")
+        return False
+
+    def sync_mixer_sources(self):
+        """Reconcile primary ListenBus sources with routing config.
+
+        Called after routing save to add/remove sources from the mixer
+        so reality matches what the routing UI shows.
+        """
+        if not self.mixer:
             return
+        _before = {s.source.name for s in self.mixer.source_slots}
+        print(f"  [sync] BEFORE: primary mixer sources = {_before}")
+        # Map source_id → (plugin, priority, duckable)
+        source_map = {}
+        if self.sdr_plugin:
+            source_map['sdr'] = (self.sdr_plugin, 11, getattr(self.config, 'SDR_DUCK', True))
+        if self.th9800_plugin:
+            source_map['aioc'] = (self.th9800_plugin, 1, False)
+        if self.kv4p_plugin:
+            source_map['kv4p'] = (self.kv4p_plugin, int(getattr(self.config, 'KV4P_AUDIO_PRIORITY', 2)) + 10, getattr(self.config, 'KV4P_AUDIO_DUCK', True))
+        if self.d75_plugin:
+            source_map['d75'] = (self.d75_plugin, int(getattr(self.config, 'D75_AUDIO_PRIORITY', 2)) + 10, getattr(self.config, 'D75_AUDIO_DUCK', True))
+        if getattr(self, 'playback_source', None):
+            source_map['playback'] = (self.playback_source, 0, False)
+        if getattr(self, 'web_mic_source', None):
+            source_map['webmic'] = (self.web_mic_source, 0, False)
+        if getattr(self, 'announce_input_source', None):
+            source_map['announce'] = (self.announce_input_source, 0, False)
+        if getattr(self, 'web_monitor_source', None):
+            source_map['monitor'] = (self.web_monitor_source, 5, False)
+        if getattr(self, 'mumble_source', None):
+            source_map['mumble_rx'] = (self.mumble_source, 0, False)
+        if getattr(self, 'remote_audio_source', None):
+            source_map['remote_audio'] = (self.remote_audio_source, int(getattr(self.config, 'REMOTE_AUDIO_PRIORITY', 2)) + 10, getattr(self.config, 'REMOTE_AUDIO_DUCK', True))
+
+        # Which sources should be on the listen bus?
+        should_be_on = set()
+        for sid in source_map:
+            if self._source_on_listen_bus(sid):
+                should_be_on.add(sid)
+
+        # Current sources on mixer
+        current_names = {s.source.name for s in self.mixer.source_slots}
+
+        # Add missing
+        for sid in should_be_on:
+            plugin, prio, duck = source_map[sid]
+            if plugin.name not in current_names:
+                _det = getattr(plugin, 'ptt_control', False)
+                self.mixer.add_source(plugin, bus_priority=prio, duckable=duck, deterministic=_det)
+                print(f"  [sync] Added {sid} to listen bus (det={_det})")
+
+        # Remove extras (only for sources we manage)
+        for sid, (plugin, _, _) in source_map.items():
+            if sid not in should_be_on and plugin.name in current_names:
+                self.mixer.remove_source(plugin.name)
+                print(f"  [sync] Removed {sid} from listen bus")
+
+        _final = {s.source.name for s in self.mixer.source_slots}
+        print(f"  [sync] Primary mixer sources: {_final}")
+
+    def _speaker_enqueue(self, data):
+        """Route audio to speaker — either real PortAudio or virtual (metering only).
+
+        Virtual mode: just track audio level for the routing page, no actual output.
+        Real mode: apply volume, queue for PortAudio callback.
+        """
+        if self.speaker_muted or not data:
+            return
+
+        # Level metering (always, regardless of mode)
         try:
             spk = data
             if self.config.SPEAKER_VOLUME != 1.0:
                 arr = np.frombuffer(spk, dtype=np.int16).astype(np.float32)
                 spk = np.clip(arr * self.config.SPEAKER_VOLUME, -32768, 32767).astype(np.int16).tobytes()
-            # Update speaker level for status bar (fast attack, slow decay)
             current_level = self.calculate_audio_level(spk)
             if current_level > self.speaker_audio_level:
                 self.speaker_audio_level = current_level
             else:
                 self.speaker_audio_level = int(self.speaker_audio_level * 0.7 + current_level * 0.3)
+        except Exception:
+            return
+
+        # Virtual speaker — metering only, no real audio output
+        if not self.speaker_queue:
+            return
+
+        try:
             # Absorb hw/sw clock drift: drain excess when queue gets deep.
-            # USB audio clocks can drift ~0.7% from software clock, accumulating
-            # ~1 extra chunk per 3.5s. Drain at 4 to keep latency bounded.
             _spk_qd = self.speaker_queue.qsize()
             if _spk_qd >= 4:
                 while self.speaker_queue.qsize() > 2:
@@ -2890,13 +1282,30 @@ class RadioGateway:
         return (chunk, pyaudio.paContinue)
 
     def open_speaker_output(self):
-        """Open optional local speaker monitoring output stream."""
+        """Open speaker output — real PortAudio device or virtual (metering only).
+
+        Virtual mode: no PortAudio stream opened, no PipeWire link to mess with.
+        Audio level is still tracked for the routing page. Use SPEAKER_MODE=virtual
+        in config, or it auto-falls back to virtual if the device isn't found.
+        """
         if not self.config.ENABLE_SPEAKER_OUTPUT:
             return
+
+        speaker_mode = str(getattr(self.config, 'SPEAKER_MODE', 'auto')).lower()
+
+        if speaker_mode == 'virtual':
+            # Virtual speaker — metering only, no real audio
+            print(f"✓ Speaker output: virtual (metering only, no audio device)")
+            return
+
+        # Try to open a real PortAudio device
         try:
             device_index, device_name = self.find_speaker_device(self.pyaudio_instance)
+            if device_index is None and speaker_mode == 'auto':
+                # No matching device — fall back to virtual
+                print(f"✓ Speaker output: virtual (no device found, metering only)")
+                return
             import queue
-            # 6 chunks × 50ms = 300ms of buffer headroom to absorb timing jitter
             self.speaker_queue = queue.Queue(maxsize=6)
             self.speaker_stream = self.pyaudio_instance.open(
                 format=pyaudio.paInt16,
@@ -2910,7 +1319,7 @@ class RadioGateway:
             print(f"✓ Speaker output initialized OK")
             print(f"  Device: {device_name}")
         except Exception as e:
-            print(f"Warning: Speaker output failed to open: {e}")
+            print(f"✓ Speaker output: virtual (device open failed: {e})")
             self.speaker_stream = None
 
     def setup_audio(self):
@@ -2918,100 +1327,67 @@ class RadioGateway:
         if self.config.VERBOSE_LOGGING:
             print("Initializing audio...")
         
-        # Find AIOC device
-        input_idx, output_idx = self.find_aioc_audio_device()
-        
-        if input_idx is None or output_idx is None:
-            print("✗ Could not find AIOC audio device")
-            if self.config.AIOC_INPUT_DEVICE < 0 or self.config.AIOC_OUTPUT_DEVICE < 0:
-                print("  Using default audio device instead")
-        
-        # Suppress ALSA warnings during PyAudio initialization if not verbose
-        if not self.config.VERBOSE_LOGGING:
-            import os
-            # Hardcode fd 2 — sys.stderr may be StatusBarWriter (fileno→stdout)
-            saved_stderr = os.dup(2)
-            try:
-                devnull = os.open(os.devnull, os.O_WRONLY)
-                os.dup2(devnull, 2)
-                os.close(devnull)
-                self.pyaudio_instance = pyaudio.PyAudio()
-            finally:
-                os.dup2(saved_stderr, 2)
-                os.close(saved_stderr)
-        else:
-            self.pyaudio_instance = pyaudio.PyAudio()
-        
-        # Determine format based on bit depth
-        if self.config.AUDIO_BITS == 16:
-            audio_format = pyaudio.paInt16
-        elif self.config.AUDIO_BITS == 24:
-            audio_format = pyaudio.paInt24
-        elif self.config.AUDIO_BITS == 32:
-            audio_format = pyaudio.paInt32
-        else:
-            audio_format = pyaudio.paInt16
-        
         try:
-            # Output stream (Mumble → AIOC → Radio)
-            self.output_stream = self.pyaudio_instance.open(
-                format=audio_format,
-                channels=self.config.AUDIO_CHANNELS,
-                rate=self.config.AUDIO_RATE,
-                output=True,
-                output_device_index=output_idx,
-                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 2  # 2x buffer for smooth playback
-            )
-            if self.config.VERBOSE_LOGGING:
-                latency_ms = (self.config.AUDIO_CHUNK_SIZE * 2 / self.config.AUDIO_RATE) * 1000
-                print(f"✓ Audio output configured ({latency_ms:.1f}ms buffer)")
-            else:
-                print("✓ Audio configured")
-            
-            # Initialize radio source FIRST so we can pass its PortAudio callback
-            # to the input stream.  Callback mode lets PortAudio deliver audio in
-            # its own real-time thread (SCHED_FIFO when rtprio limits allow) rather
-            # than a Python reader thread that can be preempted by the OS scheduler.
-            # frames_per_buffer must stay at 1x AUDIO_CHUNK_SIZE (see note below).
-            if self.aioc_available:
+            # Initialize SDR plugin BEFORE TH-9800/PyAudio — rtl_airband subprocess
+            # forks must happen before PortAudio initializes (Pa_Initialize is not
+            # fork-safe and will SIGSEGV if a fork happens after init).
+            self.sdr_plugin = None
+            if self.config.ENABLE_SDR or getattr(self.config, 'ENABLE_SDR2', False):
                 try:
-                    self.radio_source = AIOCRadioSource(self.config, self)
-                    self.mixer.add_source(self.radio_source)
-                    if self.config.VERBOSE_LOGGING:
-                        print("✓ Radio audio source added to mixer")
-                except Exception as source_err:
-                    print(f"⚠ Warning: Could not initialize radio source: {source_err}")
-                    print("  Continuing without radio audio")
-                    self.radio_source = None
+                    from sdr_plugin import SDRPlugin
+                    print("Initializing SDR plugin (RSPduo dual tuner)...")
+                    self.sdr_plugin = SDRPlugin()
+                    if self.sdr_plugin.setup(self.config):
+                        if self._source_on_listen_bus('sdr'):
+                            self.mixer.add_source(self.sdr_plugin, bus_priority=11, duckable=getattr(self.config, 'SDR_DUCK', True))
+                            print("✓ SDR plugin added to mixer (listen bus)")
+                        else:
+                            print("✓ SDR plugin initialized (routed via bus manager)")
+                    else:
+                        self.sdr_plugin = None
+                except Exception as sdr_err:
+                    print(f"⚠ Warning: SDR plugin: {sdr_err}")
+                    self.sdr_plugin = None
+
+            if self.sdr_plugin:
+                self.sdr_processor = self.sdr_plugin._processor1
+                self.sdr2_processor = self.sdr_plugin._processor2
+
+            # Initialize TH-9800 plugin (AIOC + CAT + relays + audio streams)
+            self.th9800_plugin = None
+            try:
+                from th9800_plugin import TH9800Plugin
+                print("Initializing TH-9800 plugin...")
+                self.th9800_plugin = TH9800Plugin()
+                if self.th9800_plugin.setup(self.config, gateway=self):
+                    # Only add to primary ListenBus if routed there (not to a solo/other bus)
+                    if self._source_on_listen_bus('aioc'):
+                        self.mixer.add_source(self.th9800_plugin, bus_priority=1, duckable=False)
+                        print("✓ TH-9800 plugin added to mixer (listen bus)")
+                    else:
+                        print("✓ TH-9800 plugin initialized (routed via bus manager)")
+                else:
+                    print("⚠ TH-9800 plugin setup failed")
+                    self.th9800_plugin = None
+            except Exception as e:
+                print(f"⚠ TH-9800 plugin error: {e}")
+                import traceback; traceback.print_exc()
+                self.th9800_plugin = None
+
+            # Backward compat: expose plugin internals for code that still uses them
+            if self.th9800_plugin:
+                self.radio_source = self.th9800_plugin
+                self.pyaudio_instance = self.th9800_plugin._pyaudio
+                self.input_stream = self.th9800_plugin._input_stream
+                self.output_stream = self.th9800_plugin._output_stream
+                self.aioc_device = self.th9800_plugin._aioc_device
+                self.aioc_available = self.th9800_plugin._aioc_available
+                self.cat_client = self.th9800_plugin._cat_client
+                self.radio_processor = self.th9800_plugin._processor
             else:
-                print("  Radio audio: DISABLED (AIOC not available)")
                 self.radio_source = None
 
-            # Input stream (Radio → AIOC → Mumble).
-            # frames_per_buffer=4×AUDIO_CHUNK_SIZE sets the ALSA period to 200ms.
-            # _audio_callback queues each 200ms blob; get_audio() pre-buffers 3
-            # blobs (600ms cushion) then slices into 50ms sub-chunks.
-            aioc_callback = self.radio_source._audio_callback if self.radio_source else None
-            self.input_stream = self.pyaudio_instance.open(
-                format=audio_format,
-                channels=self.config.AUDIO_CHANNELS,
-                rate=self.config.AUDIO_RATE,
-                input=True,
-                input_device_index=input_idx,
-                frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
-                stream_callback=aioc_callback
-            )
-
-            # Start the stream explicitly
-            if not self.input_stream.is_active():
-                self.input_stream.start_stream()
-
-            # Initialize stream age
             self.stream_age = time.time()
-
-            if self.config.VERBOSE_LOGGING:
-                mode = "callback" if aioc_callback else "blocking"
-                print(f"✓ Audio input configured ({mode} mode)")
 
             self.open_speaker_output()
 
@@ -3019,8 +1395,8 @@ class RadioGateway:
             if self.config.ENABLE_PLAYBACK:
                 try:
                     self.playback_source = FilePlaybackSource(self.config, self)
-                    self.mixer.add_source(self.playback_source)
-                    print("✓ File playback source added to mixer")
+                    # NOT added to primary ListenBus — routed via BusManager
+                    print("✓ File playback source initialized (routed via bus manager)")
                     
                     # Show available audio files
                     import os
@@ -3061,120 +1437,40 @@ class RadioGateway:
             else:
                 print("  Text-to-speech: DISABLED (set ENABLE_TTS = true to enable)")
             
-            # Derive numeric SDR mixer priorities from SDR_PRIORITY_ORDER
-            _sdr_order = getattr(self.config, 'SDR_PRIORITY_ORDER', 'sdr1')
-            if _sdr_order == 'sdr2':
-                _sdr1_mix_pri, _sdr2_mix_pri = 2, 1
-            elif _sdr_order == 'equal':
-                _sdr1_mix_pri, _sdr2_mix_pri = 1, 1
-            else:  # 'sdr1' default
-                _sdr1_mix_pri, _sdr2_mix_pri = 1, 2
+            # (SDR init moved above AIOC init to avoid Pa_Initialize fork crash)
 
-            # Initialize SDR1 source if enabled
-            if self.config.ENABLE_SDR:
-                try:
-                    print("Initializing SDR1 audio source...")
-                    _sdr1_cls = PipeWireSDRSource if self.config.SDR_DEVICE_NAME.startswith(('pw:', 'pipewire:')) else SDRSource
-                    self.sdr_source = _sdr1_cls(self.config, self, name="SDR1", sdr_priority=_sdr1_mix_pri)
-                    if self.sdr_source.setup_audio():
-                        # Set initial state from config
-                        self.sdr_source.enabled = True
-                        self.sdr_source.duck = self.config.SDR_DUCK
-                        self.sdr_source.mix_ratio = self.config.SDR_MIX_RATIO
-                        self.sdr_source.sdr_priority = _sdr1_mix_pri
-                        self.mixer.add_source(self.sdr_source)
-                        print("✓ SDR1 audio source added to mixer")
-                        print(f"  Device: {self.config.SDR_DEVICE_NAME}")
-                        print(f"  Priority order: {_sdr_order} (SDR1 mixer pri={_sdr1_mix_pri})")
-                        if self.config.SDR_DUCK:
-                            print(f"  Ducking: ENABLED (SDR silenced when higher priority audio active)")
-                        else:
-                            print(f"  Ducking: DISABLED (SDR mixed at {self.config.SDR_MIX_RATIO:.1f}x ratio)")
-                        print(f"  Press 's' to mute/unmute SDR1")
-                    else:
-                        print("⚠ Warning: Could not initialize SDR1 audio")
-                        self.sdr_source = None
-                except Exception as sdr_err:
-                    print(f"⚠ Warning: Could not initialize SDR1 source: {sdr_err}")
-                    self.sdr_source = None
-            else:
-                self.sdr_source = None
-                if self.config.VERBOSE_LOGGING:
-                    print("  SDR1 audio: DISABLED (set ENABLE_SDR = true to enable)")
-
-            # Initialize SDR2 source if enabled
-            if self.config.ENABLE_SDR2:
-                try:
-                    print("Initializing SDR2 audio source...")
-                    _sdr2_cls = PipeWireSDRSource if self.config.SDR2_DEVICE_NAME.startswith(('pw:', 'pipewire:')) else SDRSource
-                    self.sdr2_source = _sdr2_cls(self.config, self, name="SDR2", sdr_priority=_sdr2_mix_pri)
-                    if self.sdr2_source.setup_audio():
-                        # Set initial state from config
-                        self.sdr2_source.enabled = True
-                        self.sdr2_source.duck = self.config.SDR2_DUCK
-                        self.sdr2_source.mix_ratio = self.config.SDR2_MIX_RATIO
-                        self.sdr2_source.sdr_priority = _sdr2_mix_pri
-                        self.mixer.add_source(self.sdr2_source)
-                        print("✓ SDR2 audio source added to mixer")
-                        print(f"  Device: {self.config.SDR2_DEVICE_NAME}")
-                        print(f"  Priority order: {_sdr_order} (SDR2 mixer pri={_sdr2_mix_pri})")
-                        if self.config.SDR2_DUCK:
-                            print(f"  Ducking: ENABLED (SDR silenced when higher priority audio active)")
-                        else:
-                            print(f"  Ducking: DISABLED (SDR mixed at {self.config.SDR2_MIX_RATIO:.1f}x ratio)")
-                        print(f"  Press 'x' to mute/unmute SDR2")
-                    else:
-                        print("⚠ Warning: Could not initialize SDR2 audio")
-                        print(f"  Device {self.config.SDR2_DEVICE_NAME} not found or already in use")
-                        print(f"  Try: arecord -l | grep Loopback")
-                        print(f"  SDR2 will show as disabled in status bar")
-                        # Keep the source object but disable it so status bar shows
-                        self.sdr2_source.enabled = False
-                except Exception as sdr2_err:
-                    print(f"⚠ Warning: Could not initialize SDR2 source: {sdr2_err}")
-                    # Create disabled source object so status bar still shows it
-                    try:
-                        self.sdr2_source = _sdr2_cls(self.config, self, name="SDR2", sdr_priority=_sdr2_mix_pri)
-                        self.sdr2_source.enabled = False
-                    except:
-                        self.sdr2_source = None
-            else:
-                self.sdr2_source = None
-                if self.config.VERBOSE_LOGGING:
-                    print("  SDR2 audio: DISABLED (set ENABLE_SDR2 = true to enable)")
-
-            # Initialize Remote Audio Link
-            remote_role = getattr(self.config, 'REMOTE_AUDIO_ROLE', 'disabled').lower().strip("'\"")
-            if remote_role == 'server':
+            # Initialize Remote Audio Link (full duplex — TX server + RX source)
+            remote_enabled = getattr(self.config, 'REMOTE_AUDIO_ROLE', 'disabled').lower().strip("'\"") != 'disabled'
+            if remote_enabled:
+                # TX: RemoteAudioServer connects out to Windows client on REMOTE_AUDIO_PORT (9600)
                 try:
                     host = self.config.REMOTE_AUDIO_HOST
                     if not host:
-                        print("⚠ Warning: REMOTE_AUDIO_HOST not set — server needs a destination IP")
+                        print("⚠ Warning: REMOTE_AUDIO_HOST not set — TX server needs a destination IP")
                     else:
                         self.remote_audio_server = RemoteAudioServer(self.config)
                         self.remote_audio_server.start()
                 except Exception as e:
-                    print(f"⚠ Warning: Could not start remote audio server: {e}")
+                    print(f"⚠ Warning: Could not start remote audio TX server: {e}")
                     self.remote_audio_server = None
-            elif remote_role == 'client':
+
+                # RX: RemoteAudioSource listens on REMOTE_AUDIO_RX_PORT (9602) for Windows client
                 try:
-                    bind_host = self.config.REMOTE_AUDIO_HOST or '0.0.0.0'
-                    port = self.config.REMOTE_AUDIO_PORT
-                    print(f"Initializing remote audio client (listening on {bind_host}:{port})...")
+                    rx_port = int(getattr(self.config, 'REMOTE_AUDIO_RX_PORT', 9602))
+                    print(f"Initializing remote audio RX source (listening on 0.0.0.0:{rx_port})...")
                     self.remote_audio_source = RemoteAudioSource(self.config, self)
-                    if self.remote_audio_source.setup_audio():
+                    if self.remote_audio_source.setup_audio(port_override=rx_port):
                         self.remote_audio_source.enabled = True
                         self.remote_audio_source.duck = self.config.REMOTE_AUDIO_DUCK
                         self.remote_audio_source.sdr_priority = int(self.config.REMOTE_AUDIO_PRIORITY)
-                        self.mixer.add_source(self.remote_audio_source)
-                        print(f"✓ Remote audio source (SDRSV) added to mixer")
-                        print(f"  Priority: {self.config.REMOTE_AUDIO_PRIORITY}")
-                        print(f"  Press 'c' to mute/unmute remote audio")
+                        # Don't add to mixer here — sync_mixer_sources() handles it
+                        # after bus_manager is created, based on routing config
+                        print(f"✓ Remote audio RX source initialized (mixer sync deferred)")
                     else:
-                        print("⚠ Warning: Could not initialize remote audio source")
+                        print("⚠ Warning: Could not initialize remote audio RX source")
                         self.remote_audio_source = None
                 except Exception as e:
-                    print(f"⚠ Warning: Could not initialize remote audio client: {e}")
+                    print(f"⚠ Warning: Could not initialize remote audio RX source: {e}")
                     self.remote_audio_source = None
 
             # Initialize announcement input (port 9601) if enabled
@@ -3185,8 +1481,11 @@ class RadioGateway:
                     print(f"Initializing announcement input (listening on {bind_host}:{port})...")
                     self.announce_input_source = NetworkAnnouncementSource(self.config, self)
                     if self.announce_input_source.setup_audio():
-                        self.mixer.add_source(self.announce_input_source)
-                        print(f"✓ Announcement input (ANNIN) added to mixer")
+                        if self._source_on_listen_bus('announce'):
+                            self.mixer.add_source(self.announce_input_source, bus_priority=0, duckable=False, deterministic=True)
+                            print(f"✓ Announcement input (ANNIN) added to mixer (listen bus)")
+                        else:
+                            print(f"✓ Announcement input initialized (routed via bus manager)")
                         if not self.aioc_available:
                             print("  ⚠ No AIOC — PTT will not activate (audio discarded)")
                     else:
@@ -3201,8 +1500,11 @@ class RadioGateway:
                 try:
                     self.web_mic_source = WebMicSource(self.config, self)
                     if self.web_mic_source.setup_audio():
-                        self.mixer.add_source(self.web_mic_source)
-                        print("✓ Web microphone source (WEBMIC) added to mixer")
+                        if self._source_on_listen_bus('webmic'):
+                            self.mixer.add_source(self.web_mic_source, bus_priority=0, duckable=False, deterministic=True)
+                            print("✓ Web microphone source (WEBMIC) added to mixer (listen bus)")
+                        else:
+                            print("✓ Web microphone source initialized (routed via bus manager)")
                 except Exception as e:
                     print(f"⚠ Warning: Could not initialize web mic source: {e}")
                     self.web_mic_source = None
@@ -3212,252 +1514,65 @@ class RadioGateway:
                 try:
                     self.web_monitor_source = WebMonitorSource(self.config, self)
                     if self.web_monitor_source.setup_audio():
-                        self.mixer.add_source(self.web_monitor_source)
-                        print("✓ Web monitor source (MONITOR) added to mixer")
+                        if self._source_on_listen_bus('monitor'):
+                            self.mixer.add_source(self.web_monitor_source, bus_priority=5, duckable=False)
+                            print("✓ Web monitor source (MONITOR) added to mixer (listen bus)")
+                        else:
+                            print("✓ Web monitor source initialized (routed via bus manager)")
                 except Exception as e:
                     print(f"⚠ Warning: Could not initialize web monitor source: {e}")
                     self.web_monitor_source = None
 
-            # Initialize relay controllers
-            if getattr(self.config, 'ENABLE_RELAY_RADIO', False):
-                try:
-                    dev = self.config.RELAY_RADIO_DEVICE
-                    print(f"Initializing radio power relay ({dev})...")
-                    self.relay_radio = RelayController(dev, self.config.RELAY_RADIO_BAUD)
-                    if self.relay_radio.open():
-                        self.relay_radio.set_state(False)  # Ensure relay off on startup
-                        print(f"  Relay radio: ready (press 'j' to pulse power button)")
-                    else:
-                        self.relay_radio = None
-                except Exception as e:
-                    print(f"  Warning: Could not initialize radio relay: {e}")
-                    self.relay_radio = None
+            # Relay controllers now owned by TH9800Plugin
+            if self.th9800_plugin:
+                self.relay_radio = self.th9800_plugin._relay_radio
+                self.relay_ptt = self.th9800_plugin._relay_ptt
+                self.relay_charger = self.th9800_plugin._relay_charger
 
-            if getattr(self.config, 'ENABLE_RELAY_CHARGER', False):
-                try:
-                    charger_control = str(getattr(self.config, 'RELAY_CHARGER_CONTROL', 'gpio')).lower()
-                    if charger_control == 'gpio':
-                        gpio_pin = int(getattr(self.config, 'CHARGER_RELAY_GPIO', 23))
-                        print(f"Initializing charger relay (GPIO {gpio_pin})...")
-                        self.relay_charger = GPIORelayController(gpio_pin)
-                    else:
-                        dev = self.config.RELAY_CHARGER_DEVICE
-                        print(f"Initializing charger relay ({dev})...")
-                        self.relay_charger = RelayController(dev, self.config.RELAY_CHARGER_BAUD)
-                    if self.relay_charger.open():
-                        # Parse schedule times
-                        on_str = str(self.config.RELAY_CHARGER_ON_TIME)
-                        off_str = str(self.config.RELAY_CHARGER_OFF_TIME)
-                        oh, om = int(on_str.split(':')[0]), int(on_str.split(':')[1])
-                        fh, fm = int(off_str.split(':')[0]), int(off_str.split(':')[1])
-                        self._charger_on_time = (oh, om)
-                        self._charger_off_time = (fh, fm)
-                        # Set initial state based on current time
-                        should_be_on = self._charger_should_be_on()
-                        self.relay_charger.set_state(should_be_on)
-                        self.relay_charger_on = should_be_on
-                        state_str = "CHARGING" if should_be_on else "DRAINING"
-                        print(f"  Charger relay: {state_str} (schedule {on_str}-{off_str})")
-                    else:
-                        self.relay_charger = None
-                except Exception as e:
-                    print(f"  Warning: Could not initialize charger relay: {e}")
-                    self.relay_charger = None
+            # CAT client now owned by TH9800Plugin (backward compat alias set above)
 
-            # Initialize PTT relay (when PTT_METHOD = relay)
-            ptt_method = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
-            if ptt_method == 'relay':
-                try:
-                    dev = self.config.PTT_RELAY_DEVICE
-                    print(f"Initializing PTT relay ({dev})...")
-                    self.relay_ptt = RelayController(dev, self.config.PTT_RELAY_BAUD)
-                    if self.relay_ptt.open():
-                        self.relay_ptt.set_state(False)  # Ensure PTT released on startup
-                        print(f"  PTT relay: ready")
-                    else:
-                        print(f"  PTT relay: FAILED to open — PTT will not work!")
-                        self.relay_ptt = None
-                except Exception as e:
-                    print(f"  Warning: Could not initialize PTT relay: {e}")
-                    self.relay_ptt = None
-
-            # Initialize TH-9800 CAT control
-            if getattr(self.config, 'ENABLE_CAT_CONTROL', False):
-                try:
-                    host = self.config.CAT_HOST
-                    port = int(self.config.CAT_PORT)
-                    password = str(self.config.CAT_PASSWORD)
-                    verbose = getattr(self.config, 'VERBOSE_LOGGING', False)
-                    print(f"Connecting to TH-9800 CAT server ({host}:{port})...")
-                    self.cat_client = RadioCATClient(host, port, password, verbose=verbose)
-                    if self.cat_client.connect():
-                        print("  Connected to CAT server")
-                        # Serial connect deferred to end of startup (see below)
-                        # Pre-set volume from config so dashboard sliders show
-                        # correct values even if setup_radio is disabled or fails
-                        left_vol = getattr(self.config, 'CAT_LEFT_VOLUME', -1)
-                        right_vol = getattr(self.config, 'CAT_RIGHT_VOLUME', -1)
-                        if int(left_vol) != -1:
-                            self.cat_client._volume[self.cat_client.LEFT] = int(left_vol)
-                        if int(right_vol) != -1:
-                            self.cat_client._volume[self.cat_client.RIGHT] = int(right_vol)
-                        # Start background drain (setup_radio runs later, near end of init)
-                        self.cat_client.start_background_drain()
-                    else:
-                        print("  Failed to connect to CAT server")
-                        self.cat_client = None
-                except Exception as e:
-                    print(f"  CAT control error: {e}")
-                    self.cat_client = None
-
-            # Initialize D75 CAT control + audio
+            # Initialize D75 (plugin)
+            self.d75_plugin = None
             if getattr(self.config, 'ENABLE_D75', False):
-                d75_mode = str(getattr(self.config, 'D75_CONNECTION', 'bluetooth')).lower().strip()
                 try:
-                    d75_host = str(self.config.D75_HOST)
-                    d75_port = int(self.config.D75_PORT)
-                    d75_pass = str(self.config.D75_PASSWORD)
-                    verbose = getattr(self.config, 'VERBOSE_LOGGING', False)
-                    print(f"Connecting to D75 CAT server ({d75_host}:{d75_port}, mode={d75_mode})...")
-                    self.d75_cat = D75CATClient(d75_host, d75_port, d75_pass, verbose=verbose)
-                    if self.d75_cat.connect():
-                        print("  Connected to D75 CAT server")
-                        if d75_mode == 'bluetooth':
-                            # BT mode: btstart connects BT audio + serial
-                            # Run in background thread so it doesn't block gateway startup
-                            self.d75_cat._btstart_in_progress = True
-                            def _d75_btstart_bg(cat):
-                                cat._send_cmd("!btstart")
-                                # poll_state() clears _btstart_in_progress when serial connects
-                                # (via serial_connected in status response). Wait with timeout.
-                                for _btwait in range(60):
-                                    time.sleep(1)
-                                    if not cat._btstart_in_progress:
-                                        print(f"\n  [D75] btstart OK (took {_btwait+1}s)")
-                                        return
-                                print(f"\n  [D75] btstart timeout — serial not connected after 60s")
-                                cat._btstart_in_progress = False
-                            threading.Thread(target=_d75_btstart_bg, args=(self.d75_cat,),
-                                             name="D75-btstart", daemon=True).start()
-                            print("  btstart initiated (running in background)")
+                    from d75_plugin import D75Plugin
+                    print("Initializing D75 plugin...")
+                    self.d75_plugin = D75Plugin()
+                    if self.d75_plugin.setup(self.config):
+                        if self._source_on_listen_bus('d75'):
+                            self.mixer.add_source(self.d75_plugin, bus_priority=int(getattr(self.config, 'D75_AUDIO_PRIORITY', 2)) + 10, duckable=getattr(self.config, 'D75_AUDIO_DUCK', True))
+                            print("✓ D75 plugin added to mixer (listen bus)")
                         else:
-                            # USB mode: just connect serial (audio via AIOC)
-                            resp = self.d75_cat._send_cmd("!serial connect")
-                            if resp:
-                                print(f"  serial: {resp}")
-                        self.d75_cat.start_polling()
-                        # BT audio source (bluetooth mode only)
-                        if d75_mode == 'bluetooth':
-                            try:
-                                audio_port = int(self.config.D75_AUDIO_PORT)
-                                print(f"Initializing D75 audio source ({d75_host}:{audio_port})...")
-                                self.d75_audio_source = D75AudioSource(self.config, self)
-                                if self.d75_audio_source.setup_audio():
-                                    self.d75_audio_source.enabled = True
-                                    self.d75_audio_source.muted = self.d75_muted
-                                    self.d75_audio_source.duck = self.config.D75_AUDIO_DUCK
-                                    self.d75_audio_source.sdr_priority = int(self.config.D75_AUDIO_PRIORITY)
-                                    self.mixer.add_source(self.d75_audio_source)
-                                    print(f"✓ D75 audio source added to mixer")
-                                else:
-                                    print("⚠ D75 audio init failed")
-                                    self.d75_audio_source = None
-                            except Exception as e:
-                                print(f"⚠ D75 audio error: {e}")
-                                self.d75_audio_source = None
-                        else:
-                            print("  USB mode: audio via AIOC (no BT audio source)")
+                            print("✓ D75 plugin initialized (routed via bus manager)")
                     else:
-                        print("  Failed to connect to D75 CAT server — will retry in background")
-                        self.d75_cat = None
+                        print("⚠ Warning: D75 plugin setup failed")
+                        self.d75_plugin = None
                 except Exception as e:
-                    print(f"  D75 CAT error: {e} — will retry in background")
-                    self.d75_cat = None
+                    print(f"⚠ D75 plugin error: {e}")
+                    import traceback; traceback.print_exc()
+                    self.d75_plugin = None
+            if self.d75_plugin and self.d75_plugin._processor:
+                self.d75_processor = self.d75_plugin._processor
 
-                # Background retry loop: if initial connect failed, keep trying until proxy is up
-                def _d75_retry_loop(gw, host, port, password, mode, verbose):
-                    import time as _time
-                    while True:
-                        _time.sleep(10)
-                        if gw.d75_cat is not None:
-                            return  # Already connected — stop retrying
-                        try:
-                            _cat = D75CATClient(host, port, password, verbose=False)
-                            if not _cat.connect():
-                                continue
-                            print(f"\n[D75] Auto-reconnected to CAT server")
-                            if mode == 'bluetooth':
-                                _cat._btstart_in_progress = True
-                                def _bg(cat):
-                                    cat._send_cmd("!btstart")
-                                    # poll_state() will clear _btstart_in_progress on success;
-                                    # clear it after 40s timeout so the button comes back if BT never connects
-                                    for _w in range(40):
-                                        time.sleep(1)
-                                        if not cat._btstart_in_progress:
-                                            return
-                                    cat._btstart_in_progress = False
-                                threading.Thread(target=_bg, args=(_cat,), daemon=True, name="D75-auto-btstart").start()
-                            else:
-                                _cat._send_cmd("!serial connect")
-                            _cat.start_polling()
-                            if mode == 'bluetooth' and gw.d75_audio_source is None:
-                                try:
-                                    gw.d75_audio_source = D75AudioSource(gw.config, gw)
-                                    if gw.d75_audio_source.setup_audio():
-                                        gw.d75_audio_source.enabled = True
-                                        gw.d75_audio_source.muted = gw.d75_muted
-                                        gw.d75_audio_source.duck = gw.config.D75_AUDIO_DUCK
-                                        gw.d75_audio_source.sdr_priority = int(gw.config.D75_AUDIO_PRIORITY)
-                                        gw.mixer.add_source(gw.d75_audio_source)
-                                except Exception:
-                                    gw.d75_audio_source = None
-                            gw.d75_cat = _cat  # Make visible atomically after everything is set up
-                            return
-                        except Exception:
-                            pass
-                threading.Thread(
-                    target=_d75_retry_loop,
-                    args=(self, d75_host, d75_port, d75_pass, d75_mode, verbose),
-                    daemon=True, name="D75-retry"
-                ).start()
-
-            # Initialize KV4P HT Radio
+            # Initialize KV4P HT Radio (plugin)
+            self.kv4p_plugin = None
             if getattr(self.config, 'ENABLE_KV4P', False):
                 try:
-                    kv4p_port = str(self.config.KV4P_PORT)
-                    verbose = getattr(self.config, 'VERBOSE_LOGGING', False)
-                    print(f"Connecting to KV4P HT ({kv4p_port})...")
-                    # Create audio source FIRST so callback is ready before radio starts streaming
-                    try:
-                        self.kv4p_audio_source = KV4PAudioSource(self.config, self)
-                        if self.kv4p_audio_source.setup_audio():
-                            self.kv4p_audio_source.enabled = True
-                            self.kv4p_audio_source.muted = self.kv4p_muted
-                            self.kv4p_audio_source.duck = getattr(self.config, 'KV4P_AUDIO_DUCK', True)
-                            self.kv4p_audio_source.sdr_priority = int(getattr(self.config, 'KV4P_AUDIO_PRIORITY', 2))
-                        else:
-                            self.kv4p_audio_source = None
-                    except Exception as e:
-                        print(f"  ⚠ KV4P audio error: {e}")
-                        self.kv4p_audio_source = None
-                    self.kv4p_cat = KV4PCATClient(kv4p_port, self.config, verbose=verbose)
-                    # Wire callback BEFORE connect so no frames are missed
-                    if self.kv4p_audio_source:
-                        self.kv4p_cat.on_rx_audio = self.kv4p_audio_source.on_opus_rx
-                    if self.kv4p_cat.connect():
-                        print(f"  Connected: fw v{self.kv4p_cat._firmware_version}, {self.kv4p_cat._rf_module}")
-                        if self.kv4p_audio_source:
-                            self.mixer.add_source(self.kv4p_audio_source)
-                            print(f"  KV4P audio source added to mixer")
-                        self.kv4p_cat.start_polling()
-                        print(f"  Tuned to {self.kv4p_cat._frequency:.4f} MHz")
+                    from kv4p_plugin import KV4PPlugin
+                    print(f"Initializing KV4P plugin...")
+                    self.kv4p_plugin = KV4PPlugin()
+                    if self.kv4p_plugin.setup(self.config):
+                        # NOT added to primary ListenBus — routed via BusManager
+                        print("✓ KV4P plugin initialized (routed via bus manager)")
                     else:
-                        print("  Failed to connect to KV4P HT")
-                        self.kv4p_cat = None
+                        print("⚠ Warning: KV4P plugin setup failed")
+                        self.kv4p_plugin = None
                 except Exception as e:
-                    print(f"  KV4P error: {e}")
-                    self.kv4p_cat = None
+                    print(f"⚠ KV4P plugin error: {e}")
+                    import traceback; traceback.print_exc()
+                    self.kv4p_plugin = None
+            if self.kv4p_plugin and self.kv4p_plugin._processor:
+                self.kv4p_processor = self.kv4p_plugin._processor
 
             # Initialize Gateway Link (duplex audio + command protocol)
             if getattr(self.config, 'ENABLE_GATEWAY_LINK', False):
@@ -3479,7 +1594,7 @@ class RadioGateway:
                         saved = self.link_endpoint_settings.get(name, {})
                         src.muted = saved.get('rx_muted', False)
                         src.server_connected = True
-                        self.mixer.add_source(src)
+                        self.mixer.add_source(src, bus_priority=int(getattr(self.config, 'LINK_AUDIO_PRIORITY', 3)) + 10, duckable=getattr(self.config, 'LINK_AUDIO_DUCK', False))
                         self.link_endpoints[name] = src
                         self._link_ptt_active[name] = False
                         self._link_last_status[name] = {}
@@ -3564,13 +1679,7 @@ class RadioGateway:
                         self.mumble_server_2.state = MumbleServerManager.STATE_ERROR
                         self.mumble_server_2.error_msg = str(e)
 
-            # Validate PTT method setup
-            if ptt_method == 'relay' and not self.relay_ptt:
-                print("WARNING: PTT_METHOD = relay but PTT relay not available — PTT will not work!")
-            elif ptt_method == 'software' and not self.cat_client:
-                print("WARNING: PTT_METHOD = software but CAT client not connected — PTT will not work!")
-            elif ptt_method not in ('aioc', 'relay', 'software'):
-                print(f"WARNING: Unknown PTT_METHOD '{ptt_method}' — defaulting to AIOC")
+            # PTT validation now handled by TH9800Plugin
 
             # Initialize Smart Announcements (AI-powered)
             if getattr(self.config, 'ENABLE_SMART_ANNOUNCE', False):
@@ -3624,7 +1733,7 @@ class RadioGateway:
                     print("Initializing EchoLink integration...")
                     self.echolink_source = EchoLinkSource(self.config, self)
                     if self.echolink_source.connected:
-                        self.mixer.add_source(self.echolink_source)
+                        self.mixer.add_source(self.echolink_source, bus_priority=2, duckable=False)
                         print("✓ EchoLink source added to mixer")
                         print("  Audio routing:")
                         if self.config.ECHOLINK_TO_MUMBLE:
@@ -3662,13 +1771,7 @@ class RadioGateway:
             else:
                 self.stream_output = None
 
-            # Detect running DarkIce for process monitoring
-            if self.config.ENABLE_STREAM_OUTPUT:
-                pid = self._find_darkice_pid()
-                if pid:
-                    self._darkice_pid = pid
-                    self._darkice_was_running = True
-                    print(f"  DarkIce detected (PID {pid})")
+            # DarkIce no longer needed — streaming handled directly by StreamOutputSource
 
             # Serial connect — must happen before setup_radio so commands reach the radio
             if self.cat_client:
@@ -3744,17 +1847,6 @@ class RadioGateway:
                                 frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4  # Larger buffer for smoother output
                             )
                             
-                            # Initialize radio source first to get callback
-                            try:
-                                self.radio_source = AIOCRadioSource(self.config, self)
-                                self.mixer.add_source(self.radio_source)
-                                if self.config.VERBOSE_LOGGING:
-                                    print("✓ Radio audio source added to mixer")
-                            except Exception as source_err:
-                                print(f"⚠ Warning: Could not initialize radio source: {source_err}")
-                                self.radio_source = None
-
-                            aioc_callback = self.radio_source._audio_callback if self.radio_source else None
                             self.input_stream = self.pyaudio_instance.open(
                                 format=audio_format,
                                 channels=self.config.AUDIO_CHANNELS,
@@ -3762,7 +1854,6 @@ class RadioGateway:
                                 input=True,
                                 input_device_index=input_idx,
                                 frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
-                                stream_callback=aioc_callback
                             )
 
                             print("✓ Audio initialized successfully after USB reset")
@@ -3771,8 +1862,8 @@ class RadioGateway:
                             if self.config.ENABLE_PLAYBACK:
                                 try:
                                     self.playback_source = FilePlaybackSource(self.config, self)
-                                    self.mixer.add_source(self.playback_source)
-                                    print("✓ File playback source added to mixer")
+                                    # NOT added to primary ListenBus — routed via BusManager
+                                    print("✓ File playback source initialized (routed via bus manager)")
                                     # File mapping will be displayed later
                                     
                                 except Exception as playback_err:
@@ -3805,6 +1896,9 @@ class RadioGateway:
             print("=" * 60)
             return True
 
+        # Create MumbleSource for routing system
+        from audio_sources import MumbleSource
+        self.mumble_source = MumbleSource(self.config, gateway=self)
         print(f"\nConnecting to Mumble: {self.config.MUMBLE_SERVER}:{self.config.MUMBLE_PORT}...")
 
         try:
@@ -3856,12 +1950,23 @@ class RadioGateway:
             while time.time() - wait_start < max_wait:
                 if hasattr(self.mumble.sound_output, 'encoder_framesize') and self.mumble.sound_output.encoder_framesize is not None:
                     print(f"  ✓ Audio codec ready (framesize: {self.mumble.sound_output.encoder_framesize})")
+
                     break
                 time.sleep(0.1)
             else:
                 print("  ⚠ Audio codec not initialized after 5s")
                 print("    Audio may not work until codec is ready")
                 print("    This usually resolves itself within 10-30 seconds")
+
+            # Increase audio_per_packet to bundle more frames per Mumble packet.
+            # Default 0.02 (20ms = 1 frame/packet) causes stutter when pymumble's
+            # loop is GIL-starved (only fires ~20x/sec instead of 50x/sec).
+            # At 0.06 (60ms = 3 frames/packet), 20 sends/sec × 60ms = 1200ms/sec.
+            try:
+                self.mumble.sound_output.set_audio_per_packet(0.06)
+                print(f"  Mumble audio_per_packet set to 0.06 (60ms, 3 frames/packet)")
+            except Exception as e:
+                print(f"  ⚠ Could not set audio_per_packet: {e}")
 
             # Apply audio quality settings now that the codec is ready.
             # set_bandwidth() was never called before — the library default is 50kbps.
@@ -4362,9 +2467,9 @@ class RadioGateway:
                 sources = []
                 if self.radio_source:
                     sources.append(f"AIOC ({'muted' if self.tx_muted else 'active'})")
-                if self.sdr_source:
+                if self.sdr_plugin:
                     sources.append(f"SDR1 ({'muted' if self.sdr_muted else 'active'})")
-                if self.sdr2_source:
+                if self.sdr_plugin:
                     sources.append(f"SDR2 ({'muted' if self.sdr2_muted else 'active'})")
                 if self.remote_audio_source:
                     sources.append(f"Remote ({'muted' if self.remote_audio_muted else 'active'})")
@@ -4574,35 +2679,7 @@ class RadioGateway:
                     self.set_ptt_state(pending_ptt)
                     self._ptt_change_time = time.monotonic()  # Tell get_audio to fade in next chunk
 
-                # ── AIOC stream health management ────────────────────────────────
-                # These checks are AIOC-specific and must NOT block SDR audio.
-                # The mixer runs unconditionally below so SDR always reaches Mumble.
-                if self.input_stream and not self.restarting_stream:
-                    current_time = time.time()
-                    time_since_creation = current_time - self.stream_age
-                    time_since_vad_active = current_time - self.last_vox_active_time if hasattr(self, 'last_vox_active_time') else 999
-
-                    # Proactive AIOC restart (optional feature, brief gap acceptable)
-                    if (self.config.ENABLE_STREAM_HEALTH and
-                            self.config.STREAM_RESTART_INTERVAL > 0 and
-                            time_since_creation > self.config.STREAM_RESTART_INTERVAL):
-                        if not self.vad_active and time_since_vad_active > self.config.STREAM_RESTART_IDLE_TIME:
-                            if self.config.VERBOSE_LOGGING:
-                                print(f"\n[Maintenance] Proactive stream restart (age: {time_since_creation:.0f}s, idle: {time_since_vad_active:.0f}s)")
-                            self.restart_audio_input()
-                            self.stream_age = time.time()
-                            time.sleep(0.2)
-                            continue
-
-                    # AIOC stream inactive: restart it but do NOT raise or skip the
-                    # mixer.  AIOCRadioSource.get_audio() returns None while
-                    # restarting_stream is True, so only SDR audio flows until AIOC
-                    # recovers — which is exactly what the user wants.
-                    if not self.input_stream.is_active():
-                        if self.config.VERBOSE_LOGGING:
-                            print("\n[Diagnostic] AIOC stream inactive, restarting...")
-                        self.restart_audio_input()
-                        # Fall through — SDR still runs below
+                # AIOC stream health now handled by TH9800Plugin.check_watchdog()
 
                 # Safety: clear announcement delay if its timer has expired.
                 # This handles the case where stop_playback() is called during
@@ -4616,17 +2693,26 @@ class RadioGateway:
                 # ── Mixer path: runs whenever the mixer exists (SDR-only is valid) ──
                 if self.mixer:
                     # Snapshot source state BEFORE mixer call
-                    _tr_sdr_q = self.sdr_source._chunk_queue.qsize() if self.sdr_source and self.sdr_source.input_stream else -1
-                    _tr_sdr_sb = len(self.sdr_source._sub_buffer) if self.sdr_source and self.sdr_source.input_stream else -1
-                    _tr_sdr_prebuf = self.sdr_source._prebuffering if self.sdr_source else False
-                    _tr_sdr2_q = self.sdr2_source._chunk_queue.qsize() if self.sdr2_source and getattr(self.sdr2_source, 'enabled', False) and self.sdr2_source.input_stream else -1
-                    _tr_sdr2_sb = len(self.sdr2_source._sub_buffer) if self.sdr2_source and getattr(self.sdr2_source, 'enabled', False) and self.sdr2_source.input_stream else -1
-                    _tr_sdr2_prebuf = self.sdr2_source._prebuffering if self.sdr2_source and getattr(self.sdr2_source, 'enabled', False) else False
-                    _tr_aioc_q = self.radio_source._chunk_queue.qsize() if self.radio_source else -1
-                    _tr_aioc_sb = len(self.radio_source._sub_buffer) if self.radio_source else -1
+                    _tr_sdr_q = -1
+                    _tr_sdr_sb = -1
+                    _tr_sdr_prebuf = False
+                    _tr_sdr2_q = -1
+                    _tr_sdr2_sb = -1
+                    _tr_sdr2_prebuf = False
+                    _tr_aioc_q = -1  # TH9800Plugin doesn't use chunk_queue
+                    _tr_aioc_sb = -1
 
                     _tr_mixer_t0 = time.monotonic()
-                    data, ptt_required, active_sources, sdr1_was_ducked, sdr2_was_ducked, rx_audio, sdrsv_was_ducked, sdr_only_audio = self.mixer.get_mixed_audio(self.config.AUDIO_CHUNK_SIZE)
+                    _bus_out = self.mixer.tick(self.config.AUDIO_CHUNK_SIZE)
+                    data = _bus_out.mixed_audio
+                    ptt_required = _bus_out.ptt.get('_ptt_required', False)
+
+                    active_sources = _bus_out.active_sources
+                    sdr1_was_ducked = 'SDR1' in _bus_out.ducked_sources
+                    sdr2_was_ducked = 'SDR2' in _bus_out.ducked_sources
+                    sdrsv_was_ducked = 'SDRSV' in _bus_out.ducked_sources
+                    rx_audio = _bus_out.status.get('rx_audio')
+                    sdr_only_audio = _bus_out.status.get('duckee_only_audio')
                     _tr_mixer_ms = (time.monotonic() - _tr_mixer_t0) * 1000
 
                     # Store SDR ducked states for status bar display
@@ -4643,16 +2729,71 @@ class RadioGateway:
                         _tr_mixer_state['gl_m'] = getattr(self, 'global_muted', False)
 
                     _tr_mixer_got = data is not None
+
+                    # Track listen bus output level for routing page
+                    if data is not None:
+                        _mlv = self.calculate_audio_level(data)
+                        if _mlv > getattr(self, '_last_mixer_level', 0):
+                            self._last_mixer_level = _mlv
+                        else:
+                            self._last_mixer_level = max(0, int(getattr(self, '_last_mixer_level', 0) * 0.7))
+                    else:
+                        self._last_mixer_level = max(0, int(getattr(self, '_last_mixer_level', 0) * 0.7))
+
+                    # Drain BusManager PCM/MP3 once per tick (don't call twice!)
+                    _bm_pcm = self.bus_manager.drain_pcm() if self.bus_manager else None
+                    _bm_mp3 = self.bus_manager.drain_mp3() if self.bus_manager else None
+
+                    # Early sink delivery — before VAD/signal gates so monitoring
+                    # sinks always receive audio (SDR scanner feeds etc.)
+                    _early_audio = data if data is not None else sdr_only_audio
+                    # Suppress all sink delivery when primary listen bus is muted
+                    if getattr(self, '_listen_bus_muted', False):
+                        _early_audio = None
+                    _listen_sinks = self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())
+                    # Decay sink levels when no audio
+                    if _early_audio is None:
+                        self.stream_audio_level = max(0, int(self.stream_audio_level * 0.7))
+                        self.mumble_tx_level = max(0, int(getattr(self, 'mumble_tx_level', 0) * 0.7))
+                    if _early_audio is not None:
+                        if 'broadcastify' in _listen_sinks:
+                            if self.stream_output and self.stream_output.connected:
+                                try:
+                                    self.stream_output.send_audio(_early_audio)
+                                    self.stream_audio_level = self.calculate_audio_level(_early_audio)
+                                except Exception:
+                                    pass
+                        if 'mumble' in _listen_sinks:
+                            if (self.mumble and
+                                    hasattr(self.mumble, 'sound_output') and
+                                    self.mumble.sound_output is not None and
+                                    getattr(self.mumble.sound_output, 'encoder_framesize', None) is not None):
+                                try:
+                                    self.mumble.sound_output.add_sound(_early_audio)
+                                    # Track Mumble TX level for routing page
+                                    _ml = self.calculate_audio_level(_early_audio)
+                                    if _ml > getattr(self, 'mumble_tx_level', 0):
+                                        self.mumble_tx_level = _ml
+                                    else:
+                                        self.mumble_tx_level = int(getattr(self, 'mumble_tx_level', 0) * 0.7 + _ml * 0.3)
+                                except Exception:
+                                    pass
+
                     if data is None:
                         # No audio from any source — nothing to send.
                         # Feed silence to speaker so its PortAudio buffer stays primed,
                         # but skip the Mumble/remote-audio send path entirely.
                         self.audio_capture_active = False
                         _silence = b'\x00' * (self.config.AUDIO_CHUNK_SIZE * 2)
-                        self._speaker_enqueue(_silence)
-                        # Keep WebSocket clients fed with silence so they stay connected
-                        if self.web_config_server and self.web_config_server._ws_clients:
-                            self.web_config_server.push_ws_audio(_silence)
+                        if 'speaker' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())):
+                            self._speaker_enqueue(_silence)
+                        # Use already-drained BusManager PCM
+                        if _bm_pcm is not None:
+                            if self.web_config_server and self.web_config_server._ws_clients:
+                                self.web_config_server.push_ws_audio(_bm_pcm)
+                        elif self._bus_stream_flags.get(self._listen_bus_id, {}).get('pcm', False):
+                            if self.web_config_server and self.web_config_server._ws_clients:
+                                self.web_config_server.push_ws_audio(_silence)
                         _tr_outcome = 'vad_gate'
                         continue
                     else:
@@ -4666,12 +2807,23 @@ class RadioGateway:
                         if self.automation_engine and self.automation_engine.recorder.is_recording():
                             self.automation_engine.recorder.feed(data)
 
-                        # Push to WebSocket PCM clients.
-                        # During PTT with talkback off, defer to the PTT branch
-                        # which sends concurrent RX (not TX audio) to local outputs.
-                        if self.web_config_server and self.web_config_server._ws_clients:
-                            if not (ptt_required and not self.tx_talkback):
-                                self.web_config_server.push_ws_audio(data)
+                        # Push to WebSocket PCM clients — mix listen bus + other busses.
+                        _listen_flags = self._bus_stream_flags.get(self._listen_bus_id, {})
+                        _listen_pcm_on = _listen_flags.get('pcm', False) and not getattr(self, '_listen_bus_muted', False)
+                        # _bm_pcm already drained above — reuse it
+                        if _listen_pcm_on or _bm_pcm is not None:
+                            _pcm_out = None
+                            if _listen_pcm_on and data is not None:
+                                _pcm_out = data
+                            if _bm_pcm is not None:
+                                if _pcm_out is None:
+                                    _pcm_out = _bm_pcm
+                                else:
+                                    from audio_bus import mix_audio_streams
+                                    _pcm_out = mix_audio_streams(_pcm_out, _bm_pcm)
+                            if _pcm_out is not None:
+                                if self.web_config_server and self.web_config_server._ws_clients:
+                                    self.web_config_server.push_ws_audio(_pcm_out)
 
                     _tr_outcome = 'mix'  # will be updated to sent/no_mumble/etc below
 
@@ -4747,204 +2899,11 @@ class RadioGateway:
                         else:
                             _tr_rebro = 'hold'
 
-                    # Route audio based on PTT requirement
-                    if ptt_required:
-                        # PTT required (file playback / announcement input)
-
-                        # Trace: measure RMS inside PTT branch (the common
-                        # trace point after `continue` never runs for PTT)
-                        if self._trace_recording and data:
-                            _tr_arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-                            _tr_data_rms = float(np.sqrt(np.mean(_tr_arr * _tr_arr))) if len(_tr_arr) > 0 else 0.0
-
-                        # Update last sound time so PTT release timer works
-                        self.last_sound_time = time.time()
-
-                        # Calculate audio level for TX bar
-                        current_level = self.calculate_audio_level(data)
-                        # Smooth the level display (fast attack, slow decay)
-                        if current_level > self.rx_audio_level:
-                            self.rx_audio_level = current_level
-                        else:
-                            self.rx_audio_level = int(self.rx_audio_level * 0.7 + current_level * 0.3)
-
-                        # Update last RX audio time to prevent decay during file playback
-                        self.last_rx_audio_time = time.time()
-
-                        # Activate PTT if not already active and not muted.
-                        if not self.ptt_active and not self.tx_muted and not self.manual_ptt_mode:
-                            self.set_ptt_state(True)
-                            self._ptt_change_time = time.monotonic()  # arm click suppression in AIOCRadioSource
-                            self._announcement_ptt_delay_until = time.time() + self.config.PTT_ANNOUNCEMENT_DELAY
-                            self.announcement_delay_active = True
-
-                        # Clear the delay flag once the window has passed.
-                        if self.announcement_delay_active and time.time() >= self._announcement_ptt_delay_until:
-                            self.announcement_delay_active = False
-
-                        # Send audio to radio output
-                        _ptt_wrote = False
-                        _tx_radio_cfg = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
-                        _use_d75_tx = (_tx_radio_cfg == 'd75' and self.d75_audio_source)
-                        _use_kv4p_tx = (_tx_radio_cfg == 'kv4p' and self.kv4p_audio_source)
-                        if (_use_d75_tx or _use_kv4p_tx or self.output_stream) and not self.tx_muted:
-                            try:
-                                # Suppress audio while the PTT relay is settling.
-                                # announcement_delay_active is set in the same iteration
-                                # that PTT first activates, so data already holds a real
-                                # audio chunk — replace it with silence here too.
-                                # KV4P uses serial audio with no physical relay, so no
-                                # settle delay is needed — send real audio immediately.
-                                _needs_delay = self.announcement_delay_active and not _use_kv4p_tx and not _use_d75_tx
-                                pcm = b'\x00' * len(data) if _needs_delay else data
-                                if self.config.OUTPUT_VOLUME != 1.0:
-                                    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-                                    pcm = np.clip(arr * self.config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
-                                if _use_d75_tx:
-                                    self.d75_audio_source.write_tx_audio(pcm)
-                                elif _use_kv4p_tx:
-                                    self.kv4p_audio_source.write_tx_audio(pcm)
-                                else:
-                                    try:
-                                        self.output_stream.write(pcm, exception_on_overflow=False)
-                                    except TypeError:
-                                        self.output_stream.write(pcm)
-                                _ptt_wrote = True
-                            except IOError as io_err:
-                                if self.config.VERBOSE_LOGGING:
-                                    print(f"\n[Warning] Output stream buffer issue: {io_err}")
-                            except Exception as tx_err:
-                                if self.config.VERBOSE_LOGGING:
-                                    print(f"\n[Error] Failed to send to radio TX: {tx_err}")
-
-                        # EchoLink can optionally receive PTT audio directly
-                        if self.echolink_source and self.config.RADIO_TO_ECHOLINK:
-                            try:
-                                self.echolink_source.send_audio(data)
-                            except Exception as el_err:
-                                if self.config.VERBOSE_LOGGING:
-                                    print(f"\n[EchoLink] Send error: {el_err}")
-
-                        # Local output routing during PTT:
-                        # talkback OFF (default): local outputs get concurrent RX
-                        #   only (so user can monitor on a separate radio)
-                        # talkback ON: local outputs get TX audio (for local monitoring)
-                        if self.tx_talkback:
-                            # Talkback: send TX audio to all local outputs
-                            _local_audio = data
-                        else:
-                            # No talkback: forward concurrent radio RX (if any)
-                            _local_audio = (
-                                getattr(self.radio_source, '_rx_cache', None)
-                                if self.radio_source else rx_audio
-                            )
-                        _ws_local = _local_audio if _local_audio is not None else b'\x00' * len(data)
-                        if _local_audio is not None:
-                            if (self.mumble and
-                                    hasattr(self.mumble, 'sound_output') and
-                                    self.mumble.sound_output is not None and
-                                    getattr(self.mumble.sound_output, 'encoder_framesize', None) is not None):
-                                try:
-                                    self.mumble.sound_output.add_sound(_local_audio)
-                                except Exception:
-                                    pass
-                            if self.stream_output and self.stream_output.connected:
-                                try:
-                                    self.stream_output.send_audio(_local_audio)
-                                except Exception:
-                                    pass
-                            if self.speaker_stream and not self.speaker_muted:
-                                self._speaker_enqueue(_local_audio)
-                        if self.web_config_server and self.web_config_server._ws_clients:
-                            self.web_config_server.push_ws_audio(_ws_local)
-
-                        # Push to MP3 stream during PTT (talkback=TX audio, else concurrent RX)
-                        if self.web_config_server and self.web_config_server._stream_subscribers:
-                            _mp3_audio = data if self.tx_talkback else _local_audio
-                            if _mp3_audio is not None:
-                                self.web_config_server.push_audio(_mp3_audio)
-
-                        # Send ONE frame to remote client during PTT — the mixed
-                        # playback data.  Previously both rx_for_mumble AND data were
-                        # sent, doubling the frame rate and causing client-side stutter.
-                        if self.remote_audio_server and self.remote_audio_server.connected:
-                            try:
-                                _sv_t0 = time.monotonic()
-                                self.remote_audio_server.send_audio(data)
-                                _tr_sv_ms += (time.monotonic() - _sv_t0) * 1000
-                                _tr_sv_sent += 1
-                                self._update_sv_level(data)
-                            except Exception:
-                                pass
-
-                        # Skip the normal RX→Mumble path below - this is TX audio
-                        # Trace: encode PTT write status into outcome
-                        # ptt_ok = wrote to AIOC, ptt_nostream = output_stream is None,
-                        # ptt_txm = tx_muted, ptt_delay = in announcement delay
-                        if _ptt_wrote:
-                            _tr_outcome = 'ptt_ok'
-                        elif not self.output_stream:
-                            _tr_outcome = 'ptt_nostr'
-                        elif self.tx_muted:
-                            _tr_outcome = 'ptt_txm'
-                        else:
-                            _tr_outcome = 'ptt_err'
-                        continue
-
-                    # No PTT required (radio RX / SDR) — apply VAD then fall through to Mumble send
+                    # No PTT required (radio RX / SDR) — deliver to sinks that bypass VAD, then gate
                     if data and not self.check_vad(data):
-                        self._speaker_enqueue(data)
+                        if 'speaker' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())):
+                            self._speaker_enqueue(data)
                         _tr_outcome = 'vad_gate'
-                        continue
-
-                elif self.input_stream and not self.restarting_stream:
-                    # Fallback: direct AIOC read only (no mixer / no SDR)
-                    try:
-                        data = self.input_stream.read(
-                            self.config.AUDIO_CHUNK_SIZE,
-                            exception_on_overflow=False
-                        )
-                    except IOError as io_err:
-                        if io_err.errno == -9981:  # Input overflow
-                            if self.config.VERBOSE_LOGGING and consecutive_errors == 0:
-                                print("\n[Diagnostic] Input overflow, clearing buffer...")
-                            try:
-                                self.input_stream.read(self.config.AUDIO_CHUNK_SIZE * 2, exception_on_overflow=False)
-                            except:
-                                pass
-                            time.sleep(0.05)
-                            continue
-                        else:
-                            raise
-
-                    # Calculate audio level for TX
-                    current_level = self.calculate_audio_level(data)
-                    if current_level > self.tx_audio_level:
-                        self.tx_audio_level = current_level
-                    else:
-                        self.tx_audio_level = int(self.tx_audio_level * 0.7 + current_level * 0.3)
-
-                    self.last_audio_capture_time = time.time()
-                    self.last_successful_read = time.time()
-                    self.audio_capture_active = True
-
-                    if self.config.INPUT_VOLUME != 1.0 and data:
-                        try:
-                            arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-                            data = np.clip(arr * self.config.INPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
-                        except Exception:
-                            pass
-
-                    data = self.process_audio_for_mumble(data)
-
-                    # Push to WebSocket clients BEFORE VAD gate so low-latency
-                    # listeners always get continuous audio (like speaker output).
-                    if self.web_config_server and self.web_config_server._ws_clients:
-                        self.web_config_server.push_ws_audio(data)
-
-                    if not self.check_vad(data):
-                        # Speaker bypasses VAD — monitor even when Mumble is gated
-                        self._speaker_enqueue(data)
                         continue
 
                 else:
@@ -4983,24 +2942,30 @@ class RadioGateway:
                                 _farr[_lo:_hi+1] = np.linspace(_farr[_lo], _farr[_hi], _hi - _lo + 1)
                         data = np.clip(_farr, -32768, 32767).astype(np.int16).tobytes()
 
-                # Speaker output — send whatever Mumble gets (real audio or silence).
-                # The speaker's PortAudio hardware buffer (~200ms) smooths timing.
-                if self.speaker_queue and not self.speaker_muted:
-                    _tr_spk_qd = self.speaker_queue.qsize()
-                self._speaker_enqueue(data)
+                # Speaker output — only if connected as a sink on the listen bus.
+                if 'speaker' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())) and not getattr(self, '_listen_bus_muted', False):
+                    if self.speaker_queue and not self.speaker_muted:
+                        _tr_spk_qd = self.speaker_queue.qsize()
+                    self._speaker_enqueue(data)
                 _tr_spk_ok = True
 
-                # Remote audio server send — must be BEFORE Mumble checks so it
-                # works even when Mumble is not connected (e.g. secondary mode).
-                if self.remote_audio_server and self.remote_audio_server.connected:
-                    try:
-                        _sv_t0 = time.monotonic()
-                        self.remote_audio_server.send_audio(data)
-                        _tr_sv_ms += (time.monotonic() - _sv_t0) * 1000
-                        _tr_sv_sent += 1
-                        self._update_sv_level(data)
-                    except Exception:
-                        pass
+                # Remote audio server send — only if connected as a sink on the listen bus
+                if 'remote_audio_tx' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())) and not getattr(self, '_listen_bus_muted', False):
+                    if self.remote_audio_server and self.remote_audio_server.connected:
+                        try:
+                            _sv_t0 = time.monotonic()
+                            self.remote_audio_server.send_audio(data)
+                            _tr_sv_ms += (time.monotonic() - _sv_t0) * 1000
+                            _tr_sv_sent += 1
+                            self._update_sv_level(data)
+                            # Update routing-visible level
+                            _rl = self.calculate_audio_level(data)
+                            if _rl > getattr(self, 'remote_audio_tx_level', 0):
+                                self.remote_audio_tx_level = _rl
+                            else:
+                                self.remote_audio_tx_level = int(getattr(self, 'remote_audio_tx_level', 0) * 0.7 + _rl * 0.3)
+                        except Exception:
+                            pass
 
                 # Gateway Link: send mixed audio to all connected endpoints
                 if self.link_server and self.link_endpoints:
@@ -5025,32 +2990,8 @@ class RadioGateway:
                         except Exception:
                             pass
 
-                if not self.mumble:
-                    _tr_outcome = 'no_mumble'
-                    continue
-
-                if not hasattr(self.mumble, 'sound_output') or self.mumble.sound_output is None:
-                    _tr_outcome = 'no_sndout'
-                    continue
-
-                if not hasattr(self.mumble.sound_output, 'encoder_framesize') or self.mumble.sound_output.encoder_framesize is None:
-                    if self.mixer and self.mixer.call_count % 500 == 1:
-                        print(f"\n⚠ Mumble codec still not ready (encoder_framesize is None)")
-                        print(f"   Waiting for server negotiation to complete...")
-                        print(f"   Check that MUMBLE_SERVER = {self.config.MUMBLE_SERVER} is correct")
-                    _tr_outcome = 'no_codec'
-                    continue
-
-                try:
-                    _tr_m_t0 = time.monotonic()
-                    self.mumble.sound_output.add_sound(data)
-                    _tr_mumble_ms = (time.monotonic() - _tr_m_t0) * 1000
-                    _tr_outcome = 'sent'
-                except Exception as send_err:
-                    _tr_outcome = 'send_err'
-                    print(f"\n[Error] Failed to send to Mumble: {send_err}")
-                    import traceback
-                    traceback.print_exc()
+                # Mumble delivery handled early (before VAD gate) — skip here
+                _tr_outcome = 'sent' if 'mumble' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())) else 'no_mumble_sink'
 
                 if self.echolink_source and self.config.RADIO_TO_ECHOLINK:
                     try:
@@ -5059,19 +3000,14 @@ class RadioGateway:
                         if self.config.VERBOSE_LOGGING:
                             print(f"\n[EchoLink] Send error: {el_err}")
 
-                if self.stream_output and self.stream_output.connected:
-                    try:
-                        self.stream_output.send_audio(data)
-                    except Exception as stream_err:
-                        if self.config.VERBOSE_LOGGING:
-                            print(f"\n[Stream] Send error: {stream_err}")
+                # Broadcastify already delivered early (after mixer.tick, before gates)
 
-                # Push to web audio stream listeners (MP3 only — WebSocket PCM
-                # is already pushed earlier in the mixer path (line ~11849) and
-                # direct-AIOC path (line ~12087) to avoid double-pushing.)
-                if self.web_config_server:
-                    if self.web_config_server._stream_subscribers:
-                        self.web_config_server.push_audio(data)
+                # Push to web audio stream listeners (MP3 only, gated by bus M toggle)
+                _listen_flags_mp3 = self._bus_stream_flags.get(self._listen_bus_id, {})
+                if _listen_flags_mp3.get('mp3', False) and not getattr(self, '_listen_bus_muted', False):
+                    if self.web_config_server:
+                        if self.web_config_server._stream_subscribers:
+                            self.web_config_server.push_audio(data)
 
             except Exception as e:
                 consecutive_errors += 1
@@ -5107,15 +3043,15 @@ class RadioGateway:
                 # ── Trace record (toggled by 'i' key) ──
                 if self._trace_recording:
                     # Snapshot enhanced instrumentation from sources
-                    _sdr1_disc = self.sdr_source._serve_discontinuity if self.sdr_source and self.sdr_source.input_stream else 0.0
-                    _sdr1_sb_after = self.sdr_source._sub_buffer_after if self.sdr_source and self.sdr_source.input_stream else -1
-                    _sdr1_cb_ovf = self.sdr_source._cb_overflow_count if self.sdr_source else 0
-                    _sdr1_cb_drop = self.sdr_source._cb_drop_count if self.sdr_source else 0
-                    _aioc_disc = self.radio_source._serve_discontinuity if self.radio_source else 0.0
-                    _aioc_sb_after = self.radio_source._sub_buffer_after if self.radio_source else -1
-                    _aioc_cb_ovf = self.radio_source._cb_overflow_count if self.radio_source else 0
-                    _aioc_cb_drop = self.radio_source._cb_drop_count if self.radio_source else 0
-                    _kv4p_snap = self.kv4p_audio_source.get_trace_snapshot() if self.kv4p_audio_source else {}
+                    _sdr1_disc = 0.0
+                    _sdr1_sb_after = -1
+                    _sdr1_cb_ovf = 0
+                    _sdr1_cb_drop = 0
+                    _aioc_disc = 0.0
+                    _aioc_sb_after = -1
+                    _aioc_cb_ovf = 0
+                    _aioc_cb_drop = 0
+                    _kv4p_snap = self.kv4p_plugin.get_trace_snapshot() if self.kv4p_plugin else {}
 
                     _trace.append((
                         _tick_start - self._audio_trace_t0,  # 0: time (s)
@@ -5127,8 +3063,8 @@ class RadioGateway:
                         _tr_mixer_got,                        # 6: mixer returned audio?
                         ','.join(active_sources) if active_sources else '',  # 7: active sources
                         _tr_mixer_ms,                         # 8: mixer call duration (ms)
-                        self.sdr_source._last_blocked_ms if self.sdr_source and self.sdr_source.input_stream else 0.0,  # 9: SDR blocked (ms)
-                        self.radio_source._last_blocked_ms if self.radio_source else 0.0,  # 10: AIOC blocked (ms)
+                        0.0,  # 9: SDR blocked (ms)
+                        0.0,  # 10: AIOC blocked (ms) — legacy field, always 0
                         _tr_outcome,                          # 11: outcome (sent/no_mumble/no_sndout/no_codec/ptt/exception)
                         _tr_mumble_ms,                        # 12: Mumble add_sound time (ms)
                         _tr_spk_ok,                           # 13: speaker enqueue attempted?
@@ -5168,9 +3104,9 @@ class RadioGateway:
                         _kv4p_snap.get('tx_dropped', 0),      # 44: PCM bytes dropped (partial-frame remainder)
                         _kv4p_snap.get('tx_input_rms', 0.0),  # 45: RMS of PCM fed to encoder
                         _kv4p_snap.get('tx_errors', 0),       # 46: encoder exceptions
-                        self.announcement_delay_active and not (str(getattr(self.config, 'TX_RADIO', '')).lower() == 'kv4p' and bool(self.kv4p_audio_source)),  # 47: TX to KV4P silenced by PTT settle delay (False when TX_RADIO=kv4p, fix in place)
-                        self.sdr2_source._serve_discontinuity if self.sdr2_source and hasattr(self.sdr2_source, '_serve_discontinuity') else 0.0,  # 48: SDR2 sample discontinuity (abs delta)
-                        self.sdr2_source._sub_buffer_after if self.sdr2_source and hasattr(self.sdr2_source, '_sub_buffer_after') else -1,  # 49: SDR2 sub-buffer bytes after serve
+                        self.announcement_delay_active and not (str(getattr(self.config, 'TX_RADIO', '')).lower() == 'kv4p' and bool(self.kv4p_plugin)),  # 47: TX to KV4P silenced by PTT settle delay (False when TX_RADIO=kv4p, fix in place)
+                        0.0,  # 48: SDR2 sample discontinuity (abs delta)
+                        -1,  # 49: SDR2 sub-buffer bytes after serve
                     ))
     
     def _find_darkice_pid(self):
@@ -5245,6 +3181,22 @@ class RadioGateway:
             stats['connected'] = False
         return stats
 
+    def _get_stream_stats(self):
+        """Get live streaming statistics from direct Icecast connection."""
+        so = getattr(self, 'stream_output', None)
+        if not so or not so.connected:
+            return {}
+        uptime_s = int(so.uptime)
+        return {
+            'connected': True,
+            'uptime': uptime_s,
+            'bytes_sent': int(so._bytes_sent),
+            'send_rate': f"{so._bytes_sent * 8 / max(uptime_s, 1) / 1000:.1f} kbps" if uptime_s > 0 else '—',
+            'server': getattr(self.config, 'STREAM_SERVER', ''),
+            'mount': getattr(self.config, 'STREAM_MOUNT', ''),
+            'bitrate': int(getattr(self.config, 'STREAM_BITRATE', 16)),
+        }
+
     def _get_darkice_stats_cached(self):
         """Return cached DarkIce stats, refreshing every 5 seconds."""
         now = time.time()
@@ -5280,7 +3232,7 @@ class RadioGateway:
         import sys
         import os as restart_os
 
-        # Use the original stderr fd (may have been redirected by StatusBarWriter)
+        # Use the original stderr fd (may have been redirected by LogWriter)
         _orig_stderr = getattr(self, '_orig_stderr', sys.stderr)
         stderr_fd = _orig_stderr.fileno() if hasattr(_orig_stderr, 'fileno') else 2
         saved_stderr_fd = restart_os.dup(stderr_fd)
@@ -5341,7 +3293,6 @@ class RadioGateway:
                 print(f"  [Diagnostic] Opening new input stream (device {input_idx})...")
                 restart_os.dup2(devnull_fd, stderr_fd)
             
-            aioc_callback = self.radio_source._audio_callback if self.radio_source else None
             try:
                 self.input_stream = self.pyaudio_instance.open(
                     format=audio_format,
@@ -5350,7 +3301,6 @@ class RadioGateway:
                     input=True,
                     input_device_index=input_idx,
                     frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
-                    stream_callback=aioc_callback
                 )
 
                 if self.config.VERBOSE_LOGGING:
@@ -5451,7 +3401,6 @@ class RadioGateway:
                 )
             
             if input_idx is not None:
-                aioc_callback = self.radio_source._audio_callback if self.radio_source else None
                 self.input_stream = self.pyaudio_instance.open(
                     format=audio_format,
                     channels=self.config.AUDIO_CHANNELS,
@@ -5459,7 +3408,6 @@ class RadioGateway:
                     input=True,
                     input_device_index=input_idx,
                     frames_per_buffer=self.config.AUDIO_CHUNK_SIZE * 4,
-                    stream_callback=aioc_callback
                 )
 
             if self.config.VERBOSE_LOGGING:
@@ -5469,85 +3417,6 @@ class RadioGateway:
             if self.config.VERBOSE_LOGGING:
                 print(f"  ✗ Failed to restart PyAudio: {type(e).__name__}: {e}")
     
-    def keyboard_listener_loop(self):
-        """Listen for keyboard input to toggle mute states"""
-        # In headless mode, all controls come from web UI — skip terminal input
-        if getattr(self.config, 'HEADLESS_MODE', False):
-            print("  Headless mode — keyboard controls disabled (use web UI)")
-            return
-
-        import sys
-        import tty
-        import termios
-
-        # Note: Priority scheduling removed - system manages all threads
-
-        # Save terminal settings
-        try:
-            old_settings = termios.tcgetattr(sys.stdin)
-        except:
-            # Not running in a terminal, can't capture keyboard
-            if self.config.VERBOSE_LOGGING:
-                print("  [Warning] Keyboard controls not available (not in terminal)")
-            return
-
-        # Store on instance so cleanup() can restore if this daemon thread is killed
-        self._terminal_settings = old_settings
-
-        try:
-            # Set terminal to raw mode for character-by-character input
-            tty.setcbreak(sys.stdin.fileno())
-            
-            while self.running:
-                # Check if input is available (non-blocking)
-                if select.select([sys.stdin], [], [], 0.1)[0]:
-                    char = sys.stdin.read(1).lower()
-
-                    # Keys handled locally (need terminal access)
-                    if char == 'i':
-                        self._trace_recording = not self._trace_recording
-                        if self._trace_recording:
-                            self._audio_trace.clear()
-                            self._spk_trace.clear()
-                            self._trace_events.clear()
-                            self._audio_trace_t0 = time.monotonic()
-                            print(f"\n[Trace] Recording STARTED (press 'i' again to stop)")
-                        else:
-                            print(f"\n[Trace] Recording STOPPED ({len(self._audio_trace)} ticks captured)")
-                        self._trace_events.append((time.monotonic(), 'trace', 'on' if self._trace_recording else 'off'))
-
-                    elif char == 'u':
-                        self._watchdog_active = not self._watchdog_active
-                        if self._watchdog_active:
-                            self._watchdog_t0 = time.monotonic()
-                            self._watchdog_thread = threading.Thread(
-                                target=self._watchdog_trace_loop, daemon=True)
-                            self._watchdog_thread.start()
-                            print(f"\n[Watchdog] Trace STARTED — sampling every 5s, flushing to tools/watchdog_trace.txt every 60s")
-                        else:
-                            print(f"\n[Watchdog] Trace STOPPED")
-
-                    elif char == 'z':
-                        writer = getattr(sys.stdout, '_orig', sys.stdout)
-                        writer.write("\033[2J\033[H")
-                        writer.flush()
-                        if hasattr(sys.stdout, '_bar_drawn'):
-                            sys.stdout._bar_drawn = False
-                        self._print_banner()
-
-                    else:
-                        # All other keys go through shared handler
-                        self.handle_key(char)
-
-                time.sleep(0.05)
-
-        finally:
-            # Restore terminal settings
-            try:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-            except:
-                pass
-
     def handle_proc_toggle(self, source, filt, state=None):
         """Toggle or set a processing filter for a specific source.
         Called from the /proc_toggle and /mixer API endpoints.
@@ -5566,19 +3435,19 @@ class RadioGateway:
                 'hpf':   'SDR_PROC_ENABLE_HPF',
                 'lpf':   'SDR_PROC_ENABLE_LPF',
                 'notch': 'SDR_PROC_ENABLE_NOTCH',
-            }, '_sync_sdr_processor'),
+            }, '_sync_sdr_plugin_processors'),
             'd75': ({
                 'gate':  'D75_PROC_ENABLE_NOISE_GATE',
                 'hpf':   'D75_PROC_ENABLE_HPF',
                 'lpf':   'D75_PROC_ENABLE_LPF',
                 'notch': 'D75_PROC_ENABLE_NOTCH',
-            }, '_sync_d75_processor'),
+            }, '_sync_d75_plugin_processor'),
             'kv4p': ({
                 'gate':  'KV4P_PROC_ENABLE_NOISE_GATE',
                 'hpf':   'KV4P_PROC_ENABLE_HPF',
                 'lpf':   'KV4P_PROC_ENABLE_LPF',
                 'notch': 'KV4P_PROC_ENABLE_NOTCH',
-            }, '_sync_kv4p_processor'),
+            }, '_sync_kv4p_plugin_processor'),
         }
         entry = _source_map.get(source)
         if not entry:
@@ -5612,17 +3481,17 @@ class RadioGateway:
                 self.rx_muted = True
             self._trace_events.append((time.monotonic(), 'global_mute', f'tx={self.tx_muted} rx={self.rx_muted}'))
         elif char == 's':
-            if self.sdr_source:
+            if self.sdr_plugin:
                 self.sdr_muted = not self.sdr_muted
-                self.sdr_source.muted = self.sdr_muted
+                self.sdr_plugin.tuner1_muted = self.sdr_muted
                 self._trace_events.append((time.monotonic(), 'sdr_mute', 'on' if self.sdr_muted else 'off'))
         elif char == 'd':
-            if self.sdr_source:
-                self.sdr_source.duck = not self.sdr_source.duck
+            if self.sdr_plugin:
+                self.sdr_plugin.duck = not self.sdr_plugin.duck
         elif char == 'x':
-            if self.sdr2_source:
+            if self.sdr_plugin:
                 self.sdr2_muted = not self.sdr2_muted
-                self.sdr2_source.muted = self.sdr2_muted
+                self.sdr_plugin.tuner2_muted = self.sdr2_muted
                 self._trace_events.append((time.monotonic(), 'sdr2_mute', 'on' if self.sdr2_muted else 'off'))
         elif char == 'c':
             if self.remote_audio_source:
@@ -5696,14 +3565,14 @@ class RadioGateway:
                 self.speaker_muted = not self.speaker_muted
                 self._trace_events.append((time.monotonic(), 'spk_mute', 'on' if self.speaker_muted else 'off'))
         elif char == 'w':
-            if self.d75_audio_source:
+            if self.d75_plugin:
                 self.d75_muted = not self.d75_muted
-                self.d75_audio_source.muted = self.d75_muted
+                self.d75_plugin.muted = self.d75_muted
                 self._trace_events.append((time.monotonic(), 'd75_mute', 'on' if self.d75_muted else 'off'))
         elif char == 'y':
-            if self.kv4p_audio_source:
+            if self.kv4p_plugin:
                 self.kv4p_muted = not self.kv4p_muted
-                self.kv4p_audio_source.muted = self.kv4p_muted
+                self.kv4p_plugin.muted = self.kv4p_muted
                 self._trace_events.append((time.monotonic(), 'kv4p_mute', 'on' if self.kv4p_muted else 'off'))
         elif char == 'l':
             if self.cat_client:
@@ -5789,15 +3658,11 @@ class RadioGateway:
 
         mumble_ok = getattr(self, 'mumble', None) and getattr(self.mumble, 'is_alive', lambda: False)()
 
-        # Audio levels (note: rx_audio_level = Mumble→Radio TX, tx_audio_level = Radio→Mumble RX)
-        radio_tx = getattr(self, 'rx_audio_level', 0)
-        # Match console: show 0% when VAD is blocking (not actually transmitting)
-        if self.config.ENABLE_VAD and not self.vad_active:
-            radio_rx = 0
-        else:
-            radio_rx = getattr(self, 'tx_audio_level', 0)
-        sdr1_level = self.sdr_source.audio_level if self.sdr_source and hasattr(self.sdr_source, 'audio_level') else 0
-        sdr2_level = self.sdr2_source.audio_level if self.sdr2_source and hasattr(self.sdr2_source, 'audio_level') else 0
+        # Audio levels — use plugin levels directly
+        radio_rx = self.th9800_plugin.audio_level if self.th9800_plugin else 0
+        radio_tx = getattr(self.th9800_plugin, 'tx_audio_level', 0) if self.th9800_plugin else 0
+        sdr1_level = self.sdr_plugin.tuner1_level if self.sdr_plugin else 0
+        sdr2_level = self.sdr_plugin.tuner2_level if self.sdr_plugin else 0
         sv_level = getattr(self, 'sv_audio_level', 0)
         speaker_level = getattr(self, 'speaker_audio_level', 0)
         an_level = self.announce_input_source.audio_level if self.announce_input_source and hasattr(self.announce_input_source, 'audio_level') else 0
@@ -5875,7 +3740,7 @@ class RadioGateway:
             'rx_muted': self.rx_muted,
             'sdr1_muted': getattr(self, 'sdr_muted', False),
             'sdr2_muted': getattr(self, 'sdr2_muted', False),
-            'sdr1_duck': self.sdr_source.duck if self.sdr_source and hasattr(self.sdr_source, 'duck') else False,
+            'sdr1_duck': self.sdr_plugin.duck if self.sdr_plugin else False,
             'sdr_rebroadcast': getattr(self, 'sdr_rebroadcast', False),
             'tx_talkback': getattr(self, 'tx_talkback', False),
             'remote_muted': getattr(self, 'remote_audio_muted', False),
@@ -5907,8 +3772,8 @@ class RadioGateway:
             'cat_reliability': cat_reliability,
             'cat_vol': cat_vol,
             'relay_pressing': getattr(self, '_relay_radio_pressing', False),
-            'sdr1_enabled': bool(self.sdr_source),
-            'sdr2_enabled': bool(self.sdr2_source),
+            'sdr1_enabled': bool(self.sdr_plugin and self.sdr_plugin.tuner1_enabled),
+            'sdr2_enabled': bool(self.sdr_plugin and self.sdr_plugin.tuner2_enabled),
             'speaker_enabled': bool(self.speaker_stream),
             'remote_enabled': bool(self.remote_audio_source or self.remote_audio_server),
             'announce_enabled': bool(self.announce_input_source),
@@ -5917,15 +3782,17 @@ class RadioGateway:
             'ms1_state': self.mumble_server_1.state if self.mumble_server_1 else None,
             'ms2_state': self.mumble_server_2.state if self.mumble_server_2 else None,
             'cat_enabled': bool(self.cat_client) or getattr(self.config, 'ENABLE_CAT_CONTROL', False),
-            'd75_enabled': bool(self.d75_cat) or getattr(self.config, 'ENABLE_D75', False),
-            'd75_connected': bool(self.d75_cat and getattr(self.d75_cat, '_serial_connected', False)),
-            'd75_audio_connected': bool(self.d75_audio_source and self.d75_audio_source.server_connected),
+            'd75_enabled': bool(self.d75_plugin) or getattr(self.config, 'ENABLE_D75', False),
+            'd75_connected': bool(self.d75_plugin and getattr(self.d75_plugin, '_serial_connected', False)),
+            'd75_audio_connected': bool(self.d75_plugin and self.d75_plugin.server_connected),
             'd75_mode': str(getattr(self.config, 'D75_CONNECTION', 'bluetooth')).lower().strip(),
-            'd75_level': self.d75_audio_source.audio_level if self.d75_audio_source else 0,
+            'd75_level': self.d75_plugin.audio_level if self.d75_plugin else 0,
             'd75_muted': getattr(self, 'd75_muted', False),
-            'kv4p_enabled': bool(self.kv4p_audio_source),
-            'kv4p_level': self.kv4p_audio_source.audio_level if self.kv4p_audio_source else 0,
+            'kv4p_enabled': bool(self.kv4p_plugin),
+            'kv4p_level': self.kv4p_plugin.audio_level if self.kv4p_plugin else 0,
             'kv4p_muted': getattr(self, 'kv4p_muted', False),
+            'adsb_enabled': getattr(self.config, 'ENABLE_ADSB', False),
+            'telegram_enabled': getattr(self.config, 'ENABLE_TELEGRAM', False),
             'monitor_enabled': bool(self.web_monitor_source),
             'monitor_level': self.web_monitor_source.audio_level if self.web_monitor_source else 0,
             'link_enabled': bool(self.link_server),
@@ -5948,15 +3815,16 @@ class RadioGateway:
             'playback_enabled': bool(self.playback_source),
             'tts_enabled': bool(getattr(self, 'tts_engine', None)),
             'smart_announce_enabled': bool(self.smart_announce),
-            # Broadcastify / DarkIce streaming
+            # Broadcastify / Icecast streaming
             'streaming_enabled': bool(getattr(self.config, 'ENABLE_STREAM_OUTPUT', False)),
+            'stream_connected': bool(getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
             'stream_pipe_ok': bool(getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
-            'darkice_running': self._darkice_pid is not None,
-            'darkice_pid': self._darkice_pid,
-            'darkice_restarts': self._darkice_restart_count,
+            'darkice_running': bool(getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
+            'darkice_pid': None,
+            'darkice_restarts': 0,
             'stream_restarts': self.stream_restart_count,
-            'stream_health': bool(self._darkice_pid is not None and getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
-            'darkice_stats': self._get_darkice_stats_cached(),
+            'stream_health': bool(getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
+            'darkice_stats': self._get_stream_stats(),
             'notifications': list(self._notifications),
             'automation_enabled': bool(self.automation_engine),
             'automation_task': self.automation_engine._current_task if self.automation_engine else None,
@@ -6004,338 +3872,9 @@ class RadioGateway:
                     if self.tx_audio_level < 3:
                         self.tx_audio_level = 0
                 
-                # Check audio transmit status
-                time_since_last_capture = current_time - self.last_audio_capture_time
-                
-                # ANSI color codes
-                YELLOW = '\033[93m'
-                GREEN = '\033[92m'
-                RED = '\033[91m'
-                ORANGE = '\033[33m'
-                WHITE = '\033[97m'
-                GRAY = '\033[90m'
-                CYAN = '\033[96m'
-                MAGENTA = '\033[95m'
-                BLUE = '\033[94m'
-                RESET = '\033[0m'
-                
-                # Format status with color-coded symbols (fixed width for alignment)
-                if self.audio_capture_active and time_since_last_capture < 2.0:
-                    status_label = "  "  # padding to keep fixed width
-                    status_symbol = f"{GREEN}✓{RESET}"
-                elif time_since_last_capture < 10.0:
-                    status_label = "  "
-                    status_symbol = f"{ORANGE}⚠{RESET}"
-                else:
-                    status_label = "  "
-                    status_symbol = f"{RED}✗{RESET}"
-                    # Attempt recovery only if AIOC is expected
-                    if self.aioc_available:
-                        if self.config.VERBOSE_LOGGING:
-                            print(f"\n{WHITE}{status_label}:{RESET} {status_symbol}")
-                            print("  Attempting to restart audio input...")
-                        self.restart_audio_input()
-                        continue
-                
-                # Print status
-                # Status symbols with colors
-                mumble_status = f"{GREEN}✓{RESET}" if self.mumble else f"{RED}✗{RESET}"
-                # PTT method tag for status label
-                _ptt_m = str(getattr(self.config, 'PTT_METHOD', 'aioc')).lower()
-                _ptt_tag = {'aioc': '', 'relay': 'R', 'software': 'S'}.get(_ptt_m, '?')
-                _ptt_label = f"PTT{_ptt_tag}" if _ptt_tag else "PTT"
-                # PTT status: Always 4 chars wide for alignment
-                if self.manual_ptt_mode:
-                    ptt_status = f"{YELLOW}M-{GREEN}ON{RESET}" if self.ptt_active else f"{YELLOW}M-{GRAY}--{RESET}"
-                elif self._rebroadcast_ptt_active:
-                    ptt_status = f"{CYAN}B-{GREEN}ON{RESET}" if self.ptt_active else f"{CYAN}B-{GRAY}--{RESET}"
-                else:
-                    # Pad normal mode to 4 chars to match manual mode width
-                    ptt_status = f"  {GREEN}ON{RESET}" if self.ptt_active else f"  {GRAY}--{RESET}"
-                
-                # VAD status: Always 2 chars wide for alignment
-                if not self.config.ENABLE_VAD:
-                    vad_status = f"{RED}✗ {RESET}"  # VAD disabled (red X + space) - 2 chars
-                elif self.vad_active:
-                    vad_status = f"{GREEN}🔊{RESET}"  # VAD active (green speaker) - 2 chars (emoji width)
-                else:
-                    vad_status = f"{GRAY}--{RESET}"  # VAD silent (gray) - 2 chars
-                
-                # Format audio levels with bar graphs
-                # Note: From radio's perspective:
-                #   - rx_audio_level = Mumble → Radio (Radio TX) - RED
-                #   - tx_audio_level = Radio → Mumble (Radio RX) - GREEN
-                radio_tx_bar = self.format_level_bar(self.rx_audio_level, muted=self.tx_muted, color='red')
-                
-                # RX bar: Show 0% if VAD is blocking (not actually transmitting to Mumble)
-                # Only show level when VAD is active (actually sending to Mumble)
-                if self.config.ENABLE_VAD and not self.vad_active:
-                    radio_rx_bar = self.format_level_bar(0, muted=self.rx_muted, color='green')  # Not transmitting = 0%
-                else:
-                    radio_rx_bar = self.format_level_bar(self.tx_audio_level, muted=self.rx_muted, color='green')
-                
-                # SDR bar: Show SDR audio level (CYAN color)
-                # Calculate once so it is always defined regardless of which SDR sources are present
-                global_muted = self.tx_muted and self.rx_muted
-
-                # Determine SDR label color based on rebroadcast state
-                if self.sdr_rebroadcast:
-                    sdr_label_color = RED if self._rebroadcast_sending else GREEN
-                else:
-                    sdr_label_color = WHITE
-
-                sdr_bar = ""
-                if self.sdr_source:
-                    # Always read current level directly from source
-                    # Don't cache in self.sdr_audio_level to prevent freezing
-                    if hasattr(self.sdr_source, 'audio_level'):
-                        current_sdr_level = self.sdr_source.audio_level
-                    else:
-                        current_sdr_level = 0
-
-                    # Determine display state
-                    # Mirror SDRSource.get_audio(): discard when individually muted OR globally muted
-                    sdr_muted = self.sdr_muted or global_muted
-                    # Only show DUCK when SDR has actual signal; silence on an idle
-                    # loopback looks the same as "ducked signal" but means nothing.
-                    sdr_ducked = self.sdr_ducked if not sdr_muted and current_sdr_level > 0 else False
-                    
-                    # Format: SDR1: (no mode indicator here - it goes in proc_flags)
-                    sdr_bar = f" {sdr_label_color}SDR1:{RESET}" + self.format_level_bar(current_sdr_level, muted=sdr_muted, ducked=sdr_ducked, color='cyan')
-                    sdr_bar += f"{RED}P{RESET}" if self.sdr_source._prebuffering else " "
-                    if self.sdr_source._watchdog_restarts > 0:
-                        sdr_bar += f"{YELLOW}W{self.sdr_source._watchdog_restarts}{RESET}"
-
-                # SDR2 bar: Show SDR2 audio level (MAGENTA color for differentiation)
-                sdr2_bar = ""
-                if self.sdr2_source and self.sdr2_source.enabled:
-                    # Always read current level directly from source
-                    if hasattr(self.sdr2_source, 'audio_level'):
-                        current_sdr2_level = self.sdr2_source.audio_level
-                    else:
-                        current_sdr2_level = 0
-                    
-                    # Determine display state
-                    sdr2_muted = self.sdr2_muted or global_muted
-                    sdr2_ducked = self.sdr2_ducked if not sdr2_muted and current_sdr2_level > 0 else False
-                    
-                    # Format: SDR2: with magenta color
-                    sdr2_bar = f" {sdr_label_color}SDR2:{RESET}" + self.format_level_bar(current_sdr2_level, muted=sdr2_muted, ducked=sdr2_ducked, color='magenta')
-                    sdr2_bar += f"{RED}P{RESET}" if self.sdr2_source._prebuffering else " "
-                    if self.sdr2_source._watchdog_restarts > 0:
-                        sdr2_bar += f"{YELLOW}W{self.sdr2_source._watchdog_restarts}{RESET}"
-
-                # Remote audio bar (server: SV with tx level; client: CL with rx level)
-                remote_bar = ""
-                if self.remote_audio_server:
-                    # This machine is the server — show audio level being sent to client
-                    sv_level = self.sv_audio_level if self.remote_audio_server.connected else 0
-                    # Decay toward zero so the bar doesn't stick when no audio is sent
-                    if self.sv_audio_level > 0:
-                        self.sv_audio_level = int(self.sv_audio_level * 0.7)
-                    remote_bar = f" {WHITE}SV:{RESET}" + self.format_level_bar(sv_level, color='yellow')
-                elif self.remote_audio_source:
-                    # This machine is the client — show audio level received from server
-                    current_cl_level = getattr(self.remote_audio_source, 'audio_level', 0)
-                    cl_muted = self.remote_audio_muted or global_muted
-                    cl_ducked = self.remote_audio_ducked if not cl_muted and current_cl_level > 0 else False
-                    remote_bar = f" {WHITE}CL:{RESET}" + self.format_level_bar(current_cl_level, muted=cl_muted, ducked=cl_ducked, color='green')
-
-                # D75 audio bar
-                d75_bar = ""
-                if self.d75_audio_source:
-                    d75_level = getattr(self.d75_audio_source, 'audio_level', 0)
-                    d75_m = self.d75_muted or global_muted
-                    d75_bar = f" {WHITE}D75:{RESET}" + self.format_level_bar(d75_level, muted=d75_m, color='yellow')
-
-                # Announcement input bar (AN: — red like TX, shown when enabled)
-                annin_bar = ""
-                if self.announce_input_source:
-                    an_level = getattr(self.announce_input_source, 'audio_level', 0)
-                    an_connected = getattr(self.announce_input_source, 'client_connected', False)
-                    an_muted = self.announce_input_muted or global_muted
-                    annin_bar = f" {WHITE}AN:{RESET}" + self.format_level_bar(
-                        an_level if an_connected else 0, muted=an_muted, color='red'
-                    )
-
-                # Add diagnostics if there have been restarts (fixed width: always 6 chars like " R:123" or "      ")
-                # This prevents the status line from jumping when restarts occur
-                if self.stream_restart_count > 0:
-                    diag = f" {WHITE}R:{YELLOW}{self.stream_restart_count}{RESET}"
-                else:
-                    diag = "      "  # 6 spaces to match " R:XX" width
-                # DarkIce restart count
-                if self._darkice_restart_count > 0:
-                    diag += f" {WHITE}S:{YELLOW}{self._darkice_restart_count}{RESET}"
-                
-                # Show VAD level in dB if enabled (white label, yellow numbers, fixed width: always 6 chars like " -100dB" or "      ")
-                vad_info = f" {YELLOW}{self.vad_envelope:4.0f}{RESET}{WHITE}dB{RESET}" if self.config.ENABLE_VAD else "       "
-                
-                # Show RX volume (white label, yellow number, always 3 chars for number)
-                vol_info = f" {WHITE}Vol:{YELLOW}{self.config.INPUT_VOLUME:3.1f}{RESET}{WHITE}x{RESET}"
-                
-                # Show audio processing status (compact single-letter flags)
-                # This now appears AFTER file status, so width changes don't matter
-                proc_flags = []
-                if self.config.ENABLE_NOISE_GATE: proc_flags.append("N")
-                if self.config.ENABLE_HIGHPASS_FILTER: proc_flags.append("F")
-                if self.config.ENABLE_AGC: proc_flags.append("G")
-                if self.config.ENABLE_ECHO_CANCELLATION: proc_flags.append("E")
-                if not self.config.ENABLE_STREAM_HEALTH: proc_flags.append("X")  # X shows stream health is OFF
-                # D flag: SDR ducking enabled (only show if SDR is present)
-                if self.sdr_source and hasattr(self.sdr_source, 'duck') and self.sdr_source.duck:
-                    proc_flags.append("D")
-                
-                # Only show brackets if there are flags (saves space)
-                proc_info = f" {WHITE}[{YELLOW}{','.join(proc_flags)}{WHITE}]{RESET}" if proc_flags else ""
-                
-                # Speaker output indicator
-                sp_bar = ""
-                if self.config.ENABLE_SPEAKER_OUTPUT and self.speaker_stream:
-                    sp_bar = f" {WHITE}SP:{RESET}" + self.format_level_bar(
-                        self.speaker_audio_level, muted=self.speaker_muted, color='cyan'
-                    )
-
-                # Relay status indicators (fixed width, only shown when enabled)
-                relay_bar = ""
-                if self.relay_radio:
-                    if self._relay_radio_pressing:
-                        relay_bar += f" {RED}PWRB{RESET}"
-                    else:
-                        relay_bar += f" {WHITE}PWRB{RESET}"
-                if self.relay_charger:
-                    manual_tag = "*" if self._charger_manual else ""
-                    if self.relay_charger_on:
-                        relay_bar += f" {WHITE}CHG:{GREEN}CHRGE{manual_tag}{RESET}"
-                    else:
-                        relay_bar += f" {WHITE}CHG:{RED}DRAIN{manual_tag}{RESET}"
-
-                # CAT control status indicator
-                cat_bar = ""
-                if self.cat_client:
-                    if time.monotonic() - self.cat_client._last_activity < 1.0:
-                        cat_bar = f" {RED}CAT{RESET}"
-                    else:
-                        cat_bar = f" {GREEN}CAT{RESET}"
-                elif getattr(self.config, 'ENABLE_CAT_CONTROL', False):
-                    cat_bar = f" {WHITE}CAT{RESET}"
-
-                # Mumble Server status indicators
-                msrv_bar = ""
-                for _ms_inst, _ms_label in [(self.mumble_server_1, 'MS1'), (self.mumble_server_2, 'MS2')]:
-                    if _ms_inst and _ms_inst.is_enabled():
-                        _ms_state = _ms_inst.state
-                        if _ms_state == MumbleServerManager.STATE_RUNNING:
-                            msrv_bar += f" {GREEN}{_ms_label}{RESET}"
-                        elif _ms_state == MumbleServerManager.STATE_ERROR:
-                            msrv_bar += f" {RED}{_ms_label}{RESET}"
-                        else:
-                            msrv_bar += f" {WHITE}{_ms_label}{RESET}"
-
-                # Line 1: audio indicators + file slots
-                _file_bar = ""
-                if self.playback_source:
-                    _file_bar = f" {self.playback_source.get_file_status_string()}"
-                status_line = f"{status_symbol} {WHITE}M:{RESET}{mumble_status} {WHITE}{_ptt_label}:{RESET}{ptt_status} {WHITE}VAD:{RESET}{vad_status}{vad_info} {WHITE}TX:{RESET}{radio_tx_bar} {WHITE}RX:{RESET}{radio_rx_bar}{sp_bar}{sdr_bar}{sdr2_bar}{remote_bar}{d75_bar}{annin_bar}{_file_bar}     "
-
-                # Line 2: uptime, files, relays, CAT, servers, vol, proc, diag, smart countdowns
-                def _fmt_hms(secs):
-                    d, rem = divmod(int(secs), 86400)
-                    h, rem = divmod(rem, 3600)
-                    m, s = divmod(rem, 60)
-                    return f"{d}d {h:02d}:{m:02d}:{s:02d}"
-
-                uptime_s = current_time - self.start_time
-                line2_parts = [f"{WHITE}UP:{CYAN}{_fmt_hms(uptime_s)}{RESET}"]
-
-                if self.smart_announce:
-                    for sa_id, sa_rem, sa_mode in self.smart_announce.get_countdowns():
-                        if sa_mode == 'manual':
-                            line2_parts.append(f"{WHITE}S{sa_id}:{MAGENTA}Manual{RESET}")
-                        else:
-                            line2_parts.append(f"{WHITE}S{sa_id}:{MAGENTA}{_fmt_hms(sa_rem)}{RESET}")
-
-                if self.web_config_server:
-                    _web_port = getattr(self.config, 'WEB_CONFIG_PORT', 8080)
-                    _https_val = str(getattr(self.config, 'WEB_CONFIG_HTTPS', 'false')).lower().strip()
-                    _web_s = 'S' if _https_val not in ('false', '0', 'no', '') else ''
-                    line2_parts.append(f"{WHITE}WEB{_web_s}:{GREEN}{_web_port}{RESET}")
-
-                if self.automation_engine:
-                    _ae = self.automation_engine
-                    _ae_task = _ae._current_task
-                    if _ae_task:
-                        line2_parts.append(f"{WHITE}AUTO:{YELLOW}{_ae_task}{RESET}")
-                    elif _ae.recorder.is_recording():
-                        line2_parts.append(f"{WHITE}AUTO:{RED}REC{RESET}")
-                    else:
-                        line2_parts.append(f"{WHITE}AUTO:{GREEN}OK{RESET}")
-
-                # Line 3: network info (DNS IP + Cloudflare tunnel URL)
-                line3_parts = []
-                if self.ddns_updater:
-                    _dns_st = self.ddns_updater.get_status()
-                    _dns_color = YELLOW if self.ddns_updater._last_status in ('good', 'nochg') else (RED if self.ddns_updater._last_status else YELLOW)
-                    _dns_host = str(getattr(self.config, 'DDNS_HOSTNAME', '') or '')
-                    line3_parts.append(f"{WHITE}DNS:{_dns_color}{_dns_host} → {_dns_st}{RESET}")
-
-                if self.cloudflare_tunnel:
-                    _cf_url = self.cloudflare_tunnel.get_url()
-                    if _cf_url:
-                        line3_parts.append(f"{WHITE}CF:{YELLOW}{_cf_url}{RESET}")
-                    else:
-                        line3_parts.append(f"{WHITE}CF:{YELLOW}starting...{RESET}")
-
-                line2_tail = f"{relay_bar}{cat_bar}{msrv_bar}{vol_info}{proc_info}{diag}"
-                if line2_tail.strip():
-                    line2_parts.append(line2_tail.strip())
-
-                status_line2 = "  ".join(line2_parts) + "     "
-                status_line3 = "  ".join(line3_parts) + "     " if line3_parts else None
-
-                # Truncate all lines to terminal width to prevent line wrapping
-                try:
-                    import shutil as _shutil
-                    _term_cols = _shutil.get_terminal_size().columns
-                    import re as _re
-
-                    def _truncate_ansi(s, maxw):
-                        vlen = len(_re.sub(r'\033\[[0-9;]*m', '', s))
-                        if vlen <= maxw:
-                            return s
-                        out = []
-                        vc = 0
-                        i = 0
-                        while i < len(s) and vc < maxw:
-                            if s[i] == '\033':
-                                j = s.find('m', i)
-                                if j != -1:
-                                    out.append(s[i:j+1])
-                                    i = j + 1
-                                    continue
-                            out.append(s[i])
-                            vc += 1
-                            i += 1
-                        return ''.join(out) + RESET
-
-                    status_line = _truncate_ansi(status_line, _term_cols - 1)
-                    status_line2 = _truncate_ansi(status_line2, _term_cols - 1)
-                    if status_line3:
-                        status_line3 = _truncate_ansi(status_line3, _term_cols - 1)
-                except Exception:
-                    pass
-
-                self._status_writer.draw_status(status_line, line2=status_line2, line3=status_line3)
-            
-            # Always check for stuck audio (even if status reporting is disabled)
-            elif status_check_interval == 0:
-                time_since_last_capture = current_time - self.last_audio_capture_time
-                if time_since_last_capture > 30.0:  # 30 seconds with no audio = stuck
-                    if self.config.VERBOSE_LOGGING:
-                        print(f"\n✗ Audio TX stuck (no audio for {int(time_since_last_capture)}s)")
-                        print("  Attempting to restart audio input...")
-                    self.restart_audio_input()
-                    time.sleep(5)  # Wait before checking again
+                # Audio stream health — let plugin check its own watchdog
+                if self.th9800_plugin:
+                    self.th9800_plugin.check_watchdog()
             
             # DarkIce health check (every 10s — pgrep spawns a process)
             if (self._darkice_was_running and
@@ -6370,10 +3909,10 @@ class RadioGateway:
                     self._trace_events.append((time.monotonic(), 'relay_charger', 'on' if should_on else 'off'))
 
             # SDR loopback watchdog checks
-            if self.sdr_source and self.sdr_source.enabled:
-                self.sdr_source.check_watchdog()
-            if self.sdr2_source and self.sdr2_source.enabled:
-                self.sdr2_source.check_watchdog()
+            if self.sdr_plugin and self.sdr_plugin.tuner1_enabled:
+                self.sdr_plugin.check_watchdog()
+            if self.sdr_plugin and self.sdr_plugin.tuner2_enabled:
+                self.sdr_plugin.check_watchdog()
 
             # Mumble Server health checks (every ~10 seconds)
             if not hasattr(self, '_ms_health_tick'):
@@ -6423,113 +3962,6 @@ class RadioGateway:
                 pass  # trace deque itself failed — don't let that kill us
             time.sleep(1)
 
-    def _print_banner(self):
-        """Print the Gateway Active banner, status info, and keyboard controls."""
-        mumble_ok = getattr(self, '_mumble_ok', True)
-        print()
-        print("=" * 60)
-        if self.secondary_mode:
-            print("Gateway Active! (SECONDARY / STANDBY MODE)")
-            print("  Mumble: DISABLED — username already connected on primary")
-            print("  DarkIce: DISABLED — Broadcastify feed already live on primary")
-            print("  Radio RX/TX and SDR sources still active locally.")
-        elif not mumble_ok:
-            print("Gateway Active! (MUMBLE OFFLINE)")
-            print("  Mumble: DISABLED — server unreachable")
-            print("  Radio RX/TX and SDR sources still active locally.")
-        else:
-            print("Gateway Active!")
-            print("  Mumble → AIOC output → Radio TX (auto PTT)")
-            print("  Radio RX → AIOC input → Mumble (VOX)")
-
-        # Show audio processing status
-        processing_enabled = []
-        if self.config.ENABLE_HIGHPASS_FILTER:
-            processing_enabled.append(f"HPF@{self.config.HIGHPASS_CUTOFF_FREQ}Hz")
-        if self.config.ENABLE_NOISE_GATE:
-            processing_enabled.append(f"Gate@{self.config.NOISE_GATE_THRESHOLD}dB")
-
-        if processing_enabled:
-            print(f"  Audio Processing: {', '.join(processing_enabled)}")
-
-        # Show VAD status
-        if self.config.ENABLE_VAD:
-            print(f"  Voice Activity Detection: ON (threshold: {self.config.VAD_THRESHOLD}dB)")
-            print(f"    → Only sends audio to Mumble when radio signal detected")
-        else:
-            print(f"  Voice Activity Detection: OFF (continuous transmission)")
-
-        # Show stream health management
-        if self.config.ENABLE_STREAM_HEALTH and self.config.STREAM_RESTART_INTERVAL > 0:
-            print(f"  Stream Health: Auto-restart every {self.config.STREAM_RESTART_INTERVAL}s (when idle {self.config.STREAM_RESTART_IDLE_TIME}s+)")
-        else:
-            print(f"  Stream Health: DISABLED (may experience -9999 errors if streams get stuck)")
-
-        # Show SDR watchdog status
-        if self.sdr_source and self.sdr_source.enabled:
-            wt = self.config.SDR_WATCHDOG_TIMEOUT
-            wm = self.config.SDR_WATCHDOG_MAX_RESTARTS
-            mp = self.config.SDR_WATCHDOG_MODPROBE
-            print(f"  SDR1 Watchdog: {wt}s timeout, {wm} max restarts, modprobe={'ON' if mp else 'OFF'}")
-        if self.sdr2_source and self.sdr2_source.enabled:
-            wt = self.config.SDR2_WATCHDOG_TIMEOUT
-            wm = self.config.SDR2_WATCHDOG_MAX_RESTARTS
-            mp = self.config.SDR2_WATCHDOG_MODPROBE
-            print(f"  SDR2 Watchdog: {wt}s timeout, {wm} max restarts, modprobe={'ON' if mp else 'OFF'}")
-
-        # Show Mumble Server status
-        for _ms, _ms_num in [(getattr(self, 'mumble_server_1', None), 1),
-                              (getattr(self, 'mumble_server_2', None), 2)]:
-            if _ms and _ms.is_enabled():
-                state, port = _ms.get_status()
-                if state == MumbleServerManager.STATE_RUNNING:
-                    print(f"  Mumble Server {_ms_num}: RUNNING on port {port}")
-                elif state == MumbleServerManager.STATE_ERROR:
-                    print(f"  Mumble Server {_ms_num}: ERROR — {_ms.error_msg}")
-                elif state == MumbleServerManager.STATE_CONFIGURED:
-                    print(f"  Mumble Server {_ms_num}: configured (port {port})")
-                else:
-                    print(f"  Mumble Server {_ms_num}: {state}")
-
-        # Print file mapping if playback is enabled
-        if self.config.ENABLE_PLAYBACK and hasattr(self, 'playback_source') and self.playback_source:
-            print()  # Blank line
-            self.playback_source.print_file_mapping()
-            print()  # Blank line before keyboard controls
-
-        print("Press Ctrl+C to exit")
-        print("Keyboard Controls:")
-        print("  Mute:  't'=TX  'r'=RX  'm'=Global  's'=SDR1  'x'=SDR2  'c'=Remote  'a'=Announce  'o'=Speaker  'w'=D75  'y'=KV4P")
-        print("  Audio: 'v'=VAD toggle  ','=Vol-  '.'=Vol+")
-        print("  Proc:  'n'=Gate  'f'=HPF  'g'=AGC")
-        print("  SDR:   'd'=SDR1 Duck toggle  'b'=SDR Rebroadcast toggle")
-        print("  PTT:   'p'=Manual PTT toggle")
-        print("  Play:  '1-9'=Announcements  '0'=StationID  '-'=Stop")
-        print("  Net:   'k'=Reset remote audio connection")
-        print("  Relay: 'j'=Radio power button  'h'=Charger toggle  'l'=Send CAT config")
-        print("  Smart: '['=Smart#1  ']'=Smart#2  '\\'=Smart#3")
-        print("  Trace: 'i'=Start/stop audio trace  'u'=Start/stop watchdog trace")
-        print("  Misc:  'q'=Restart gateway  'z'=Clear and reprint console")
-        print("=" * 60)
-        print()
-
-        # Print status line legend (only in verbose mode)
-        if self.config.VERBOSE_LOGGING:
-            print("Status Line Legend:")
-            print("  [✓/⚠/✗]  = Audio capture status (active/idle/stopped)")
-            print("  M:✓/✗    = Mumble connected/disconnected")
-            print("  PTT:ON/M-ON/B-ON/-- = Push-to-talk (auto/manual-on/rebroadcast/off)")
-            print("  VAD:✗/🔊/-- = VAD disabled/active/silent (dB = current level)")
-            print("  TX:[bar] = Mumble → Radio audio level")
-            print("  RX:[bar] = Radio → Mumble audio level")
-            print("  SDR1:[bar] = SDR1 receiver audio level (cyan)")
-            print("  SDR2:[bar] = SDR2 receiver audio level (magenta)")
-            print("  Vol:X.Xx = RX volume multiplier (Radio → Mumble gain)")
-            print("  1234567890 = File status (green=loaded, red=playing, white=empty)")
-            print("  [N,F,G,D] = Processing: N=NoiseGate F=HPF G=AGC D=SDR1Duck")
-            print("  R:n      = Stream restart count (only if >0)")
-            print()
-
     def run(self):
         """Main application"""
         # Set up rolling log file (daily rotation, keeps LOG_FILE_DAYS days)
@@ -6569,10 +4001,9 @@ class RadioGateway:
                 pass
 
         # Install stdout/stderr wrapper early so ALL messages get timestamps
-        headless = getattr(self.config, 'HEADLESS_MODE', False)
         buf_lines = int(getattr(self.config, 'LOG_BUFFER_LINES', 2000))
-        self._status_writer = StatusBarWriter(
-            sys.stdout, headless=headless, buffer_lines=buf_lines, log_file=log_file
+        self._status_writer = LogWriter(
+            sys.stdout, buffer_lines=buf_lines, log_file=log_file
         )
         sys.stdout = self._status_writer
         self._orig_stderr = sys.stderr
@@ -6596,12 +4027,8 @@ class RadioGateway:
         print("=" * 60)
         print()
         
-        # Initialize AIOC (optional - gateway can work without it)
-        self.aioc_available = self.setup_aioc()
-        if not self.aioc_available:
-            print("⚠ AIOC not found - continuing without radio interface")
-            print("  Gateway will operate in Mumble + SDR mode")
-        
+        # AIOC init now handled by TH9800Plugin in setup_audio()
+
         # Initialize Audio
         if not self.setup_audio():
             self.cleanup()
@@ -6614,10 +4041,8 @@ class RadioGateway:
             print("\n  ⚠ Mumble connection failed — continuing without Mumble.")
             print("  Radio audio, SDR, and other features will still work.")
 
-        self._print_banner()
-
         # Redirect OS-level fd 2 (C stderr) through a pipe that feeds back
-        # into the StatusBarWriter.  This catches output from external
+        # into the LogWriter.  This catches output from external
         # processes (murmurd, Mumble GUI Qt warnings) that share our terminal.
         try:
             self._stderr_pipe_r, self._stderr_pipe_w = os.pipe()
@@ -6652,10 +4077,29 @@ class RadioGateway:
         self._status_thread = threading.Thread(target=self.status_monitor_loop, daemon=True)
         self._status_thread.start()
 
-        # Start keyboard listener thread
-        self._keyboard_thread = threading.Thread(target=self.keyboard_listener_loop, daemon=True)
-        self._keyboard_thread.start()
-
+        # Start Bus Manager (additional busses from routing config)
+        try:
+            from bus_manager import BusManager
+            self.bus_manager = BusManager(self)
+            self.bus_manager.start()
+            # Cache per-bus stream flags (pcm/mp3/vad), sink connections, and listen bus ID
+            self._bus_stream_flags = self.bus_manager.get_bus_stream_flags()
+            self._bus_sinks = self.bus_manager.get_bus_sinks()
+            self._listen_bus_id = self.bus_manager.get_listen_bus_id()
+            self._listen_bus_muted = self.bus_manager.is_bus_muted(self._listen_bus_id)
+            # Reconcile mixer sources with routing config now that bus_manager exists
+            self.sync_mixer_sources()
+        except Exception as e:
+            print(f"  [BusManager] Failed to start: {e}")
+            self.bus_manager = None
+        if not hasattr(self, '_bus_stream_flags'):
+            self._bus_stream_flags = {}
+        if not hasattr(self, '_bus_sinks'):
+            self._bus_sinks = {}
+        if not hasattr(self, '_listen_bus_id'):
+            self._listen_bus_id = 'listen'
+        if not hasattr(self, '_listen_bus_muted'):
+            self._listen_bus_muted = False
 
         # Start Automation Engine if enabled
         if getattr(self.config, 'ENABLE_AUTOMATION', False):
@@ -6729,9 +4173,9 @@ class RadioGateway:
             th_tx = _alive(self._tx_thread)
             th_stat = _alive(self._status_thread)
             th_kb = _alive(self._keyboard_thread)
-            th_aioc = _alive(self.radio_source._reader_thread if self.radio_source and hasattr(self.radio_source, '_reader_thread') else None)
-            th_sdr1 = _alive(self.sdr_source._reader_thread if self.sdr_source and hasattr(self.sdr_source, '_reader_thread') else None)
-            th_sdr2 = _alive(self.sdr2_source._reader_thread if self.sdr2_source and hasattr(self.sdr2_source, '_reader_thread') else None)
+            th_aioc = _alive(self.radio_source._rx_thread if self.radio_source and hasattr(self.radio_source, '_rx_thread') else None)
+            th_sdr1 = _alive(None)
+            th_sdr2 = _alive(None)
             th_remote = _alive(self.remote_audio_source._reader_thread if self.remote_audio_source and hasattr(self.remote_audio_source, '_reader_thread') else None)
             th_announce = _alive(self.announce_input_source._reader_thread if self.announce_input_source and hasattr(self.announce_input_source, '_reader_thread') else None)
 
@@ -6745,8 +4189,8 @@ class RadioGateway:
 
             # Source enabled flags
             en_aioc = 1 if (self.radio_source and self.radio_source.enabled) else 0
-            en_sdr1 = 1 if (self.sdr_source and self.sdr_source.enabled) else 0
-            en_sdr2 = 1 if (self.sdr2_source and self.sdr2_source.enabled) else 0
+            en_sdr1 = 1 if (self.sdr_plugin and self.sdr_plugin.tuner1_enabled) else 0
+            en_sdr2 = 1 if (self.sdr_plugin and self.sdr_plugin.tuner2_enabled) else 0
             en_remote = 1 if (self.remote_audio_source and self.remote_audio_source.enabled) else 0
             en_announce = 1 if (self.announce_input_source and self.announce_input_source.enabled) else 0
 
@@ -6769,15 +4213,17 @@ class RadioGateway:
             # Queue depths
             def _qsize(src):
                 try:
-                    if src and hasattr(src, '_chunk_queue'):
-                        return src._chunk_queue.qsize()
+                    for attr in ('_rx_queue', '_chunk_queue'):
+                        q = getattr(src, attr, None)
+                        if q is not None:
+                            return q.qsize()
                 except Exception:
                     pass
                 return -1
 
             q_aioc = _qsize(self.radio_source)
-            q_sdr1 = _qsize(self.sdr_source)
-            q_sdr2 = _qsize(self.sdr2_source)
+            q_sdr1 = 0
+            q_sdr2 = 0
 
             # PTT / VAD / rebroadcast
             ptt = 1 if self.ptt_active else 0
@@ -6851,9 +4297,7 @@ class RadioGateway:
 
             # ── System info ──
             import platform
-            sdr_mode = "PipeWire" if any(
-                isinstance(s, PipeWireSDRSource)
-                for s in [self.sdr_source, self.sdr2_source] if s) else "ALSA"
+            sdr_mode = "SDRPlugin" if self.sdr_plugin else "none"
             f.write("SYSTEM\n")
             f.write(f"  version={__version__}\n")
             f.write(f"  os={platform.system()} {platform.release()} arch={platform.machine()}\n")
@@ -6971,7 +4415,7 @@ class RadioGateway:
                 f.write(f"  first quarter={q1:.1f}  last quarter={q4:.1f}\n")
                 pb_ticks = sum(1 for r in trace if len(r) > SPREBUF and r[SPREBUF])
                 f.write(f"  prebuffering: {pb_ticks}/{len(trace)} ticks\n")
-                plc_total = self.sdr_source._plc_total if self.sdr_source else 0
+                plc_total = 0
                 f.write(f"  PLC repeats: {plc_total} (gap concealment)\n\n")
 
             # SDR2 queue depth
@@ -6981,7 +4425,7 @@ class RadioGateway:
                 f.write(f"  min={min(sq2_vals)}  mean={statistics.mean(sq2_vals):.1f}  max={max(sq2_vals)}\n")
                 pb2_ticks = sum(1 for r in trace if len(r) > S2PREBUF and r[S2PREBUF])
                 f.write(f"  prebuffering: {pb2_ticks}/{len(trace)} ticks\n")
-                plc2_total = self.sdr2_source._plc_total if self.sdr2_source else 0
+                plc2_total = 0
                 f.write(f"  PLC repeats: {plc2_total} (gap concealment)\n\n")
 
             # AIOC queue depth
@@ -7265,7 +4709,7 @@ class RadioGateway:
                 return flags
 
             # ── Reader blob delivery intervals ──
-            for src_name, src_obj in [('SDR1', self.sdr_source), ('SDR2', self.sdr2_source)]:
+            for src_name, src_obj in [('SDR1', self.sdr_plugin.get_tuner(1) if self.sdr_plugin else None), ('SDR2', self.sdr_plugin.get_tuner(2) if self.sdr_plugin else None)]:
                 if src_obj and getattr(src_obj, '_blob_times', None):
                     btimes = list(src_obj._blob_times)
                     if len(btimes) > 1:
@@ -7582,19 +5026,13 @@ class RadioGateway:
         time.sleep(0.1)
         
         # Now close audio streams (with better error handling for ALSA)
-        if self.sdr_source:
+        if self.sdr_plugin:
             try:
-                self.sdr_source.cleanup()
+                self.sdr_plugin.cleanup()
                 if self.config.VERBOSE_LOGGING:
-                    print("  SDR1 audio closed")
+                    print("  SDR audio closed")
             except Exception as e:
-                pass  # Suppress ALSA errors during shutdown
-        
-        if self.sdr2_source:
-            try:
-                self.sdr2_source.cleanup()
-                if self.config.VERBOSE_LOGGING:
-                    print("  SDR2 audio closed")
+                pass
             except Exception as e:
                 pass  # Suppress ALSA errors during shutdown
 
@@ -7683,17 +5121,17 @@ class RadioGateway:
             except Exception:
                 pass
 
-        if self.d75_cat:
+        if self.d75_plugin:
             try:
-                self.d75_cat.close()
+                self.d75_plugin.close()
                 if self.config.VERBOSE_LOGGING:
                     print("  D75 CAT client closed")
             except Exception:
                 pass
 
-        if self.d75_audio_source:
+        if self.d75_plugin:
             try:
-                self.d75_audio_source.cleanup()
+                self.d75_plugin.cleanup()
                 if self.config.VERBOSE_LOGGING:
                     print("  D75 audio source closed")
             except Exception:
