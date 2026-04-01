@@ -3632,8 +3632,36 @@ class WebConfigServer:
                     return {'ok': True, 'state': proc[filt]}
             return {'ok': False, 'error': f'bus not found: {bus_id}'}
 
+        elif cmd == 'bus_mute':
+            bus_id = data.get('bus', '')
+            for b in busses:
+                if b['id'] == bus_id:
+                    b['muted'] = not b.get('muted', False)
+                    self._save_routing_config(busses, connections)
+                    # Update live BusManager state
+                    bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+                    if bm and bus_id in bm._bus_config:
+                        bm._bus_config[bus_id]['muted'] = b['muted']
+                    # Update primary listen bus mute cache
+                    if self.gateway and bus_id == getattr(self.gateway, '_listen_bus_id', None):
+                        self.gateway._listen_bus_muted = b['muted']
+                    return {'ok': True, 'muted': b['muted']}
+            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+
         elif cmd == 'mute':
             target_id = data.get('id', '')
+            # Check if it's a sink without a plugin object
+            _sink_ids = ('speaker', 'broadcastify', 'mumble', 'recording', 'remote_audio_tx')
+            if target_id in _sink_ids and self.gateway:
+                muted_sinks = getattr(self.gateway, '_muted_sinks', set())
+                if target_id in muted_sinks:
+                    muted_sinks.discard(target_id)
+                    muted = False
+                else:
+                    muted_sinks.add(target_id)
+                    muted = True
+                self.gateway._muted_sinks = muted_sinks
+                return {'ok': True, 'muted': muted}
             plugin = self._get_plugin_by_id(target_id)
             if plugin:
                 plugin.muted = not getattr(plugin, 'muted', False)

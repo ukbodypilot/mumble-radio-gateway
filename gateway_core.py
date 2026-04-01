@@ -1463,11 +1463,9 @@ class RadioGateway:
                         self.remote_audio_source.enabled = True
                         self.remote_audio_source.duck = self.config.REMOTE_AUDIO_DUCK
                         self.remote_audio_source.sdr_priority = int(self.config.REMOTE_AUDIO_PRIORITY)
-                        if self._source_on_listen_bus('remote_audio') or not getattr(self, 'bus_manager', None):
-                            self.mixer.add_source(self.remote_audio_source, bus_priority=int(self.config.REMOTE_AUDIO_PRIORITY) + 10, duckable=self.config.REMOTE_AUDIO_DUCK)
-                            print(f"✓ Remote audio RX source added to mixer")
-                        else:
-                            print(f"✓ Remote audio RX source initialized (routed via bus manager)")
+                        # Don't add to mixer here — sync_mixer_sources() handles it
+                        # after bus_manager is created, based on routing config
+                        print(f"✓ Remote audio RX source initialized (mixer sync deferred)")
                     else:
                         print("⚠ Warning: Could not initialize remote audio RX source")
                         self.remote_audio_source = None
@@ -2801,7 +2799,10 @@ class RadioGateway:
                     # Early sink delivery — before VAD/signal gates so monitoring
                     # sinks always receive audio (SDR scanner feeds etc.)
                     _early_audio = data if data is not None else sdr_only_audio
-                    _listen_sinks = self._bus_sinks.get(self._listen_bus_id, set())
+                    # Suppress all sink delivery when primary listen bus is muted
+                    if getattr(self, '_listen_bus_muted', False):
+                        _early_audio = None
+                    _listen_sinks = self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())
                     # Decay sink levels when no audio
                     if _early_audio is None:
                         self.stream_audio_level = max(0, int(self.stream_audio_level * 0.7))
@@ -2836,7 +2837,7 @@ class RadioGateway:
                         # but skip the Mumble/remote-audio send path entirely.
                         self.audio_capture_active = False
                         _silence = b'\x00' * (self.config.AUDIO_CHUNK_SIZE * 2)
-                        if 'speaker' in self._bus_sinks.get(self._listen_bus_id, set()):
+                        if 'speaker' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())):
                             self._speaker_enqueue(_silence)
                         # Use already-drained BusManager PCM
                         if _bm_pcm is not None:
@@ -2866,7 +2867,7 @@ class RadioGateway:
 
                         # Push to WebSocket PCM clients — mix listen bus + other busses.
                         _listen_flags = self._bus_stream_flags.get(self._listen_bus_id, {})
-                        _listen_pcm_on = _listen_flags.get('pcm', False)
+                        _listen_pcm_on = _listen_flags.get('pcm', False) and not getattr(self, '_listen_bus_muted', False)
                         # _bm_pcm already drained above — reuse it
                         if _listen_pcm_on or _bm_pcm is not None:
                             _pcm_out = None
@@ -3051,7 +3052,7 @@ class RadioGateway:
                             )
                         _ws_local = _local_audio if _local_audio is not None else b'\x00' * len(data)
                         if _local_audio is not None:
-                            if 'mumble' in self._bus_sinks.get(self._listen_bus_id, set()):
+                            if 'mumble' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())) and not getattr(self, '_listen_bus_muted', False):
                                 if (self.mumble and
                                         hasattr(self.mumble, 'sound_output') and
                                         self.mumble.sound_output is not None and
@@ -3060,7 +3061,7 @@ class RadioGateway:
                                         self.mumble.sound_output.add_sound(_local_audio)
                                     except Exception:
                                         pass
-                            if 'speaker' in self._bus_sinks.get(self._listen_bus_id, set()):
+                            if 'speaker' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())):
                                 if self.speaker_stream and not self.speaker_muted:
                                     self._speaker_enqueue(_local_audio)
                         _listen_flags_ptt = self._bus_stream_flags.get(self._listen_bus_id, {})
@@ -3086,7 +3087,7 @@ class RadioGateway:
                         # Send ONE frame to remote client during PTT — the mixed
                         # playback data.  Previously both rx_for_mumble AND data were
                         # sent, doubling the frame rate and causing client-side stutter.
-                        if self.remote_audio_server and self.remote_audio_server.connected:
+                        if self.remote_audio_server and self.remote_audio_server.connected and not getattr(self, '_listen_bus_muted', False):
                             try:
                                 _sv_t0 = time.monotonic()
                                 self.remote_audio_server.send_audio(data)
@@ -3112,7 +3113,7 @@ class RadioGateway:
 
                     # No PTT required (radio RX / SDR) — deliver to sinks that bypass VAD, then gate
                     if data and not self.check_vad(data):
-                        if 'speaker' in self._bus_sinks.get(self._listen_bus_id, set()):
+                        if 'speaker' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())):
                             self._speaker_enqueue(data)
                         _tr_outcome = 'vad_gate'
                         continue
@@ -3161,7 +3162,7 @@ class RadioGateway:
 
                     if not self.check_vad(data):
                         # Speaker bypasses VAD — monitor even when Mumble is gated
-                        if 'speaker' in self._bus_sinks.get(self._listen_bus_id, set()):
+                        if 'speaker' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())):
                             self._speaker_enqueue(data)
                         continue
 
@@ -3202,14 +3203,14 @@ class RadioGateway:
                         data = np.clip(_farr, -32768, 32767).astype(np.int16).tobytes()
 
                 # Speaker output — only if connected as a sink on the listen bus.
-                if 'speaker' in self._bus_sinks.get(self._listen_bus_id, set()):
+                if 'speaker' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())) and not getattr(self, '_listen_bus_muted', False):
                     if self.speaker_queue and not self.speaker_muted:
                         _tr_spk_qd = self.speaker_queue.qsize()
                     self._speaker_enqueue(data)
                 _tr_spk_ok = True
 
                 # Remote audio server send — only if connected as a sink on the listen bus
-                if 'remote_audio_tx' in self._bus_sinks.get(self._listen_bus_id, set()):
+                if 'remote_audio_tx' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())) and not getattr(self, '_listen_bus_muted', False):
                     if self.remote_audio_server and self.remote_audio_server.connected:
                         try:
                             _sv_t0 = time.monotonic()
@@ -3250,7 +3251,7 @@ class RadioGateway:
                             pass
 
                 # Mumble delivery handled early (before VAD gate) — skip here
-                _tr_outcome = 'sent' if 'mumble' in self._bus_sinks.get(self._listen_bus_id, set()) else 'no_mumble_sink'
+                _tr_outcome = 'sent' if 'mumble' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())) else 'no_mumble_sink'
 
                 if self.echolink_source and self.config.RADIO_TO_ECHOLINK:
                     try:
@@ -3263,7 +3264,7 @@ class RadioGateway:
 
                 # Push to web audio stream listeners (MP3 only, gated by bus M toggle)
                 _listen_flags_mp3 = self._bus_stream_flags.get(self._listen_bus_id, {})
-                if _listen_flags_mp3.get('mp3', False):
+                if _listen_flags_mp3.get('mp3', False) and not getattr(self, '_listen_bus_muted', False):
                     if self.web_config_server:
                         if self.web_config_server._stream_subscribers:
                             self.web_config_server.push_audio(data)
@@ -4349,6 +4350,9 @@ class RadioGateway:
             self._bus_stream_flags = self.bus_manager.get_bus_stream_flags()
             self._bus_sinks = self.bus_manager.get_bus_sinks()
             self._listen_bus_id = self.bus_manager.get_listen_bus_id()
+            self._listen_bus_muted = self.bus_manager.is_bus_muted(self._listen_bus_id)
+            # Reconcile mixer sources with routing config now that bus_manager exists
+            self.sync_mixer_sources()
         except Exception as e:
             print(f"  [BusManager] Failed to start: {e}")
             self.bus_manager = None
@@ -4358,6 +4362,8 @@ class RadioGateway:
             self._bus_sinks = {}
         if not hasattr(self, '_listen_bus_id'):
             self._listen_bus_id = 'listen'
+        if not hasattr(self, '_listen_bus_muted'):
+            self._listen_bus_muted = False
 
         # Start Automation Engine if enabled
         if getattr(self.config, 'ENABLE_AUTOMATION', False):

@@ -94,6 +94,10 @@ class BusManager:
                 return bus_cfg['id']
         return 'listen'
 
+    def is_bus_muted(self, bus_id):
+        """Check if a bus is muted."""
+        return self._bus_config.get(bus_id, {}).get('muted', False)
+
     def get_bus_stream_flags(self):
         """Return per-bus stream flags from routing config.
 
@@ -255,6 +259,7 @@ class BusManager:
 
             # Create per-bus AudioProcessor from processing config
             proc_cfg = bus_cfg.get('processing', {})
+            proc_cfg['muted'] = bus_cfg.get('muted', False)
             self._bus_config[bus_id] = proc_cfg
             if any(proc_cfg.get(k) for k in ('gate', 'hpf', 'lpf', 'notch')):
                 proc = AudioProcessor(f"bus_{bus_id}", self.config)
@@ -321,8 +326,11 @@ class BusManager:
         gw = self.gateway
         bus_cfg = self._bus_config.get(bus_id, {})
 
+        _muted_sinks = getattr(gw, '_muted_sinks', set())
         for sink_id, audio in bus_output.audio.items():
             if audio is None:
+                continue
+            if sink_id in _muted_sinks:
                 continue
 
             # Apply per-bus processing
@@ -421,6 +429,10 @@ class BusManager:
 
             for bus_id, bus in self._busses.items():
                 try:
+                    # Skip muted busses
+                    if self._bus_config.get(bus_id, {}).get('muted', False):
+                        self._bus_levels[bus_id] = 0
+                        continue
                     output = bus.tick(chunk_size)
                     # Track bus output level
                     _mixed = output.mixed_audio
