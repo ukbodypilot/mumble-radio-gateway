@@ -1182,6 +1182,8 @@ class RadioGateway:
             source_map['monitor'] = (self.web_monitor_source, 5, False)
         if getattr(self, 'mumble_source', None):
             source_map['mumble_rx'] = (self.mumble_source, 0, False)
+        if getattr(self, 'remote_audio_source', None):
+            source_map['remote_audio'] = (self.remote_audio_source, int(getattr(self.config, 'REMOTE_AUDIO_PRIORITY', 2)) + 10, getattr(self.config, 'REMOTE_AUDIO_DUCK', True))
 
         # Which sources should be on the listen bus?
         should_be_on = set()
@@ -1437,41 +1439,40 @@ class RadioGateway:
             
             # (SDR init moved above AIOC init to avoid Pa_Initialize fork crash)
 
-            # Initialize Remote Audio Link
-            remote_role = getattr(self.config, 'REMOTE_AUDIO_ROLE', 'disabled').lower().strip("'\"")
-            if remote_role == 'server':
+            # Initialize Remote Audio Link (full duplex — TX server + RX source)
+            remote_enabled = getattr(self.config, 'REMOTE_AUDIO_ROLE', 'disabled').lower().strip("'\"") != 'disabled'
+            if remote_enabled:
+                # TX: RemoteAudioServer connects out to Windows client on REMOTE_AUDIO_PORT (9600)
                 try:
                     host = self.config.REMOTE_AUDIO_HOST
                     if not host:
-                        print("⚠ Warning: REMOTE_AUDIO_HOST not set — server needs a destination IP")
+                        print("⚠ Warning: REMOTE_AUDIO_HOST not set — TX server needs a destination IP")
                     else:
                         self.remote_audio_server = RemoteAudioServer(self.config)
                         self.remote_audio_server.start()
                 except Exception as e:
-                    print(f"⚠ Warning: Could not start remote audio server: {e}")
+                    print(f"⚠ Warning: Could not start remote audio TX server: {e}")
                     self.remote_audio_server = None
-            elif remote_role == 'client':
+
+                # RX: RemoteAudioSource listens on REMOTE_AUDIO_RX_PORT (9602) for Windows client
                 try:
-                    bind_host = self.config.REMOTE_AUDIO_HOST or '0.0.0.0'
-                    port = self.config.REMOTE_AUDIO_PORT
-                    print(f"Initializing remote audio client (listening on {bind_host}:{port})...")
+                    rx_port = int(getattr(self.config, 'REMOTE_AUDIO_RX_PORT', 9602))
+                    print(f"Initializing remote audio RX source (listening on 0.0.0.0:{rx_port})...")
                     self.remote_audio_source = RemoteAudioSource(self.config, self)
-                    if self.remote_audio_source.setup_audio():
+                    if self.remote_audio_source.setup_audio(port_override=rx_port):
                         self.remote_audio_source.enabled = True
                         self.remote_audio_source.duck = self.config.REMOTE_AUDIO_DUCK
                         self.remote_audio_source.sdr_priority = int(self.config.REMOTE_AUDIO_PRIORITY)
-                        if self._source_on_listen_bus('monitor') or not self.bus_manager:
+                        if self._source_on_listen_bus('remote_audio') or not self.bus_manager:
                             self.mixer.add_source(self.remote_audio_source, bus_priority=int(self.config.REMOTE_AUDIO_PRIORITY) + 10, duckable=self.config.REMOTE_AUDIO_DUCK)
-                            print(f"✓ Remote audio source (SDRSV) added to mixer")
+                            print(f"✓ Remote audio RX source added to mixer")
                         else:
-                            print(f"✓ Remote audio source initialized (routed via bus manager)")
-                        print(f"  Priority: {self.config.REMOTE_AUDIO_PRIORITY}")
-                        print(f"  Press 'c' to mute/unmute remote audio")
+                            print(f"✓ Remote audio RX source initialized (routed via bus manager)")
                     else:
-                        print("⚠ Warning: Could not initialize remote audio source")
+                        print("⚠ Warning: Could not initialize remote audio RX source")
                         self.remote_audio_source = None
                 except Exception as e:
-                    print(f"⚠ Warning: Could not initialize remote audio client: {e}")
+                    print(f"⚠ Warning: Could not initialize remote audio RX source: {e}")
                     self.remote_audio_source = None
 
             # Initialize announcement input (port 9601) if enabled
@@ -3207,17 +3208,17 @@ class RadioGateway:
                     self._speaker_enqueue(data)
                 _tr_spk_ok = True
 
-                # Remote audio server send — must be BEFORE Mumble checks so it
-                # works even when Mumble is not connected (e.g. secondary mode).
-                if self.remote_audio_server and self.remote_audio_server.connected:
-                    try:
-                        _sv_t0 = time.monotonic()
-                        self.remote_audio_server.send_audio(data)
-                        _tr_sv_ms += (time.monotonic() - _sv_t0) * 1000
-                        _tr_sv_sent += 1
-                        self._update_sv_level(data)
-                    except Exception:
-                        pass
+                # Remote audio server send — only if connected as a sink on the listen bus
+                if 'remote_audio_tx' in self._bus_sinks.get(self._listen_bus_id, set()):
+                    if self.remote_audio_server and self.remote_audio_server.connected:
+                        try:
+                            _sv_t0 = time.monotonic()
+                            self.remote_audio_server.send_audio(data)
+                            _tr_sv_ms += (time.monotonic() - _sv_t0) * 1000
+                            _tr_sv_sent += 1
+                            self._update_sv_level(data)
+                        except Exception:
+                            pass
 
                 # Gateway Link: send mixed audio to all connected endpoints
                 if self.link_server and self.link_endpoints:

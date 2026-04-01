@@ -1,40 +1,29 @@
 #!/usr/bin/env python3
-"""Windows Audio Client for Radio Gateway.
+"""Windows Audio Client for Radio Gateway — Full Duplex.
 
-Two roles (consistent with gateway REMOTE_AUDIO_ROLE):
-
-  server — SENDS audio TO the gateway.
-           Audio flow: Windows input device → TCP → Gateway
-           Client connects out to gateway port.
-
-  client — RECEIVES audio FROM the gateway.
-           Audio flow: Gateway → TCP → Windows output device
-           Client listens on a port; gateway connects in and pushes audio.
-
-Server-role modes:
-  SDR input source     — connects to gateway port 9600 (Remote Audio link).
-                         Audio enters the mixer as an SDR-style source with
-                         ducking and priority support.
-  Announcement source  — connects to gateway port 9601 (Announcement Input).
-                         Audio triggers PTT and is transmitted over the radio.
-                         Silence is ignored so PTT is only active during speech.
+Runs both directions simultaneously:
+  TX: Captures audio from a local input device and sends it to the gateway
+      via TCP (connects out to gateway's REMOTE_AUDIO_RX_PORT, default 9602).
+  RX: Listens on a local port for the gateway to connect in and push audio,
+      then plays it on a local output device (gateway connects from port 9600).
 
 Protocol: length-prefixed PCM — [4-byte big-endian uint32 length][PCM payload]
 Audio: 48000 Hz, mono, 16-bit signed little-endian PCM, 2400 frames per chunk.
 
 Keyboard controls:
-  l = Toggle LIVE/IDLE (server) or LIVE/MUTE (client)
-  m = Switch between server and client roles
-  , (or <) = Volume down 5%
-  . (or >) = Volume up 5%
+  l = Toggle TX LIVE/IDLE (mic capture)
+  p = Toggle RX PLAY/MUTE (speaker output)
+  , (or <) = TX volume down 5%
+  . (or >) = TX volume up 5%
+  [ = RX volume down 5%
+  ] = RX volume up 5%
 
 Usage:
-    pip install sounddevice
-    python windows_audio_client.py [host] [port]
+    pip install sounddevice numpy
+    python windows_audio_client.py [gateway_host]
 
-On first run the script will prompt for role, mode, audio device, and host,
+On first run the script will prompt for audio devices and gateway host,
 then save the selection to windows_audio_client.json alongside this script.
-Each role has its own saved settings (devices, host/port) in the config file.
 """
 
 import json
@@ -63,15 +52,8 @@ FRAMES_PER_BUFFER = 2400  # 2400 frames x 2 bytes = 4800 bytes per chunk
 RECONNECT_INTERVAL = 5  # seconds between connection attempts
 SILENCE = b'\x00' * (FRAMES_PER_BUFFER * 2)  # 4800 bytes of silence
 
-ROLE_SERVER = "server"
-ROLE_CLIENT = "client"
-
-MODE_SDR = "sdr"
-MODE_ANNOUNCE = "announce"
-DEFAULT_PORTS = {MODE_SDR: 9600, MODE_ANNOUNCE: 9601}
-MODE_LABELS = {MODE_SDR: "SDR input source", MODE_ANNOUNCE: "Announcement source"}
-
-ROLE_LABELS = {ROLE_SERVER: "Server (send audio)", ROLE_CLIENT: "Client (receive audio)"}
+DEFAULT_TX_PORT = 9602  # Gateway's RX listen port (we connect out to this)
+DEFAULT_RX_PORT = 9600  # Local listen port (gateway connects in on this)
 
 # ANSI colors
 RED = "\033[91m"
@@ -81,6 +63,7 @@ CYAN = "\033[96m"
 WHITE = "\033[97m"
 GRAY = "\033[90m"
 RESET = "\033[0m"
+BOLD = "\033[1m"
 
 CONFIG_FILENAME = "windows_audio_client.json"
 
@@ -122,14 +105,7 @@ def _keyboard_listener(state):
                     ch = ch.decode("utf-8", errors="ignore").lower()
                 except Exception:
                     ch = ""
-                if ch == "l":
-                    state["live"] = not state["live"]
-                elif ch == "m":
-                    state["switch_role"] = True
-                elif ch in (",", "<"):
-                    state["volume"] = max(0, state["volume"] - 5)
-                elif ch in (".", ">"):
-                    state["volume"] = min(100, state["volume"] + 5)
+                _handle_key(ch, state)
             time.sleep(0.05)
     except ImportError:
         # Unix / Linux / macOS
@@ -143,22 +119,29 @@ def _keyboard_listener(state):
             while state["running"]:
                 if select.select([sys.stdin], [], [], 0.05)[0]:
                     ch = sys.stdin.read(1).lower()
-                    if ch == "l":
-                        state["live"] = not state["live"]
-                    elif ch == "m":
-                        state["switch_role"] = True
-                    elif ch in (",", "<"):
-                        state["volume"] = max(0, state["volume"] - 5)
-                    elif ch in (".", ">"):
-                        state["volume"] = min(100, state["volume"] + 5)
+                    _handle_key(ch, state)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def _handle_key(ch, state):
+    if ch == "l":
+        state["tx_live"] = not state["tx_live"]
+    elif ch == "p":
+        state["rx_play"] = not state["rx_play"]
+    elif ch in (",", "<"):
+        state["tx_vol"] = max(0, state["tx_vol"] - 5)
+    elif ch in (".", ">"):
+        state["tx_vol"] = min(100, state["tx_vol"] + 5)
+    elif ch == "[":
+        state["rx_vol"] = max(0, state["rx_vol"] - 5)
+    elif ch == "]":
+        state["rx_vol"] = min(100, state["rx_vol"] + 5)
 
 # ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------
 def list_input_devices():
-    """Return list of (index, name, max_input_channels) for input devices."""
     devices = []
     for d in sd.query_devices():
         if d["max_input_channels"] > 0:
@@ -167,7 +150,6 @@ def list_input_devices():
 
 
 def list_output_devices():
-    """Return list of (index, name, max_output_channels) for output devices."""
     devices = []
     for d in sd.query_devices():
         if d["max_output_channels"] > 0:
@@ -176,7 +158,6 @@ def list_output_devices():
 
 
 def find_device_by_name(name, output=False):
-    """Return device index matching *name*, or None."""
     for d in sd.query_devices():
         if output:
             if d["max_output_channels"] > 0 and d["name"] == name:
@@ -187,65 +168,20 @@ def find_device_by_name(name, output=False):
     return None
 
 
-def choose_role(cfg):
-    """Resolve or prompt for role.  Returns ROLE_SERVER or ROLE_CLIENT."""
-    saved = cfg.get("role")
-    if saved in (ROLE_SERVER, ROLE_CLIENT):
-        return saved
-
-    print("\nRole:")
-    print("  1) Server — send audio TO the gateway     (input device → TCP → gateway)")
-    print("  2) Client — receive audio FROM the gateway (gateway → TCP → output device)")
-
-    while True:
-        try:
-            choice = input("\nSelect role [1]: ").strip()
-            if choice in ("", "1"):
-                return ROLE_SERVER
-            if choice == "2":
-                return ROLE_CLIENT
-        except (ValueError, EOFError):
-            pass
-        print("Invalid selection, try again.")
-
-
-def choose_mode(cfg):
-    """Resolve or prompt for operating mode.  Returns MODE_SDR or MODE_ANNOUNCE."""
-    saved = cfg.get("server_mode")
-    if saved in (MODE_SDR, MODE_ANNOUNCE):
-        return saved
-
-    print("\nOperating mode:")
-    print(f"  1) SDR input source      (port {DEFAULT_PORTS[MODE_SDR]})  — audio mixed into Mumble stream")
-    print(f"  2) Announcement source   (port {DEFAULT_PORTS[MODE_ANNOUNCE]})  — audio transmitted over radio via PTT")
-
-    while True:
-        try:
-            choice = input("\nSelect mode [1]: ").strip()
-            if choice in ("", "1"):
-                return MODE_SDR
-            if choice == "2":
-                return MODE_ANNOUNCE
-        except (ValueError, EOFError):
-            pass
-        print("Invalid selection, try again.")
-
-
 def choose_input_device(cfg):
-    """Resolve or prompt for an input device.  Returns (index, name)."""
-    saved_name = cfg.get("server_device_name")
+    saved_name = cfg.get("tx_device_name")
     if saved_name:
         idx = find_device_by_name(saved_name, output=False)
         if idx is not None:
             return idx, saved_name
-        print(f"Saved device not found: {saved_name}")
+        print(f"Saved input device not found: {saved_name}")
 
     devices = list_input_devices()
     if not devices:
         print("No input devices found.")
         sys.exit(1)
 
-    print("\nAvailable input devices:")
+    print("\nAvailable input devices (TX mic):")
     for n, (idx, name, ch) in enumerate(devices, 1):
         print(f"  {n}) {name}  (index {idx}, {ch}ch)")
 
@@ -261,8 +197,7 @@ def choose_input_device(cfg):
 
 
 def choose_output_device(cfg):
-    """Resolve or prompt for an output device.  Returns (index, name)."""
-    saved_name = cfg.get("client_device_name")
+    saved_name = cfg.get("rx_device_name")
     if saved_name:
         idx = find_device_by_name(saved_name, output=True)
         if idx is not None:
@@ -274,7 +209,7 @@ def choose_output_device(cfg):
         print("No output devices found.")
         sys.exit(1)
 
-    print("\nAvailable output devices:")
+    print("\nAvailable output devices (RX speaker):")
     for n, (idx, name, ch) in enumerate(devices, 1):
         print(f"  {n}) {name}  (index {idx}, {ch}ch)")
 
@@ -292,7 +227,6 @@ def choose_output_device(cfg):
 # Level meter
 # ---------------------------------------------------------------------------
 def rms_db(pcm_bytes):
-    """Compute RMS level in dBFS from 16-bit LE PCM."""
     n_samples = len(pcm_bytes) // 2
     if n_samples == 0:
         return -100.0
@@ -304,25 +238,15 @@ def rms_db(pcm_bytes):
 
 
 def level_bar(db, width=20, vol_pct=100):
-    """Return an ASCII level bar with a volume ceiling marker.
-
-    *vol_pct* (0-100) scales the displayed level and places a '|' marker
-    on the bar to show where the volume ceiling sits relative to full scale.
-    """
-    # Scale the dB value by the volume percentage
     vol_frac = max(0.0, min(1.0, vol_pct / 100.0))
     if vol_frac > 0:
         scaled_db = db + 20.0 * math.log10(vol_frac)
     else:
         scaled_db = -100.0
-
     clamped = max(-60.0, min(0.0, scaled_db))
     filled = int((clamped + 60.0) / 60.0 * width)
-
-    # Volume ceiling marker position
     marker_pos = int(vol_frac * width)
     marker_pos = max(0, min(width, marker_pos))
-
     bar_chars = []
     for i in range(width):
         if i == marker_pos and marker_pos < width:
@@ -334,112 +258,26 @@ def level_bar(db, width=20, vol_pct=100):
     return "".join(bar_chars), scaled_db
 
 # ---------------------------------------------------------------------------
-# Screen helpers
+# Helper
 # ---------------------------------------------------------------------------
-def clear_screen():
-    """Clear terminal and move cursor to top-left."""
-    sys.stdout.write("\033[2J\033[H")
-    sys.stdout.flush()
-
-
-def print_server_header(mode, dev_name, dev_index, host, port):
-    """Print server role header info."""
-    clear_screen()
-    print(f"Role   : {CYAN}Server (send audio){RESET}")
-    print(f"Mode   : {MODE_LABELS[mode]}")
-    print(f"Device : {dev_name} (index {dev_index})")
-    print(f"Gateway: {host}:{port}")
-    print(f"Format : {SAMPLE_RATE} Hz, mono, 16-bit, {FRAMES_PER_BUFFER} frames/chunk")
-    print(f"\nPress 'l' to toggle LIVE/IDLE — audio is NOT sent until you go LIVE")
-    print(f"Press 'm' to switch to client role")
-    print(f"Press ','/'.' to adjust volume down/up (5% steps)")
-    print("Press Ctrl+C to stop.\n")
-
-
-def print_client_header(dev_name, dev_index, port, connected_from=None):
-    """Print client role header info."""
-    clear_screen()
-    print(f"Role   : {CYAN}Client (receive audio){RESET}")
-    print(f"Device : {dev_name} (index {dev_index})")
-    print(f"Listen : port {port}")
-    print(f"Format : {SAMPLE_RATE} Hz, mono, 16-bit, {FRAMES_PER_BUFFER} frames/chunk")
-    print(f"\nPress 'l' to toggle PLAY/MUTE — when MUTE, received audio is discarded")
-    print(f"Press 'm' to switch to server role")
-    print(f"Press ','/'.' to adjust volume down/up (5% steps)")
-    print("Press Ctrl+C to stop.\n")
-    if connected_from:
-        print(f"Gateway connected from {connected_from}")
-    else:
-        print(f"Listening on port {port} — waiting for gateway connection ...")
-
+def _recv_exact(sock, n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
 
 # ---------------------------------------------------------------------------
-# Server role — send audio to gateway
+# TX thread — capture mic and send to gateway
 # ---------------------------------------------------------------------------
-def run_server(cfg, state):
-    """Send audio from local input device to the gateway over TCP.
-
-    Returns True if user pressed 'm' to switch roles, False otherwise.
-    """
-    # --- Operating mode -----------------------------------------------------
-    try:
-        mode = choose_mode(cfg)
-    except KeyboardInterrupt:
-        return False
-    cfg["server_mode"] = mode
-    default_port = DEFAULT_PORTS[mode]
-
-    # --- Resolve gateway host/port from args, config, or prompt -----------
-    host = None
-    port = None
-    if len(sys.argv) >= 2:
-        host = sys.argv[1]
-    if len(sys.argv) >= 3:
-        try:
-            port = int(sys.argv[2])
-        except ValueError:
-            print(f"Invalid port: {sys.argv[2]}")
-            return False
-
-    if not host:
-        host = cfg.get("server_host")
-    if not port:
-        port = cfg.get("server_port")
-
-    if not host:
-        host = input("Gateway host (IP or hostname): ").strip()
-        if not host:
-            print("No host provided.")
-            return False
-    if not port:
-        port_str = input(f"Gateway port [{default_port}]: ").strip()
-        port = int(port_str) if port_str else default_port
-
-    port = int(port)
-
-    # --- Audio device -------------------------------------------------------
-    try:
-        dev_index, dev_name = choose_input_device(cfg)
-    except KeyboardInterrupt:
-        return False
-
-    # Save config
-    cfg["server_device_name"] = dev_name
-    cfg["server_host"] = host
-    cfg["server_port"] = port
-    save_config(cfg)
-
-    print_server_header(mode, dev_name, dev_index, host, port)
-
-    # --- Reset state --------------------------------------------------------
-    state["live"] = False
-    state["switch_role"] = False
-
-    # --- Open audio stream --------------------------------------------------
+def _tx_thread_func(state, cfg, gateway_host, tx_port, in_dev_index, in_dev_name):
+    """Capture mic audio and send to gateway's RX port."""
     stream = sd.RawInputStream(
         samplerate=SAMPLE_RATE,
         blocksize=FRAMES_PER_BUFFER,
-        device=dev_index,
+        device=in_dev_index,
         channels=CHANNELS,
         dtype="int16",
     )
@@ -448,55 +286,55 @@ def run_server(cfg, state):
     sock = None
 
     def connect():
-        """Attempt TCP connection to gateway.  Returns socket or None."""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(2.0)
-            s.connect((host, port))
+            s.connect((gateway_host, tx_port))
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.settimeout(None)
             return s
-        except Exception as e:
-            print(f"\rConnect failed: {e}" + " " * 20)
+        except Exception:
             try:
                 s.close()
             except Exception:
                 pass
             return None
 
-    switched = False
     try:
-        while not state["switch_role"]:
+        while state["running"]:
             # Connect / reconnect
             if sock is None:
-                print_server_header(mode, dev_name, dev_index, host, port)
-                print(f"Connecting to {host}:{port} ...")
+                state["tx_connected"] = False
                 sock = connect()
                 if sock is None:
-                    # Keep reading (and discarding) audio so the stream doesn't stall
                     deadline = time.monotonic() + RECONNECT_INTERVAL
-                    while time.monotonic() < deadline and not state["switch_role"]:
+                    while time.monotonic() < deadline and state["running"]:
                         try:
                             stream.read(FRAMES_PER_BUFFER)
                         except Exception:
                             pass
                     continue
-                print_server_header(mode, dev_name, dev_index, host, port)
-                print(f"Connected to {host}:{port}")
+                state["tx_connected"] = True
 
             # Read audio
             try:
                 data, overflowed = stream.read(FRAMES_PER_BUFFER)
                 pcm = bytes(data)
-            except Exception as e:
-                print(f"\nAudio read error: {e}")
+            except Exception:
                 break
 
-            # Choose what to send based on LIVE state
-            is_live = state["live"]
-            send_pcm = pcm if is_live else SILENCE
+            # Apply volume
+            vol = state["tx_vol"]
+            if vol < 100:
+                samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+                samples *= vol / 100.0
+                pcm = np.clip(samples, -32768, 32767).astype(np.int16).tobytes()
 
-            # Send
+            # Compute level for display
+            state["tx_db"] = rms_db(pcm)
+
+            # Send or send silence based on LIVE state
+            send_pcm = pcm if state["tx_live"] else SILENCE
             try:
                 header = struct.pack(">I", len(send_pcm))
                 sock.sendall(header + send_pcm)
@@ -507,22 +345,6 @@ def run_server(cfg, state):
                     pass
                 sock = None
                 continue
-
-            # Status line: state + level meter
-            if is_live:
-                status = f"{RED}LIVE{RESET}"
-            else:
-                status = f"{GREEN}IDLE{RESET}"
-            db = rms_db(pcm)
-            bar, scaled_db = level_bar(db, vol_pct=state["volume"])
-            vol = state["volume"]
-            role_tag = f"{CYAN}SV{RESET}"
-            sys.stdout.write(f"\r  {role_tag} {status}  [{bar}] {scaled_db:+6.1f} dBFS  Vol:{vol:3d}% ")
-            sys.stdout.flush()
-
-        switched = state["switch_role"]
-    except KeyboardInterrupt:
-        print("\n\nShutting down.")
     finally:
         stream.stop()
         stream.close()
@@ -531,80 +353,28 @@ def run_server(cfg, state):
                 sock.close()
             except Exception:
                 pass
-
-    return switched
+        state["tx_connected"] = False
 
 # ---------------------------------------------------------------------------
-# Client role — receive audio from gateway
+# RX thread — receive audio from gateway and play
 # ---------------------------------------------------------------------------
-def _recv_exact(sock, n):
-    """Read exactly n bytes from socket.  Returns bytes or None on disconnect."""
-    buf = bytearray()
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            return None
-        buf.extend(chunk)
-    return bytes(buf)
-
-
-def run_client(cfg, state):
-    """Receive audio from the gateway and play on local output device.
-
-    Returns True if user pressed 'm' to switch roles, False otherwise.
-    """
-    # --- Resolve listen port from args, config, or prompt -------------------
-    port = None
-    if len(sys.argv) >= 3:
-        try:
-            port = int(sys.argv[2])
-        except ValueError:
-            print(f"Invalid port: {sys.argv[2]}")
-            return False
-    if not port:
-        port = cfg.get("client_port")
-    if not port:
-        port_str = input(f"Listen port [{DEFAULT_PORTS[MODE_SDR]}]: ").strip()
-        port = int(port_str) if port_str else DEFAULT_PORTS[MODE_SDR]
-    port = int(port)
-
-    # --- Output device ------------------------------------------------------
-    try:
-        dev_index, dev_name = choose_output_device(cfg)
-    except KeyboardInterrupt:
-        return False
-
-    # Save config
-    cfg["client_device_name"] = dev_name
-    cfg["client_port"] = port
-    save_config(cfg)
-
-    print_client_header(dev_name, dev_index, port)
-
-    # --- Reset state --------------------------------------------------------
-    state["live"] = False
-    state["switch_role"] = False
-
-    # --- Listen socket ------------------------------------------------------
+def _rx_thread_func(state, cfg, rx_port, out_dev_index, out_dev_name):
+    """Listen for gateway connection and play received audio."""
     listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-        # Windows: prevent a second instance from binding to the same port
         listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
     else:
         listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        listen_sock.bind(("0.0.0.0", port))
+        listen_sock.bind(("0.0.0.0", rx_port))
     except OSError as e:
-        print(f"\n  ✗ Port {port} is already in use — is another instance running?")
-        print(f"    ({e})")
-        listen_sock.close()
+        print(f"\n  Port {rx_port} already in use — is another instance running? ({e})")
         return
     listen_sock.listen(1)
     listen_sock.settimeout(1.0)
 
-    switched = False
     try:
-        while not state["switch_role"]:
+        while state["running"]:
             # Accept a connection
             try:
                 conn, addr = listen_sock.accept()
@@ -614,35 +384,24 @@ def run_client(cfg, state):
                 break
 
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            conn.settimeout(0.2)  # Allow keypress checks during silence
-            print_client_header(dev_name, dev_index, port, f"{addr[0]}:{addr[1]}")
+            conn.settimeout(0.2)
+            state["rx_connected"] = True
+            state["rx_from"] = f"{addr[0]}:{addr[1]}"
 
-            # Open output stream for this connection
             out_stream = sd.RawOutputStream(
                 samplerate=SAMPLE_RATE,
                 blocksize=FRAMES_PER_BUFFER,
-                device=dev_index,
+                device=out_dev_index,
                 channels=CHANNELS,
                 dtype="int16",
             )
             out_stream.start()
 
             try:
-                while not state["switch_role"]:
-                    # Read length prefix (timeout lets us check keypress state)
+                while state["running"]:
                     try:
                         hdr = _recv_exact(conn, 4)
                     except socket.timeout:
-                        # No data — update status line and re-check state
-                        if state["live"]:
-                            status = f"{GREEN}PLAY{RESET}"
-                        else:
-                            status = f"{YELLOW}MUTE{RESET}"
-                        role_tag = f"{CYAN}CL{RESET}"
-                        idle_bar, idle_db = level_bar(-100, vol_pct=state["volume"])
-                        vol = state["volume"]
-                        sys.stdout.write(f"\r  {role_tag} {status}  [{idle_bar}] {idle_db:+6.1f} dBFS  Vol:{vol:3d}% ")
-                        sys.stdout.flush()
                         continue
                     if hdr is None:
                         break
@@ -650,18 +409,16 @@ def run_client(cfg, state):
                     if length == 0 or length > 960000:
                         break
 
-                    # Read PCM payload (blocking — header already confirmed data is coming)
                     conn.settimeout(None)
                     pcm = _recv_exact(conn, length)
                     conn.settimeout(0.2)
                     if pcm is None:
                         break
 
-                    is_live = state["live"]
+                    state["rx_db"] = rms_db(pcm)
 
-                    # Play or discard (scale by volume)
-                    vol = state["volume"]
-                    if is_live:
+                    if state["rx_play"]:
+                        vol = state["rx_vol"]
                         if vol < 100:
                             samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
                             samples *= vol / 100.0
@@ -669,17 +426,6 @@ def run_client(cfg, state):
                         else:
                             pcm_out = pcm
                         out_stream.write(pcm_out)
-
-                    # Status line
-                    if is_live:
-                        status = f"{GREEN}PLAY{RESET}"
-                    else:
-                        status = f"{YELLOW}MUTE{RESET}"
-                    db = rms_db(pcm)
-                    bar, scaled_db = level_bar(db, vol_pct=vol)
-                    role_tag = f"{CYAN}CL{RESET}"
-                    sys.stdout.write(f"\r  {role_tag} {status}  [{bar}] {scaled_db:+6.1f} dBFS  Vol:{vol:3d}% ")
-                    sys.stdout.flush()
 
             except (ConnectionResetError, BrokenPipeError, OSError):
                 pass
@@ -690,16 +436,80 @@ def run_client(cfg, state):
                     conn.close()
                 except Exception:
                     pass
-                if not state["switch_role"]:
-                    print_client_header(dev_name, dev_index, port)
-
-        switched = state["switch_role"]
-    except KeyboardInterrupt:
-        print("\n\nShutting down.")
+                state["rx_connected"] = False
+                state["rx_from"] = None
     finally:
         listen_sock.close()
 
-    return switched
+# ---------------------------------------------------------------------------
+# Display thread — update status line
+# ---------------------------------------------------------------------------
+def _display_thread_func(state, gateway_host, tx_port, rx_port,
+                         in_dev_name, out_dev_name):
+    """Periodically redraw the status display."""
+    def clear():
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
+
+    last_header = ""
+    while state["running"]:
+        # Build header
+        header = (
+            f"{BOLD}Radio Gateway — Full Duplex Audio Client{RESET}\n"
+            f"\n"
+            f"  TX mic    : {in_dev_name}\n"
+            f"  RX speaker: {out_dev_name}\n"
+            f"  Gateway   : {gateway_host}  (TX→{tx_port}  RX←{rx_port})\n"
+            f"\n"
+            f"  Keys: {CYAN}l{RESET}=TX live/idle  {CYAN}p{RESET}=RX play/mute  "
+            f"{CYAN}</>={RESET}TX vol  {CYAN}[/]={RESET}RX vol  Ctrl+C=quit\n"
+        )
+
+        if header != last_header:
+            clear()
+            sys.stdout.write(header)
+            last_header = header
+
+        # TX status
+        tx_conn = state["tx_connected"]
+        tx_live = state["tx_live"]
+        tx_db = state.get("tx_db", -100.0)
+        tx_vol = state["tx_vol"]
+        if not tx_conn:
+            tx_tag = f"{YELLOW}DISCONNECTED{RESET}"
+        elif tx_live:
+            tx_tag = f"{RED}LIVE{RESET}"
+        else:
+            tx_tag = f"{GREEN}IDLE{RESET}"
+        tx_bar, tx_sdb = level_bar(tx_db, vol_pct=tx_vol)
+
+        # RX status
+        rx_conn = state["rx_connected"]
+        rx_play = state["rx_play"]
+        rx_db = state.get("rx_db", -100.0)
+        rx_vol = state["rx_vol"]
+        rx_from = state.get("rx_from")
+        if not rx_conn:
+            rx_tag = f"{YELLOW}WAITING{RESET}"
+        elif rx_play:
+            rx_tag = f"{GREEN}PLAY{RESET}"
+        else:
+            rx_tag = f"{YELLOW}MUTE{RESET}"
+        rx_bar, rx_sdb = level_bar(rx_db, vol_pct=rx_vol)
+
+        # Move cursor to status area (line 9)
+        sys.stdout.write(f"\033[9;1H")
+        sys.stdout.write(
+            f"  TX {tx_tag:>20s}  [{tx_bar}] {tx_sdb:+6.1f} dBFS  Vol:{tx_vol:3d}%   \n"
+            f"  RX {rx_tag:>20s}  [{rx_bar}] {rx_sdb:+6.1f} dBFS  Vol:{rx_vol:3d}%   \n"
+        )
+        if rx_from:
+            sys.stdout.write(f"     Gateway connected from {rx_from}   \n")
+        else:
+            sys.stdout.write(f"     Listening on port {rx_port} ...              \n")
+        sys.stdout.flush()
+
+        time.sleep(0.1)
 
 # ---------------------------------------------------------------------------
 # Main
@@ -707,32 +517,68 @@ def run_client(cfg, state):
 def main():
     cfg = load_config()
 
-    # --- Role selection -----------------------------------------------------
+    # --- Gateway host -------------------------------------------------------
+    gateway_host = None
+    if len(sys.argv) >= 2:
+        gateway_host = sys.argv[1]
+    if not gateway_host:
+        gateway_host = cfg.get("gateway_host")
+    if not gateway_host:
+        gateway_host = input("Gateway host (IP or hostname): ").strip()
+        if not gateway_host:
+            print("No host provided.")
+            sys.exit(1)
+
+    # --- Ports --------------------------------------------------------------
+    tx_port = cfg.get("tx_port", DEFAULT_TX_PORT)
+    rx_port = cfg.get("rx_port", DEFAULT_RX_PORT)
+
+    # --- Audio devices ------------------------------------------------------
     try:
-        role = choose_role(cfg)
+        in_dev_index, in_dev_name = choose_input_device(cfg)
+        out_dev_index, out_dev_name = choose_output_device(cfg)
     except KeyboardInterrupt:
         sys.exit(0)
-    cfg["role"] = role
+
+    # --- Save config --------------------------------------------------------
+    cfg["gateway_host"] = gateway_host
+    cfg["tx_port"] = tx_port
+    cfg["rx_port"] = rx_port
+    cfg["tx_device_name"] = in_dev_name
+    cfg["rx_device_name"] = out_dev_name
     save_config(cfg)
 
-    # Shared state lives across role switches — keyboard thread stays running
-    state = {"live": False, "running": True, "switch_role": False, "volume": 100}
-    kb_thread = threading.Thread(target=_keyboard_listener, args=(state,), daemon=True)
-    kb_thread.start()
+    # --- Shared state -------------------------------------------------------
+    state = {
+        "running": True,
+        "tx_live": False,
+        "rx_play": True,
+        "tx_vol": 100,
+        "rx_vol": 100,
+        "tx_connected": False,
+        "rx_connected": False,
+        "tx_db": -100.0,
+        "rx_db": -100.0,
+        "rx_from": None,
+    }
 
-    while True:
-        if role == ROLE_SERVER:
-            switched = run_server(cfg, state)
-        else:
-            switched = run_client(cfg, state)
+    # --- Start threads ------------------------------------------------------
+    threads = [
+        threading.Thread(target=_keyboard_listener, args=(state,), daemon=True),
+        threading.Thread(target=_tx_thread_func, args=(state, cfg, gateway_host, tx_port, in_dev_index, in_dev_name), daemon=True, name="TX"),
+        threading.Thread(target=_rx_thread_func, args=(state, cfg, rx_port, out_dev_index, out_dev_name), daemon=True, name="RX"),
+        threading.Thread(target=_display_thread_func, args=(state, gateway_host, tx_port, rx_port, in_dev_name, out_dev_name), daemon=True, name="Display"),
+    ]
+    for t in threads:
+        t.start()
 
-        if not switched:
-            break
-
-        # Flip role
-        role = ROLE_CLIENT if role == ROLE_SERVER else ROLE_SERVER
-        cfg["role"] = role
-        save_config(cfg)
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\n\nShutting down.")
+        state["running"] = False
+        time.sleep(0.3)
 
 
 if __name__ == "__main__":

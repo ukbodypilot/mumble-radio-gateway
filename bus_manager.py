@@ -303,6 +303,8 @@ class BusManager:
             return gw.web_monitor_source
         elif source_id == 'mumble_rx' and getattr(gw, 'mumble_source', None):
             return gw.mumble_source
+        elif source_id == 'remote_audio' and getattr(gw, 'remote_audio_source', None):
+            return gw.remote_audio_source
         return None
 
     def _apply_processing(self, audio, bus_id):
@@ -367,6 +369,17 @@ class BusManager:
                     pass
             elif sink_id == 'recording':
                 pass  # TODO: recording sink
+            elif sink_id == 'remote_audio_tx' and getattr(gw, 'remote_audio_server', None):
+                if gw.remote_audio_server.connected:
+                    try:
+                        gw.remote_audio_server.send_audio(audio)
+                        _rl = gw.calculate_audio_level(audio)
+                        if _rl > getattr(gw, 'remote_audio_tx_level', 0):
+                            gw.remote_audio_tx_level = _rl
+                        else:
+                            gw.remote_audio_tx_level = int(getattr(gw, 'remote_audio_tx_level', 0) * 0.7 + _rl * 0.3)
+                    except Exception:
+                        pass
 
             # Radio TX sinks
             elif sink_id == 'kv4p_tx' and gw.kv4p_plugin:

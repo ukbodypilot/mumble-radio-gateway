@@ -1573,11 +1573,11 @@ class RemoteAudioSource(AudioSource):
         self._listen_socket = None
         self._conn = None  # current accepted connection (for reset)
 
-    def setup_audio(self):
+    def setup_audio(self, port_override=None):
         """Bind listen socket and start the reader/accept thread."""
         import socket
-        bind_host = self.config.REMOTE_AUDIO_HOST or '0.0.0.0'
-        port = int(self.config.REMOTE_AUDIO_PORT)
+        bind_host = '0.0.0.0'
+        port = int(port_override) if port_override else int(self.config.REMOTE_AUDIO_PORT)
         self._listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._listen_socket.settimeout(1.0)
@@ -1620,6 +1620,22 @@ class RemoteAudioSource(AudioSource):
                     payload = self._recv_exact(conn, msg_len)
                     if payload is None:
                         break
+
+                    # Track level in reader thread (works even when not on a bus)
+                    try:
+                        arr = np.frombuffer(payload, dtype=np.int16).astype(np.float32)
+                        rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
+                        if rms > 0:
+                            _lv = max(0, min(100, (20.0 * _math_mod.log10(rms / 32767.0) + 60) * (100 / 60)))
+                        else:
+                            _lv = 0
+                        if _lv > self.audio_level:
+                            self.audio_level = int(_lv)
+                        else:
+                            self.audio_level = int(self.audio_level * 0.7 + _lv * 0.3)
+                    except Exception:
+                        pass
+
                     try:
                         self._chunk_queue.put_nowait(payload)
                     except _queue_mod.Full:

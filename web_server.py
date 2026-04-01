@@ -1675,6 +1675,8 @@ class WebConfigServer:
                             data['mumble_rx'] = gw.mumble_source.audio_level
                         else:
                             data['mumble_rx'] = getattr(gw, 'rx_audio_level', 0)
+                        if getattr(gw, 'remote_audio_source', None):
+                            data['remote_audio'] = gw.remote_audio_source.audio_level
                         # TX levels (radio destinations)
                         if gw.kv4p_plugin:
                             data['kv4p_tx'] = getattr(gw.kv4p_plugin, 'tx_audio_level', 0)
@@ -1707,6 +1709,9 @@ class WebConfigServer:
                             data['mumble'] = gw.mumble_tx_level
                         if 'recording' in _all_connected:
                             data['recording'] = 0
+                        if 'remote_audio_tx' in _all_connected:
+                            gw.remote_audio_tx_level = max(0, int(getattr(gw, 'remote_audio_tx_level', 0) * 0.8))
+                            data['remote_audio_tx'] = getattr(gw, 'remote_audio_tx_level', 0)
                         # Bus output levels
                         _bm = getattr(gw, 'bus_manager', None)
                         if _bm:
@@ -3451,6 +3456,9 @@ class WebConfigServer:
                 sources.append({'id': 'mumble_rx', 'name': 'Mumble [RX]', 'enabled': True,
                                 'can_rx': False, 'can_tx': True, 'can_ptt': True,
                                 'muted': False, 'gain': 100})
+            if getattr(gw, 'remote_audio_source', None):
+                sources.append({**{'id': 'remote_audio', 'name': 'Remote Audio [RX]', 'enabled': True,
+                                'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(gw.remote_audio_source)})
 
         # Build sink list (passive consumers + TX-capable radios)
         sinks = []
@@ -3462,6 +3470,9 @@ class WebConfigServer:
         sinks.append({'id': 'speaker', 'name': 'Speaker', 'type': 'Local',
                       'enabled': True, 'speaker_mode': _spk_mode})
         sinks.append({'id': 'recording', 'name': 'Recording', 'type': 'File', 'enabled': True})
+        if gw and getattr(gw, 'remote_audio_server', None):
+            sinks.append({'id': 'remote_audio_tx', 'name': 'Remote Audio [TX]', 'type': 'Network',
+                          'enabled': bool(gw.remote_audio_server.connected)})
         # TX-capable radios as destinations
         if gw:
             if gw.kv4p_plugin:
@@ -3686,6 +3697,7 @@ class WebConfigServer:
             'announce': getattr(gw, 'announce_input_source', None),
             'monitor': getattr(gw, 'web_monitor_source', None),
             'mumble_rx': getattr(gw, 'mumble_source', None),
+            'remote_audio': getattr(gw, 'remote_audio_source', None),
         }
         return _map.get(id)
 
