@@ -1,15 +1,13 @@
 # Mixer v2.0 — Progress & Tracking Log
 
 ## READ THIS FIRST
-This file tracks the progress of the v2.0 mixer rewrite. If you are a new
-Claude session, read this file AND `docs/mixer-v2-design.md` before doing
-any work on the mixer.
+This file tracked the progress of the v2.0 mixer rewrite. The rewrite is
+now complete and merged.
 
-**Branch:** `v2.0-mixer` (branched from `main` on 2026-03-29)
 **Design doc:** `docs/mixer-v2-design.md`
 **This file:** `docs/mixer-v2-progress.md`
 
-## Current Status: LISTENBUS LIVE — PARITY VERIFIED
+## Current Status: COMPLETE — v2.0 released 2026-03-31
 
 ## Completed
 - [x] Discussed use cases with user (2026-03-29)
@@ -26,28 +24,47 @@ any work on the mixer.
 - [x] Wired ListenBus into gateway_core.py replacing AudioMixer
 - [x] All 15 add_source call sites updated with bus_priority/duckable/deterministic
 - [x] Main loop 8-tuple replaced with BusOutput consumption
-
 - [x] Verified parity — gateway running on ListenBus, user confirmed working (2026-03-29)
-
-## Next Steps (in order)
-8. [x] Unified RadioPlugin.get_audio signature to return (bytes, bool) tuple (2026-03-29)
-9. [x] Built SDRPlugin in sdr_plugin.py (RSPduo dual tuner, internal ducking, absorbed RTLAirbandManager) (2026-03-29)
-9a. [x] Wired into gateway_core.py (replaces ~80 lines of SDR init with ~15 lines)
-9b. [x] Wired web_server.py /sdrstatus and /sdrcmd to plugin
-9c. [x] _SDRTunerView backward compat for sdr_source/sdr2_source references
-9d. [x] FIXED — SIGSEGV/SIGABRT was caused by _SDRTunerView missing attribute proxying. Status bar code accessed _chunk_queue, _prebuffering, _watchdog_restarts etc. on the view, causing AttributeError in threads that corrupted PortAudio state. Fixed with __getattr__ proxy + safe defaults. Also moved SDR init before AIOC to avoid fork-after-Pa_Initialize. SDRPlugin live and working (2026-03-29).
-10. [ ] Refactor TH-9800, D75, KV4P into plugins
-11. [ ] Build SoloBus (takes a RadioPlugin)
-12. [ ] Build DuplexRepeaterBus (connects two RadioPlugins)
-13. [ ] Build routing UI page — column wiring view (sources | busses | sinks)
-14. [ ] Build SimplexRepeaterBus (lower priority)
-15. [ ] Merge to main when stable
+- [x] Unified RadioPlugin.get_audio signature to return (bytes, bool) tuple (2026-03-29)
+- [x] Built SDRPlugin in sdr_plugin.py (RSPduo dual tuner, internal ducking, absorbed RTLAirbandManager) (2026-03-29)
+- [x] Wired SDRPlugin into gateway_core.py (replaces ~80 lines of SDR init with ~15 lines)
+- [x] Wired web_server.py /sdrstatus and /sdrcmd to plugin
+- [x] Fixed SIGSEGV/SIGABRT from _SDRTunerView missing attribute proxying (2026-03-29)
+- [x] Refactored TH-9800 into TH9800Plugin (AIOC + CAT + relays + PTT) (2026-03-30)
+- [x] Refactored D75 into D75Plugin (2026-03-29)
+- [x] Refactored KV4P into KV4PPlugin (2026-03-29)
+- [x] Built SoloBus (2026-03-30)
+- [x] Built DuplexRepeaterBus (2026-03-30)
+- [x] Built SimplexRepeaterBus (2026-03-30)
+- [x] Built routing UI with Drawflow node editor (2026-03-30)
+- [x] Built BusManager to run routing-configured busses (2026-03-30)
+- [x] Live level bars in Drawflow source/sink nodes (2026-03-30)
+- [x] Mute buttons and gain sliders in Drawflow nodes (2026-03-30)
+- [x] TX radio sinks (KV4P/D75/TH-9800 [TX]) in sink column (2026-03-30)
+- [x] MumbleSource as routable source with PTT control (2026-03-30)
+- [x] Removed console/terminal UI: StatusBar, keyboard, ANSI display (-649 lines) (2026-03-30)
+- [x] Removed old AudioMixer and AIOCRadioSource (-900 lines)
+- [x] Removed 13 _generate_* web methods (-5375 lines from web_server.py) (2026-03-30)
+- [x] Extracted 13 web pages to static HTML in web_pages/ (2026-03-30)
+- [x] Consolidated 13 static page routes to single _STATIC_PAGES lookup (2026-03-30)
+- [x] Extracted utility classes to gateway_utils.py (2026-03-30)
+- [x] Eliminated all backward compat aliases (2026-03-30)
+- [x] Removed dead PTT code and old AIOC audio paths
+- [x] Removed diagnostic trace prints (2026-03-31)
+- [x] Full duplex Remote Audio (Windows client, ports 9600/9602)
+- [x] Direct Icecast streaming (replaced DarkIce/FFmpeg/ALSA loopback)
+- [x] Room Monitor as routable source with VAD
+- [x] Web Mic in nav bar
+- [x] Speaker virtual mode (prevents PipeWire feedback)
+- [x] 14 new MCP tools for routing and automation (2026-03-31)
+- [x] Config page updates (2026-03-31)
+- [x] Merged to main (2026-03-31)
 
 ## Design Decisions Log
 | Date | Decision | Rationale |
 |------|----------|-----------|
 | 2026-03-29 | 4 bus types | Covers all current and planned use cases |
-| 2026-03-29 | Source processing stays on source | Bus shouldn't care about HPF/LPF/gate — it just routes clean PCM |
+| 2026-03-29 | Source processing stays on source | Bus shouldn't care about HPF/LPF/gate -- it just routes clean PCM |
 | 2026-03-29 | Sources can be on multiple busses | Needed for e.g. D75 on solo + repeater |
 | 2026-03-29 | Ducking is per-bus, priority-based | No more hardcoded "AIOC ducks SDRs" rules |
 | 2026-03-29 | Duplex repeater is high priority | User needs it for cross-band linking |
@@ -55,16 +72,13 @@ any work on the mixer.
 | 2026-03-29 | Plugins replace source classes | Existing sources refactored (not wrapped) into RadioPlugin interface |
 | 2026-03-29 | RSPduo = single plugin | Dual tuner master/slave ducking handled inside plugin, bus sees one source |
 | 2026-03-29 | Plugins can be simple or complex | Standard interface for bus, hardware-specific methods for UI |
-| 2026-03-29 | UI: column wiring view | 3-column layout (sources/busses/sinks) with visual connections, stacks on mobile |
+| 2026-03-29 | UI: column wiring view | 3-column layout (sources/busses/sinks) with visual connections |
 | 2026-03-29 | Build plugins before busses | SDR plugin first, then SoloBus/DuplexRepeaterBus, then routing UI |
-
-## Open Questions (from design doc)
-1. Bus config format: INI or JSON? (not yet decided)
-2. Web UI: own page or on Controls? (not yet decided)
-3. Multiple listen busses? (not yet decided)
-4. Link endpoint auto-creates solo bus? (not yet decided)
-5. Announcement routing to specific bus or broadcast? (not yet decided)
-6. SDR rebroadcast: becomes duplex repeater or stays special? (not yet decided)
+| 2026-03-30 | Drawflow for routing | Visual node editor with drag-and-drop wiring, live level bars |
+| 2026-03-30 | All sinks gated by routing | No implicit audio flow -- everything must be wired |
+| 2026-03-30 | Direct Icecast streaming | Eliminated DarkIce/FFmpeg/ALSA loopback chain |
+| 2026-03-30 | Mumble as routable source/sink | Full integration with bus routing |
+| 2026-03-31 | Routing config as JSON | More flexible than INI for nested bus/connection structures |
 
 ## Test Log
 | Date | Test | Result | Notes |
@@ -95,38 +109,42 @@ any work on the mixer.
 | 2026-03-30 | SoloBus | PASS | Built and smoke tested |
 | 2026-03-30 | DuplexRepeaterBus | PASS | Built and smoke tested (full duplex cross-link) |
 | 2026-03-30 | SimplexRepeaterBus | PASS | Built and smoke tested (store-and-forward) |
-| 2026-03-30 | Console removal | PASS | StatusBar/keyboard/ANSI removed (-649 lines) |
 | 2026-03-30 | Web modularization | PASS | 13 pages extracted to static HTML in web_pages/ |
 | 2026-03-30 | Dead code cleanup | PASS | _generate_* methods removed (-5375 lines from web_server.py) |
 | 2026-03-30 | Nav status fields | PASS | adsb_enabled + telegram_enabled added to /status |
-| 2026-03-30 | Web dead code removal | PASS | 13 _generate_* methods removed (-5375 lines) |
 | 2026-03-30 | Routing UI | PASS | Drawflow node editor, save/load, source/bus/sink wiring |
 | 2026-03-30 | TX radio sinks | PASS | KV4P/D75/TH-9800 [TX] appear in sink column |
 | 2026-03-30 | BusManager | PASS | Runs routing-configured busses alongside main loop |
-| 2026-03-30 | SoloBus live audio | PASS | File Playback → Solo Bus → KV4P TX over the air |
+| 2026-03-30 | SoloBus live audio | PASS | File Playback -> Solo Bus -> KV4P TX over the air |
 | 2026-03-30 | Routing levels | PASS | RX/TX levels separated, all sources report levels |
 | 2026-03-30 | Drawflow level bars | PASS | Live level bars in source/sink nodes |
 | 2026-03-30 | Source level metering | PASS | File Playback, Announce, WebMic report levels |
 | 2026-03-30 | Alias cleanup | PASS | d75_cat/d75_audio_source/kv4p_cat/kv4p_audio_source removed |
-| 2026-03-30 | Utility extraction | PASS | DDNSUpdater/EmailNotifier/CloudflareTunnel etc → gateway_utils.py |
-| 2026-03-30 | Route consolidation | PASS | 13 static page routes → single _STATIC_PAGES lookup |
+| 2026-03-30 | Utility extraction | PASS | DDNSUpdater/EmailNotifier/CloudflareTunnel etc -> gateway_utils.py |
+| 2026-03-30 | Route consolidation | PASS | 13 static page routes -> single _STATIC_PAGES lookup |
 | 2026-03-30 | Routing UI controls | PASS | Mute buttons + gain sliders in Drawflow nodes |
-| 2026-03-30 | Alias cleanup | PASS | All backward compat aliases eliminated |
-| 2026-03-30 | Utility extraction | PASS | DDNSUpdater/EmailNotifier/etc → gateway_utils.py |
-| 2026-03-30 | TH9800Plugin skeleton | DONE | Step 1: AIOC + CAT + relays + PTT in plugin |
-| 2026-03-30 | MumbleSource | DONE | Step 2: Mumble RX as bus source with PTT control |
+| 2026-03-30 | TH9800Plugin skeleton | PASS | AIOC + CAT + relays + PTT in plugin |
+| 2026-03-30 | MumbleSource | PASS | Mumble RX as bus source with PTT control |
 | 2026-03-30 | TH9800Plugin wired | PASS | AIOC init replaced with plugin, clean audio flowing |
 | 2026-03-30 | Audio rewrite | PASS | Blocking reader replaces PortAudio callback (reliable) |
 | 2026-03-30 | Main loop fix | PASS | AttributeError on _chunk_queue was crashing every tick |
 | 2026-03-30 | SDR autostart fix | PASS | Wait for sdrplay_apiService before rtl_airband |
 | 2026-03-30 | All mute defaults | PASS | D75/KV4P/SDR2 default to unmuted |
-| 2026-03-30 | Step 3: Wire in | DONE | All 4 radios as plugins, all audio flowing |
-
-## Known Issues
-(none yet)
+| 2026-03-30 | All 4 radios as plugins | PASS | All audio flowing through plugin interface |
+| 2026-03-31 | Diagnostic removal | PASS | Trace prints removed |
+| 2026-03-31 | MCP tools | PASS | 14 new routing/automation tools added |
+| 2026-03-31 | Final v2.0 verification | PASS | All busses, plugins, routing, sinks operational |
 
 ## Files Changed
-- `audio_bus.py` — NEW: bus module (ListenBus, DuckGroup, SourceSlot, utilities, stubs)
-- `gateway_core.py` — MODIFIED: imports ListenBus, replaces AudioMixer instantiation, 15 add_source calls updated, main loop 8-tuple replaced with BusOutput
-- `docs/mixer-v2-design.md` — architecture design doc
+- `audio_bus.py` — NEW: bus module (ListenBus, SoloBus, DuplexRepeaterBus, SimplexRepeaterBus, DuckGroup, SourceSlot, BusManager, utilities)
+- `sdr_plugin.py` — NEW: SDRPlugin (RSPduo dual tuner, absorbed RTLAirbandManager)
+- `th9800_plugin.py` — NEW: TH9800Plugin (AIOC + CAT + relays)
+- `d75_plugin.py` — NEW: D75Plugin (BT audio + TCP CAT proxy)
+- `kv4p_plugin.py` — NEW: KV4PPlugin (CP2102 USB serial + Opus)
+- `gateway_utils.py` — NEW: extracted utility classes
+- `web_pages/` — NEW: 13 static HTML pages including routing UI
+- `gateway_core.py` — MODIFIED: bus-based routing, plugin instantiation, BusOutput main loop
+- `web_server.py` — MODIFIED: _generate_* methods removed, static page serving, plugin API wiring
+- `gateway_mcp.py` — MODIFIED: 14 new routing/automation tools
+- `docs/mixer-v2-design.md` — UPDATED: architecture reference (status: COMPLETE)
 - `docs/mixer-v2-progress.md` — this file

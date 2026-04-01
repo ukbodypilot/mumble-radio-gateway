@@ -1,9 +1,9 @@
-# Claude Instructions — Radio Gateway
+# Claude Instructions -- Radio Gateway
 
 ## Memory
 At the end of every session, and whenever a significant bug or pattern is found, update the memory files:
-- `/home/user/.claude/projects/-home-user-Downloads-radio-gateway/memory/MEMORY.md` — concise project overview (keep under 200 lines)
-- `/home/user/.claude/projects/-home-user-Downloads-radio-gateway/memory/bugs.md` — bug history
+- `/home/user/.claude/projects/-home-user-Downloads-radio-gateway/memory/MEMORY.md` -- concise project overview (keep under 200 lines)
+- `/home/user/.claude/projects/-home-user-Downloads-radio-gateway/memory/bugs.md` -- bug history
 
 Also mirror the updated files into `.claude/memory/` inside this project directory so they travel with the repo.
 
@@ -27,29 +27,28 @@ If it is missing, ask the user for the source machine's IP/hostname and username
 ```bash
 scp user@source-ip:~/Downloads/radio-gateway/gateway_config.txt .
 ```
-Do NOT proceed with gateway work until the config file is present — the gateway will not run without it.
+Do NOT proceed with gateway work until the config file is present -- the gateway will not run without it.
 
 ## Project Rules
-- `gateway_config.txt` is in `.gitignore` — NEVER commit it (repo is public; it contains stream keys and passwords)
+- `gateway_config.txt` is in `.gitignore` -- NEVER commit it (repo is public; it contains stream keys and passwords)
 - NEVER commit Broadcastify credentials (STREAM_PASSWORD, STREAM_MOUNT) or any other secrets
-- To sync config between machines: copy the file manually (scp/rsync) — do NOT commit it
+- To sync config between machines: copy the file manually (scp/rsync) -- do NOT commit it
 - Never commit the `bak/` directory
 - Only commit when the user explicitly asks
 - Never auto-push
 
-## Mixer v2.0 Rewrite (ACTIVE — branch: v2.0-mixer)
-**READ THESE FIRST if working on the mixer:**
-- `docs/mixer-v2-design.md` — architecture design (bus types, source/sink model, routing, API)
-- `docs/mixer-v2-progress.md` — progress tracking, decisions log, next steps, test results
+## Mixer v2.0 Architecture (COMPLETE)
+**Reference docs:**
+- `docs/mixer-v2-design.md` -- architecture reference (bus types, plugin model, routing, API)
+- `docs/mixer-v2-progress.md` -- development history, decisions log, test results
 
-The v2.0 rewrite replaces the monolithic AudioMixer with a bus-based architecture:
-- **4 bus types:** duplex repeater, simplex repeater, listen, solo
-- **Sources own their processing** (gate/HPF/LPF/notch/gain) — busses just route clean PCM
-- **Ducking is per-bus, priority-based** — no hardcoded source name rules
-- **Sources can be on multiple busses**
-- **ListenBus replaces current AudioMixer** as the first migration step
-
-Update `docs/mixer-v2-progress.md` after every session with what was done, decisions made, and test results.
+The v2.0 architecture uses bus-based audio routing with all radios as plugins:
+- **4 bus types:** Listen, Solo, Duplex Repeater, Simplex Repeater
+- **4 radio plugins:** SDRPlugin, TH9800Plugin, D75Plugin, KV4PPlugin
+- **Sources own their processing** (gate/HPF/LPF/notch/gain) -- busses route clean PCM
+- **Ducking is per-bus, priority-based** -- no hardcoded source name rules
+- **All sinks gated by routing connections** -- visual Drawflow node editor
+- **BusManager** runs routing-configured busses alongside main loop
 
 ## Gateway Link (duplex audio + command protocol)
 - See `docs/gateway_link.md` for architecture, protocol, plugin system, and roadmap
