@@ -1963,12 +1963,49 @@ class RadioGateway:
             while time.time() - wait_start < max_wait:
                 if hasattr(self.mumble.sound_output, 'encoder_framesize') and self.mumble.sound_output.encoder_framesize is not None:
                     print(f"  ✓ Audio codec ready (framesize: {self.mumble.sound_output.encoder_framesize})")
+
+                    # Monkey-patch pymumble send_audio to instrument the full chain
+                    _so = self.mumble.sound_output
+                    _orig_send = _so.send_audio
+                    _so._send_count = 0
+                    _so._send_last_t = time.monotonic()
+                    _so._send_frames_total = 0
+                    _so._send_gaps = 0
+                    def _instrumented_send():
+                        _t0 = time.monotonic()
+                        _pcm_before = len(_so.pcm)
+                        result = _orig_send()
+                        _pcm_after = len(_so.pcm)
+                        _consumed = _pcm_before - _pcm_after
+                        if _consumed > 0:
+                            _so._send_count += 1
+                            _so._send_frames_total += _consumed
+                            _gap = (_t0 - _so._send_last_t) * 1000
+                            _so._send_last_t = _t0
+                            _elapsed = (time.monotonic() - _t0) * 1000
+                            if _so._send_count <= 5 or _so._send_count % 200 == 0 or _gap > 100:
+                                print(f"  [pymumble-send] #{_so._send_count}: consumed={_consumed} remaining={_pcm_after} gap={_gap:.0f}ms encode={_elapsed:.1f}ms total_frames={_so._send_frames_total}")
+                            if _gap > 100:
+                                _so._send_gaps += 1
+                        return result
+                    _so.send_audio = _instrumented_send
+
                     break
                 time.sleep(0.1)
             else:
                 print("  ⚠ Audio codec not initialized after 5s")
                 print("    Audio may not work until codec is ready")
                 print("    This usually resolves itself within 10-30 seconds")
+
+            # Increase audio_per_packet to bundle more frames per Mumble packet.
+            # Default 0.02 (20ms = 1 frame/packet) causes stutter when pymumble's
+            # loop is GIL-starved (only fires ~20x/sec instead of 50x/sec).
+            # At 0.06 (60ms = 3 frames/packet), 20 sends/sec × 60ms = 1200ms/sec.
+            try:
+                self.mumble.sound_output.set_audio_per_packet(0.06)
+                print(f"  Mumble audio_per_packet set to 0.06 (60ms, 3 frames/packet)")
+            except Exception as e:
+                print(f"  ⚠ Could not set audio_per_packet: {e}")
 
             # Apply audio quality settings now that the codec is ready.
             # set_bandwidth() was never called before — the library default is 50kbps.
@@ -2782,13 +2819,7 @@ class RadioGateway:
                                     self.mumble.sound_output is not None and
                                     getattr(self.mumble.sound_output, 'encoder_framesize', None) is not None):
                                 try:
-                                    # Split into pymumble-sized frames
-                                    _ef = self.mumble.sound_output.encoder_framesize
-                                    _fb = int(_ef * 48000 * 2)
-                                    for _fi in range(0, len(_early_audio), _fb):
-                                        _fr = _early_audio[_fi:_fi + _fb]
-                                        if len(_fr) == _fb:
-                                            self.mumble.sound_output.add_sound(_fr)
+                                    self.mumble.sound_output.add_sound(_early_audio)
                                     # Track Mumble TX level for routing page
                                     _ml = self.calculate_audio_level(_early_audio)
                                     if _ml > getattr(self, 'mumble_tx_level', 0):

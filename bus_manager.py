@@ -334,18 +334,17 @@ class BusManager:
                     _so = getattr(gw.mumble, 'sound_output', None)
                     _ef = getattr(_so, 'encoder_framesize', None) if _so else None
                     if _so is not None and _ef is not None:
-                        # Split into pymumble-sized frames (encoder_framesize * 48000 * 2 bytes)
-                        _frame_bytes = int(_ef * 48000 * 2)
-                        for _fi in range(0, len(audio), _frame_bytes):
-                            _frame = audio[_fi:_fi + _frame_bytes]
-                            if len(_frame) == _frame_bytes:
-                                gw.mumble.sound_output.add_sound(_frame)
+                        gw.mumble.sound_output.add_sound(audio)
                         _pcm_len = len(_so.pcm) if hasattr(_so, 'pcm') else -1
                         if not hasattr(self, '_mumble_send_count'):
                             self._mumble_send_count = 0
+                            self._mumble_last_add = time.monotonic()
                         self._mumble_send_count += 1
-                        if self._mumble_send_count <= 3 or self._mumble_send_count % 100 == 0:
-                            print(f"  [Mumble-TX] add_sound #{self._mumble_send_count}: {len(audio)}B pcm_buf={_pcm_len} ef={_ef}")
+                        _now = time.monotonic()
+                        _gap = (_now - self._mumble_last_add) * 1000
+                        self._mumble_last_add = _now
+                        if self._mumble_send_count <= 5 or self._mumble_send_count % 100 == 0 or _gap > 100:
+                            print(f"  [Mumble-TX] add_sound #{self._mumble_send_count}: {len(audio)}B pcm_buf={_pcm_len} gap={_gap:.0f}ms")
                         _ml = gw.calculate_audio_level(audio)
                         if _ml > getattr(gw, 'mumble_tx_level', 0):
                             gw.mumble_tx_level = _ml
