@@ -267,7 +267,8 @@ class WebConfigServer:
         'KV4P_BANDWIDTH': [('0', '0 — Narrow'), ('1', '1 — Wide')],
         'AUDIO_CHANNELS': [('1', '1 — Mono'), ('2', '2 — Stereo')],
         'AIOC_PTT_CHANNEL': [('1', '1'), ('2', '2'), ('3', '3')],
-        'REMOTE_AUDIO_ROLE': ['disabled', 'server', 'client'],
+        'REMOTE_AUDIO_ROLE': [('disabled', 'disabled'), ('server', 'enabled — connect to remote client')],
+        'SPEAKER_MODE': [('virtual', 'virtual — metering only'), ('auto', 'auto — try device, fallback virtual'), ('real', 'real — require audio device')],
         'RELAY_CHARGER_CONTROL': ['gpio', 'serial'],
         'TTS_ENGINE': [('edge', 'edge — Microsoft Neural (natural)'), ('gtts', 'gtts — Google Translate (robotic)')],
         'WEB_CONFIG_HTTPS': ['false', 'self-signed', 'letsencrypt'],
@@ -420,6 +421,7 @@ class WebConfigServer:
         ]),
         ('remote', 'Remote Audio Link', [
             'REMOTE_AUDIO_ROLE', 'REMOTE_AUDIO_HOST', 'REMOTE_AUDIO_PORT',
+            'REMOTE_AUDIO_RX_PORT',
             'REMOTE_AUDIO_DUCK', 'REMOTE_AUDIO_PRIORITY',
             'REMOTE_AUDIO_DISPLAY_GAIN', 'REMOTE_AUDIO_AUDIO_BOOST',
             'REMOTE_AUDIO_RECONNECT_INTERVAL',
@@ -460,8 +462,8 @@ class WebConfigServer:
             'SMART_ANNOUNCE_3_MODE', 'SMART_ANNOUNCE_3_TOP_TEXT', 'SMART_ANNOUNCE_3_TAIL_TEXT',
         ]),
         ('speaker', 'Speaker Output', [
-            'ENABLE_SPEAKER_OUTPUT', 'SPEAKER_OUTPUT_DEVICE', 'SPEAKER_VOLUME',
-            'SPEAKER_START_MUTED',
+            'ENABLE_SPEAKER_OUTPUT', 'SPEAKER_MODE', 'SPEAKER_OUTPUT_DEVICE',
+            'SPEAKER_VOLUME', 'SPEAKER_START_MUTED',
         ]),
         ('cw', 'Text to CW', [
             'CW_WPM', 'CW_FREQUENCY', 'CW_VOLUME',
