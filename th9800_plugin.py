@@ -95,8 +95,7 @@ class TH9800Plugin(RadioPlugin):
         self.audio_level = 0
         self.audio_boost = 1.0
 
-        # Stream health
-        self._restarting_stream = False
+        # Stream health (reader thread manages lifecycle)
         self._last_audio_capture_time = 0
         self._stream_restart_count = 0
 
@@ -302,21 +301,8 @@ class TH9800Plugin(RadioPlugin):
         self._set_ptt(False)
 
     def check_watchdog(self):
-        """Check AIOC stream health, restart if stalled."""
-        if not self._input_stream or self._restarting_stream:
-            return
-        try:
-            if not self._input_stream.is_active():
-                print(f"  [TH-9800] Stream inactive — restarting")
-                self._restart_audio_input()
-            elif self._rx_queue.qsize() == 0:
-                # Stream reports active but no blobs — check if stuck
-                last_capture = getattr(self._gateway, 'last_audio_capture_time', 0) if self._gateway else 0
-                if last_capture > 0 and time.time() - last_capture > 10.0:
-                    print(f"  [TH-9800] No audio blobs for 10s — restarting stream")
-                    self._restart_audio_input()
-        except Exception:
-            pass
+        """No-op — stream lifecycle is fully managed by _rx_reader_loop."""
+        pass
 
     def cleanup(self):
         self.teardown()
@@ -339,11 +325,11 @@ class TH9800Plugin(RadioPlugin):
             self._aioc_available = False
 
     def _init_audio_streams(self):
-        """Initialize PyAudio and open AIOC input/output streams.
+        """Initialize PyAudio and open AIOC output stream.
 
-        Uses blocking mode (no callback) — the _rx_reader_loop thread reads
-        from the input stream. This is simpler and more reliable than the
-        PortAudio callback approach which silently dies on some USB devices.
+        The input stream is opened by _rx_reader_loop which owns its
+        full lifecycle (open, read, close, restart).  Only the output
+        stream (gateway → radio mic) is opened here.
         """
         try:
             import pyaudio
@@ -365,88 +351,137 @@ class TH9800Plugin(RadioPlugin):
                 output=True, output_device_index=output_idx,
                 frames_per_buffer=chunk)
 
-            # Input stream (radio → gateway) — blocking mode
-            self._input_stream = self._pyaudio.open(
-                format=fmt, channels=channels, rate=rate,
-                input=True, input_device_index=input_idx,
-                frames_per_buffer=chunk)
-
-            print(f"  TH-9800: Audio streams opened (device {input_idx})")
+            # Input stream opened by reader thread — not here
+            print(f"  TH-9800: Audio output opened (device {output_idx})")
             return True
         except Exception as e:
             print(f"  TH-9800: Audio init error: {e}")
             return False
 
     def _rx_reader_loop(self):
-        """Read audio from AIOC input stream in a blocking loop.
+        """Read audio from AIOC input stream — fully self-contained lifecycle.
+
+        This thread owns the PortAudio input stream entirely: open, start,
+        read, close, restart.  No external code touches the stream.
+        The only interface to the rest of the system is self._rx_queue.
 
         Reads 4× chunk_size (200ms) per call to match AIOC USB delivery,
         then slices into individual chunks and queues each one.
-        This keeps the queue buffered ahead of the mixer's 50ms tick.
         """
+        import pyaudio as _pa
+
         chunk_size = self._config.AUDIO_CHUNK_SIZE
         chunk_bytes = chunk_size * 2  # 16-bit mono
         read_size = chunk_size * 4  # 200ms block (matches AIOC USB period)
 
         while self._rx_running:
-            if not self._input_stream or self._restarting_stream:
-                time.sleep(0.05)
-                continue
+            # ── Phase 1: Open stream ──
+            stream = None
             try:
-                data = self._input_stream.read(read_size, exception_on_overflow=False)
-                if not data:
+                input_idx, _ = self._find_aioc_device()
+                if input_idx is None:
+                    print("  [TH9800-RX] AIOC device not found — retrying in 5s")
+                    time.sleep(5)
                     continue
+                stream = self._pyaudio.open(
+                    format=_pa.paInt16,
+                    channels=self._config.AUDIO_CHANNELS,
+                    rate=self._config.AUDIO_RATE,
+                    input=True,
+                    input_device_index=input_idx,
+                    frames_per_buffer=chunk_size)
+                self._input_stream = stream  # expose for is_active() checks
+                self._stream_restart_count += 1
+                print(f"  [TH9800-RX] Stream opened (restart #{self._stream_restart_count})")
+            except Exception as e:
+                print(f"  [TH9800-RX] Failed to open stream: {e} — retrying in 2s")
+                time.sleep(2)
+                continue
 
-                # Slice 200ms block into 4 × 50ms chunks
-                for offset in range(0, len(data), chunk_bytes):
-                    chunk = data[offset:offset + chunk_bytes]
-                    if len(chunk) < chunk_bytes:
-                        break
+            # ── Phase 2: Read loop — runs until error ──
+            _consecutive_errors = 0
+            while self._rx_running:
+                try:
+                    data = stream.read(read_size, exception_on_overflow=False)
+                    if not data:
+                        continue
 
-                    # Apply audio processing
-                    if self._processor:
-                        chunk = self._processor.process(chunk)
+                    self._last_audio_capture_time = time.time()
+                    _consecutive_errors = 0
 
-                    # Track level from reader thread (works even when not on a bus)
-                    try:
-                        arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
-                        rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
-                        if rms > 0:
-                            _lv = max(0, min(100, (20.0 * math.log10(rms / 32767.0) + 60) * (100 / 60)))
-                        else:
-                            _lv = 0
-                        if _lv > self.audio_level:
-                            self.audio_level = int(_lv)
-                        else:
-                            self.audio_level = int(self.audio_level * 0.7 + _lv * 0.3)
-                    except Exception as _e:
-                        if not getattr(self, '_rx_level_err_logged', False):
-                            self._rx_level_err_logged = True
-                            print(f"  [TH9800-RX] level error: {_e}")
+                    # Slice 200ms block into 4 × 50ms chunks
+                    for offset in range(0, len(data), chunk_bytes):
+                        chunk = data[offset:offset + chunk_bytes]
+                        if len(chunk) < chunk_bytes:
+                            break
 
-                    # Queue for get_audio()
-                    try:
-                        self._rx_queue.put_nowait(chunk)
-                    except _queue_mod.Full:
+                        # Apply audio processing
+                        if self._processor:
+                            chunk = self._processor.process(chunk)
+
+                        # Track level
                         try:
-                            self._rx_queue.get_nowait()
-                        except _queue_mod.Empty:
+                            arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+                            rms = float(np.sqrt(np.mean(arr * arr))) if len(arr) > 0 else 0.0
+                            if rms > 0:
+                                _lv = max(0, min(100, (20.0 * math.log10(rms / 32767.0) + 60) * (100 / 60)))
+                            else:
+                                _lv = 0
+                            if _lv > self.audio_level:
+                                self.audio_level = int(_lv)
+                            else:
+                                self.audio_level = int(self.audio_level * 0.7 + _lv * 0.3)
+                        except Exception:
                             pass
+
+                        # Queue for get_audio()
                         try:
                             self._rx_queue.put_nowait(chunk)
                         except _queue_mod.Full:
-                            pass
+                            try:
+                                self._rx_queue.get_nowait()
+                            except _queue_mod.Empty:
+                                pass
+                            try:
+                                self._rx_queue.put_nowait(chunk)
+                            except _queue_mod.Full:
+                                pass
 
-            except IOError as e:
-                if hasattr(e, 'errno') and e.errno == -9981:
-                    try:
-                        self._input_stream.read(read_size, exception_on_overflow=False)
-                    except Exception:
-                        pass
-                else:
+                except IOError as e:
+                    err_code = getattr(e, 'errno', None)
+                    if err_code == -9981:  # paInputOverflowed — recoverable
+                        try:
+                            stream.read(read_size, exception_on_overflow=False)
+                        except Exception:
+                            pass
+                        continue
+                    _consecutive_errors += 1
+                    if _consecutive_errors <= 3:
+                        print(f"  [TH9800-RX] IOError: {e} (errno={err_code}) [{_consecutive_errors}]")
+                    if _consecutive_errors >= 5:
+                        print(f"  [TH9800-RX] {_consecutive_errors} consecutive errors — closing stream")
+                        break  # exit inner loop → close → reopen
                     time.sleep(0.1)
+
+                except Exception as e:
+                    _consecutive_errors += 1
+                    if _consecutive_errors <= 3:
+                        print(f"  [TH9800-RX] Exception: {e} [{_consecutive_errors}]")
+                    if _consecutive_errors >= 5:
+                        print(f"  [TH9800-RX] {_consecutive_errors} consecutive errors — closing stream")
+                        break  # exit inner loop → close → reopen
+                    time.sleep(0.1)
+
+            # ── Phase 3: Close stream and retry ──
+            self._input_stream = None
+            try:
+                stream.stop_stream()
+                stream.close()
             except Exception:
-                time.sleep(0.1)
+                pass
+            if self._rx_running:
+                print("  [TH9800-RX] Stream closed — reopening in 1s")
+                time.sleep(1)
 
     def _find_aioc_device(self):
         """Find AIOC audio device indices by name."""
@@ -598,38 +633,7 @@ class TH9800Plugin(RadioPlugin):
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    # -- Internal: audio stream health --
-
-    def _restart_audio_input(self):
-        """Recover AIOC input stream."""
-        if self._restarting_stream:
-            return
-        self._restarting_stream = True
-        try:
-            if self._input_stream:
-                try:
-                    self._input_stream.stop_stream()
-                    self._input_stream.close()
-                except Exception:
-                    pass
-                self._input_stream = None
-            time.sleep(0.5)
-            input_idx, _ = self._find_aioc_device()
-            if input_idx is not None and self._pyaudio:
-                import pyaudio
-                self._input_stream = self._pyaudio.open(
-                    format=pyaudio.paInt16,
-                    channels=self._config.AUDIO_CHANNELS,
-                    rate=self._config.AUDIO_RATE,
-                    input=True,
-                    input_device_index=input_idx,
-                    frames_per_buffer=self._config.AUDIO_CHUNK_SIZE)
-                self._stream_restart_count += 1
-                print(f"  [TH-9800] Audio input restarted (count: {self._stream_restart_count})")
-        except Exception as e:
-            print(f"  [TH-9800] Audio restart error: {e}")
-        finally:
-            self._restarting_stream = False
+    # _restart_audio_input removed — stream lifecycle is fully owned by _rx_reader_loop
 
     # -- Internal: processing sync --
 

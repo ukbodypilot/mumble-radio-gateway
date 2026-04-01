@@ -203,11 +203,11 @@ function updateStatus() {
       var stTxt = conn?'LIVE':'OFF';
       document.getElementById('bc-status-badge').innerHTML = '<span style="color:'+stClr+'">'+stTxt+'</span>';
       var bh = '';
-      if(ds.server) bh += '<div class="st-item"><span class="st-label">Server:</span><span class="st-val white">'+ds.server+ds.mount+'</span></div>';
       if(ds.bitrate) bh += '<div class="st-item"><span class="st-label">Bitrate:</span><span class="st-val cyan">'+ds.bitrate+' kbps MP3</span></div>';
       if(ds.uptime) { var u=ds.uptime; var uh=Math.floor(u/3600); var um=Math.floor((u%3600)/60); var us=Math.floor(u%60); bh += '<div class="st-item"><span class="st-label">Uptime:</span><span class="st-val white">'+uh+'h '+('0'+um).slice(-2)+'m '+('0'+us).slice(-2)+'s</span></div>'; }
       if(ds.bytes_sent) { var kb=ds.bytes_sent/1024; var mb=kb/1024; bh += '<div class="st-item"><span class="st-label">Sent:</span><span class="st-val cyan">'+(mb>=1?mb.toFixed(1)+' MB':kb.toFixed(0)+' KB')+'</span></div>'; }
       if(ds.send_rate) bh += '<div class="st-item"><span class="st-label">Rate:</span><span class="st-val cyan">'+ds.send_rate+'</span></div>';
+      if(ds.server) bh += '<div class="st-item"><span class="st-label">Server:</span><span class="st-val white">'+ds.server+ds.mount+'</span></div>';
       document.getElementById('bc-stats').innerHTML = bh;
     } else {
       bcPanel.style.display = 'none';

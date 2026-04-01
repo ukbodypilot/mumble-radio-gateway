@@ -480,31 +480,16 @@ class CloudflareTunnel:
                                 f.write(self._url)
                         except Exception:
                             pass
-                # Validate the URL is still live — stale quick tunnels return 502/530
+                # Cloudflared process is running and we have a cached URL.
+                # Don't HEAD-validate through the tunnel — the gateway's web
+                # server (the backend) isn't up yet during startup, so cloudflare
+                # returns 502 even though the tunnel itself is perfectly healthy.
+                # Quick tunnels last ~24h; if it expires, cloudflared exits and
+                # the next restart will launch a fresh one.
                 if self._url:
-                    try:
-                        import urllib.request
-                        req = urllib.request.Request(self._url, method='HEAD')
-                        resp = urllib.request.urlopen(req, timeout=5)
-                        if resp.status < 500:
-                            print(f"  [Tunnel] Reusing existing cloudflared (URL: {self._url})")
-                            return
-                    except Exception:
-                        pass
-                    # URL is stale — kill old cloudflared and start fresh
-                    print(f"  [Tunnel] Stale tunnel URL detected — restarting cloudflared")
-                    self._url = None
-                    try:
-                        os.unlink(self.URL_FILE)
-                    except Exception:
-                        pass
-                    try:
-                        subprocess.run(['pkill', '-x', 'cloudflared'], capture_output=True, timeout=5)
-                        time.sleep(2)
-                    except Exception:
-                        pass
-                    self._adopted = False
-                    # Fall through to launch new one
+                    print(f"  [Tunnel] Reusing existing cloudflared (URL: {self._url})")
+                    return
+                # No cached URL but process is running — tail the log for it
                 else:
                     print(f"  [Tunnel] Reusing existing cloudflared (URL not yet cached)")
                     self._thread = threading.Thread(target=self._tail_log, daemon=True,
@@ -525,15 +510,31 @@ class CloudflareTunnel:
         self._do_launch(port)
 
     def _do_launch(self, port):
-        """Launch cloudflared, redirecting output to LOG_FILE so it survives restarts."""
+        """Launch cloudflared in its own systemd scope so it survives gateway restarts.
+
+        The gateway service uses KillMode=control-group, which kills all child
+        processes on restart.  systemd-run --user --scope puts cloudflared in a
+        separate cgroup so it is not affected by gateway stop/restart.
+        Falls back to plain Popen if systemd-run is not available.
+        """
         import subprocess
         try:
             with open(self.LOG_FILE, 'w') as log_f:
-                self._process = subprocess.Popen(
-                    ['cloudflared', 'tunnel', '--url', f'http://localhost:{port}'],
-                    stdout=log_f, stderr=log_f,
-                    start_new_session=True  # detach from gateway session/group
-                )
+                try:
+                    # Launch in a separate systemd scope — survives gateway cgroup kill
+                    self._process = subprocess.Popen(
+                        ['systemd-run', '--user', '--scope', '--unit=cloudflared-tunnel',
+                         'cloudflared', 'tunnel', '--url', f'http://localhost:{port}'],
+                        stdout=log_f, stderr=log_f,
+                        start_new_session=True
+                    )
+                except FileNotFoundError:
+                    # systemd-run not available — fall back to plain launch
+                    self._process = subprocess.Popen(
+                        ['cloudflared', 'tunnel', '--url', f'http://localhost:{port}'],
+                        stdout=log_f, stderr=log_f,
+                        start_new_session=True
+                    )
         except FileNotFoundError:
             print("  [Tunnel] cloudflared not found — install with: sudo pacman -S cloudflared")
             return

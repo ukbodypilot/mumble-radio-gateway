@@ -243,6 +243,7 @@
   <button onclick="deleteSelected()" style="background:#e74c3c;border-color:#c0392b;">Delete Selected</button>
   <span class="hint">Click a connection to select it, then click Delete Selected (or right-click).</span>
   <span class="spacer"></span>
+  <button onclick="autoArrange()">Auto-arrange</button>
   <button onclick="saveRouting()" style="background:#2ecc71;border-color:#27ae60;color:#000;font-weight:bold;">Save</button>
   <button onclick="loadRouting()">Reload</button>
   <span class="status" id="statusBar">Loading...</span>
@@ -264,6 +265,39 @@ var container = document.getElementById('drawflow');
 editor = new Drawflow(container);
 editor.reroute = true;
 editor.start();
+
+// Auto-arrange nodes in three columns: sources | busses | sinks
+function autoArrange() {
+  var xSource = 50, xBus = 370, xSink = 700;
+  var spacing = 80;
+  var ySource = 20, yBus = 20, ySink = 20;
+
+  var data = editor.export().drawflow.Home.data;
+  for (var nid in data) {
+    var node = data[nid];
+    var el = document.querySelector('#node-' + nid);
+    if (!el) continue;
+    var x, y;
+    if (node.class.indexOf('source') >= 0) {
+      x = xSource; y = ySource; ySource += spacing;
+    } else if (node.class.indexOf('bus') >= 0) {
+      x = xBus; y = yBus; yBus += spacing + 30;
+    } else {
+      x = xSink; y = ySink; ySink += spacing;
+    }
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    // Update Drawflow internal state
+    editor.drawflow.drawflow.Home.data[nid].pos_x = x;
+    editor.drawflow.drawflow.Home.data[nid].pos_y = y;
+  }
+  editor.updateConnectionNodes('node-' + Object.keys(data)[0]);
+  // Force all connections to redraw
+  for (var nid in data) {
+    try { editor.updateConnectionNodes('node-' + nid); } catch(e) {}
+  }
+  setStatus('Auto-arranged — click Save to keep');
+}
 
 // Delete selected connection or node
 function deleteSelected() {
@@ -331,12 +365,18 @@ function rebuildEditor() {
   _nodeMap = {};
 
   // Extract saved node positions from layout (if available)
+  // Keys are prefixed (src-/bus-/sink-) to avoid collisions when a source
+  // and bus share the same id (e.g. "announce" source vs "announce" bus).
   var savedPositions = {};
   if (_state.layout) {
     try {
       var nodes = _state.layout.drawflow.Home.data;
       for (var nid in nodes) {
-        savedPositions[nodes[nid].name] = {x: nodes[nid].pos_x, y: nodes[nid].pos_y};
+        var n = nodes[nid];
+        var prefix = n.class.indexOf('source') >= 0 ? 'src-'
+                   : n.class.indexOf('bus') >= 0 ? 'bus-'
+                   : 'sink-';
+        savedPositions[prefix + n.name] = {x: n.pos_x, y: n.pos_y};
       }
     } catch(e) {}
   }
@@ -361,7 +401,7 @@ function rebuildEditor() {
       + '</div>'
       + '<div class="level-bar" id="level-' + s.id + '"><div class="level-fill"></div></div>'
       + '</div>';
-    var pos = savedPositions[s.id] || {x: xSource, y: ySource};
+    var pos = savedPositions['src-' + s.id] || {x: xSource, y: ySource};
     var srcCls = 'source' + (s.muted ? ' node-muted' : '');
     var nodeId = editor.addNode(s.id, 0, 1, pos.x, pos.y, srcCls, {id: s.id}, s.name + '\n' + html);
     _nodeMap['src-' + s.id] = nodeId;
@@ -389,7 +429,7 @@ function rebuildEditor() {
       + '</div>'
       + '<div class="level-bar" id="level-bus_' + b.id + '"><div class="level-fill"></div></div>'
       + '</div>';
-    var pos = savedPositions[b.id] || {x: xBus, y: yBus};
+    var pos = savedPositions['bus-' + b.id] || {x: xBus, y: yBus};
     var busCls = cls + (b.muted ? ' node-muted' : '');
     var nodeId = editor.addNode(b.id, 1, 1, pos.x, pos.y, busCls, {id: b.id, type: b.type}, b.name + '\n' + html);
     _nodeMap['bus-' + b.id] = nodeId;
@@ -412,7 +452,7 @@ function rebuildEditor() {
       s._speaker_mode = (s.speaker_mode || 'virtual').toLowerCase();
     }
     html += '</div>';
-    var pos = savedPositions[s.id] || {x: xSink, y: ySink};
+    var pos = savedPositions['sink-' + s.id] || {x: xSink, y: ySink};
     var sinkCls = 'sink' + (s.muted ? ' node-muted' : '');
     var nodeId = editor.addNode(s.id, 1, 0, pos.x, pos.y, sinkCls, {id: s.id}, s.name + '\n' + html);
     _nodeMap['sink-' + s.id] = nodeId;

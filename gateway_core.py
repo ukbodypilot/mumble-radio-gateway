@@ -1374,11 +1374,14 @@ class RadioGateway:
                 import traceback; traceback.print_exc()
                 self.th9800_plugin = None
 
-            # Backward compat: expose plugin internals for code that still uses them
+            # Backward compat: expose plugin internals for code that still uses them.
+            # input_stream is NOT copied — it's managed by the reader thread and
+            # may be closed/reopened at any time.  Code that needs the stream must
+            # go through th9800_plugin._input_stream (live reference).
             if self.th9800_plugin:
                 self.radio_source = self.th9800_plugin
                 self.pyaudio_instance = self.th9800_plugin._pyaudio
-                self.input_stream = self.th9800_plugin._input_stream
+                self.input_stream = None  # DO NOT cache — reader thread owns lifecycle
                 self.output_stream = self.th9800_plugin._output_stream
                 self.aioc_device = self.th9800_plugin._aioc_device
                 self.aioc_available = self.th9800_plugin._aioc_available
@@ -2751,6 +2754,7 @@ class RadioGateway:
                     if getattr(self, '_listen_bus_muted', False):
                         _early_audio = None
                     _listen_sinks = self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())
+                    _vad_pass = True  # default: pass through (updated below if VAD enabled)
                     # Decay sink levels when no audio
                     if _early_audio is None:
                         self.stream_audio_level = max(0, int(self.stream_audio_level * 0.7))
@@ -2763,7 +2767,10 @@ class RadioGateway:
                                     self.stream_audio_level = self.calculate_audio_level(_early_audio)
                                 except Exception:
                                     pass
-                        if 'mumble' in _listen_sinks:
+                        # Run VAD once per tick — reused below for the main gate.
+                        _vad_pass = self.check_vad(_early_audio) if (getattr(self.config, 'ENABLE_VAD', False) and _early_audio) else True
+                        # Mumble respects VAD — only deliver when signal is present.
+                        if 'mumble' in _listen_sinks and _vad_pass:
                             if (self.mumble and
                                     hasattr(self.mumble, 'sound_output') and
                                     self.mumble.sound_output is not None and
@@ -2900,7 +2907,8 @@ class RadioGateway:
                             _tr_rebro = 'hold'
 
                     # No PTT required (radio RX / SDR) — deliver to sinks that bypass VAD, then gate
-                    if data and not self.check_vad(data):
+                    # _vad_pass was computed above in early delivery section
+                    if data and not _vad_pass:
                         if 'speaker' in (self._bus_sinks.get(self._listen_bus_id, set()) - getattr(self, '_muted_sinks', set())):
                             self._speaker_enqueue(data)
                         _tr_outcome = 'vad_gate'
@@ -3017,27 +3025,18 @@ class RadioGateway:
                 error_type = type(e).__name__
                 error_msg = str(e)
 
-                if "-9999" in error_msg or "Unanticipated host error" in error_msg:
-                    if consecutive_errors == 1 and self.config.VERBOSE_LOGGING:
-                        print(f"\n[Diagnostic] ALSA Error -9999: {error_type}: {error_msg}")
-                        try:
-                            if self.input_stream:
-                                print(f"  Stream state: active={self.input_stream.is_active()}, stopped={self.input_stream.is_stopped()}")
-                        except:
-                            pass
-                else:
-                    if consecutive_errors == 1 and self.config.VERBOSE_LOGGING:
-                        print(f"\n[Diagnostic] Audio error #{consecutive_errors}: {error_type}: {error_msg}")
+                # Always log first occurrence of each error burst
+                if consecutive_errors <= 2:
+                    print(f"  [MainLoop] Exception #{consecutive_errors}: {error_type}: {error_msg}")
+                    if consecutive_errors == 1:
+                        import traceback; traceback.print_exc()
 
                 self.last_stream_error = f"{error_type}: {error_msg}"
 
                 if consecutive_errors >= max_consecutive_errors:
-                    if self.config.VERBOSE_LOGGING:
-                        print(f"\n✗ Audio capture failed {consecutive_errors} times, restarting AIOC stream...")
-                    self.restart_audio_input()
-                    self.stream_restart_count += 1
+                    # Stream lifecycle is managed by TH9800Plugin reader thread.
+                    # Just reset the counter — don't call the old restart_audio_input().
                     consecutive_errors = 0
-                    time.sleep(1)
                 # else: self-clock at top of loop handles pacing
             finally:
                 # ── Trace record (toggled by 'i' key) ──
