@@ -38,9 +38,6 @@ class BusManager:
         # main loop picks it up and mixes with listen bus output before pushing.
         self._pcm_queue = []        # PCM audio chunks from non-listen busses (list, not single buffer)
         self._mp3_queue = []        # MP3 audio chunks from non-listen busses
-        # Keep old names for backward compat with drain methods
-        self._pcm_buffer = None
-        self._mp3_buffer = None
         self._bus_levels = {}       # bus_id → audio level (0-100) for routing page
 
     def get_bus_sinks(self):
@@ -80,7 +77,6 @@ class BusManager:
         chunks = list(self._mp3_queue)
         self._mp3_queue.clear()
         return additive_mix(chunks)
-        return mp3
 
     def get_listen_bus_id(self):
         """Return the ID of the first listen-type bus in routing config."""

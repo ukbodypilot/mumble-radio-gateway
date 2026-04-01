@@ -8,7 +8,6 @@ import signal
 import threading
 import threading as _thr
 import subprocess
-import shutil
 import json as json_mod
 import collections
 import queue as _queue_mod
@@ -266,206 +265,6 @@ class AudioProcessor:
             return _arr.array('h', gated).tobytes()
         except Exception:
             return pcm_data
-
-
-class AIOCRadioSource(AudioSource):
-    """Radio audio source via AIOC device"""
-    def __init__(self, config, gateway):
-        super().__init__("Radio", config)
-        self.gateway = gateway  # Reference to main gateway for shared resources
-        self.priority = 1  # Lower priority than file playback
-        self.ptt_control = False  # Radio RX doesn't control PTT
-        self.volume = config.INPUT_VOLUME
-
-        # Queue for audio blobs delivered by PortAudio's callback thread.
-        # The ALSA period is opened at 4×AUDIO_CHUNK_SIZE so each callback
-        # delivers one 200ms blob.  get_audio() pre-buffers 3 blobs (600ms)
-        # before first serve, then slices into 50ms sub-chunks (non-blocking).
-        # WARNING: Do NOT reduce blob_mult below 4 or pre-buffer below 3.
-        # AIOC USB audio has significant jitter; smaller values cause clicks,
-        # robot sounds, and volume discontinuities. Tested 2× and 1× — both
-        # produced artifacts. These values are the proven minimum for clean audio.
-        self._chunk_queue = _queue_mod.Queue(maxsize=16)
-        self._blob_mult = 4  # ALSA period = 4×AUDIO_CHUNK_SIZE — DO NOT REDUCE
-        self._blob_bytes = config.AUDIO_CHUNK_SIZE * self._blob_mult * config.AUDIO_CHANNELS * 2
-        # Pre-compute sizes for the hot callback path and get_audio() slicer.
-        self._chunk_bytes = config.AUDIO_CHUNK_SIZE * config.AUDIO_CHANNELS * 2  # 16-bit
-        self._chunk_secs = config.AUDIO_CHUNK_SIZE / config.AUDIO_RATE           # ~0.05 s
-        # Sub-chunk slicing state (accessed only from the get_audio() call site).
-        self._sub_buffer = b''
-        self._prebuffering = True   # Wait for 3 blobs before first serve
-        self._last_blocked_ms = 0.0  # instrumentation: how long get_audio blocked on blob fetch
-
-        # Enhanced trace instrumentation
-        self._cb_overflow_count = 0
-        self._cb_underflow_count = 0
-        self._cb_drop_count = 0
-        self._last_cb_status = 0
-        self._last_serve_sample = 0
-        self._serve_discontinuity = 0.0
-        self._sub_buffer_after = 0
-
-    def _audio_callback(self, in_data, frame_count, time_info, status):
-        """PortAudio input callback — invoked at each ALSA period (4×AUDIO_CHUNK_SIZE frames).
-
-        Each callback delivers a 200ms blob.  get_audio() pre-buffers 3 blobs
-        (600ms cushion) before starting to serve, then slices into 50ms sub-chunks.
-
-        Keep this method minimal — it runs in PortAudio's audio thread."""
-        if status:
-            self._last_cb_status = status
-            if status & 0x2:  # paInputOverflow
-                self._cb_overflow_count += 1
-            if status & 0x1:  # paInputUnderflow
-                self._cb_underflow_count += 1
-        if in_data:
-            try:
-                self._chunk_queue.put_nowait(in_data)
-            except _queue_mod.Full:
-                self._cb_drop_count += 1
-        return (None, pyaudio.paContinue)
-
-    def cleanup(self):
-        pass  # No resources to release; PortAudio stream is owned by the gateway
-
-    def get_audio(self, chunk_size):
-        """Get audio from radio via AIOC input stream"""
-        # Reset the full-duplex cache every call so stale data is never forwarded
-        self._rx_cache = None
-
-        if not self.gateway.input_stream or self.gateway.restarting_stream:
-            return None, False
-
-        # Mute check BEFORE blob fetch — avoids blocking the main loop for
-        # 60ms to get data that would be thrown away.  Flush stale data so
-        # the sub-buffer is fresh when unmuted.
-        if self.gateway.rx_muted:
-            self._sub_buffer = b''
-            self._prebuffering = True
-            while not self._chunk_queue.empty():
-                try:
-                    self._chunk_queue.get_nowait()
-                except _queue_mod.Empty:
-                    break
-            self._last_blocked_ms = 0.0
-            return None, False
-
-        try:
-            # Eagerly drain all available blobs from queue into the sub-buffer.
-            # This is critical for the pre-buffer gate: the old loop only fetched
-            # when sub_buffer < chunk_bytes, which starved the pre-buffer check.
-            cb = self._chunk_bytes
-            _t0 = time.monotonic()
-            _fetched = False
-            while True:
-                try:
-                    blob = self._chunk_queue.get_nowait()
-                    self._sub_buffer += blob
-                    _fetched = True
-                except _queue_mod.Empty:
-                    break
-            self._last_blocked_ms = (time.monotonic() - _t0) * 1000 if _fetched else 0.0
-
-            # Cap sub-buffer to prevent stale audio buildup under CPU load.
-            if self._blob_bytes > 0 and len(self._sub_buffer) > self._blob_bytes * 5:
-                self._sub_buffer = self._sub_buffer[-(self._blob_bytes * 5):]
-
-            # Pre-buffer gate: after the sub-buffer empties, accumulate 3 blobs
-            # (600ms cushion) before serving.  Absorbs USB delivery jitter.
-            if self._prebuffering:
-                if len(self._sub_buffer) < self._blob_bytes * 3:
-                    return None, False  # still accumulating
-                self._prebuffering = False
-
-            if len(self._sub_buffer) < cb:
-                self._prebuffering = True  # depleted — re-enter prebuffer
-                return None, False
-
-            data = self._sub_buffer[:cb]
-            self._sub_buffer = self._sub_buffer[cb:]
-            self._sub_buffer_after = len(self._sub_buffer)
-
-            # Sample discontinuity detection
-            if len(data) >= 2:
-                first_sample = int.from_bytes(data[0:2], byteorder='little', signed=True)
-                self._serve_discontinuity = float(abs(first_sample - self._last_serve_sample))
-                self._last_serve_sample = int.from_bytes(data[-2:], byteorder='little', signed=True)
-
-            # Update capture time so stream-health checks stay happy
-            self.gateway.last_audio_capture_time = time.time()
-            self.gateway.last_successful_read = time.time()
-            self.gateway.audio_capture_active = True
-
-            # Apply volume if needed
-            if self.volume != 1.0 and data:
-                arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-                data = np.clip(arr * self.volume, -32768, 32767).astype(np.int16).tobytes()
-
-            # Apply audio processing
-            data = self.gateway.process_audio_for_mumble(data)
-
-            # Apply click-suppression envelope for 150ms after any PTT state change.
-            # We use a time-based window (not a one-shot flag) because the sub-chunk
-            # slicing in get_audio() means the AIOC transient from the HID write can
-            # appear 1-3 sub-chunks after the flag would otherwise be cleared.
-            # Gain: 0 for first 30 ms, linearly ramps 0→1 from 30 ms to 130 ms.
-            t_since_ptt = time.monotonic() - self.gateway._ptt_change_time
-            if t_since_ptt < 0.130 and data:
-                arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-                n = len(arr)
-                t_samples = t_since_ptt + np.arange(n, dtype=np.float32) / self.config.AUDIO_RATE
-                gain = np.clip((t_samples - 0.030) / 0.100, 0.0, 1.0)
-                data = (arr * gain).astype(np.int16).tobytes()
-
-            # Cache the processed audio for full-duplex forwarding during PTT.
-            # The transmit loop reads this directly so RX → Mumble works even if
-            # VAD is blocking and regardless of ptt_active timing in the mixer.
-            self._rx_cache = data
-
-            # Check VAD - always call to keep the envelope/state current.
-            should_transmit = self.gateway.check_vad(data)
-
-            # Calculate audio level for the RX (AIOC) status bar — gate on AIOC's OWN
-            # VAD result, not gateway.vad_active (shared global state).
-            # Problem: check_vad() in the main loop is also called on the MIXED audio
-            # (AIOC + SDR) every tick AFTER this method returns.  That call can set
-            # vad_active=True due to SDR signal even when AIOC is silent.  The next
-            # tick's get_audio() would then read vad_active=True and calculate the AIOC
-            # noise floor level (~20%), making the RX bar show false activity.
-            # Using should_transmit (this call's local result) means the bar only lights
-            # up when AIOC itself has signal above threshold.
-            current_level = self.gateway.calculate_audio_level(data) if should_transmit else 0
-            if current_level > self.gateway.tx_audio_level:
-                self.gateway.tx_audio_level = current_level
-            else:
-                self.gateway.tx_audio_level = int(self.gateway.tx_audio_level * 0.7 + current_level * 0.3)
-
-            # Full-duplex: when the gateway is transmitting (PTT active), bypass
-            # the VAD gate so radio RX still flows to Mumble via the normal path.
-            if self.gateway.ptt_active:
-                should_transmit = True
-
-            # During the PTT click-suppression window, force the muted/faded audio
-            # through to Mumble even if VAD says no.  Without this, Mumble skips the
-            # ~130ms of silence while the speaker plays it, causing a permanent
-            # speaker/Mumble sync offset after every PTT event.
-            if time.monotonic() - self.gateway._ptt_change_time < 0.130:
-                should_transmit = True
-
-            if should_transmit:
-                return data, False  # Don't trigger PTT (radio RX)
-            else:
-                return None, False
-                
-        except Exception as e:
-            # Log the error so we can see what's wrong
-            if self.gateway.config.VERBOSE_LOGGING:
-                print(f"\n[RadioSource] Error reading audio: {type(e).__name__}: {e}")
-            return None, False
-    
-    def is_active(self):
-        """Radio is active if VAD is detecting signal"""
-        return self.gateway.vad_active
 
 
 class FilePlaybackSource(AudioSource):
@@ -1408,7 +1207,6 @@ class EchoLinkSource(AudioSource):
                 pass
 
 
-# SDRSource and PipeWireSDRSource removed — replaced by SDRPlugin in sdr_plugin.py
 
 
 class RemoteAudioServer:
@@ -1774,7 +1572,6 @@ class RemoteAudioSource(AudioSource):
         self._sub_buffer = b''
 
 
-# D75AudioSource removed — replaced by D75Plugin in d75_plugin.py
 
 
 class LinkAudioSource(AudioSource):
@@ -2587,9 +2384,6 @@ class StreamOutputSource:
                 pass
 
 
-# AudioMixer class removed (700 lines) — replaced by ListenBus in audio_bus.py
-# See docs/mixer-v2-design.md for architecture.
-# Old code available in git history (main branch) if needed.
 
 
 _MORSE_TABLE = {
