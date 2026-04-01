@@ -274,12 +274,23 @@ def _recv_exact(sock, n):
 # ---------------------------------------------------------------------------
 def _tx_thread_func(state, cfg, gateway_host, tx_port, in_dev_index, in_dev_name):
     """Capture mic audio and send to gateway's RX port."""
+    import queue
+    tx_q = queue.Queue(maxsize=32)
+
+    def _tx_callback(indata, frames, time_info, status):
+        """Called by sounddevice from audio thread — push PCM to queue."""
+        try:
+            tx_q.put_nowait(bytes(indata))
+        except queue.Full:
+            pass  # drop oldest implicitly by not queuing
+
     stream = sd.RawInputStream(
         samplerate=SAMPLE_RATE,
         blocksize=FRAMES_PER_BUFFER,
         device=in_dev_index,
         channels=CHANNELS,
         dtype="int16",
+        callback=_tx_callback,
     )
     stream.start()
 
@@ -307,21 +318,21 @@ def _tx_thread_func(state, cfg, gateway_host, tx_port, in_dev_index, in_dev_name
                 state["tx_connected"] = False
                 sock = connect()
                 if sock is None:
+                    # Drain queue while waiting to reconnect
                     deadline = time.monotonic() + RECONNECT_INTERVAL
                     while time.monotonic() < deadline and state["running"]:
                         try:
-                            stream.read(FRAMES_PER_BUFFER)
-                        except Exception:
+                            tx_q.get(timeout=0.1)
+                        except queue.Empty:
                             pass
                     continue
                 state["tx_connected"] = True
 
-            # Read audio
+            # Get audio from callback queue
             try:
-                data, overflowed = stream.read(FRAMES_PER_BUFFER)
-                pcm = bytes(data)
-            except Exception:
-                break
+                pcm = tx_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
 
             # Apply volume
             vol = state["tx_vol"]
@@ -388,12 +399,29 @@ def _rx_thread_func(state, cfg, rx_port, out_dev_index, out_dev_name):
             state["rx_connected"] = True
             state["rx_from"] = f"{addr[0]}:{addr[1]}"
 
+            import queue as _queue
+            rx_q = _queue.Queue(maxsize=32)
+
+            def _rx_callback(outdata, frames, time_info, status):
+                """Called by sounddevice from audio thread — pull PCM from queue."""
+                try:
+                    pcm = rx_q.get_nowait()
+                    expected = frames * CHANNELS * 2  # 16-bit
+                    if len(pcm) >= expected:
+                        outdata[:] = pcm[:expected]
+                    else:
+                        outdata[:len(pcm)] = pcm
+                        outdata[len(pcm):] = b'\x00' * (expected - len(pcm))
+                except _queue.Empty:
+                    outdata[:] = b'\x00' * len(outdata)
+
             out_stream = sd.RawOutputStream(
                 samplerate=SAMPLE_RATE,
                 blocksize=FRAMES_PER_BUFFER,
                 device=out_dev_index,
                 channels=CHANNELS,
                 dtype="int16",
+                callback=_rx_callback,
             )
             out_stream.start()
 
@@ -425,7 +453,17 @@ def _rx_thread_func(state, cfg, rx_port, out_dev_index, out_dev_name):
                             pcm_out = np.clip(samples, -32768, 32767).astype(np.int16).tobytes()
                         else:
                             pcm_out = pcm
-                        out_stream.write(pcm_out)
+                        try:
+                            rx_q.put_nowait(pcm_out)
+                        except _queue.Full:
+                            try:
+                                rx_q.get_nowait()
+                            except _queue.Empty:
+                                pass
+                            try:
+                                rx_q.put_nowait(pcm_out)
+                            except _queue.Full:
+                                pass
 
             except (ConnectionResetError, BrokenPipeError, OSError):
                 pass
