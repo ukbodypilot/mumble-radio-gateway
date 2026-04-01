@@ -472,6 +472,36 @@ def gateway_key(key_char: str) -> str:
 
 
 @mcp.tool()
+def automation_status() -> str:
+    """
+    Get the automation engine status: configured tasks, schedules,
+    time window, and whether the engine is active.
+    """
+    return json.dumps(_get('/automationstatus'), indent=2)
+
+
+@mcp.tool()
+def automation_history() -> str:
+    """
+    Get recent automation execution history — which tasks ran, when,
+    and whether they succeeded or failed.
+    """
+    return json.dumps(_get('/automationhistory'), indent=2)
+
+
+@mcp.tool()
+def automation_reload() -> str:
+    """
+    Reload the automation scheme from the config file.
+    Use after editing automation tasks in gateway_config.txt.
+    """
+    result = _post('/automationcmd', {'cmd': 'reload'})
+    if result.get('ok'):
+        return f"Reloaded: {result.get('tasks', 0)} tasks"
+    return f"Failed: {result.get('error', 'unknown')}"
+
+
+@mcp.tool()
 def automation_trigger(task_name: str) -> str:
     """
     Manually trigger a named automation task (from the gateway's automation
