@@ -13,6 +13,21 @@ import sys
 import threading
 import time
 
+def _update_config_key(key, value):
+    """Update a single key in gateway_config.txt using anchored sed."""
+    import subprocess
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gateway_config.txt')
+    if not os.path.exists(config_path):
+        return
+    # Escape value for sed
+    val_str = str(value)
+    try:
+        subprocess.run(
+            ['sed', '-i', f's/^{key} = .*/{key} = {val_str}/', config_path],
+            capture_output=True, timeout=5)
+    except Exception:
+        pass
+
 import numpy as np
 
 from audio_sources import AudioProcessor
@@ -376,10 +391,12 @@ class KV4PPlugin(RadioPlugin):
             self._frequency = freq
             self._tx_frequency = tx_freq if tx_freq > 0 else freq
             self._apply_group()
+            self._persist()
             return {"ok": True}
         elif action == 'squelch':
             self._squelch = max(0, min(8, int(cmd.get('level', self._squelch))))
             self._apply_group()
+            self._persist()
             return {"ok": True}
         elif action == 'ctcss':
             if 'tx' in cmd:
@@ -387,18 +404,22 @@ class KV4PPlugin(RadioPlugin):
             if 'rx' in cmd:
                 self._ctcss_rx = int(cmd['rx'])
             self._apply_group()
+            self._persist()
             return {"ok": True}
         elif action == 'bandwidth':
             self._bandwidth = 1 if cmd.get('wide', True) else 0
             self._apply_group()
+            self._persist()
             return {"ok": True}
         elif action == 'power':
             self._high_power = bool(cmd.get('high', True))
             if self._radio:
                 self._radio.set_power(self._high_power)
+            self._persist()
             return {"ok": True}
         elif action == 'boost':
             self.audio_boost = max(0.0, min(5.0, float(cmd.get('value', 1.0))))
+            self._persist()
             return {"ok": True}
         elif action == 'ptt':
             state = bool(cmd.get('state', False))
@@ -509,7 +530,7 @@ class KV4PPlugin(RadioPlugin):
                 self._firmware_version = ver.firmware_version
                 self._rf_module = ver.rf_module_type.name if hasattr(ver.rf_module_type, 'name') else 'VHF'
 
-            # Apply initial config (warn if frequency is out of range for this module)
+            # Apply initial config
             self._frequency = float(getattr(self._config, 'KV4P_FREQ', 146.520))
             tx_freq = float(getattr(self._config, 'KV4P_TX_FREQ', 0))
             self._tx_frequency = tx_freq if tx_freq > 0 else self._frequency
@@ -599,7 +620,17 @@ class KV4PPlugin(RadioPlugin):
         if self._verbose:
             print(f"\n[KV4P] Physical PTT {'pressed' if pressed else 'released'}")
 
-    # -- Internal: radio control --
+    # -- Internal: persist + radio control --
+
+    def _persist(self):
+        """Save current settings back to gateway_config.txt."""
+        _update_config_key('KV4P_FREQ', f'{self._frequency:.6f}')
+        _update_config_key('KV4P_TX_FREQ', f'{self._tx_frequency:.6f}')
+        _update_config_key('KV4P_SQUELCH', self._squelch)
+        _update_config_key('KV4P_BANDWIDTH', self._bandwidth)
+        _update_config_key('KV4P_CTCSS_TX', self._ctcss_tx)
+        _update_config_key('KV4P_CTCSS_RX', self._ctcss_rx)
+        _update_config_key('KV4P_HIGH_POWER', str(self._high_power).lower())
 
     def _apply_group(self):
         """Send current frequency/tone/squelch config to radio."""

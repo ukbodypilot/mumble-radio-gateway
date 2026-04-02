@@ -1,73 +1,91 @@
-# Machine: user-optiplex3020 (Arch Linux)
+# Radio Gateway — Project Memory
 
-## User preferences
-- sudo password: Platoon69!
+## Project Overview
+Radio-to-Mumble gateway with SDR, multiple radios, web UI, and AI features. Python 3, Arch Linux.
 
-## RDP Setup (shared local desktop via x11vnc)
-- xrdp + xorgxrdp + x11vnc installed
-- xrdp and xrdp-sesman enabled at boot
-- x11vnc systemd service at /etc/systemd/system/x11vnc.service - enabled at boot
-  - Runs: x11vnc -display :0 -forever -loop -noxdamage -repeat -rfbport 5900 -shared -nopw -localhost
-  - After=display-manager.service, WantedBy=graphical.target
-- /etc/xrdp/xrdp.ini has [local-desktop] section: "Local Desktop (shared)" using libvnc.so on 127.0.0.1:5900
-- autorun is empty (session picker shown) - user selects "Local Desktop (shared)"
-- Desktop environment: XFCE4 (started via ~/.xinitrc with dbus-launch)
-- Display manager: lightdm with autologin
-- Physical display disconnected — headless setup
-- /etc/X11/xorg.conf.d/10-headless.conf forces HDMI-1 active at 1920x1080 (prevents laggy RDP/VNC when no monitor connected)
+**Config:** `gateway_config.txt` (INI, `.gitignore` — NEVER commit, contains secrets)
+**Start:** `sudo systemctl restart radio-gateway.service` (or start.sh)
 
-## Git config
-- user.name: ukbodypilot
-- user.email: robin.pengelly@gmail.com
+## Codebase Structure (post-refactor 2026-04-02)
+- `gateway_core.py` (3,694 lines) — RadioGateway class, main loop, audio setup, Mumble, status
+- `web_server.py` (2,032 lines) — WebConfigServer, Handler dispatch, _CONFIG_LAYOUT, helpers
+- `web_routes_get.py` (957) — 28 GET route handlers
+- `web_routes_post.py` (1,390) — 27 POST route handlers
+- `web_routes_stream.py` (379) — 4 WebSocket/streaming handlers
+- `text_commands.py` (718) — Mumble chat commands, key dispatch, TTS
+- `audio_trace.py` (846) — watchdog trace loop + HTML trace dump
+- `stream_stats.py` (117) — DarkIce/Icecast stats
+- `audio_sources.py` — AudioSource subclasses, StreamOutputSource
+- `audio_bus.py` — ListenBus, SoloBus, DuplexRepeaterBus, SimplexRepeaterBus
+- `bus_manager.py` — BusManager, sink delivery, routing config
+- `sdr_plugin.py` — RSPduo dual tuner plugin
+- `th9800_plugin.py` — TH-9800 AIOC plugin
+- `kv4p_plugin.py` — KV4P HT radio plugin
+- `gateway_link.py` — Link protocol, server, client, plugins
+- `repeater_manager.py` — ARD repeater database, GPS proximity queries
+- `transcriber.py` — Whisper voice-to-text (streaming + chunked modes)
+- `smart_announce.py` — AI announcement engine (claude CLI backend)
+- `radio_automation.py` — Automation engine (scheme parser, repeater DB, recorder)
+- `ptt.py` — RelayController, GPIORelayController
+- Utility modules (each one class): `ddns_updater.py`, `email_notifier.py`, `cloudflare_tunnel.py`, `mumble_server.py`, `usbip_manager.py`, `gps_manager.py`
+- `gateway_utils.py` — re-export shim (backward compat for old imports)
+- `gateway_mcp.py` — MCP server (stdio, 55+ tools, talks to HTTP API on port 8080)
 
-## SSH hardening (2026-03-17)
-- SSH was compromised via password brute-force — cryptominer deployed
-- PasswordAuthentication set to `no` in /etc/ssh/sshd_config
-- PermitRootLogin set to `no`
-- authorized_keys cleared (attacker had added a key)
-- No SSH keys currently set up for user — key-based auth needed if remote SSH access is wanted
+## Web UI Pages
+`/` shell, `/dashboard`, `/routing`, `/controls`, `/radio`, `/d75`, `/kv4p`, `/sdr`, `/gps`, `/repeaters`, `/aircraft`, `/telegram`, `/monitor`, `/recordings`, `/transcribe`, `/config`, `/logs`, `/voice`
 
-## Chrome Remote Desktop
-- Package: chrome-remote-desktop-existing-session (AUR) — patched to use existing X session via ~/.config/chrome-remote-desktop/Xsession (contains "0" for display :0)
-- SYSTEM service chrome-remote-desktop@user.service enabled at boot (the actual daemon)
-- USER-level service chrome-remote-desktop.service is DISABLED (it was racing with the system service at boot — both would see each other's process and exit with "already running")
-- Override at /etc/systemd/system/chrome-remote-desktop@user.service.d/override.conf
-  - Adds: After=graphical.target lightdm.service (prevents race with display manager on boot)
-  - Sets: XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS for user 1000
-  - Adds: Restart=on-failure RestartSec=5
-- Start manually if needed: sudo systemctl start chrome-remote-desktop@user
-- Root cause of repeated boot failures: both system and user-level services were enabled, racing at boot and detecting each other as "already running"
+## Key Subsystems
 
-## Claude Plan
-- User upgraded to Max plan (2026-03-23)
+### GPS Receiver (2026-04-02)
+- `gps_manager.py`: USB serial NMEA or `GPS_PORT = simulate` for fake DM13do data
+- `/gps` page: Leaflet map, DOP probability ring, satellite SNR chart, SIM/LIVE toggle
+- SIM/LIVE toggle: `switch_mode()` — no restart needed
 
-## Voice Relay (added 2026-03-29)
-- Voice-to-tmux page hosted on gateway web server at /voice (port 8080, accessible via Cloudflare)
-- Routes: /voice, /voice/status, /voice/view, /voice/send, /voice/session
-- tmux session: claude-voice (independent of gateway's claude-gateway session for Telegram)
-- Session buttons: Start tmux, New Claude, Stop (stop = Ctrl+C + clear, keeps shell alive)
-- Claude launches with `--dangerously-skip-permissions` in /home/user, auto-confirms trust prompt
-- Standalone Flask server (~/voice-relay/) disabled via `systemctl --user disable voice-relay`
-- XFCE autostart entry at ~/.config/autostart/claude-voice-terminal.desktop opens terminal on login
-- Email links in gateway_core.py updated to point to /voice on gateway port (not old :5123)
+### Repeater Database (2026-04-02)
+- `repeater_manager.py`: ARD per-state JSON, GPS proximity, 24h cache
+- `/repeaters` page: map + table, MASTER/SLAVE SDR assignment + SET, KV4P Tune button
+- MCP: nearby_repeaters, repeater_info, repeater_tune, repeater_refresh
 
-## Radio Gateway v2.0 (shipped 2026-03-31)
-- Branch v2.0-mixer merged to main, tagged v2.0.0
-- Bus-based audio routing with visual Drawflow UI
-- 4 radio plugins: SDR, TH9800, D75, KV4P
-- 119 commits, 28 bugs fixed, 7200+ lines dead code removed
-- Full duplex remote audio, direct Icecast, Mumble routing, 44+ MCP tools
-- `json` imported as `json_mod` in gateway_core.py — critical gotcha
+### Transcription Freq Tags (2026-04-02)
+- `feed(audio, source_id=bus_id)` passes bus context to transcriber
+- `_resolve_freq_tag()` maps bus→radio→frequency
+- Results prefixed with [freq] in logs, Mumble, Telegram
 
-## v2.1 Roadmap
-1. Clean up start.sh (absorb into Python)
-2. Installer / deployment
-3. More plugins
+### Broadcastify Streaming
+- `StreamOutputSource` in audio_sources.py: direct PCM→ffmpeg→Icecast
+- Silence keepalive thread: feeds 50ms silence frames when no real audio (prevents idle disconnect)
+- Auto-reconnect in send_audio() when connection drops
 
-## Gotchas
-- pam_faillock is active (default: 3 failures = 10min lockout). Reset with: faillock --user user --reset
-- When piping sudo password, avoid heredocs that can feed extra lines as password attempts
-- x11vnc override at /etc/systemd/system/x11vnc.service.d/override.conf must include `-repeat` flag or key repeat breaks over RDP
-- Use `echo 'password' | sudo -S python3 -c "..."` to write files as root — avoids heredoc stdin leakage into tee
-- NEVER restart radio-gateway service — user does it themselves
-- web_server.py do_GET has `import os` at line 720 inside an elif — any new code using `os` in do_GET must ensure `import os` runs first (it's now at the top of do_GET)
+### Cloudflare Tunnel
+- 15-min health check: relaunches cloudflared if dead, emails new URL
+- `on_url_changed` callback → EmailNotifier.send_tunnel_changed()
+
+### KV4P Frequency Validation
+- `_FREQ_RANGES`: SA818_VHF (134-174 MHz), SA818_UHF (400-480 MHz)
+- Rejects out-of-band tunes, warns at startup. Unknown modules permissive.
+
+## Config Safety (CRITICAL)
+- `_CONFIG_LAYOUT` in web_server.py is master list — Save wipes keys not listed
+- 20 missing keys were added in audit (2026-04-02): ptt, mumble, web, switching, sdr, transcription, telegram sections
+- NEVER use `replace_all=true` on config file; use anchored sed patterns
+- `gateway_config.txt` is NOT in git — repo is PUBLIC
+
+## User Preferences
+- Commits requested explicitly, no auto-push, concise responses, no emojis
+- Instrument code rather than guess at bugs
+- Separate files for new features (not monolith)
+- Config file is master for startup state; runtime controls reset on restart
+
+## Machine — user-optiplex3020 (Arch Linux)
+- Python 3.14, sudo password: `user`, Git user: ukbodypilot
+- AIOC: `/dev/ttyACM0`, KV4P: `/dev/kv4p`, Relay: `/dev/relay_radio`
+- D75: link endpoint on 192.168.2.134 via BT proxy
+
+## See Also
+- [bugs.md](bugs.md) — bug history
+- [bugs_2026_03_30.md](bugs_2026_03_30.md) — v2.0 routing bugs
+- [bugs_2026_04_01.md](bugs_2026_04_01.md) — marathon session bugs
+- [feedback_config_safety.md](feedback_config_safety.md) — config damage prevention
+- [feedback_single_source_config.md](feedback_single_source_config.md) — GUI changes write to config file, not separate JSON
+- [feedback_no_gateway_restart.md](feedback_no_gateway_restart.md) — Claude can restart gateway
+- [project_d75_cleanup.md](project_d75_cleanup.md) — legacy D75 removal target ~2026-04-08

@@ -204,7 +204,7 @@ function updateStatus() {
     if(s.ms1_state) h += '<div class="st-item"><span class="st-label">MS1:</span><span class="st-val '+(s.ms1_state==='running'?'green':s.ms1_state==='error'?'red':'white')+'">'+(s.ms1_state==='running'?'ON':'OFF')+'</span></div>';
     if(s.ms2_state) h += '<div class="st-item"><span class="st-label">MS2:</span><span class="st-val '+(s.ms2_state==='running'?'green':s.ms2_state==='error'?'red':'white')+'">'+(s.ms2_state==='running'?'ON':'OFF')+'</span></div>';
     if(s.cat_enabled) h += '<div class="st-item"><span class="st-label">CAT:</span><span class="st-val '+(s.cat==='active'?'red':s.cat==='idle'?'green':'white')+'">'+(s.cat==='active'||s.cat==='idle'?'ON':'OFF')+'</span></div>';
-    if(s.d75_enabled) { var _d75a = s.d75_mode==='bluetooth' ? (s.d75_audio_connected?' <span class="st-val green">BT Audio</span>':' <span class="st-val red">No BT Audio</span>') : ' <span class="st-val yellow">USB/AIOC</span>'; h += '<div class="st-item"><span class="st-label">D75:</span><span class="st-val '+(s.d75_connected?'green':'red')+'">'+(s.d75_connected?'ON':'OFF')+'</span>'+_d75a+'</div>'; }
+    if(s.d75_enabled) { var _d75a = s.d75_mode==='bluetooth' ? (s.d75_audio_connected?' <span class="st-val green">BT Audio</span>':' <span class="st-val red">No BT Audio</span>') : s.d75_mode==='link_endpoint' ? ' <span class="st-val green">Link</span>' : ' <span class="st-val yellow">USB</span>'; h += '<div class="st-item"><span class="st-label">D75:</span><span class="st-val '+(s.d75_connected?'green':'red')+'">'+(s.d75_connected?'ON':'OFF')+'</span>'+_d75a+'</div>'; }
     if(s.relay_radio_enabled) h += '<div class="st-item"><span class="st-label">PWRB:</span><span class="st-val '+(s.relay_pressing?'red':'green')+'">'+(s.relay_pressing?'ON':'off')+'</span></div>';
     h += '</div>';
 
@@ -251,18 +251,26 @@ function updateStatus() {
         for(var i=0; i<eps.length; i++) {
           var le = eps[i];
           if(i > 0) lh += '<div style="border-top:1px solid var(--t-border); margin-top:8px; padding-top:8px;"></div>';
+          var est = le.endpoint_status || {};
+          // Header: name + model + plugin
+          var _model = est.model || le.plugin || '';
           lh += '<div style="display:flex; justify-content:space-between; margin-bottom:4px;">';
           lh += '<span class="st-val white">'+le.name+'</span>';
-          lh += '<span class="st-val cyan">'+le.plugin+'</span>';
+          lh += '<span class="st-val cyan">'+_model+'</span>';
           lh += '</div>';
-          var est = le.endpoint_status || {};
+          // Curated status row
           var eh = '';
-          for(var k in est) {
-            if(est.hasOwnProperty(k)) {
-              var v = est[k];
-              var col = (v===true)?'green':(v===false)?'red':'white';
-              var txt = (v===true)?'Yes':(v===false)?'No':String(v);
-              eh += '<div class="st-item"><span class="st-label">'+k+':</span><span class="st-val '+col+'">'+txt+'</span></div>';
+          if(est.serial_connected !== undefined) eh += '<div class="st-item"><span class="st-label">Serial:</span><span class="st-val '+(est.serial_connected?'green':'red')+'">'+(est.serial_connected?'Yes':'No')+'</span></div>';
+          if(est.bluetooth !== undefined) eh += '<div class="st-item"><span class="st-label">BT:</span><span class="st-val '+(est.bluetooth?'green':'red')+'">'+(est.bluetooth?'Yes':'No')+'</span></div>';
+          if(est.audio_connected !== undefined) eh += '<div class="st-item"><span class="st-label">Audio:</span><span class="st-val '+(est.audio_connected?'green':'red')+'">'+(est.audio_connected?'Yes':'No')+'</span></div>';
+          if(est.transmitting !== undefined) eh += '<div class="st-item"><span class="st-label">TX:</span><span class="st-val '+(est.transmitting?'red':'green')+'">'+(est.transmitting?'ON':'off')+'</span></div>';
+          if(est.battery_level !== undefined) eh += '<div class="st-item"><span class="st-label">Batt:</span><span class="st-val '+(est.battery_level>1?'green':'red')+'">'+est.battery_level+'</span></div>';
+          if(est.firmware) eh += '<div class="st-item"><span class="st-label">FW:</span><span class="st-val white">'+est.firmware+'</span></div>';
+          // Band frequencies
+          if(est.band && Array.isArray(est.band)) {
+            for(var b=0; b<est.band.length; b++) {
+              var bd = est.band[b];
+              if(bd.frequency) eh += '<div class="st-item"><span class="st-label">Band '+(b===0?'A':'B')+':</span><span class="st-val cyan">'+bd.frequency+' MHz</span></div>';
             }
           }
           if(eh) lh += '<div class="st-row">'+eh+'</div>';
