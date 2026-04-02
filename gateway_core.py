@@ -105,7 +105,7 @@ from audio_sources import (
     WebMicSource, WebMonitorSource, LinkAudioSource, StreamOutputSource, generate_cw_pcm,
 )
 from audio_bus import ListenBus
-from gateway_utils import DDNSUpdater, EmailNotifier, CloudflareTunnel, MumbleServerManager, USBIPManager
+from gateway_utils import DDNSUpdater, EmailNotifier, CloudflareTunnel, MumbleServerManager, USBIPManager, GPSManager
 from ptt import RelayController, GPIORelayController
 from cat_client import RadioCATClient
 from smart_announce import SmartAnnouncementManager
@@ -354,6 +354,7 @@ class RadioGateway:
         self.ddns_updater = None  # DDNSUpdater instance
         self.cloudflare_tunnel = None  # CloudflareTunnel instance
         self.email_notifier = None  # EmailNotifier instance
+        self.gps_manager = None  # GPSManager instance
 
         # TH-9800 CAT control
         self.cat_client = None  # RadioCATClient instance
@@ -1748,6 +1749,14 @@ class RadioGateway:
                         self.email_notifier = None
                 except Exception as e:
                     print(f"  [Email] Init error: {e}")
+
+            # Initialize GPS receiver
+            if getattr(self.config, 'ENABLE_GPS', False):
+                try:
+                    self.gps_manager = GPSManager(self.config)
+                    self.gps_manager.start()
+                except Exception as e:
+                    print(f"  [GPS] Init error: {e}")
 
             # Initialize EchoLink source if enabled (Phase 3B)
             if self.config.ENABLE_ECHOLINK:
@@ -3831,6 +3840,7 @@ class RadioGateway:
             'kv4p_enabled': bool(self.kv4p_plugin),
             'kv4p_level': self.kv4p_plugin.audio_level if self.kv4p_plugin else 0,
             'kv4p_muted': getattr(self, 'kv4p_muted', False),
+            'gps_enabled': bool(self.gps_manager),
             'adsb_enabled': getattr(self.config, 'ENABLE_ADSB', False),
             'telegram_enabled': getattr(self.config, 'ENABLE_TELEGRAM', False),
             'monitor_enabled': bool(self.web_monitor_source),
@@ -5154,6 +5164,12 @@ class RadioGateway:
         if self.web_config_server:
             try:
                 self.web_config_server.stop()
+            except Exception:
+                pass
+
+        if self.gps_manager:
+            try:
+                self.gps_manager.stop()
             except Exception:
                 pass
 

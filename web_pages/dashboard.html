@@ -93,6 +93,33 @@
   <div id="usbip-devices-list" style="margin-top:6px; font-size:0.9em; color:#ccc;">No devices</div>
 </div>
 
+<div id="gps-panel" style="background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.95em; margin-top:10px; display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <h3 style="margin:0; color:var(--t-accent); font-size:1.1em;">GPS Receiver</h3>
+    <span id="gps-fix-badge" style="font-weight:bold;"></span>
+  </div>
+  <div class="st-row" style="margin-bottom:8px;">
+    <div class="st-item"><span class="st-label">Lat:</span><span id="gps-lat" class="st-val cyan">--</span></div>
+    <div class="st-item"><span class="st-label">Lon:</span><span id="gps-lon" class="st-val cyan">--</span></div>
+    <div class="st-item"><span class="st-label">Alt:</span><span id="gps-alt" class="st-val white">--</span><span class="st-label"> m</span></div>
+  </div>
+  <div class="st-row" style="margin-bottom:8px;">
+    <div class="st-item"><span class="st-label">Speed:</span><span id="gps-speed" class="st-val white">--</span><span class="st-label"> km/h</span></div>
+    <div class="st-item"><span class="st-label">Heading:</span><span id="gps-heading" class="st-val white">--</span><span class="st-label">&deg;</span></div>
+    <div class="st-item"><span class="st-label">HDOP:</span><span id="gps-hdop" class="st-val white">--</span></div>
+  </div>
+  <div class="st-row" style="margin-bottom:8px;">
+    <div class="st-item"><span class="st-label">Sats:</span><span id="gps-sats-used" class="st-val green">--</span></div>
+    <div class="st-item"><span class="st-label">Fix time:</span><span id="gps-fix-time" class="st-val white">--</span></div>
+    <div class="st-item"><span class="st-label">Port:</span><span id="gps-port" class="st-val white">--</span></div>
+    <div class="st-item"><a id="gps-map-link" href="#" target="_blank" style="color:var(--t-accent); font-size:0.9em; text-decoration:none;">View on Map &rarr;</a></div>
+  </div>
+  <details style="background:transparent; border:none; margin:4px 0 0;">
+    <summary style="padding:4px 0; color:var(--t-accent); font-size:0.95em;">Satellites in View</summary>
+    <div id="gps-sat-chart" style="margin-top:6px;"></div>
+  </details>
+</div>
+
 <style>
   #status { background: var(--t-panel); border: 1px solid var(--t-border); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 1.0em; }
   .st-row { display: grid; grid-template-columns: repeat(auto-fill, 240px); gap: 10px 16px; margin: 8px 0; }
@@ -283,6 +310,64 @@ setInterval(function() {
   }
 }, 1000);
 updateStatus();
+
+// --- GPS panel polling ---
+function updateGps() {
+  fetch('/gpsstatus').then(function(r){return r.json()}).then(function(d) {
+    var panel = document.getElementById('gps-panel');
+    if (!d.enabled) { panel.style.display='none'; return; }
+    panel.style.display = '';
+
+    var fixBadge = document.getElementById('gps-fix-badge');
+    if (!d.connected) {
+      fixBadge.innerHTML = '<span style="color:#e74c3c">Disconnected</span>';
+    } else if (d.fix === 0) {
+      fixBadge.innerHTML = '<span style="color:#f39c12">No Fix</span>';
+    } else if (d.fix === 1) {
+      fixBadge.innerHTML = '<span style="color:#2ecc71">GPS Fix</span>';
+    } else {
+      fixBadge.innerHTML = '<span style="color:#2ecc71">DGPS Fix</span>';
+    }
+
+    document.getElementById('gps-lat').textContent = d.fix > 0 ? d.lat.toFixed(6) : '--';
+    document.getElementById('gps-lon').textContent = d.fix > 0 ? d.lon.toFixed(6) : '--';
+    document.getElementById('gps-alt').textContent = d.fix > 0 ? d.alt.toFixed(1) : '--';
+    document.getElementById('gps-speed').textContent = d.fix > 0 ? d.speed.toFixed(1) : '--';
+    document.getElementById('gps-heading').textContent = d.fix > 0 ? d.heading.toFixed(0) : '--';
+    document.getElementById('gps-hdop').textContent = d.fix > 0 ? d.hdop.toFixed(1) : '--';
+    document.getElementById('gps-sats-used').textContent = d.satellites_used || 0;
+    document.getElementById('gps-fix-time').textContent = d.last_fix_time || '--';
+    document.getElementById('gps-port').textContent = d.port || '--';
+
+    var mapLink = document.getElementById('gps-map-link');
+    if (d.fix > 0) {
+      mapLink.href = 'https://www.openstreetmap.org/?mlat='+d.lat+'&mlon='+d.lon+'#map=15/'+d.lat+'/'+d.lon;
+      mapLink.style.display = '';
+    } else {
+      mapLink.style.display = 'none';
+    }
+
+    // Satellite signal strength bars
+    var sats = d.satellites || [];
+    var ch = '';
+    for (var i=0; i<sats.length; i++) {
+      var s = sats[i];
+      var pct = Math.min(100, Math.round(s.snr * 100 / 50));
+      var clr = s.snr >= 35 ? '#2ecc71' : s.snr >= 20 ? '#f1c40f' : '#e74c3c';
+      if (s.snr === 0) clr = '#555';
+      ch += '<div style="display:flex;align-items:center;gap:6px;margin:2px 0;">';
+      ch += '<span style="min-width:32px;text-align:right;color:#888;font-size:0.8em;">PRN '+s.prn+'</span>';
+      ch += '<div style="flex:1;background:#1a1a2e;border:1px solid #333;border-radius:2px;height:14px;overflow:hidden;">';
+      ch += '<div style="width:'+pct+'%;height:100%;background:'+clr+';"></div></div>';
+      ch += '<span style="min-width:28px;font-size:0.8em;color:#ccc;">'+s.snr+'</span>';
+      ch += '</div>';
+    }
+    if (!ch) ch = '<span style="color:#888;font-size:0.85em;">No satellites in view</span>';
+    document.getElementById('gps-sat-chart').innerHTML = ch;
+  }).catch(function(){});
+}
+setInterval(updateGps, 3000);
+updateGps();
 
 var _audio = null;
 var _playing = false;

@@ -1495,6 +1495,20 @@ def cloudflare_status() -> str:
 
 
 @mcp.tool()
+def gps_status() -> str:
+    """
+    Get GPS receiver status: position (lat/lon), altitude, speed, heading,
+    fix quality, HDOP, and satellite signal strengths from the USB GPS module.
+    """
+    data = _get('/gpsstatus')
+    if not data.get('enabled'):
+        return "GPS is not enabled (ENABLE_GPS=false)"
+    if not data.get('connected'):
+        return "GPS enabled but not connected (check GPS_PORT)"
+    return json.dumps(data, indent=2)
+
+
+@mcp.tool()
 def gateway_restart() -> str:
     """
     Restart the radio gateway service via systemd.

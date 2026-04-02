@@ -488,6 +488,9 @@ class WebConfigServer:
             'D75_PROC_ENABLE_NOISE_GATE', 'D75_PROC_NOISE_GATE_THRESHOLD',
             'D75_PROC_NOISE_GATE_ATTACK', 'D75_PROC_NOISE_GATE_RELEASE',
         ]),
+        ('gps', 'GPS Receiver', [
+            'ENABLE_GPS', 'GPS_PORT', 'GPS_BAUD',
+        ]),
         ('usbip', 'USB/IP Remote Devices', [
             'ENABLE_USBIP', 'USBIP_SERVER', 'USBIP_DEVICES',
         ]),
@@ -651,6 +654,7 @@ class WebConfigServer:
                 '/recordings': 'recordings.html',
                 '/transcribe': 'transcribe.html',
                 '/logs': 'logs.html',
+                '/gps': 'gps.html',
                 '/aircraft': 'aircraft.html',
                 '/voice': 'voice.html',
                 '/routing': 'routing.html',
@@ -1192,6 +1196,22 @@ class WebConfigServer:
                                 'server': str(getattr(parent.config, 'USBIP_SERVER', '')),
                                 'server_reachable': False, 'devices': [],
                                 'last_error': '', 'last_check': None}
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-cache')
+                        self.end_headers()
+                        self.wfile.write(json_mod.dumps(data).encode('utf-8'))
+                    except BrokenPipeError:
+                        pass
+                elif self.path == '/gpsstatus':
+                    import json as json_mod
+                    gw = parent.gateway
+                    if gw and gw.gps_manager:
+                        data = gw.gps_manager.get_status()
+                    else:
+                        data = {'enabled': bool(getattr(parent.config, 'ENABLE_GPS', False)),
+                                'connected': False, 'fix': 0, 'satellites': []}
                     try:
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
@@ -2505,6 +2525,41 @@ class WebConfigServer:
                     except BrokenPipeError:
                         pass
                     return
+                elif self.path == '/gpscmd':
+                    # GPS command endpoint — set simulated position
+                    length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(length).decode('utf-8')
+                    result = {'ok': False, 'error': 'GPS manager not available'}
+                    try:
+                        data = json_mod.loads(body)
+                        gps = getattr(parent.gateway, 'gps_manager', None) if parent.gateway else None
+                        if gps:
+                            cmd = data.get('cmd', '')
+                            if cmd == 'set_position':
+                                ok = gps.set_simulated_position(
+                                    lat=data.get('lat'), lon=data.get('lon'),
+                                    alt=data.get('alt'), speed=data.get('speed'),
+                                    heading=data.get('heading'))
+                                result = {'ok': ok, 'error': '' if ok else 'Not in simulate mode'}
+                            elif cmd == 'switch_mode':
+                                mode = data.get('mode', '')
+                                ok, msg = gps.switch_mode(mode)
+                                result = {'ok': ok, 'message': msg}
+                            elif cmd == 'status':
+                                result = {'ok': True, 'status': gps.get_status()}
+                            else:
+                                result = {'ok': False, 'error': f'Unknown command: {cmd}'}
+                    except Exception as e:
+                        result = {'ok': False, 'error': str(e)}
+                    try:
+                        resp = json_mod.dumps(result).encode('utf-8')
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Content-Length', str(len(resp)))
+                        self.end_headers()
+                        self.wfile.write(resp)
+                    except BrokenPipeError:
+                        pass
                 elif self.path == '/kv4pcmd':
                     # KV4P command endpoint — routed to KV4PPlugin
                     length = int(self.headers.get('Content-Length', 0))
