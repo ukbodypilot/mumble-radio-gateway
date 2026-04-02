@@ -1328,7 +1328,7 @@ echo
 echo "[ 13/15 ] Setting permissions..."
 chmod +x "$GATEWAY_DIR/radio_gateway.py" 2>/dev/null || true
 chmod +x "$GATEWAY_DIR/scripts/"*.sh 2>/dev/null || true
-chmod +x "$GATEWAY_DIR/start.sh" 2>/dev/null || true
+chmod +x "$GATEWAY_DIR/scripts/install.sh" 2>/dev/null || true
 echo "  ✓ Scripts are executable"
 echo
 
