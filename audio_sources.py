@@ -2265,6 +2265,8 @@ class StreamOutputSource:
     Replaces the old DarkIce/FFmpeg/ALSA loopback chain with a single
     in-process pipeline. No external processes needed.
     """
+    SILENCE_INTERVAL = 0.05  # seconds between silence frames (50ms = 20 ticks/sec)
+
     def __init__(self, config, gateway):
         self.config = config
         self.gateway = gateway
@@ -2273,6 +2275,8 @@ class StreamOutputSource:
         self._icecast_sock = None  # TCP socket to Icecast
         self._lock = threading.Lock()
         self._reader_thread = None
+        self._keepalive_thread = None
+        self._last_audio_time = 0  # monotonic time of last real audio push
         self._bytes_sent = 0
         self._connect_time = 0
         self._reconnect_backoff = 5
@@ -2378,7 +2382,14 @@ class StreamOutputSource:
         self._reader_thread.start()
         self.connected = True
         self._connect_time = time.time()
+        self._last_audio_time = time.monotonic()
         self._bytes_sent = 0
+
+        # Keepalive: feed silence to encoder when no real audio arrives
+        if not self._keepalive_thread or not self._keepalive_thread.is_alive():
+            self._keepalive_thread = threading.Thread(target=self._keepalive_loop, daemon=True,
+                                                       name="Broadcastify-keepalive")
+            self._keepalive_thread.start()
         print(f"  ✓ Broadcastify: direct Icecast stream to {server}:{port}{mount} ({bitrate}kbps)")
 
     def send_audio(self, audio_data):
@@ -2397,10 +2408,34 @@ class StreamOutputSource:
             return
         try:
             self._encoder.stdin.write(audio_data)
+            self._last_audio_time = time.monotonic()
         except (BrokenPipeError, OSError):
             self.connected = False
         except Exception:
             pass
+
+    def _keepalive_loop(self):
+        """Feed silence to the encoder when no real audio is arriving.
+
+        Icecast servers drop SOURCE connections that go idle.  By sending
+        silence frames the MP3 encoder keeps producing a constant bitrate
+        stream even when the radio is quiet.
+        """
+        # 50ms of silence at 48kHz mono 16-bit = 4800 bytes
+        _silence = b'\x00' * 4800
+        while True:
+            time.sleep(self.SILENCE_INTERVAL)
+            if not self.connected or not self._encoder:
+                continue
+            # Only send silence if no real audio in the last 100ms
+            if time.monotonic() - self._last_audio_time < 0.1:
+                continue
+            try:
+                self._encoder.stdin.write(_silence)
+            except (BrokenPipeError, OSError):
+                self.connected = False
+            except Exception:
+                pass
 
     def reconnect(self):
         """Tear down and reconnect."""
