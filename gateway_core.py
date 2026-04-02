@@ -2789,13 +2789,13 @@ class RadioGateway:
                         self.mumble_tx_level = max(0, int(getattr(self, 'mumble_tx_level', 0) * 0.7))
                         self.transcription_audio_level = max(0, int(getattr(self, 'transcription_audio_level', 0) * 0.7))
                     if _early_audio is not None:
-                        if 'broadcastify' in _listen_sinks:
-                            if self.stream_output and self.stream_output.connected:
-                                try:
-                                    self.stream_output.send_audio(_early_audio)
+                        if 'broadcastify' in _listen_sinks and self.stream_output:
+                            try:
+                                self.stream_output.send_audio(_early_audio)
+                                if self.stream_output.connected:
                                     self.stream_audio_level = self.calculate_audio_level(_early_audio)
-                                except Exception:
-                                    pass
+                            except Exception:
+                                pass
                         # Run VAD once per tick — reused below for the main gate.
                         _vad_pass = self.check_vad(_early_audio) if (getattr(self.config, 'ENABLE_VAD', False) and _early_audio) else True
                         # Mumble respects VAD — only deliver when signal is present.
