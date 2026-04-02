@@ -3006,22 +3006,20 @@ class RadioGateway:
                         except Exception:
                             pass
 
-                # Gateway Link: send mixed audio to endpoints whose TX sink is routed
+                # Gateway Link: send listen bus audio to endpoints whose TX sink
+                # is on the PRIMARY listen bus. Solo/duplex busses handle their
+                # own TX delivery via put_audio() in BusManager.
                 if self.link_server and self.link_endpoints:
-                    # Build set of TX sinks that are wired to any bus
-                    _all_routed_sinks = set()
-                    for _sinks in self._bus_sinks.values():
-                        _all_routed_sinks.update(_sinks)
+                    _listen_sinks_for_link = self._bus_sinks.get(self._listen_bus_id, set())
                     # Compute TX level once for all endpoints
                     _la = np.frombuffer(data, dtype=np.int16).astype(np.float32)
                     _lr = float(np.sqrt(np.mean(_la * _la))) if len(_la) > 0 else 0.0
                     _ldb = 20 * _math_mod.log10(_lr / 32767.0) if _lr > 0 else -100.0
                     _vad_t = getattr(self.config, 'VAD_THRESHOLD', -40)
                     for _ep_name in list(self.link_endpoints.keys()):
-                        # Only send TX if this endpoint's TX sink is connected to a bus
-                        # Convention: TX sink ID is endpoint name + '_tx' or just endpoint name
+                        # Only send listen bus audio if this endpoint's TX sink is on the listen bus
                         _tx_sink_ids = {_ep_name + '_tx', _ep_name, 'd75_tx' if 'd75' in _ep_name.lower() else _ep_name + '_tx'}
-                        if not _tx_sink_ids & _all_routed_sinks:
+                        if not _tx_sink_ids & _listen_sinks_for_link:
                             self._link_tx_levels[_ep_name] = max(0, int(self._link_tx_levels.get(_ep_name, 0) * 0.7))
                             continue
                         _ep_settings = self.link_endpoint_settings.get(_ep_name, {})
