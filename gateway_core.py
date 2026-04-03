@@ -1644,25 +1644,13 @@ class RadioGateway:
                         self._link_last_status[name] = {}
                         self._link_tx_levels[name] = 0
                         print(f"  [Link] Endpoint registered: {name} ({info.get('plugin', '?')})")
-                        # Hot-swap bus radio references for reconnecting endpoints
+                        # Reload bus manager so buses pick up the new LinkAudioSource
                         if hasattr(self, 'bus_manager') and self.bus_manager:
                             try:
-                                # Try targeted swap first (no teardown)
-                                self.bus_manager.update_radio_reference(_source_id)
-                                # If no bus has this endpoint yet, full reload to create it
-                                _found = any(
-                                    getattr(getattr(b, '_radio', None), 'endpoint_name', '') == name
-                                    for b in self.bus_manager._busses.values()
-                                ) or any(
-                                    getattr(s.source, 'endpoint_name', '') == name
-                                    for b in self.bus_manager._busses.values()
-                                    for s in getattr(b, '_tx_sources', [])
-                                )
-                                if not _found:
-                                    self.bus_manager.reload()
-                                    print(f"  [Link] Bus manager reloaded (first registration of {name})")
+                                self.bus_manager.reload()
+                                print(f"  [Link] Bus manager reloaded for {name}")
                             except Exception as _bme:
-                                print(f"  [Link] Bus update error: {_bme}")
+                                print(f"  [Link] Bus reload error: {_bme}")
                         return src  # server stores src.push_audio as audio callback
 
                     def _link_on_disconnect(name):

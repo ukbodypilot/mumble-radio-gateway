@@ -92,6 +92,8 @@ class PacketRadioPlugin:
         self._start_time = None
 
         # Config values (set in setup)
+        self._dw_audio_level = 0        # Direwolf's reported audio level
+        self._dw_audio_peak = ''         # Direwolf's level bar string
         self._callsign = 'N0CALL'
         self._ssid = 0
         self._modem_rate = 1200
@@ -300,6 +302,8 @@ class PacketRadioPlugin:
             "uptime": round(time.monotonic() - self._start_time, 1) if self._start_time else 0,
             "rx_audio_level": self.tx_audio_level,   # audio going INTO Direwolf (TNC RX)
             "tx_audio_level": self.audio_level,       # audio coming FROM Direwolf (TNC TX)
+            "dw_audio_level": self._dw_audio_level,   # Direwolf's reported decode level
+            "dw_audio_peak": self._dw_audio_peak,     # Direwolf's level bar
         }
 
     # ── Direwolf lifecycle ────────────────────────────────────────────
@@ -342,6 +346,9 @@ class PacketRadioPlugin:
             f"CHANNEL 0",
             f"MYCALL {mycall}",
             f"MODEM {self._modem_rate}",
+            f"",
+            f"# Better decode: try multiple decoders in parallel",
+            f"FIX_BITS 1 AX.25+FX.25",
             f"",
             f"KISSPORT {self._kiss_port}",
             f"AGWPORT {self._agw_port}",
@@ -635,42 +642,198 @@ class PacketRadioPlugin:
     # ── APRS handling ─────────────────────────────────────────────────
 
     def _handle_aprs_packet(self, src, dst, info):
-        """Parse APRS position/status from info field and track station."""
+        """Parse APRS position from info field — handles uncompressed, compressed, and MIC-E."""
         try:
-            info_str = info.decode('ascii', errors='replace')
-            # Basic APRS position parsing (! or / or = or @ formats)
-            lat, lon = None, None
+            info_str = info.decode('latin-1', errors='replace')
+            lat, lon, symbol, comment = None, None, '', ''
+            ptype = 'unknown'
 
-            if len(info_str) > 0 and info_str[0] in '!/=@':
-                # Uncompressed position: !DDMM.MMN/DDDMM.MMW
-                # or compressed position (base91)
+            if not info_str:
+                return
+
+            dtype = info_str[0]
+
+            # ── Try aprs3 library first (handles uncompressed + compressed well) ──
+            if dtype in '!/=@':
                 try:
-                    if len(info_str) >= 20 and info_str[0] in '!/=@':
-                        lat_str = info_str[1:9]   # DDMM.MMN
-                        lon_str = info_str[10:19]  # DDDMM.MMW
-                        if lat_str[-1] in 'NS' and lon_str[-1] in 'EW':
-                            lat_deg = int(lat_str[0:2]) + float(lat_str[2:7]) / 60.0
-                            if lat_str[-1] == 'S':
-                                lat_deg = -lat_deg
-                            lon_deg = int(lon_str[0:3]) + float(lon_str[3:8]) / 60.0
-                            if lon_str[-1] == 'W':
-                                lon_deg = -lon_deg
-                            lat, lon = lat_deg, lon_deg
-                except (ValueError, IndexError):
+                    import aprs
+                    full = f"{src}>{dst}:{info_str}"
+                    frame = aprs.APRSFrame.from_str(full)
+                    if hasattr(frame.info, '_position') and frame.info._position:
+                        pos = frame.info._position
+                        lat = float(pos.lat) if pos.lat else None
+                        lon = float(pos.long) if pos.long else None
+                        sym_table = (pos.sym_table_id or b'/').decode('latin-1', errors='replace')
+                        sym_code = (pos.symbol_code or b'?').decode('latin-1', errors='replace')
+                        symbol = sym_table + sym_code
+                    comment = (getattr(frame.info, 'comment', b'') or b'').decode('latin-1', errors='replace')
+                    ptype = 'position'
+                except Exception:
+                    # Fall back to manual uncompressed parsing
+                    try:
+                        if len(info_str) >= 20:
+                            lat_str = info_str[1:9]
+                            lon_str = info_str[10:19]
+                            if lat_str[-1] in 'NS' and lon_str[-1] in 'EW':
+                                lat = int(lat_str[0:2]) + float(lat_str[2:7]) / 60.0
+                                if lat_str[-1] == 'S': lat = -lat
+                                lon = int(lon_str[0:3]) + float(lon_str[3:8]) / 60.0
+                                if lon_str[-1] == 'W': lon = -lon
+                                symbol = info_str[9] + info_str[19]
+                                comment = info_str[20:].strip()
+                                ptype = 'position'
+                    except (ValueError, IndexError):
+                        pass
+
+            # ── MIC-E: position encoded in destination address ──
+            elif dtype in '`\x1c\x1d':
+                try:
+                    lat, lon, symbol, comment = self._parse_mice(dst, info)
+                    if lat is not None:
+                        ptype = 'mic-e'
+                except Exception:
                     pass
 
-            comment = info_str[20:] if len(info_str) > 20 else ''
+            # ── Status report ──
+            elif dtype == '>':
+                comment = info_str[1:].strip()
+                ptype = 'status'
+
+            # ── Message ──
+            elif dtype == ':':
+                comment = info_str[1:].strip()
+                ptype = 'message'
+
+            # ── Object/Item ──
+            elif dtype == ';':
+                # Object report: ;NAME_____*DDMM.MMN/DDDMM.MMW...
+                try:
+                    if len(info_str) >= 27:
+                        pos_start = 10  # after ";NAME_____*"
+                        lat_str = info_str[pos_start + 1:pos_start + 9]
+                        lon_str = info_str[pos_start + 10:pos_start + 19]
+                        if lat_str[-1] in 'NS' and lon_str[-1] in 'EW':
+                            lat = int(lat_str[0:2]) + float(lat_str[2:7]) / 60.0
+                            if lat_str[-1] == 'S': lat = -lat
+                            lon = int(lon_str[0:3]) + float(lon_str[3:8]) / 60.0
+                            if lon_str[-1] == 'W': lon = -lon
+                            symbol = info_str[pos_start + 9] + info_str[pos_start + 19]
+                            comment = info_str[pos_start + 20:].strip()
+                            ptype = 'object'
+                except (ValueError, IndexError):
+                    pass
 
             self._aprs_stations[src] = {
                 'lat': lat,
                 'lon': lon,
-                'symbol': info_str[9] + info_str[19] if len(info_str) >= 20 else '',
-                'comment': comment.strip(),
+                'symbol': symbol,
+                'comment': comment[:100] if comment else '',
                 'last_heard': time.time(),
-                'raw': info_str,
+                'type': ptype,
+                'raw': info_str[:120],
             }
         except Exception:
             pass
+
+    @staticmethod
+    def _parse_mice(dst, info):
+        """Parse MIC-E encoded position from destination + info fields.
+
+        MIC-E encodes latitude in the destination address (6 chars) and
+        longitude + speed/course in the info field.
+        """
+        info_str = info.decode('latin-1', errors='replace')
+        dst_str = dst.split('-')[0]  # strip SSID
+
+        if len(dst_str) < 6 or len(info_str) < 9:
+            return None, None, '', ''
+
+        # Decode latitude from destination address
+        _mice_digits = {
+            '0': (0, False, False), '1': (1, False, False), '2': (2, False, False),
+            '3': (3, False, False), '4': (4, False, False), '5': (5, False, False),
+            '6': (6, False, False), '7': (7, False, False), '8': (8, False, False),
+            '9': (9, False, False),
+            'A': (0, True, False), 'B': (1, True, False), 'C': (2, True, False),
+            'D': (3, True, False), 'E': (4, True, False), 'F': (5, True, False),
+            'G': (6, True, False), 'H': (7, True, False), 'I': (8, True, False),
+            'J': (9, True, False),
+            'K': (0, True, True), 'L': (1, True, True), 'P': (0, True, True),
+            'Q': (1, True, True), 'R': (2, True, True), 'S': (3, True, True),
+            'T': (4, True, True), 'U': (5, True, True), 'V': (6, True, True),
+            'W': (7, True, True), 'X': (8, True, True), 'Y': (9, True, True),
+            'Z': (0, True, True),
+        }
+
+        digits = []
+        north = True
+        west = True
+        lon_offset = 0
+        for i, c in enumerate(dst_str[:6]):
+            if c not in _mice_digits:
+                return None, None, '', ''
+            d, custom, msg_bit = _mice_digits[c]
+            digits.append(d)
+            if i == 3: north = custom       # bit 3: custom=North, std=South
+            if i == 4: lon_offset = 100 if custom else 0  # bit 4: lon offset
+            if i == 5: west = custom      # bit 5: custom=West, std=East
+
+        lat_deg = digits[0] * 10 + digits[1]
+        lat_min = digits[2] * 10 + digits[3] + (digits[4] * 10 + digits[5]) / 100.0
+        lat = lat_deg + lat_min / 60.0
+        if not north:
+            lat = -lat
+
+        # Decode longitude from info field bytes 1-3 (after data type byte)
+        d28 = ord(info_str[1]) - 28
+        m28 = ord(info_str[2]) - 28
+        h28 = ord(info_str[3]) - 28
+
+        lon_deg = d28 + lon_offset
+        if 180 <= lon_deg <= 189:
+            lon_deg -= 80
+        elif 190 <= lon_deg <= 199:
+            lon_deg -= 190
+
+        lon_min = m28
+        if lon_min >= 60:
+            lon_min -= 60
+
+        lon_hun = h28
+        lon = lon_deg + (lon_min + lon_hun / 100.0) / 60.0
+        if west:
+            lon = -lon
+
+        # Symbol: table from info[7], code from info[8]
+        symbol = ''
+        if len(info_str) >= 9:
+            symbol = info_str[8] + info_str[7]  # table + code (reversed in MIC-E)
+
+        # Comment: after symbol bytes (index 9+)
+        # MIC-E status text starts with a type byte then optional text
+        comment = ''
+        if len(info_str) > 9:
+            tail = info_str[9:]
+            # Strip MIC-E type indicator bytes and binary prefixes
+            # Common patterns: `text, 'text, >text, ]text
+            # Also strip Kenwood/Yaesu radio type codes (e.g. "7V}, "8k})
+            # Look for printable ASCII text after stripping leading control bytes
+            stripped = tail
+            # Remove leading MIC-E type byte
+            if stripped and stripped[0] in '`\'">=]':
+                stripped = stripped[1:]
+            # Remove Kenwood D7/D700/D710 type codes ("Xn} pattern)
+            if len(stripped) >= 3 and stripped[0] == '"' and stripped[2] == '}':
+                stripped = stripped[3:]
+            # What remains is the actual comment
+            comment = stripped.strip()
+            # Remove trailing MIC-E suffixes
+            for suffix in ['_4', '_5', '_6', '_7', '_8', '_#']:
+                if comment.endswith(suffix):
+                    comment = comment[:-len(suffix)].strip()
+                    break
+
+        return lat, lon, symbol, comment
 
     def _send_aprs_beacon(self):
         """Trigger an APRS position beacon via KISS."""
@@ -741,6 +904,8 @@ class PacketRadioPlugin:
         proc = self._direwolf_proc
         if not proc or not proc.stdout:
             return
+        import re as _re
+        _level_re = _re.compile(r'audio level\s*=\s*(\d+)\((\d+)/(\d+)\)\s+([\s_|]+)')
         try:
             buf = b''
             while self._running:
@@ -750,6 +915,11 @@ class PacketRadioPlugin:
                 if chunk == b'\n':
                     line = buf.decode('utf-8', errors='replace')
                     self._direwolf_log.append(line)
+                    # Parse audio level
+                    m = _level_re.search(line)
+                    if m:
+                        self._dw_audio_level = int(m.group(1))
+                        self._dw_audio_peak = m.group(4).strip()
                     buf = b''
                 else:
                     buf += chunk

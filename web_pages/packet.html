@@ -66,6 +66,10 @@
       <span><span class="pkt-label">Stations:</span> <span id="st-stns" class="pkt-val">0</span></span>
     </div>
     <div class="pkt-row">
+      <span><span class="pkt-label">DW Level:</span> <span id="st-dw-level" class="pkt-val cyan">—</span></span>
+      <span id="st-dw-bar" style="font-family:monospace; color:#2ecc71; letter-spacing:1px;"></span>
+    </div>
+    <div class="pkt-row">
       <button class="pkt-btn" id="btn-aprs" onclick="setMode('aprs')">APRS</button>
       <button class="pkt-btn" id="btn-winlink" onclick="setMode('winlink')">Winlink</button>
       <button class="pkt-btn" id="btn-bbs" onclick="setMode('bbs')">BBS</button>
@@ -166,6 +170,8 @@ function pollStatus() {
     document.getElementById('st-kiss').className = 'pkt-val ' + (s.kiss_connected ? 'green' : 'red');
     document.getElementById('st-pkts').textContent = s.packet_count || 0;
     document.getElementById('st-stns').textContent = s.station_count || 0;
+    document.getElementById('st-dw-level').textContent = s.dw_audio_level !== undefined ? s.dw_audio_level : '—';
+    document.getElementById('st-dw-bar').textContent = s.dw_audio_peak || '';
 
     // Mode buttons
     ['aprs','winlink','bbs'].forEach(function(m) {
@@ -210,6 +216,100 @@ function pollPackets() {
   });
 }
 
+// ── APRS Symbol Map ──
+// Maps APRS symbol chars to emoji/text labels for map display
+var _aprsSymbols = {
+  // Primary table (/)
+  '/!': {icon: '!', label: 'Police'},
+  '/"': {icon: '"', label: 'Reserved'},
+  '/#': {icon: '#', label: 'Digi'},
+  '/$': {icon: '$', label: 'Phone'},
+  '/%': {icon: '%', label: 'DX Cluster'},
+  '/&': {icon: '&', label: 'HF Gateway'},
+  "/\\'": {icon: "'", label: 'Aircraft'},
+  '/(': {icon: '(', label: 'Cloudy'},
+  '/)': {icon: ')', label: 'Firenet'},
+  '/*': {icon: '*', label: 'Snow'},
+  '/+': {icon: '+', label: 'Church'},
+  '/,': {icon: ',', label: 'Girl Scouts'},
+  '/-': {icon: '-', label: 'House QTH'},
+  '/.': {icon: '.', label: 'X'},
+  '//': {icon: '/', label: 'Dot'},
+  '/0': {icon: '0', label: 'Circle'},
+  '/1': {icon: '1', label: 'Circle'},
+  '/2': {icon: '2', label: 'Circle'},
+  '/3': {icon: '3', label: 'Circle'},
+  '/4': {icon: '4', label: 'Circle'},
+  '/5': {icon: '5', label: 'Circle'},
+  '/6': {icon: '6', label: 'Circle'},
+  '/7': {icon: '7', label: 'Circle'},
+  '/8': {icon: '8', label: 'Circle'},
+  '/9': {icon: '9', label: 'Circle'},
+  '/>': {icon: '>', label: 'Car'},
+  '/?': {icon: '?', label: 'Server'},
+  '/R': {icon: 'R', label: 'Rec Vehicle'},
+  '/T': {icon: 'T', label: 'SSTV'},
+  '/U': {icon: 'U', label: 'Bus'},
+  '/W': {icon: 'W', label: 'NWS Site'},
+  '/Y': {icon: 'Y', label: 'Yacht'},
+  '/[': {icon: '[', label: 'Runner'},
+  '/_': {icon: '_', label: 'WX Station'},
+  '/a': {icon: 'a', label: 'Ambulance'},
+  '/b': {icon: 'b', label: 'Bike'},
+  '/e': {icon: 'e', label: 'Horse'},
+  '/f': {icon: 'f', label: 'Fire Truck'},
+  '/j': {icon: 'j', label: 'Jeep'},
+  '/k': {icon: 'k', label: 'Truck'},
+  '/p': {icon: 'p', label: 'Rover Dog'},
+  '/s': {icon: 's', label: 'Ship'},
+  '/u': {icon: 'u', label: 'Truck 18'},
+  '/v': {icon: 'v', label: 'Van'},
+  '/y': {icon: 'y', label: 'House Yagi'},
+};
+// Emoji map for common symbol chars (best-effort visual)
+var _symbolEmoji = {
+  '>': '\u{1F697}',  // car
+  'k': '\u{1F69A}',  // truck
+  'b': '\u{1F6B2}',  // bike
+  'a': '\u{1F691}',  // ambulance
+  'f': '\u{1F692}',  // fire truck
+  'U': '\u{1F68C}',  // bus
+  's': '\u{26F5}',   // ship
+  'Y': '\u{26F5}',   // yacht
+  '_': '\u{1F327}',  // weather
+  '#': '\u{1F4E1}',  // digi/antenna
+  '&': '\u{1F4E1}',  // gateway
+  '-': '\u{1F3E0}',  // house
+  'y': '\u{1F3E0}',  // house yagi
+  '[': '\u{1F3C3}',  // runner
+  'R': '\u{1F6F6}',  // RV
+  'j': '\u{1F699}',  // jeep
+  'v': '\u{1F690}',  // van
+  'p': '\u{1F415}',  // dog/rover
+  '!': '\u{1F6A8}',  // police
+  'e': '\u{1F40E}',  // horse
+};
+
+function aprsIcon(symbolStr) {
+  // symbolStr is 2-char: table+symbol (e.g. "/k" = truck)
+  if (!symbolStr || symbolStr.length < 2) return {emoji: '\u{1F4CD}', label: '?'};  // pin
+  var sym = symbolStr.charAt(1);
+  var emoji = _symbolEmoji[sym] || '\u{1F4CD}';
+  var info = _aprsSymbols['/' + sym] || _aprsSymbols[symbolStr] || {label: sym};
+  return {emoji: emoji, label: info.label || sym};
+}
+
+function aprsMarkerIcon(symbolStr) {
+  var si = aprsIcon(symbolStr);
+  return L.divIcon({
+    html: '<div style="font-size:20px; text-align:center; line-height:1;">' + si.emoji + '</div>',
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -12],
+    className: ''
+  });
+}
+
 // ── APRS Map ──
 var _aprsMap, _aprsMarkers = {};
 window._aprsMapInit = false;
@@ -235,19 +335,21 @@ function pollAprsStations() {
       var st = stations[call];
       var age = Math.round(now - st.last_heard);
       var ageStr = age < 60 ? age + 's' : Math.round(age / 60) + 'm';
-      html += '<tr><td style="color:var(--t-accent);">' + call + '</td>'
+      var si = aprsIcon(st.symbol);
+      html += '<tr><td style="color:var(--t-accent);">' + si.emoji + ' ' + call + '</td>'
         + '<td>' + (st.lat ? st.lat.toFixed(4) : '—') + '</td>'
         + '<td>' + (st.lon ? st.lon.toFixed(4) : '—') + '</td>'
         + '<td style="color:#888;">' + (st.comment || '') + '</td>'
         + '<td>' + ageStr + ' ago</td></tr>';
 
-      // Map markers
+      // Map markers with APRS symbol icons
       if (_aprsMap && st.lat && st.lon) {
         if (_aprsMarkers[call]) {
           _aprsMarkers[call].setLatLng([st.lat, st.lon]);
+          _aprsMarkers[call].setIcon(aprsMarkerIcon(st.symbol));
         } else {
-          _aprsMarkers[call] = L.marker([st.lat, st.lon])
-            .bindPopup('<b>' + call + '</b><br>' + (st.comment || ''))
+          _aprsMarkers[call] = L.marker([st.lat, st.lon], {icon: aprsMarkerIcon(st.symbol)})
+            .bindPopup('<b>' + si.emoji + ' ' + call + '</b><br><em>' + si.label + '</em><br>' + (st.comment || ''))
             .addTo(_aprsMap);
         }
         // Fade old markers
