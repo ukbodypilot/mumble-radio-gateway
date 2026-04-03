@@ -1418,3 +1418,46 @@ def handle_config_form(handler, parent):
     handler.send_response(303)
     handler.send_header('Location', '/config?saved=1')
     handler.end_headers()
+
+
+# ── Packet Radio POST handlers ──
+
+def handle_packet_cmd(handler, parent):
+    """POST /packet/* — dispatch packet radio commands."""
+    import json as _json
+    path = handler.path.split('?')[0]
+    action = path.replace('/packet/', '')
+
+    try:
+        length = int(handler.headers.get('Content-Length', 0))
+        body = handler.rfile.read(length) if length > 0 else b'{}'
+        data = _json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    gw = parent.gateway if parent else None
+    result = {"ok": False, "error": "packet plugin not available"}
+
+    if gw and gw.packet_plugin:
+        pp = gw.packet_plugin
+        if action == 'mode':
+            result = pp.execute({'cmd': 'set_mode', 'mode': data.get('mode', 'idle')})
+        elif action == 'aprs_beacon':
+            result = pp.execute({'cmd': 'aprs_beacon'})
+        elif action == 'aprs_send':
+            result = pp.execute({'cmd': 'aprs_send', 'to': data.get('to', ''), 'message': data.get('message', '')})
+        elif action == 'bbs_connect':
+            result = pp.execute({'cmd': 'bbs_connect', 'callsign': data.get('callsign', '')})
+        elif action == 'bbs_disconnect':
+            result = pp.execute({'cmd': 'bbs_disconnect'})
+        elif action == 'bbs_send':
+            result = pp.execute({'cmd': 'bbs_send', 'text': data.get('text', '')})
+        else:
+            result = {"ok": False, "error": f"unknown action: {action}"}
+
+    resp = _json.dumps(result).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(resp)))
+    handler.end_headers()
+    handler.wfile.write(resp)

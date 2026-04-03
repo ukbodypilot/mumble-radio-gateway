@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packet Radio</title>
+<link rel="stylesheet" href="/pages/common.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  .pkt-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--t-border); margin-bottom: 10px; }
+  .pkt-tab { padding: 6px 16px; cursor: pointer; color: #888; border-bottom: 2px solid transparent;
+    margin-bottom: -2px; font-size: 0.95em; }
+  .pkt-tab:hover { color: #ccc; }
+  .pkt-tab.active { color: var(--t-accent); border-bottom-color: var(--t-accent); font-weight: bold; }
+  .pkt-panel { display: none; }
+  .pkt-panel.active { display: block; }
+  .pkt-card { background: var(--t-panel); border: 1px solid var(--t-border); border-radius: 6px;
+    padding: 12px; margin-bottom: 10px; font-family: monospace; font-size: 0.9em; }
+  .pkt-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .pkt-btn { padding: 8px 16px; border: 1px solid var(--t-btn-border); border-radius: 4px;
+    background: var(--t-btn); color: #e0e0e0; cursor: pointer; font-family: monospace; font-size: 0.9em; }
+  .pkt-btn:hover { background: var(--t-btn-hover); }
+  .pkt-btn.active { background: var(--t-accent); color: #000; border-color: var(--t-accent); }
+  .pkt-btn.danger { background: #5c1a1a; border-color: #c0392b; color: #ff6b6b; }
+  .pkt-label { color: #888; min-width: 5em; display: inline-block; }
+  .pkt-val { color: #e0e0e0; font-weight: bold; }
+  .pkt-val.green { color: #2ecc71; }
+  .pkt-val.red { color: #e74c3c; }
+  .pkt-val.yellow { color: #f39c12; }
+  .pkt-val.cyan { color: var(--t-accent); }
+  #pkt-log { max-height: 300px; overflow-y: auto; font-size: 0.8em; color: #aaa;
+    background: #0a0a1a; border-radius: 4px; padding: 8px; }
+  #pkt-log div { white-space: nowrap; border-bottom: 1px solid rgba(255,255,255,0.03); padding: 1px 0; }
+  #aprs-map { height: 400px; border-radius: 6px; margin-bottom: 10px; }
+  #aprs-stations { max-height: 250px; overflow-y: auto; font-size: 0.8em; }
+  #aprs-stations table { width: 100%; border-collapse: collapse; }
+  #aprs-stations th { color: #888; text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--t-border); }
+  #aprs-stations td { padding: 3px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  #bbs-term { background: #000; color: #0f0; font-family: 'Courier New', monospace; font-size: 0.85em;
+    height: 400px; overflow-y: auto; padding: 8px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; }
+  #bbs-input { width: 100%; padding: 6px; background: #111; color: #0f0; border: 1px solid #333;
+    font-family: 'Courier New', monospace; font-size: 0.9em; margin-top: 4px; border-radius: 4px; }
+  .pkt-input { padding: 5px 8px; background: var(--t-btn); border: 1px solid var(--t-btn-border); color: #e0e0e0;
+    border-radius: 4px; font-family: monospace; font-size: 0.9em; }
+</style>
+</head><body>
+
+<!-- Tabs -->
+<div class="pkt-tabs">
+  <div class="pkt-tab active" onclick="switchTab('status')">Status</div>
+  <div class="pkt-tab" onclick="switchTab('aprs')">APRS</div>
+  <div class="pkt-tab" onclick="switchTab('winlink')">Winlink</div>
+  <div class="pkt-tab" onclick="switchTab('bbs')">BBS</div>
+</div>
+
+<!-- Status Tab -->
+<div id="tab-status" class="pkt-panel active">
+  <div class="pkt-card">
+    <div class="pkt-row">
+      <span><span class="pkt-label">Mode:</span> <span id="st-mode" class="pkt-val cyan">idle</span></span>
+      <span><span class="pkt-label">Callsign:</span> <span id="st-call" class="pkt-val">—</span></span>
+      <span><span class="pkt-label">Modem:</span> <span id="st-modem" class="pkt-val">—</span></span>
+      <span><span class="pkt-label">Direwolf:</span> <span id="st-dw" class="pkt-val red">stopped</span></span>
+      <span><span class="pkt-label">KISS:</span> <span id="st-kiss" class="pkt-val red">no</span></span>
+      <span><span class="pkt-label">Packets:</span> <span id="st-pkts" class="pkt-val">0</span></span>
+      <span><span class="pkt-label">Stations:</span> <span id="st-stns" class="pkt-val">0</span></span>
+    </div>
+    <div class="pkt-row">
+      <button class="pkt-btn" id="btn-aprs" onclick="setMode('aprs')">APRS</button>
+      <button class="pkt-btn" id="btn-winlink" onclick="setMode('winlink')">Winlink</button>
+      <button class="pkt-btn" id="btn-bbs" onclick="setMode('bbs')">BBS</button>
+      <button class="pkt-btn danger" id="btn-stop" onclick="setMode('idle')">Stop</button>
+    </div>
+  </div>
+  <div class="pkt-card">
+    <div style="margin-bottom:6px; color:#888;">Decoded Packets</div>
+    <div id="pkt-log"></div>
+  </div>
+</div>
+
+<!-- APRS Tab -->
+<div id="tab-aprs" class="pkt-panel">
+  <div id="aprs-map"></div>
+  <div class="pkt-card">
+    <div class="pkt-row">
+      <button class="pkt-btn" onclick="aprsBeacon()">Send Beacon</button>
+      <input type="text" id="aprs-msg-to" class="pkt-input" placeholder="Callsign" style="width:100px;">
+      <input type="text" id="aprs-msg-text" class="pkt-input" placeholder="Message" style="flex:1;">
+      <button class="pkt-btn" onclick="aprsSendMsg()">Send Message</button>
+    </div>
+  </div>
+  <div class="pkt-card" id="aprs-stations">
+    <table>
+      <thead><tr><th>Callsign</th><th>Lat</th><th>Lon</th><th>Comment</th><th>Last Heard</th></tr></thead>
+      <tbody id="aprs-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Winlink Tab -->
+<div id="tab-winlink" class="pkt-panel">
+  <div class="pkt-card">
+    <p style="color:#888;">Winlink requires Pat client. When Winlink mode is active, Pat's web UI will be available below.</p>
+    <div id="winlink-frame-container" style="margin-top:10px;">
+      <iframe id="winlink-frame" style="width:100%; height:500px; border:1px solid var(--t-border); border-radius:4px; display:none;"></iframe>
+      <div id="winlink-status" style="color:#888; font-style:italic;">Switch to Winlink mode to start Pat.</div>
+    </div>
+  </div>
+</div>
+
+<!-- BBS Tab -->
+<div id="tab-bbs" class="pkt-panel">
+  <div class="pkt-card">
+    <div class="pkt-row">
+      <input type="text" id="bbs-callsign" class="pkt-input" placeholder="BBS Callsign (e.g. W6ABC-1)" style="width:200px;">
+      <button class="pkt-btn" onclick="bbsConnect()">Connect</button>
+      <button class="pkt-btn danger" onclick="bbsDisconnect()">Disconnect</button>
+      <span><span class="pkt-label">Status:</span> <span id="bbs-status" class="pkt-val red">disconnected</span></span>
+    </div>
+  </div>
+  <div id="bbs-term"></div>
+  <input type="text" id="bbs-input" placeholder="Type here and press Enter..." onkeydown="if(event.key==='Enter')bbsSend()">
+</div>
+
+<script>
+// ── Tab switching ──
+function switchTab(name) {
+  document.querySelectorAll('.pkt-tab').forEach(function(t) { t.classList.remove('active'); });
+  document.querySelectorAll('.pkt-panel').forEach(function(p) { p.classList.remove('active'); });
+  document.getElementById('tab-' + name).classList.add('active');
+  document.querySelector('.pkt-tab[onclick*="' + name + '"]').classList.add('active');
+  if (name === 'aprs' && !window._aprsMapInit) initAprsMap();
+}
+
+// ── API helpers ──
+function pktPost(endpoint, data) {
+  return fetch('/packet/' + endpoint, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data || {})
+  }).then(function(r) { return r.json(); }).catch(function() { return {}; });
+}
+function pktGet(endpoint) {
+  return fetch('/packet/' + endpoint).then(function(r) { return r.json(); }).catch(function() { return {}; });
+}
+
+// ── Mode control ──
+function setMode(mode) {
+  pktPost('mode', {mode: mode}).then(function(d) {
+    if (d.error) alert('Error: ' + d.error);
+    pollStatus();
+  });
+}
+
+// ── Status polling ──
+function pollStatus() {
+  pktGet('status').then(function(s) {
+    if (!s.mode) return;
+    document.getElementById('st-mode').textContent = s.mode;
+    document.getElementById('st-mode').className = 'pkt-val ' + (s.mode === 'idle' ? 'yellow' : 'cyan');
+    document.getElementById('st-call').textContent = s.callsign || '—';
+    document.getElementById('st-modem').textContent = (s.modem || 1200) + ' bps';
+    document.getElementById('st-dw').textContent = s.direwolf_running ? 'running' : 'stopped';
+    document.getElementById('st-dw').className = 'pkt-val ' + (s.direwolf_running ? 'green' : 'red');
+    document.getElementById('st-kiss').textContent = s.kiss_connected ? 'yes' : 'no';
+    document.getElementById('st-kiss').className = 'pkt-val ' + (s.kiss_connected ? 'green' : 'red');
+    document.getElementById('st-pkts').textContent = s.packet_count || 0;
+    document.getElementById('st-stns').textContent = s.station_count || 0;
+
+    // Mode buttons
+    ['aprs','winlink','bbs'].forEach(function(m) {
+      var btn = document.getElementById('btn-' + m);
+      if (btn) {
+        btn.className = 'pkt-btn' + (s.mode === m ? ' active' : '');
+      }
+    });
+
+    // Winlink iframe
+    if (s.mode === 'winlink') {
+      var wf = document.getElementById('winlink-frame');
+      if (wf && !wf.src) {
+        wf.src = 'http://' + location.hostname + ':' + (s.pat_port || 8082);
+        wf.style.display = '';
+        document.getElementById('winlink-status').style.display = 'none';
+      }
+    }
+
+    // BBS status
+    document.getElementById('bbs-status').textContent = s.bbs_connected ? 'connected to ' + s.bbs_callsign : 'disconnected';
+    document.getElementById('bbs-status').className = 'pkt-val ' + (s.bbs_connected ? 'green' : 'red');
+  });
+}
+
+// ── Packet log polling ──
+var _lastPktCount = 0;
+function pollPackets() {
+  pktGet('packets').then(function(d) {
+    var packets = d.packets || [];
+    if (packets.length === _lastPktCount) return;
+    _lastPktCount = packets.length;
+    var log = document.getElementById('pkt-log');
+    var html = '';
+    for (var i = packets.length - 1; i >= Math.max(0, packets.length - 100); i--) {
+      var p = packets[i];
+      var t = new Date(p.time * 1000);
+      var ts = t.toLocaleTimeString();
+      html += '<div><span style="color:#666;">' + ts + '</span> <span style="color:var(--t-accent);">' + p.src + '</span>&gt;' + p.dst + ': ' + p.info + '</div>';
+    }
+    log.innerHTML = html;
+  });
+}
+
+// ── APRS Map ──
+var _aprsMap, _aprsMarkers = {};
+window._aprsMapInit = false;
+
+function initAprsMap() {
+  if (window._aprsMapInit) return;
+  window._aprsMapInit = true;
+  _aprsMap = L.map('aprs-map').setView([33.75, -117.87], 10);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: '&copy; OpenStreetMap'
+  }).addTo(_aprsMap);
+  setTimeout(function() { _aprsMap.invalidateSize(); }, 200);
+}
+
+function pollAprsStations() {
+  pktGet('aprs_stations').then(function(d) {
+    var stations = d.stations || {};
+    var tbody = document.getElementById('aprs-tbody');
+    var html = '';
+    var now = Date.now() / 1000;
+    for (var call in stations) {
+      var st = stations[call];
+      var age = Math.round(now - st.last_heard);
+      var ageStr = age < 60 ? age + 's' : Math.round(age / 60) + 'm';
+      html += '<tr><td style="color:var(--t-accent);">' + call + '</td>'
+        + '<td>' + (st.lat ? st.lat.toFixed(4) : '—') + '</td>'
+        + '<td>' + (st.lon ? st.lon.toFixed(4) : '—') + '</td>'
+        + '<td style="color:#888;">' + (st.comment || '') + '</td>'
+        + '<td>' + ageStr + ' ago</td></tr>';
+
+      // Map markers
+      if (_aprsMap && st.lat && st.lon) {
+        if (_aprsMarkers[call]) {
+          _aprsMarkers[call].setLatLng([st.lat, st.lon]);
+        } else {
+          _aprsMarkers[call] = L.marker([st.lat, st.lon])
+            .bindPopup('<b>' + call + '</b><br>' + (st.comment || ''))
+            .addTo(_aprsMap);
+        }
+        // Fade old markers
+        var opacity = Math.max(0.3, 1.0 - age / 3600);
+        _aprsMarkers[call].setOpacity(opacity);
+      }
+    }
+    tbody.innerHTML = html;
+  });
+}
+
+function aprsBeacon() {
+  pktPost('aprs_beacon').then(function(d) {
+    if (d.error) alert(d.error);
+  });
+}
+function aprsSendMsg() {
+  var to = document.getElementById('aprs-msg-to').value.trim();
+  var msg = document.getElementById('aprs-msg-text').value.trim();
+  if (!to || !msg) return;
+  pktPost('aprs_send', {to: to, message: msg}).then(function(d) {
+    if (d.error) alert(d.error);
+    document.getElementById('aprs-msg-text').value = '';
+  });
+}
+
+// ── BBS Terminal ──
+function pollBbs() {
+  pktGet('bbs_buffer').then(function(d) {
+    var lines = d.lines || [];
+    var term = document.getElementById('bbs-term');
+    term.textContent = lines.join('\n');
+    term.scrollTop = term.scrollHeight;
+  });
+}
+function bbsConnect() {
+  var call = document.getElementById('bbs-callsign').value.trim();
+  if (!call) return;
+  pktPost('bbs_connect', {callsign: call});
+}
+function bbsDisconnect() { pktPost('bbs_disconnect'); }
+function bbsSend() {
+  var input = document.getElementById('bbs-input');
+  var text = input.value;
+  if (!text) return;
+  pktPost('bbs_send', {text: text});
+  input.value = '';
+}
+
+// ── Polling loop ──
+setInterval(pollStatus, 2000);
+setInterval(pollPackets, 2000);
+setInterval(pollAprsStations, 5000);
+setInterval(pollBbs, 1000);
+pollStatus();
+pollPackets();
+</script>
+<script src="/pages/common.js"></script>
+</body></html>

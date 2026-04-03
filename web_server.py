@@ -677,6 +677,7 @@ class WebConfigServer:
                 '/aircraft': 'aircraft.html',
                 '/voice': 'voice.html',
                 '/routing': 'routing.html',
+                '/packet': 'packet.html',
             }
 
             def do_GET(self):
@@ -769,6 +770,16 @@ class WebConfigServer:
                     _rg.handle_voice_status(self, parent)
                 elif self.path == '/voice/view':
                     _rg.handle_voice_view(self, parent)
+                elif self.path == '/packet/status':
+                    _rg.handle_packet_status(self, parent)
+                elif self.path == '/packet/packets':
+                    _rg.handle_packet_packets(self, parent)
+                elif self.path == '/packet/aprs_stations':
+                    _rg.handle_packet_aprs_stations(self, parent)
+                elif self.path == '/packet/bbs_buffer':
+                    _rg.handle_packet_bbs_buffer(self, parent)
+                elif self.path == '/packet/log':
+                    _rg.handle_packet_log(self, parent)
 
             def do_POST(self):
                 if not self._check_auth():
@@ -831,6 +842,8 @@ class WebConfigServer:
                     _rp.handle_voice_send(self, parent)
                 elif self.path == '/voice/session':
                     _rp.handle_voice_session(self, parent)
+                elif self.path.startswith('/packet/'):
+                    _rp.handle_packet_cmd(self, parent)
                 else:
                     # Config form submission (fallback for /config POST)
                     _rp.handle_config_form(self, parent)

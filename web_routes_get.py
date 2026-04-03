@@ -973,3 +973,55 @@ def handle_voice_view(handler, parent):
         handler.send_header('Content-Type', 'application/json')
         handler.end_headers()
         handler.wfile.write(json_mod.dumps({'content': result.stdout}).encode())
+
+
+# ── Packet Radio GET handlers ──
+
+def _pkt_json(handler, data):
+    """Helper to send JSON response for packet endpoints."""
+    body = json_mod.dumps(data).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+def handle_packet_status(handler, parent):
+    """GET /packet/status"""
+    gw = parent.gateway if parent else None
+    if gw and gw.packet_plugin:
+        _pkt_json(handler, gw.packet_plugin.get_status())
+    else:
+        _pkt_json(handler, {"mode": "disabled"})
+
+def handle_packet_packets(handler, parent):
+    """GET /packet/packets"""
+    gw = parent.gateway if parent else None
+    if gw and gw.packet_plugin:
+        _pkt_json(handler, {"packets": list(gw.packet_plugin._decoded_packets)})
+    else:
+        _pkt_json(handler, {"packets": []})
+
+def handle_packet_aprs_stations(handler, parent):
+    """GET /packet/aprs_stations"""
+    gw = parent.gateway if parent else None
+    if gw and gw.packet_plugin:
+        _pkt_json(handler, {"stations": gw.packet_plugin._aprs_stations})
+    else:
+        _pkt_json(handler, {"stations": {}})
+
+def handle_packet_bbs_buffer(handler, parent):
+    """GET /packet/bbs_buffer"""
+    gw = parent.gateway if parent else None
+    if gw and gw.packet_plugin:
+        _pkt_json(handler, {"lines": list(gw.packet_plugin._bbs_buffer)})
+    else:
+        _pkt_json(handler, {"lines": []})
+
+def handle_packet_log(handler, parent):
+    """GET /packet/log"""
+    gw = parent.gateway if parent else None
+    if gw and gw.packet_plugin:
+        _pkt_json(handler, {"lines": list(gw.packet_plugin._direwolf_log)})
+    else:
+        _pkt_json(handler, {"lines": []})
