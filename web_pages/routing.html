@@ -19,11 +19,11 @@
   .drawflow .drawflow-node {
     background: var(--t-panel);
     border: 1px solid var(--t-border);
-    border-radius: 6px;
+    border-radius: 5px;
     color: #e0e0e0;
-    min-width: 160px;
+    min-width: 136px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
-    font-size: 0.72rem;
+    font-size: 0.61rem;
   }
   .drawflow .drawflow-node.selected {
     border-color: #f39c12 !important;
@@ -31,54 +31,54 @@
     background: rgba(243,156,18,0.1) !important;
   }
   .drawflow .drawflow-node .title-box {
-    padding: 3px 7px;
+    padding: 2px 6px;
     border-bottom: 1px solid var(--t-border);
     font-weight: 700;
-    font-size: 0.72rem;
+    font-size: 0.61rem;
   }
   .drawflow .drawflow-node .box {
-    padding: 1px 6px 2px;
-    font-size: 0.62rem;
+    padding: 1px 5px 1px;
+    font-size: 0.53rem;
     color: #aaa;
   }
   /* Source/sink nodes */
   .drawflow .drawflow-node.source,
   .drawflow .drawflow-node.sink {
-    min-width: 185px;
+    min-width: 157px;
   }
   .drawflow .drawflow-node.source .box,
   .drawflow .drawflow-node.sink .box {
-    padding: 1px 6px 1px;
-    font-size: 0.58rem;
+    padding: 1px 5px 1px;
+    font-size: 0.49rem;
   }
   .drawflow .drawflow-node.source .title-box,
   .drawflow .drawflow-node.sink .title-box {
-    padding: 2px 7px;
-    font-size: 0.65rem;
+    padding: 2px 6px;
+    font-size: 0.55rem;
   }
   /* Bus nodes: more vertical room */
   .drawflow .drawflow-node[class*="bus-"] .box {
-    padding: 1px 6px 2px;
+    padding: 1px 5px 1px;
   }
   .drawflow .drawflow-node[class*="bus-"] .title-box {
-    padding: 2px 6px;
-    font-size: 0.62rem;
+    padding: 2px 5px;
+    font-size: 0.53rem;
   }
   .drawflow .drawflow-node[class*="bus-"] .proc-btn {
-    width: 20px;
-    height: 17px;
-    font-size: 0.6rem;
-    line-height: 17px;
+    width: 17px;
+    height: 14px;
+    font-size: 0.51rem;
+    line-height: 14px;
   }
   .drawflow .drawflow-node[class*="bus-"] .proc-buttons {
-    gap: 3px;
-    margin-top: 3px;
+    gap: 2px;
+    margin-top: 2px;
   }
   .drawflow .drawflow-node[class*="bus-"] .mute-btn {
-    width: 20px;
-    height: 17px;
-    font-size: 0.6rem;
-    line-height: 17px;
+    width: 17px;
+    height: 14px;
+    font-size: 0.51rem;
+    line-height: 14px;
   }
   .drawflow .connection .main-path {
     stroke: var(--t-accent);
@@ -104,22 +104,22 @@
   .node-controls {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     margin-bottom: 0px;
     padding: 1px 0;
   }
   .mute-btn {
-    width: 19px;
-    height: 16px;
+    width: 16px;
+    height: 14px;
     border: 1px solid #555;
-    border-radius: 3px;
+    border-radius: 2px;
     background: #2a2a3e;
     color: #888;
-    font-size: 0.56rem;
+    font-size: 0.48rem;
     font-weight: bold;
     cursor: pointer;
     padding: 0;
-    line-height: 16px;
+    line-height: 14px;
     text-align: center;
     flex-shrink: 0;
   }
@@ -130,27 +130,27 @@
     border-color: #c0392b;
   }
   .gain-slider {
-    width: 60px;
+    width: 51px;
     flex-shrink: 0;
-    height: 5px;
+    height: 4px;
     -webkit-appearance: none;
     appearance: none;
     background: #444;
-    border-radius: 3px;
+    border-radius: 2px;
     outline: none;
   }
   .gain-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 11px;
-    height: 11px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
     background: var(--t-accent);
     cursor: pointer;
   }
   .gain-val {
-    font-size: 0.56rem;
+    font-size: 0.48rem;
     color: #aaa;
-    min-width: 28px;
+    min-width: 24px;
     text-align: right;
     flex-shrink: 0;
   }
@@ -158,22 +158,22 @@
   /* Processing buttons on bus nodes */
   .proc-buttons {
     display: flex;
-    gap: 4px;
-    margin-top: 2px;
+    gap: 2px;
+    margin-top: 1px;
   }
   .proc-btn {
-    width: 19px;
-    height: 16px;
+    width: 16px;
+    height: 14px;
     border: 1px solid #555;
-    border-radius: 3px;
+    border-radius: 2px;
     background: #2a2a3e;
     color: #666;
-    font-size: 0.56rem;
+    font-size: 0.48rem;
     font-weight: bold;
     cursor: pointer;
     padding: 0;
     text-align: center;
-    line-height: 12px;
+    line-height: 10px;
   }
   .proc-btn:hover { border-color: var(--t-accent); color: var(--t-accent); }
   .proc-btn.on {
@@ -187,11 +187,11 @@
   }
 
   /* Wider nodes to fit controls */
-  .drawflow .drawflow-node { min-width: 140px; }
-  .drawflow .drawflow-node[class*="bus-"] { min-width: 210px; }
-  .drawflow .drawflow-node .title-box { padding: 2px 5px; font-size: 0.58rem; }
+  .drawflow .drawflow-node { min-width: 119px; }
+  .drawflow .drawflow-node[class*="bus-"] { min-width: 178px; }
+  .drawflow .drawflow-node .title-box { padding: 1px 4px; font-size: 0.49rem; }
   .drawflow .drawflow-node.source .title-box,
-  .drawflow .drawflow-node.sink .title-box { padding: 1px 5px; }
+  .drawflow .drawflow-node.sink .title-box { padding: 1px 4px; }
 
   /* Level bars inside nodes */
   .level-bar {
@@ -262,6 +262,7 @@
 <div id="drawflow"></div>
 
 <script src="/pages/drawflow.min.js"></script>
+<script src="/pages/dagre.min.js"></script>
 <script src="/pages/common.js"></script>
 <script>
 var editor;
@@ -276,33 +277,62 @@ editor = new Drawflow(container);
 editor.reroute = true;
 editor.start();
 
-// Auto-arrange nodes in three columns: sources | busses | sinks
+// Auto-arrange nodes using Dagre hierarchical layout (LR: sources → busses → sinks)
 function autoArrange() {
-  var xSource = 40, xBus = 300, xSink = 590;
-  var spacing = 65;
-  var ySource = 20, yBus = 20, ySink = 20;
-
   var data = editor.export().drawflow.Home.data;
+
+  // Build Dagre graph from Drawflow nodes + connections
+  var g = new dagre.graphlib.Graph({ directed: true });
+  g.setGraph({
+    rankdir: 'LR',
+    ranksep: 80,
+    nodesep: 30,
+    marginx: 30,
+    marginy: 20,
+    ranker: 'network-simplex'
+  });
+  g.setDefaultEdgeLabel(function() { return {}; });
+
+  // Add nodes — measure actual rendered size for accuracy
   for (var nid in data) {
-    var node = data[nid];
     var el = document.querySelector('#node-' + nid);
-    if (!el) continue;
-    var x, y;
-    if (node.class.indexOf('source') >= 0) {
-      x = xSource; y = ySource; ySource += spacing;
-    } else if (node.class.indexOf('bus') >= 0) {
-      x = xBus; y = yBus; yBus += spacing + 30;
-    } else {
-      x = xSink; y = ySink; ySink += spacing;
+    var w = el ? el.offsetWidth : 160;
+    var h = el ? el.offsetHeight : 60;
+    g.setNode('n' + nid, { width: w, height: h });
+  }
+
+  // Add edges from Drawflow connections
+  for (var nid in data) {
+    var outputs = data[nid].outputs || {};
+    for (var okey in outputs) {
+      var conns = outputs[okey].connections || [];
+      for (var j = 0; j < conns.length; j++) {
+        g.setEdge('n' + nid, 'n' + conns[j].node);
+      }
     }
-    el.style.left = x + 'px';
-    el.style.top = y + 'px';
-    // Update Drawflow internal state
+  }
+
+  // Run layout
+  dagre.layout(g);
+
+  // Apply computed positions (Dagre gives center coords, Drawflow uses top-left)
+  for (var nid in data) {
+    var dn = g.node('n' + nid);
+    if (!dn) continue;
+    var x = Math.round(dn.x - dn.width / 2);
+    var y = Math.round(dn.y - dn.height / 2);
+    if (x < 10) x = 10;
+    if (y < 10) y = 10;
     editor.drawflow.drawflow.Home.data[nid].pos_x = x;
     editor.drawflow.drawflow.Home.data[nid].pos_y = y;
+    var el = document.querySelector('#node-' + nid);
+    if (el) {
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+    }
   }
-  editor.updateConnectionNodes('node-' + Object.keys(data)[0]);
-  // Force all connections to redraw
+
+  // Redraw all connections
   for (var nid in data) {
     try { editor.updateConnectionNodes('node-' + nid); } catch(e) {}
   }
