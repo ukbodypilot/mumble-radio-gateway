@@ -227,15 +227,9 @@ class PacketRadioPlugin:
         return chunk, True  # True = trigger PTT
 
     def put_audio(self, pcm):
-        """Receive radio RX audio from the bus and forward to Direwolf via UDP."""
-        if not self._running or not self._direwolf_proc or not self._udp_rx_sock:
+        """Receive radio RX audio from the bus and pipe to Direwolf stdin."""
+        if not self._running or not self._direwolf_proc:
             return
-        if not hasattr(self, '_put_count'):
-            self._put_count = 0
-        self._put_count += 1
-        if self._put_count <= 5 or self._put_count % 200 == 0:
-            print(f"  [Packet] put_audio #{self._put_count}, {len(pcm)} bytes, mode={self._mode}, dw={self._direwolf_proc is not None}")
-
         # TX level metering (audio going into Direwolf)
         try:
             arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
@@ -256,9 +250,10 @@ class PacketRadioPlugin:
             arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
             pcm = np.clip(arr * self.tx_audio_boost, -32768, 32767).astype(np.int16).tobytes()
 
-        # Send to Direwolf via UDP (48kHz native — no resample needed)
+        # Write to Direwolf stdin
         try:
-            self._udp_rx_sock.sendto(pcm, ('127.0.0.1', self._udp_rx_port))
+            self._direwolf_proc.stdin.write(pcm)
+            self._direwolf_proc.stdin.flush()
         except Exception:
             pass
 
@@ -340,7 +335,7 @@ class PacketRadioPlugin:
         loopback_out = f"plughw:{self._loopback_card},0,0"
 
         lines = [
-            f"ADEVICE udp:{self._udp_rx_port} null",
+            f"ADEVICE stdin null",
             f"ARATE 48000",
             f"ACHANNELS 1",
             f"",
@@ -386,12 +381,11 @@ class PacketRadioPlugin:
         # Spawn Direwolf
         try:
             self._direwolf_proc = subprocess.Popen(
-                [self._direwolf_path, '-c', conf_path, '-t', '0', '-d', 'o'],
+                [self._direwolf_path, '-c', conf_path, '-t', '0', '-'],
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+                bufsize=0,
             )
             print(f"  [Packet] Direwolf started (PID {self._direwolf_proc.pid})")
         except Exception as e:
@@ -428,6 +422,11 @@ class PacketRadioPlugin:
 
         # Kill Direwolf
         if self._direwolf_proc:
+            try:
+                if self._direwolf_proc.stdin:
+                    self._direwolf_proc.stdin.close()
+            except Exception:
+                pass
             try:
                 self._direwolf_proc.send_signal(signal.SIGTERM)
                 self._direwolf_proc.wait(timeout=5)
@@ -743,8 +742,16 @@ class PacketRadioPlugin:
         if not proc or not proc.stdout:
             return
         try:
-            for line in proc.stdout:
-                line = line.rstrip('\n')
-                self._direwolf_log.append(line)
+            buf = b''
+            while self._running:
+                chunk = proc.stdout.read(1)
+                if not chunk:
+                    break
+                if chunk == b'\n':
+                    line = buf.decode('utf-8', errors='replace')
+                    self._direwolf_log.append(line)
+                    buf = b''
+                else:
+                    buf += chunk
         except Exception:
             pass
