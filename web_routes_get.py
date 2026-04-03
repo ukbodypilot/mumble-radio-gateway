@@ -864,6 +864,9 @@ def handle_routing_levels(handler, parent):
             data['mumble_rx'] = getattr(gw, 'rx_audio_level', 0)
         if getattr(gw, 'remote_audio_source', None):
             data['remote_audio'] = gw.remote_audio_source.audio_level
+        if getattr(gw, 'packet_plugin', None):
+            data['tnc'] = gw.packet_plugin.audio_level
+            data['tnc_tx'] = getattr(gw.packet_plugin, 'tx_audio_level', 0)
         # Generic link endpoint RX levels (skip D75 — handled above)
         import re as _re
         for _ln, _ls in gw.link_endpoints.items():

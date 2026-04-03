@@ -369,6 +369,7 @@ class RadioGateway:
         # KV4P HT Radio
         self.kv4p_plugin = None           # KV4PCATClient instance
         self.kv4p_plugin = None  # KV4PAudioSource instance
+        self.packet_plugin = None         # PacketRadioPlugin instance
         self.kv4p_muted = False        # KV4P audio mute toggle
         self.kv4p_processor = AudioProcessor("kv4p", config)
 
@@ -1584,6 +1585,23 @@ class RadioGateway:
                     self.kv4p_plugin = None
             if self.kv4p_plugin and self.kv4p_plugin._processor:
                 self.kv4p_processor = self.kv4p_plugin._processor
+
+            # Initialize Packet Radio (Direwolf TNC)
+            self.packet_plugin = None
+            if getattr(self.config, 'ENABLE_PACKET', False):
+                try:
+                    from packet_radio import PacketRadioPlugin
+                    print("Initializing Packet Radio plugin...")
+                    self.packet_plugin = PacketRadioPlugin()
+                    if self.packet_plugin.setup(self.config, gateway=self):
+                        print("✓ Packet Radio plugin initialized (routed via bus manager)")
+                    else:
+                        print("⚠ Warning: Packet Radio plugin setup failed")
+                        self.packet_plugin = None
+                except Exception as e:
+                    print(f"⚠ Packet Radio plugin error: {e}")
+                    import traceback; traceback.print_exc()
+                    self.packet_plugin = None
 
             # Initialize Gateway Link (duplex audio + command protocol)
             if getattr(self.config, 'ENABLE_GATEWAY_LINK', False):

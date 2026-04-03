@@ -350,6 +350,8 @@ class BusManager:
             return gw.kv4p_plugin
         elif sink_id == 'd75' and gw.d75_plugin:
             return gw.d75_plugin
+        elif sink_id in ('tnc_tx', 'tnc') and getattr(gw, 'packet_plugin', None):
+            return gw.packet_plugin
         # Check link endpoints for D75 (when using link endpoint instead of plugin)
         if sink_id in ('d75_tx', 'd75') and not gw.d75_plugin:
             for name, src in gw.link_endpoints.items():
@@ -386,6 +388,8 @@ class BusManager:
             return gw.mumble_source
         elif source_id == 'remote_audio' and getattr(gw, 'remote_audio_source', None):
             return gw.remote_audio_source
+        elif source_id == 'tnc' and getattr(gw, 'packet_plugin', None):
+            return gw.packet_plugin
         # Generic link endpoint lookup by sanitised name
         import re as _re
         for name, src in gw.link_endpoints.items():
