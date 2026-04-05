@@ -108,9 +108,9 @@ class StreamTrace:
                 # Timing between consecutive events at each point
                 for pt in sorted(streams[sid].keys()):
                     evts = streams[sid][pt]
-                    if len(evts) > 1:
+                    if len(evts) > 2:
                         intervals = [(evts[i+1][0] - evts[i][0]) * 1000 for i in range(len(evts)-1)]
-                        if intervals:
+                        if len(intervals) >= 2:
                             f.write(f"    {pt} intervals: mean={statistics.mean(intervals):.1f}ms "
                                     f"stdev={statistics.stdev(intervals):.1f}ms "
                                     f"min={min(intervals):.1f}ms max={max(intervals):.1f}ms")
