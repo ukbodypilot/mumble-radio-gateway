@@ -1,6 +1,10 @@
 # Radio Gateway
 
-A Linux gateway that bridges two-way radios to digital endpoints: Mumble VoIP, Broadcastify streaming, Telegram, AI automation, and the web. Bus-based audio routing with a visual drag-and-drop editor, plugin-based radio support, and 55+ MCP tools for AI control -- all from a single Python process.
+A full-stack Linux radio gateway that bridges analog and digital two-way radios to the internet: Mumble VoIP, Broadcastify streaming, Winlink email over packet radio, APRS tracking, Telegram bot control, AI-powered announcements, and a 17-page web UI. Bus-based audio routing with a visual drag-and-drop editor, plugin-based radio support, per-stream diagnostic tracing, and 55+ MCP tools for AI control -- all from a single Python process.
+
+**Radios:** TH-9800 (AIOC), TH-D75 (Bluetooth), KV4P (USB serial), FTM-150 (remote endpoint), RSPduo dual SDR receiver.
+**Packet:** Winlink email via Direwolf TNC + Pat client. APRS decode with station mapping. BBS terminal. Gateway proximity map from Winlink CMS directory.
+**Audio:** Sub-millisecond jitter bus mixer with per-stream trace diagnostics. Fire-and-forget PTT. Direct ALSA capture bypassing PipeWire.
 
 ## v2.0 Highlights
 
@@ -38,9 +42,13 @@ v2.0 is a full architectural rewrite of the audio engine:
 |:-:|:-:|:-:|
 | ![GPS](docs/screenshots/gps.png) | ![Repeaters](docs/screenshots/repeaters.png) | ![Transcription](docs/screenshots/transcribe.png) |
 
-| Config | Logs | Voice |
+| Packet Status | Packet APRS Map | Packet Winlink |
 |:-:|:-:|:-:|
-| ![Config](docs/screenshots/config.png) | ![Logs](docs/screenshots/logs.png) | ![Voice](docs/screenshots/voice.png) |
+| ![Packet Status](docs/screenshots/packet-status.png) | ![APRS Map](docs/screenshots/packet-aprs.png) | ![Winlink](docs/screenshots/packet-winlink.png) |
+
+| Packet BBS | Config | Logs |
+|:-:|:-:|:-:|
+| ![BBS Terminal](docs/screenshots/packet-bbs.png) | ![Config](docs/screenshots/config.png) | ![Logs](docs/screenshots/logs.png) |
 
 ## Quick Start
 
@@ -90,7 +98,7 @@ The installer handles system packages (Python, PortAudio, FFmpeg, HIDAPI, scipy)
 
 ## Web Interface
 
-Built-in HTTP server (no Flask). Shell frame with persistent audio level bars visible on every page. Compact nav bar with inline MP3/PCM/MIC controls. 14 pages served from static HTML files in `web_pages/`.
+Built-in HTTP server (no Flask). Shell frame with persistent audio level bars visible on every page. Compact nav bar with inline MP3/PCM/MIC controls. 17 pages served from static HTML files in `web_pages/`.
 
 ```ini
 [web]

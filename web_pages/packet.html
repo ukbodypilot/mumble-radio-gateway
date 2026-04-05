@@ -139,7 +139,8 @@
     <button class="pkt-btn" onclick="wlCompose()">Compose</button>
     <button class="pkt-btn" onclick="wlConnect()" id="wl-connect-btn">Connect &amp; Sync</button>
     <select id="wl-gateway" style="background:var(--t-input-bg);color:var(--t-fg);border:1px solid var(--t-border);padding:4px 8px;border-radius:3px;">
-      <option value="KM6RTE-12">KM6RTE-12 (144.970)</option>
+      <option value="KM6RTE-12">KM6RTE-12 (144.970) Loma Ridge 19km</option>
+      <option value="KF6BRC-10">KF6BRC-10 (145.090) Mission Viejo 0km</option>
     </select>
     <span id="wl-status" style="margin-left:auto;color:#888;font-size:0.95em;">idle</span>
   </div>
@@ -207,7 +208,10 @@ function switchTab(name) {
   document.querySelectorAll('.pkt-panel').forEach(function(p) { p.classList.remove('active'); });
   document.getElementById('tab-' + name).classList.add('active');
   document.querySelector('.pkt-tab[onclick*="' + name + '"]').classList.add('active');
-  if (name === 'aprs' && !window._aprsMapInit) initAprsMap();
+  if (name === 'aprs') {
+    if (!window._aprsMapInit) initAprsMap();
+    else if (_aprsMap) setTimeout(function() { _aprsMap.invalidateSize(); }, 100);
+  }
 }
 
 // ── API helpers ──
@@ -219,7 +223,10 @@ function pktPost(endpoint, data) {
   }).then(function(r) { return r.json(); }).catch(function() { return {}; });
 }
 function pktGet(endpoint) {
-  return fetch('/packet/' + endpoint).then(function(r) { return r.json(); }).catch(function() { return {}; });
+  return fetch('/packet/' + endpoint).then(function(r) {
+    if (!r.ok) console.error('[pktGet] HTTP ' + r.status + ' for /packet/' + endpoint);
+    return r.json();
+  }).catch(function(e) { console.error('[pktGet] fetch error for /packet/' + endpoint + ':', e); return {}; });
 }
 
 // ── Mode control ──
@@ -406,6 +413,7 @@ var _aprsPathLines = [];  // active relay path polylines
 var _aprsStationData = {};  // cached station data for path drawing
 window._aprsMapInit = false;
 
+var _wlGwMarkers = [];
 function initAprsMap() {
   if (window._aprsMapInit) return;
   window._aprsMapInit = true;
@@ -415,7 +423,40 @@ function initAprsMap() {
     attribution: '&copy; OpenStreetMap'
   }).addTo(_aprsMap);
   _aprsMap.on('click', clearPathLines);
-  setTimeout(function() { _aprsMap.invalidateSize(); }, 200);
+  setTimeout(function() {
+    _aprsMap.invalidateSize();
+    loadWinlinkGateways();
+  }, 500);
+}
+function loadWinlinkGateways() {
+  console.log('[WL-GW] Loading gateways, map=' + !!_aprsMap);
+  pktGet('winlink/gateways').then(function(d) {
+    console.log('[WL-GW] Got response:', JSON.stringify(d).substring(0, 200));
+    if (!d.ok || !d.gateways || !_aprsMap) return;
+    // Clear old markers
+    _wlGwMarkers.forEach(function(m) { _aprsMap.removeLayer(m); });
+    _wlGwMarkers = [];
+    d.gateways.forEach(function(gw) {
+      var icon = L.divIcon({
+        className: '',
+        html: '<div style="background:#2980b9;color:#fff;font-size:10px;font-weight:bold;padding:3px 6px;border-radius:10px;border:2px solid #1a5276;white-space:nowrap;text-shadow:0 1px 1px rgba(0,0,0,0.5);">' + gw.callsign + '</div>',
+        iconAnchor: [12, 12]
+      });
+      var active = gw.hours_since >= 0 ? (gw.hours_since < 1 ? '<span style="color:#2ecc71;">Active now</span>' : gw.hours_since + 'h ago') : '?';
+      var popup = '<div style="font-size:13px;line-height:1.6;">'
+        + '<b style="color:#2980b9;">' + gw.callsign + '</b><br>'
+        + '<b>Freq:</b> ' + gw.freq + ' MHz &nbsp; <b>Baud:</b> ' + gw.modem + '<br>'
+        + '<b>Distance:</b> ' + gw.dist_km + ' km &nbsp; <b>Range:</b> ' + (gw.range_mi || '?') + ' mi<br>'
+        + '<b>Grid:</b> ' + gw.grid + ' &nbsp; <b>Antenna:</b> ' + (gw.antenna || '?') + '<br>'
+        + '<b>Last active:</b> ' + active + '<br>'
+        + '<b>Hours:</b> ' + (gw.hours || '24/7')
+        + '</div>';
+      var m = L.marker([gw.lat, gw.lon], {icon: icon})
+        .bindPopup(popup)
+        .addTo(_aprsMap);
+      _wlGwMarkers.push(m);
+    });
+  });
 }
 
 function clearPathLines() {

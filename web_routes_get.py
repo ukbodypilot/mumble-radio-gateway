@@ -1040,6 +1040,78 @@ def _pkt_json(handler, data):
     handler.end_headers()
     handler.wfile.write(body)
 
+_winlink_gw_cache = {'data': None, 'time': 0}
+
+def _winlink_gateways():
+    """Return nearby Winlink RMS packet gateways from Pat's cached rmslist.json.
+
+    Pat downloads the full gateway list from api.winlink.org and caches it
+    locally.  We read the JSON directly — no CLI parsing, no API key needed.
+    """
+    import json as _json, time as _time, math as _math
+    now = _time.time()
+    if _winlink_gw_cache['data'] and now - _winlink_gw_cache['time'] < 3600:
+        return _winlink_gw_cache['data']
+
+    rmslist = os.path.expanduser('~/.local/share/pat/rmslist.json')
+    if not os.path.exists(rmslist):
+        return {"ok": False, "error": "rmslist.json not found — run pat rmslist first"}
+
+    try:
+        with open(rmslist) as f:
+            data = _json.load(f)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    # Our position (from GPS config or default)
+    my_lat, my_lon = 33.75, -117.87  # DM13do default
+    max_dist_km = 100
+
+    def _haversine(lat1, lon1, lat2, lon2):
+        R = 6371
+        dlat = _math.radians(lat2 - lat1)
+        dlon = _math.radians(lon2 - lon1)
+        a = _math.sin(dlat/2)**2 + _math.cos(_math.radians(lat1)) * _math.cos(_math.radians(lat2)) * _math.sin(dlon/2)**2
+        return R * 2 * _math.atan2(_math.sqrt(a), _math.sqrt(1-a))
+
+    gateways = []
+    for gw in data.get('Gateways', []):
+        lat = gw.get('Latitude', 0)
+        lon = gw.get('Longitude', 0)
+        if not lat or not lon:
+            continue
+        dist = _haversine(my_lat, my_lon, lat, lon)
+        if dist > max_dist_km:
+            continue
+        # Each gateway can have multiple channels — extract packet ones
+        for ch in gw.get('GatewayChannels', []):
+            modes = str(ch.get('SupportedModes', ''))
+            if 'Packet' not in modes:
+                continue
+            freq_hz = ch.get('Frequency', 0)
+            freq_mhz = f'{freq_hz / 1e6:.3f}' if freq_hz else '?'
+            gateways.append({
+                'callsign': gw.get('Callsign', '?'),
+                'grid': ch.get('Gridsquare', ''),
+                'lat': round(lat, 5),
+                'lon': round(lon, 5),
+                'dist_km': round(dist, 1),
+                'freq': freq_mhz,
+                'modem': int(ch.get('Baud', 1200)),
+                'last_active': gw.get('LastStatus', ''),
+                'hours_since': gw.get('HoursSinceStatus', -1),
+                'range_mi': ch.get('RadioRange', ''),
+                'antenna': ch.get('Antenna', ''),
+                'hours': ch.get('OperatingHours', ''),
+            })
+
+    gateways.sort(key=lambda g: g['dist_km'])
+    result = {"ok": True, "gateways": gateways}
+    _winlink_gw_cache['data'] = result
+    _winlink_gw_cache['time'] = now
+    return result
+
+
 def handle_winlink_api(handler, parent):
     """GET /packet/winlink/* — Winlink mailbox API."""
     import json as _json, email, glob as _glob
@@ -1110,6 +1182,9 @@ def handle_winlink_api(handler, parent):
     elif path == '/packet/winlink/log':
         from web_routes_post import _winlink_log
         _pkt_json(handler, {"ok": True, "log": _winlink_log})
+
+    elif path == '/packet/winlink/gateways':
+        _pkt_json(handler, _winlink_gateways())
 
     else:
         _pkt_json(handler, {"ok": False, "error": "unknown endpoint"})

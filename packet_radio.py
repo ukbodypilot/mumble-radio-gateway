@@ -71,6 +71,8 @@ class PacketRadioPlugin:
         self._bbs_buffer = collections.deque(maxlen=2000)
         self._bbs_connected = False
         self._bbs_callsign = ''
+        self._bbs_agw_sock = None
+        self._bbs_reader_thread = None
         self._packet_count = 0
         self._start_time = None
 
@@ -754,27 +756,135 @@ class PacketRadioPlugin:
         except Exception:
             pass
 
+    @staticmethod
+    def _agw_frame(port, kind, call_from, call_to, data=b''):
+        """Build a 36-byte AGW protocol frame."""
+        import struct
+        hdr = bytearray(36)
+        hdr[0] = port & 0xFF
+        hdr[4] = ord(kind[0])
+        cf = call_from.encode()[:10]
+        ct = call_to.encode()[:10]
+        hdr[8:8+len(cf)] = cf
+        hdr[18:18+len(ct)] = ct
+        struct.pack_into('<I', hdr, 28, len(data))
+        return bytes(hdr) + data
+
     def _bbs_connect(self, callsign):
+        """Connect to a remote station via AGW connected mode."""
+        import struct
         if not callsign:
             return {"ok": False, "error": "callsign required"}
-        if not self._kiss_connected:
-            return {"ok": False, "error": "KISS not connected"}
-        self._bbs_callsign = callsign.upper()
-        self._bbs_connected = True
+        if self._bbs_connected:
+            return {"ok": False, "error": f"already connected to {self._bbs_callsign}"}
+        if not self._remote_tnc:
+            return {"ok": False, "error": "no remote TNC configured"}
+
+        callsign = callsign.upper().strip()
+        mycall = f"{self._callsign}-{self._ssid}"
         self._bbs_buffer.clear()
-        self._bbs_buffer.append(f"*** Connecting to {self._bbs_callsign}...")
-        return {"ok": True, "callsign": self._bbs_callsign}
+        self._bbs_buffer.append(f"*** Connecting to {callsign} via AGW...")
+        self._bbs_callsign = callsign
+
+        def _session():
+            import socket
+            try:
+                s = socket.socket()
+                s.settimeout(60)
+                s.connect((self._remote_tnc, 8010))
+                self._bbs_agw_sock = s
+
+                # Register callsign
+                s.sendall(self._agw_frame(0, 'X', mycall, ''))
+                time.sleep(0.3)
+
+                # Send connect
+                s.sendall(self._agw_frame(0, 'C', mycall, callsign))
+
+                # Reader loop
+                buf = b''
+                while self._bbs_agw_sock:
+                    try:
+                        data = s.recv(4096)
+                        if not data:
+                            break
+                        buf += data
+                        while len(buf) >= 36:
+                            data_len = struct.unpack('<I', buf[28:32])[0]
+                            if len(buf) < 36 + data_len:
+                                break
+                            kind = chr(buf[4])
+                            cf = buf[8:18].decode('ascii', errors='replace').strip('\x00')
+                            ct = buf[18:28].decode('ascii', errors='replace').strip('\x00')
+                            payload = buf[36:36+data_len]
+                            buf = buf[36+data_len:]
+                            text = payload.decode('ascii', errors='replace')
+
+                            if kind == 'C' and text:
+                                # Connection status
+                                self._bbs_buffer.append(f"*** {text.strip()}")
+                                if 'CONNECTED' in text.upper() and 'RETRYOUT' not in text.upper():
+                                    self._bbs_connected = True
+                            elif kind == 'D' and text:
+                                # Data from remote
+                                for line in text.splitlines():
+                                    self._bbs_buffer.append(line)
+                            elif kind == 'd':
+                                # Disconnect
+                                self._bbs_buffer.append(f"*** {text.strip()}" if text.strip() else "*** Disconnected")
+                                self._bbs_connected = False
+                                break
+                    except socket.timeout:
+                        continue
+                    except Exception as e:
+                        self._bbs_buffer.append(f"*** Error: {e}")
+                        break
+
+            except Exception as e:
+                self._bbs_buffer.append(f"*** Connection failed: {e}")
+            finally:
+                self._bbs_connected = False
+                self._bbs_agw_sock = None
+                self._bbs_buffer.append("*** Session ended")
+
+        self._bbs_reader_thread = threading.Thread(target=_session, daemon=True, name="BBS-session")
+        self._bbs_reader_thread.start()
+        return {"ok": True, "callsign": callsign}
 
     def _bbs_disconnect(self):
+        """Disconnect the BBS AGW session."""
+        if self._bbs_agw_sock and self._bbs_callsign:
+            mycall = f"{self._callsign}-{self._ssid}"
+            try:
+                self._bbs_agw_sock.sendall(
+                    self._agw_frame(0, 'd', mycall, self._bbs_callsign))
+            except Exception:
+                pass
+        # Close socket to break reader loop
+        s = self._bbs_agw_sock
+        self._bbs_agw_sock = None
+        if s:
+            try:
+                s.close()
+            except Exception:
+                pass
         self._bbs_connected = False
         self._bbs_buffer.append("*** Disconnected")
         self._bbs_callsign = ''
         return {"ok": True}
 
     def _bbs_send(self, text):
-        if not self._bbs_connected:
+        """Send a line of text to the connected BBS via AGW data frame."""
+        if not self._bbs_connected or not self._bbs_agw_sock:
             return {"ok": False, "error": "not connected"}
         if not text:
             return {"ok": False, "error": "text required"}
-        self._bbs_buffer.append(f"> {text}")
-        return {"ok": True}
+        mycall = f"{self._callsign}-{self._ssid}"
+        try:
+            payload = (text + '\r').encode('ascii', errors='replace')
+            self._bbs_agw_sock.sendall(
+                self._agw_frame(0, 'D', mycall, self._bbs_callsign, payload))
+            self._bbs_buffer.append(f"> {text}")
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}

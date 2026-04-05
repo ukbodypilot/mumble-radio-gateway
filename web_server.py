@@ -767,7 +767,7 @@ class WebConfigServer:
                     _rg.handle_recordingsdownload(self, parent)
                 elif self.path == '/adsb' or self.path.startswith('/adsb/'):
                     _rg.handle_adsb_proxy(self, parent)
-                elif self.path.startswith('/pat') or self.path.startswith('/pat/'):
+                elif self.path == '/pat' or self.path.startswith('/pat/'):
                     _rg.handle_pat_proxy(self, parent)
                 elif self.path == '/config':
                     _rg.handle_config(self, parent)
@@ -853,7 +853,7 @@ class WebConfigServer:
                     _rp.handle_voice_send(self, parent)
                 elif self.path == '/voice/session':
                     _rp.handle_voice_session(self, parent)
-                elif self.path.startswith('/pat') or self.path.startswith('/pat/'):
+                elif self.path == '/pat' or self.path.startswith('/pat/'):
                     _rg.handle_pat_proxy(self, parent)
                 elif self.path.startswith('/packet/'):
                     _rp.handle_packet_cmd(self, parent)
