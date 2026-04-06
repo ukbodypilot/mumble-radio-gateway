@@ -148,7 +148,6 @@
 <div id="tab-winlink" class="pkt-panel">
   <!-- Toolbar -->
   <div class="pkt-card" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-    <button class="pkt-btn" onclick="wlCompose()">Compose</button>
     <button class="pkt-btn" onclick="wlConnect()" id="wl-connect-btn">Connect &amp; Sync</button>
     <select id="wl-gateway" style="background:var(--t-input-bg);color:var(--t-fg);border:1px solid var(--t-border);padding:4px 8px;border-radius:3px;">
       <option value="KM6RTE-12">KM6RTE-12 (144.970) Loma Ridge 19km</option>
@@ -172,6 +171,7 @@
   <!-- Mailbox tabs -->
   <div class="pkt-card">
     <div style="display:flex;gap:4px;margin-bottom:8px;">
+      <button class="pkt-btn" onclick="wlCompose()">Compose</button>
       <button class="pkt-btn active" id="wl-tab-in" onclick="wlFolder('in')">Inbox</button>
       <button class="pkt-btn" id="wl-tab-out" onclick="wlFolder('out')">Outbox</button>
       <button class="pkt-btn" id="wl-tab-sent" onclick="wlFolder('sent')">Sent</button>
