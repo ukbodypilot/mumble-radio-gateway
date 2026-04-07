@@ -3120,14 +3120,6 @@ class RadioGateway:
         except Exception as e:
             print(f"  [BusManager] Failed to start: {e}")
             self.bus_manager = None
-        if not hasattr(self, '_bus_stream_flags'):
-            self._bus_stream_flags = {}
-        if not hasattr(self, '_bus_sinks'):
-            self._bus_sinks = {}
-        if not hasattr(self, '_listen_bus_id'):
-            self._listen_bus_id = 'listen'
-        if not hasattr(self, '_listen_bus_muted'):
-            self._listen_bus_muted = False
 
         # Start Automation Engine if enabled
         if getattr(self.config, 'ENABLE_AUTOMATION', False):
