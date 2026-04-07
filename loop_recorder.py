@@ -227,6 +227,17 @@ class LoopRecorder:
                         'active': True,
                         'retention_hours': self.get_retention(bus_id),
                     }
+        # Add disk usage stats per bus
+        for bus_id, entry in result.items():
+            bus_dir = os.path.join(self._base_dir, bus_id)
+            if os.path.isdir(bus_dir):
+                total_bytes = sum(
+                    os.path.getsize(os.path.join(bus_dir, f))
+                    for f in os.listdir(bus_dir) if f.endswith('.mp3')
+                )
+                entry['disk_mb'] = round(total_bytes / (1024 * 1024), 1)
+            else:
+                entry['disk_mb'] = 0.0
         return sorted(result.values(), key=lambda b: b['id'])
 
     def get_waveform(self, bus_id, start_ts, end_ts):
@@ -243,8 +254,22 @@ class LoopRecorder:
         peaks = []
         rms = []
 
-        # Find segments that overlap the requested range
-        for seg_start_epoch, wfm_path in self._find_wfm_files(bus_id, start_ts, end_ts):
+        # Collect waveform sources: disk files + active segment
+        wfm_sources = list(self._find_wfm_files(bus_id, start_ts, end_ts))
+        # Add active segment if it has live data and overlaps the range
+        with self._lock:
+            active = self._active.get(bus_id)
+            if active and active.wfm_peaks:
+                a_start = active.segment_start.timestamp()
+                a_end = a_start + self._segment_seconds
+                if a_end > start_ts and a_start < end_ts:
+                    # Check if already covered by a disk wfm file
+                    disk_starts = {s for s, _ in wfm_sources}
+                    if a_start not in disk_starts:
+                        wfm_sources.append((a_start, None))  # None = read from memory
+                wfm_sources.sort(key=lambda x: x[0])
+
+        for seg_start_epoch, wfm_path in wfm_sources:
             seg_data = self._read_wfm(bus_id, seg_start_epoch, wfm_path)
             if seg_data is None:
                 continue
@@ -427,18 +452,18 @@ class LoopRecorder:
             yield seg_start, os.path.join(bus_dir, fname)
 
     def _read_wfm(self, bus_id, seg_start_epoch, wfm_path):
-        """Read a .wfm file.  Returns (peaks_list, rms_list) or None.
+        """Read waveform data.  Returns (peaks_list, rms_list) or None.
 
-        Also checks the active segment for live waveform data.
+        wfm_path=None means read from active segment in memory.
         """
-        # Check if this is the currently-recording segment (live data)
+        # Check active segment for live data
         with self._lock:
             active = self._active.get(bus_id)
             if active and active.segment_start.timestamp() == seg_start_epoch:
                 return list(active.wfm_peaks), list(active.wfm_rms)
 
         # Read from disk
-        if not os.path.isfile(wfm_path):
+        if wfm_path is None or not os.path.isfile(wfm_path):
             return None
         try:
             with open(wfm_path, 'rb') as f:

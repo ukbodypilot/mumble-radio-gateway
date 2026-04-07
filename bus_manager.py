@@ -227,6 +227,11 @@ class BusManager:
             source_map[_sid] = (src,
                                 int(getattr(gw.config, 'LINK_AUDIO_PRIORITY', 3)) + 10,
                                 getattr(gw.config, 'LINK_AUDIO_DUCK', False))
+        # External plugins (auto-discovered from plugins/)
+        for pid, plugin in getattr(gw, '_external_plugins', {}).items():
+            _prio = getattr(plugin, 'priority', 5)
+            _duck = getattr(plugin, 'duck', True) if not getattr(plugin, 'ptt_control', False) else False
+            source_map[pid] = (plugin, _prio, _duck)
 
         # Read routing config to find which sources connect to listen bus
         try:
@@ -523,6 +528,10 @@ class BusManager:
             return gw.mumble_source
         elif source_id == 'remote_audio' and getattr(gw, 'remote_audio_source', None):
             return gw.remote_audio_source
+        # External plugins (auto-discovered from plugins/ directory)
+        _ext = getattr(gw, '_external_plugins', {})
+        if source_id in _ext:
+            return _ext[source_id]
         # Generic link endpoint lookup by sanitised name
         import re as _re
         for name, src in gw.link_endpoints.items():

@@ -3121,6 +3121,19 @@ class RadioGateway:
             print(f"  [BusManager] Failed to start: {e}")
             self.bus_manager = None
 
+        # Load external plugins from plugins/ directory
+        self._external_plugins = {}
+        try:
+            from plugin_loader import discover_plugins
+            self._external_plugins = discover_plugins(self.config, self)
+            if self._external_plugins:
+                print(f"✓ Loaded {len(self._external_plugins)} external plugin(s)")
+                # Re-sync listen bus to pick up new sources
+                if self.bus_manager:
+                    self.bus_manager.sync_listen_bus()
+        except Exception as e:
+            print(f"  [Plugins] Discovery failed: {e}")
+
         # Initialize Loop Recorder (per-bus continuous recording)
         try:
             from loop_recorder import LoopRecorder
@@ -3217,6 +3230,13 @@ class RadioGateway:
         # Stop loop recorder
         if getattr(self, 'loop_recorder', None):
             self.loop_recorder.stop()
+
+        # Cleanup external plugins
+        for pid, plugin in getattr(self, '_external_plugins', {}).items():
+            try:
+                plugin.cleanup()
+            except Exception:
+                pass
 
         # Signal threads to stop
         self.running = False
