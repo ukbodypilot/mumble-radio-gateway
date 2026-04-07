@@ -143,4 +143,5 @@ Radio-to-Mumble gateway with SDR, multiple radios, web UI, and AI features. Pyth
 - [project_packet_radio.md](project_packet_radio.md) — Packet Radio (Direwolf TNC) + Winlink email
 - [project_ftm150_reverse_eng.md](project_ftm150_reverse_eng.md) — FTM-150 control head RE (shelved)
 - [bugs_2026_04_05.md](bugs_2026_04_05.md) — bus processing, SDR noise, endpoint mode bugs
-- [project_listen_bus_unify.md](project_listen_bus_unify.md) — listen bus unification (scoped, deferred)
+- [project_listen_bus_unify.md](project_listen_bus_unify.md) — listen bus unification (COMPLETED, branch 3.0)
+- [project_rust_audio_core.md](project_rust_audio_core.md) — Rust audio core (future path, deferred)

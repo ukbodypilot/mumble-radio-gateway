@@ -692,6 +692,15 @@ class BusManager:
                 self._pcm_queue.append(mixed)
             if proc_cfg.get('mp3', False):
                 self._mp3_queue.append(mixed)
+            # Loop recording: feed processed audio to LoopRecorder
+            if proc_cfg.get('loop', False):
+                _lr = getattr(gw, 'loop_recorder', None)
+                if _lr:
+                    # Sync per-bus retention from routing config
+                    _lh = proc_cfg.get('loop_hours', 0)
+                    if _lh and _lh != _lr.get_retention(bus_id):
+                        _lr.set_retention(bus_id, _lh)
+                    _lr.feed(bus_id, mixed)
 
     def _handle_listen_tick(self, output, chunk_size):
         """Handle listen-bus-specific post-tick work.

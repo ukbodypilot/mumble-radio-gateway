@@ -677,6 +677,7 @@ class WebConfigServer:
                 '/telegram': 'telegram.html',
                 '/monitor': 'monitor.html',
                 '/recordings': 'recordings.html',
+                '/recorder': 'recorder.html',
                 '/transcribe': 'transcribe.html',
                 '/logs': 'logs.html',
                 '/gps': 'gps.html',
@@ -789,6 +790,8 @@ class WebConfigServer:
                     _rg.handle_packet_bbs_buffer(self, parent)
                 elif self.path == '/packet/log':
                     _rg.handle_packet_log(self, parent)
+                elif self.path.startswith('/loop/'):
+                    _rg.handle_loop_api(self, parent)
                 elif self.path.startswith('/packet/winlink/'):
                     _rg.handle_winlink_api(self, parent)
 
@@ -853,6 +856,8 @@ class WebConfigServer:
                     _rp.handle_voice_send(self, parent)
                 elif self.path == '/voice/session':
                     _rp.handle_voice_session(self, parent)
+                elif self.path == '/loop/export':
+                    _rp.handle_loop_export(self, parent)
                 elif self.path == '/pat' or self.path.startswith('/pat/'):
                     _rg.handle_pat_proxy(self, parent)
                 elif self.path.startswith('/packet/'):
@@ -1557,7 +1562,7 @@ class WebConfigServer:
         elif cmd == 'toggle_proc':
             bus_id = data.get('bus', '')
             filt = data.get('filter', '')
-            if filt not in ('gate', 'hpf', 'lpf', 'notch', 'pcm', 'mp3', 'vad'):
+            if filt not in ('gate', 'hpf', 'lpf', 'notch', 'pcm', 'mp3', 'vad', 'loop'):
                 return {'ok': False, 'error': f'invalid filter: {filt}'}
             for b in busses:
                 if b['id'] == bus_id:
@@ -1565,7 +1570,7 @@ class WebConfigServer:
                     proc[filt] = not proc.get(filt, False)
                     self._save_routing_config(busses, connections)
                     # Update cached stream flags on gateway + BusManager
-                    if filt in ('pcm', 'mp3', 'vad') and self.gateway:
+                    if filt in ('pcm', 'mp3', 'vad', 'loop') and self.gateway:
                         flags = getattr(self.gateway, '_bus_stream_flags', {})
                         bus_flags = flags.setdefault(bus_id, {'pcm': False, 'mp3': False, 'vad': False})
                         bus_flags[filt] = proc[filt]
@@ -1581,6 +1586,27 @@ class WebConfigServer:
                                 bm._bus_processors[bus_id] = _bp
                             setattr(_bp, 'enable_noise_gate' if filt == 'gate' else f'enable_{filt}', proc[filt])
                     return {'ok': True, 'state': proc[filt]}
+            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+
+        elif cmd == 'set_loop_hours':
+            bus_id = data.get('bus', '')
+            hours = data.get('hours', 24)
+            try:
+                hours = max(1, min(168, int(hours)))  # 1h to 7 days
+            except (ValueError, TypeError):
+                return {'ok': False, 'error': 'invalid hours value'}
+            for b in busses:
+                if b['id'] == bus_id:
+                    proc = b.setdefault('processing', {})
+                    proc['loop_hours'] = hours
+                    self._save_routing_config(busses, connections)
+                    bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+                    if bm and bus_id in bm._bus_config:
+                        bm._bus_config[bus_id]['loop_hours'] = hours
+                    lr = getattr(self.gateway, 'loop_recorder', None)
+                    if lr:
+                        lr.set_retention(bus_id, hours)
+                    return {'ok': True, 'hours': hours}
             return {'ok': False, 'error': f'bus not found: {bus_id}'}
 
         elif cmd == 'bus_mute':

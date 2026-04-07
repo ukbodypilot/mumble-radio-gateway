@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loop Recorder</title>
+<link rel="stylesheet" href="/pages/common.css">
+<style>
+  .bus-tabs { display:flex; gap:4px; margin-bottom:10px; flex-wrap:wrap; }
+  .bus-tab { padding:6px 14px; background:var(--t-btn); color:#aaa; border:1px solid var(--t-btn-border);
+    border-radius:4px 4px 0 0; cursor:pointer; font-family:monospace; font-size:0.9em; }
+  .bus-tab.active { background:var(--t-panel); color:#e0e0e0; border-bottom-color:var(--t-panel); }
+  .bus-tab .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-left:6px; }
+  .bus-tab .dot.rec { background:#c0392b; animation: pulse-dot 1.5s infinite; }
+  .bus-tab .dot.off { background:#555; }
+  @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .toolbar { display:flex; align-items:center; gap:10px; padding:8px 0; font-size:0.85em; color:#aaa; }
+  .toolbar button { padding:4px 10px; background:var(--t-btn); color:#ccc; border:1px solid var(--t-btn-border);
+    border-radius:3px; cursor:pointer; font-family:monospace; }
+  .toolbar button:hover { background:var(--t-btn-hover); }
+
+  #waveform-container { position:relative; background:var(--t-panel); border:1px solid var(--t-btn-border);
+    border-radius:4px; overflow:hidden; cursor:crosshair; }
+  #waveform { width:100%; display:block; }
+
+  .player-bar { display:flex; align-items:center; gap:10px; padding:10px 0; }
+  .player-bar button { padding:5px 12px; background:var(--t-btn); color:#ccc; border:1px solid var(--t-btn-border);
+    border-radius:3px; cursor:pointer; font-family:monospace; font-size:1em; }
+  .player-bar button:hover { background:var(--t-btn-hover); }
+  #seek-bar { flex:1; cursor:pointer; }
+  #time-display { font-family:monospace; color:#aaa; font-size:0.9em; min-width:140px; text-align:center; }
+
+  .export-bar { display:flex; align-items:center; gap:10px; padding:10px 0; flex-wrap:wrap; }
+  .export-bar label { color:#888; font-size:0.85em; }
+  .export-bar input, .export-bar select { background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border);
+    border-radius:3px; padding:4px 8px; font-family:monospace; }
+  .export-bar button { padding:5px 14px; background:#27ae60; color:#fff; border:none;
+    border-radius:3px; cursor:pointer; font-family:monospace; }
+  .export-bar button:hover { background:#2ecc71; }
+  .export-bar button:disabled { background:#555; cursor:default; }
+
+  .status-msg { color:#888; font-size:0.85em; padding:4px 0; }
+  .no-data { color:#666; text-align:center; padding:60px 0; font-size:1.1em; }
+</style>
+</head>
+<body>
+
+<div class="bus-tabs" id="bus-tabs"></div>
+
+<div class="toolbar" id="toolbar" style="display:none;">
+  <button onclick="zoomIn()">+</button>
+  <button onclick="zoomOut()">&minus;</button>
+  <button onclick="fitAll()">Fit All</button>
+  <span style="margin-left:auto;"></span>
+  <label style="color:#888;">Retention:</label>
+  <select id="retention-sel" onchange="setRetention(this.value)" style="background:var(--t-btn);color:#e0e0e0;border:1px solid var(--t-btn-border);border-radius:3px;padding:2px 6px;font-family:monospace;">
+    <option value="1">1h</option><option value="2">2h</option><option value="4">4h</option>
+    <option value="8">8h</option><option value="12">12h</option><option value="24" selected>24h</option>
+    <option value="48">48h</option><option value="72">3d</option><option value="168">7d</option>
+  </select>
+  <span id="time-range" style="margin-left:10px;"></span>
+</div>
+
+<div id="waveform-container" style="display:none;">
+  <canvas id="waveform" height="200"></canvas>
+</div>
+
+<div class="player-bar" id="player-bar" style="display:none;">
+  <button id="btn-play" onclick="togglePlay()">&#9654;</button>
+  <button onclick="stopPlay()">&#9632;</button>
+  <span id="time-display">00:00:00 / 00:00:00</span>
+  <input type="range" id="seek-bar" min="0" max="1000" value="0" oninput="seekTo(this.value)">
+  <span style="color:#888;font-size:0.8em;">Vol</span>
+  <input type="range" id="vol-bar" min="0" max="100" value="80" style="width:60px;" oninput="setVolume(this.value)">
+</div>
+
+<div class="export-bar" id="export-bar" style="display:none;">
+  <label>Export:</label>
+  <label>Start</label> <input type="text" id="exp-start" size="10" placeholder="HH:MM:SS">
+  <label>End</label> <input type="text" id="exp-end" size="10" placeholder="HH:MM:SS">
+  <select id="exp-fmt"><option value="mp3">MP3</option><option value="wav">WAV</option></select>
+  <button id="btn-export" onclick="doExport()">Download</button>
+  <span id="export-status" class="status-msg"></span>
+</div>
+
+<div id="no-data" class="no-data">
+  No loop recordings found.<br>
+  Enable the <b>R</b> button on a bus in the <a href="/routing" target="content">Routing</a> page to start recording.
+</div>
+
+<audio id="audio-player" preload="none"></audio>
+
+<script>
+var currentBus = null;
+var buses = [];
+var wfmData = null;       // {start, end, resolution, peaks, rms}
+var viewStart = 0;        // visible window start (epoch seconds)
+var viewEnd = 0;          // visible window end (epoch seconds)
+var dataStart = 0;        // earliest data (epoch)
+var dataEnd = 0;          // latest data (epoch)
+var selStart = null;       // selection start (epoch) or null
+var selEnd = null;         // selection end (epoch) or null
+var playStart = 0;         // playback range start (epoch)
+var playEnd = 0;           // playback range end (epoch)
+var isDragging = false;
+var dragStartX = 0;
+var dragViewStart = 0;
+var isSelecting = false;
+
+var player = document.getElementById('audio-player');
+var canvas = document.getElementById('waveform');
+var ctx = canvas.getContext('2d');
+
+// -- Init ------------------------------------------------------------------
+
+function init() {
+  fetch('/loop/buses').then(r => r.json()).then(function(data) {
+    buses = data;
+    if (buses.length === 0) {
+      document.getElementById('no-data').style.display = '';
+      return;
+    }
+    document.getElementById('no-data').style.display = 'none';
+    document.getElementById('toolbar').style.display = '';
+    document.getElementById('waveform-container').style.display = '';
+    document.getElementById('player-bar').style.display = '';
+    document.getElementById('export-bar').style.display = '';
+    renderTabs();
+    selectBus(buses[0].id);
+  }).catch(function() {
+    document.getElementById('no-data').style.display = '';
+  });
+}
+
+function renderTabs() {
+  var html = '';
+  for (var i = 0; i < buses.length; i++) {
+    var b = buses[i];
+    var cls = b.id === currentBus ? ' active' : '';
+    var dot = b.active ? 'rec' : 'off';
+    html += '<div class="bus-tab' + cls + '" onclick="selectBus(\'' + b.id + '\')">'
+      + b.id + '<span class="dot ' + dot + '"></span></div>';
+  }
+  document.getElementById('bus-tabs').innerHTML = html;
+}
+
+function selectBus(busId) {
+  currentBus = busId;
+  renderTabs();
+  // Find bus data range
+  var busInfo = null;
+  for (var i = 0; i < buses.length; i++) {
+    if (buses[i].id === busId) {
+      busInfo = buses[i];
+      dataStart = buses[i].earliest;
+      dataEnd = buses[i].latest;
+      // Set retention dropdown to current value
+      var ret = buses[i].retention_hours || 24;
+      document.getElementById('retention-sel').value = String(ret);
+      break;
+    }
+  }
+  selStart = null;
+  selEnd = null;
+  if (busInfo && busInfo.segments === 0) {
+    // Enabled but no audio yet — show waiting state
+    wfmData = null;
+    viewStart = dataStart;
+    viewEnd = dataStart + 300; // show 5 min window
+    resizeCanvas();
+    ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--t-panel') || '#1a1a2e';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#666';
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Recording enabled \u2014 waiting for audio...', canvas.width / 2, canvas.height / 2);
+    updateTimeRange();
+    return;
+  }
+  viewStart = dataStart;
+  viewEnd = dataEnd;
+  loadWaveform();
+}
+
+// -- Waveform loading ------------------------------------------------------
+
+function loadWaveform() {
+  if (!currentBus) return;
+  fetch('/loop/waveform?bus=' + currentBus + '&start=' + viewStart + '&end=' + viewEnd)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      wfmData = data;
+      resizeCanvas();
+      renderWaveform();
+      updateTimeRange();
+    });
+}
+
+// -- Canvas rendering ------------------------------------------------------
+
+function resizeCanvas() {
+  var container = document.getElementById('waveform-container');
+  canvas.width = container.clientWidth;
+  canvas.height = 200;
+}
+
+function renderWaveform() {
+  if (!wfmData || !wfmData.peaks.length) return;
+  var w = canvas.width, h = canvas.height;
+  var timeAxisH = 24;
+  var waveH = (h - timeAxisH) / 2;
+  var centerY = waveH;
+
+  ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--t-panel') || '#1a1a2e';
+  ctx.fillRect(0, 0, w, h);
+
+  // Map view window to waveform data indices
+  var dataOffset = viewStart - wfmData.start;
+  var dataLen = viewEnd - viewStart;
+  var samplesPerPixel = dataLen / w;
+
+  // Peak envelope (lighter)
+  ctx.fillStyle = 'rgba(52, 152, 219, 0.3)';
+  for (var px = 0; px < w; px++) {
+    var sStart = Math.floor(dataOffset + px * samplesPerPixel);
+    var sEnd = Math.floor(dataOffset + (px + 1) * samplesPerPixel);
+    var maxPeak = 0;
+    for (var s = sStart; s < sEnd && s < wfmData.peaks.length; s++) {
+      if (s >= 0 && wfmData.peaks[s] > maxPeak) maxPeak = wfmData.peaks[s];
+    }
+    var peakH = (maxPeak / 255) * waveH;
+    if (peakH > 0) ctx.fillRect(px, centerY - peakH, 1, peakH * 2);
+  }
+
+  // RMS envelope (solid)
+  ctx.fillStyle = 'rgba(52, 152, 219, 0.8)';
+  for (var px = 0; px < w; px++) {
+    var sStart = Math.floor(dataOffset + px * samplesPerPixel);
+    var sEnd = Math.floor(dataOffset + (px + 1) * samplesPerPixel);
+    var maxRMS = 0;
+    for (var s = sStart; s < sEnd && s < wfmData.rms.length; s++) {
+      if (s >= 0 && wfmData.rms[s] > maxRMS) maxRMS = wfmData.rms[s];
+    }
+    var rmsH = (maxRMS / 255) * waveH;
+    if (rmsH > 0) ctx.fillRect(px, centerY - rmsH, 1, rmsH * 2);
+  }
+
+  // Selection overlay
+  if (selStart !== null && selEnd !== null) {
+    var sx = timeToPixel(Math.min(selStart, selEnd));
+    var ex = timeToPixel(Math.max(selStart, selEnd));
+    ctx.fillStyle = 'rgba(46, 204, 113, 0.25)';
+    ctx.fillRect(sx, 0, ex - sx, h - timeAxisH);
+    ctx.strokeStyle = 'rgba(46, 204, 113, 0.7)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(sx, 0, ex - sx, h - timeAxisH);
+  }
+
+  // Playback cursor
+  if (!player.paused && playStart > 0) {
+    var curTime = playStart + player.currentTime;
+    if (curTime >= viewStart && curTime <= viewEnd) {
+      var cx = timeToPixel(curTime);
+      ctx.strokeStyle = '#e74c3c';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, 0);
+      ctx.lineTo(cx, h - timeAxisH);
+      ctx.stroke();
+    }
+  }
+
+  // Time axis
+  drawTimeAxis(h - timeAxisH, timeAxisH, w);
+}
+
+function drawTimeAxis(y, h, w) {
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(0, y, w, h);
+
+  var duration = viewEnd - viewStart;
+  // Choose tick interval based on zoom level
+  var intervals = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 28800];
+  var targetTicks = w / 100; // ~100px per tick
+  var interval = 3600;
+  for (var i = 0; i < intervals.length; i++) {
+    if (duration / intervals[i] <= targetTicks) { interval = intervals[i]; break; }
+  }
+
+  ctx.fillStyle = '#888';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'center';
+
+  var firstTick = Math.ceil(viewStart / interval) * interval;
+  for (var t = firstTick; t <= viewEnd; t += interval) {
+    var px = timeToPixel(t);
+    ctx.fillStyle = '#555';
+    ctx.fillRect(px, y, 1, 4);
+    ctx.fillStyle = '#888';
+    var d = new Date(t * 1000);
+    var label = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    if (interval < 60) label += ':' + pad2(d.getSeconds());
+    ctx.fillText(label, px, y + 16);
+  }
+}
+
+// -- Interaction -----------------------------------------------------------
+
+canvas.addEventListener('wheel', function(e) {
+  e.preventDefault();
+  var rect = canvas.getBoundingClientRect();
+  var mx = e.clientX - rect.left;
+  var pivot = pixelToTime(mx);
+  var factor = e.deltaY > 0 ? 1.3 : 0.77;
+  var newDur = Math.max(10, Math.min(dataEnd - dataStart, (viewEnd - viewStart) * factor));
+  var ratio = (pivot - viewStart) / (viewEnd - viewStart);
+  viewStart = pivot - newDur * ratio;
+  viewEnd = viewStart + newDur;
+  clampView();
+  loadWaveform();
+});
+
+canvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+canvas.addEventListener('mousedown', function(e) {
+  if (e.button === 2) {
+    // Right-click drag — selection mode
+    e.preventDefault();
+    isSelecting = true;
+    selStart = pixelToTime(e.offsetX);
+    selEnd = selStart;
+  } else {
+    isDragging = true;
+    dragStartX = e.clientX;
+    dragViewStart = viewStart;
+  }
+});
+
+canvas.addEventListener('mousemove', function(e) {
+  if (isDragging) {
+    var dx = e.clientX - dragStartX;
+    var dt = -dx * (viewEnd - viewStart) / canvas.width;
+    viewStart = dragViewStart + dt;
+    viewEnd = viewStart + (viewEnd - viewStart);
+    // Don't clamp during drag for smooth feel
+    renderWaveform();
+    updateTimeRange();
+  } else if (isSelecting) {
+    selEnd = pixelToTime(e.offsetX);
+    renderWaveform();
+    updateExportFields();
+  }
+});
+
+canvas.addEventListener('mouseup', function(e) {
+  if (isDragging) {
+    isDragging = false;
+    var dx = Math.abs(e.clientX - dragStartX);
+    if (dx < 4) {
+      // Click (not drag) — play from this position
+      playFrom(pixelToTime(e.offsetX));
+    } else {
+      clampView();
+      loadWaveform();
+    }
+  } else if (isSelecting) {
+    isSelecting = false;
+    if (Math.abs(selEnd - selStart) < 1) {
+      selStart = null;
+      selEnd = null;
+      playFrom(pixelToTime(e.offsetX));
+    } else {
+      updateExportFields();
+    }
+  }
+});
+
+// -- Zoom / Pan ------------------------------------------------------------
+
+function zoomIn() {
+  var mid = (viewStart + viewEnd) / 2;
+  var dur = Math.max(10, (viewEnd - viewStart) * 0.5);
+  viewStart = mid - dur / 2;
+  viewEnd = mid + dur / 2;
+  clampView();
+  loadWaveform();
+}
+
+function zoomOut() {
+  var mid = (viewStart + viewEnd) / 2;
+  var dur = Math.min(dataEnd - dataStart, (viewEnd - viewStart) * 2);
+  viewStart = mid - dur / 2;
+  viewEnd = mid + dur / 2;
+  clampView();
+  loadWaveform();
+}
+
+function fitAll() {
+  viewStart = dataStart;
+  viewEnd = dataEnd;
+  loadWaveform();
+}
+
+function clampView() {
+  var dur = viewEnd - viewStart;
+  if (viewStart < dataStart) { viewStart = dataStart; viewEnd = viewStart + dur; }
+  if (viewEnd > dataEnd) { viewEnd = dataEnd; viewStart = viewEnd - dur; }
+  if (viewStart < dataStart) viewStart = dataStart;
+}
+
+// -- Playback --------------------------------------------------------------
+
+function playFrom(epoch) {
+  playStart = epoch;
+  playEnd = viewEnd;
+  player.src = '/loop/play?bus=' + currentBus + '&start=' + epoch + '&end=' + playEnd;
+  player.volume = document.getElementById('vol-bar').value / 100;
+  player.play();
+  document.getElementById('btn-play').innerHTML = '&#10074;&#10074;';
+  requestAnimationFrame(updatePlayback);
+}
+
+function togglePlay() {
+  if (!player.paused) {
+    player.pause();
+    document.getElementById('btn-play').innerHTML = '&#9654;';
+  } else if (player.src && player.src !== location.href) {
+    player.play();
+    document.getElementById('btn-play').innerHTML = '&#10074;&#10074;';
+    requestAnimationFrame(updatePlayback);
+  } else {
+    // Nothing loaded yet — play from start of visible range
+    playFrom(viewStart);
+  }
+}
+
+function stopPlay() {
+  player.pause();
+  player.currentTime = 0;
+  document.getElementById('btn-play').innerHTML = '&#9654;';
+  document.getElementById('seek-bar').value = 0;
+  document.getElementById('time-display').textContent = '00:00:00 / 00:00:00';
+  renderWaveform();
+}
+
+function seekTo(val) {
+  if (player.duration && player.duration < Infinity) {
+    player.currentTime = (val / 1000) * player.duration;
+  } else if (playStart && playEnd) {
+    // Fallback: reload from new position
+    var seekEpoch = playStart + ((val / 1000) * (playEnd - playStart));
+    playFrom(seekEpoch);
+  }
+}
+
+function setVolume(val) {
+  player.volume = val / 100;
+}
+
+function updatePlayback() {
+  if (player.paused) return;
+  var dur = player.duration || 0;
+  var cur = player.currentTime || 0;
+  document.getElementById('seek-bar').value = dur > 0 ? Math.floor((cur / dur) * 1000) : 0;
+  document.getElementById('time-display').textContent = fmtTime(cur) + ' / ' + fmtTime(dur);
+  renderWaveform(); // redraws cursor
+  requestAnimationFrame(updatePlayback);
+}
+
+player.addEventListener('ended', function() {
+  document.getElementById('btn-play').innerHTML = '&#9654;';
+  renderWaveform();
+});
+
+// -- Export ----------------------------------------------------------------
+
+function updateExportFields() {
+  if (selStart !== null && selEnd !== null) {
+    var s = Math.min(selStart, selEnd);
+    var e = Math.max(selStart, selEnd);
+    document.getElementById('exp-start').value = epochToHMS(s);
+    document.getElementById('exp-end').value = epochToHMS(e);
+  }
+}
+
+function setRetention(hours) {
+  if (!currentBus) return;
+  fetch('/routing/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cmd: 'set_loop_hours', bus: currentBus, hours: parseInt(hours)})
+  });
+}
+
+function doExport() {
+  var startStr = document.getElementById('exp-start').value;
+  var endStr = document.getElementById('exp-end').value;
+  var fmt = document.getElementById('exp-fmt').value;
+  if (!startStr || !endStr) { alert('Enter start and end times'); return; }
+
+  var startEpoch = hmsToEpoch(startStr);
+  var endEpoch = hmsToEpoch(endStr);
+  if (!startEpoch || !endEpoch || endEpoch <= startEpoch) {
+    alert('Invalid time range'); return;
+  }
+
+  var btn = document.getElementById('btn-export');
+  var status = document.getElementById('export-status');
+  btn.disabled = true;
+  status.textContent = 'Exporting...';
+
+  fetch('/loop/export', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({bus: currentBus, start: startEpoch, end: endEpoch, format: fmt})
+  }).then(function(r) {
+    if (!r.ok) throw new Error('Export failed');
+    return r.blob();
+  }).then(function(blob) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'loop_' + currentBus + '_' + startStr.replace(/:/g,'') + '_' + endStr.replace(/:/g,'') + '.' + fmt;
+    a.click();
+    URL.revokeObjectURL(url);
+    status.textContent = 'Done';
+    btn.disabled = false;
+  }).catch(function(err) {
+    status.textContent = 'Error: ' + err.message;
+    btn.disabled = false;
+  });
+}
+
+// -- Helpers ---------------------------------------------------------------
+
+function timeToPixel(epoch) {
+  return ((epoch - viewStart) / (viewEnd - viewStart)) * canvas.width;
+}
+
+function pixelToTime(px) {
+  return viewStart + (px / canvas.width) * (viewEnd - viewStart);
+}
+
+function updateTimeRange() {
+  document.getElementById('time-range').textContent =
+    epochToHMS(viewStart) + ' \u2014 ' + epochToHMS(viewEnd);
+}
+
+function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+function fmtTime(sec) {
+  var h = Math.floor(sec / 3600);
+  var m = Math.floor((sec % 3600) / 60);
+  var s = Math.floor(sec % 60);
+  return pad2(h) + ':' + pad2(m) + ':' + pad2(s);
+}
+
+function epochToHMS(epoch) {
+  var d = new Date(epoch * 1000);
+  return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+}
+
+function hmsToEpoch(str) {
+  // Parse HH:MM:SS relative to today
+  var parts = str.split(':');
+  if (parts.length < 2) return null;
+  var h = parseInt(parts[0]) || 0;
+  var m = parseInt(parts[1]) || 0;
+  var s = parseInt(parts[2]) || 0;
+  var d = new Date();
+  d.setHours(h, m, s, 0);
+  return d.getTime() / 1000;
+}
+
+// -- Resize handler --------------------------------------------------------
+window.addEventListener('resize', function() {
+  resizeCanvas();
+  renderWaveform();
+});
+
+// -- Periodic refresh (update live data) -----------------------------------
+var _prevSegments = 0;
+setInterval(function() {
+  fetch('/loop/buses').then(function(r) { return r.json(); }).then(function(data) {
+    buses = data;
+    renderTabs();
+    for (var i = 0; i < buses.length; i++) {
+      if (buses[i].id === currentBus) {
+        // Auto-switch from "waiting" to waveform when first data arrives
+        if (_prevSegments === 0 && buses[i].segments > 0) {
+          _prevSegments = buses[i].segments;
+          selectBus(currentBus);
+          return;
+        }
+        _prevSegments = buses[i].segments;
+        var newEnd = buses[i].latest;
+        if (newEnd > dataEnd) {
+          dataEnd = newEnd;
+          if (viewEnd >= dataEnd - 60) {
+            viewEnd = dataEnd;
+            loadWaveform();
+          }
+        }
+        break;
+      }
+    }
+  }).catch(function(){});
+}, 5000);
+
+init();
+</script>
+</body>
+</html>

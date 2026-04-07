@@ -3121,6 +3121,15 @@ class RadioGateway:
             print(f"  [BusManager] Failed to start: {e}")
             self.bus_manager = None
 
+        # Initialize Loop Recorder (per-bus continuous recording)
+        try:
+            from loop_recorder import LoopRecorder
+            self.loop_recorder = LoopRecorder()
+            print("✓ Loop Recorder initialized")
+        except Exception as e:
+            print(f"  [LoopRec] Failed to initialize: {e}")
+            self.loop_recorder = None
+
         # Start Automation Engine if enabled
         if getattr(self.config, 'ENABLE_AUTOMATION', False):
             try:
@@ -3204,6 +3213,10 @@ class RadioGateway:
 
         if self.config.VERBOSE_LOGGING:
             print("\nCleaning up...")
+
+        # Stop loop recorder
+        if getattr(self, 'loop_recorder', None):
+            self.loop_recorder.stop()
 
         # Signal threads to stop
         self.running = False
