@@ -108,8 +108,8 @@
 </div>
 <div id="shell-bars"></div>
 <iframe id="shell-frame" name="content" src="/dashboard"></iframe>
+<script src="/pages/common.js"></script>
 <script>
-var _T = {accent:'#00d4ff',btnBorder:'#1b3a5c'};
 
 function setActive(el) {
   document.querySelectorAll('.shell-nav a').forEach(function(a){ a.classList.remove('active'); });
@@ -130,10 +130,6 @@ document.addEventListener('click', function(e) {
     document.querySelectorAll('.nav-group').forEach(function(g){ g.classList.remove('open'); });
   }
 });
-function shellCmd(key) {
-  fetch('/key', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:key})});
-}
-
 // --- MP3 stream player ---
 var _audio = null;
 var _playing = false;
@@ -412,11 +408,7 @@ function _sbBar(pct, cls, ducked) {
   var col = ducked ? '#e74c3c' : '#2ecc71';
   return '<span class="sb-pct" style="color:'+col+'">'+pct+'%</span><span class="sb-track"><span class="sb-bar '+cls+'" style="width:'+w+'%"></span></span>';
 }
-var _sbBusy = false;
-function _updateBars() {
-  if (_sbBusy) return;
-  _sbBusy = true;
-  fetch('/status').then(function(r){return r.json()}).then(function(s){
+createPoller('/status', 1000, function(s) {
     var h = '';
     h += '<div class="sb"><span class="sb-label">RX:</span>'+_sbBar(s.radio_rx,'sb-rx')+'</div>';
     h += '<div class="sb"><span class="sb-label">TX:</span>'+_sbBar(s.radio_tx,'sb-tx')+'</div>';
@@ -430,14 +422,11 @@ function _updateBars() {
     if(s.monitor_enabled) h += '<div class="sb"><span class="sb-label">MON:</span>'+_sbBar(s.monitor_level,'sb-mon')+'</div>';
     if(s.link_enabled && s.link_endpoints) { for(var i=0; i<s.link_endpoints.length; i++) { var le = s.link_endpoints[i]; h += '<div class="sb"><span class="sb-label">'+le.name+':</span>'+_sbBar(le.level,'sb-link')+(le.rx_muted?' <span style="color:#e74c3c;font-weight:bold;">M</span>':'')+'</div>'; } }
     document.getElementById('shell-bars').innerHTML = h;
-  }).catch(function(){}).finally(function(){_sbBusy=false});
-}
-setInterval(_updateBars, 1000);
-_updateBars();
+  });
 
 // Grey out nav links for disabled radios
 function _updateNav() {
-  fetch('/status').then(function(r){return r.json()}).then(function(s) {
+  getJson('/status').then(function(s) {
     var checks = {
       'nav-radio': s.cat_enabled !== false,
       'nav-d75': s.d75_enabled !== false,

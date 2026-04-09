@@ -330,8 +330,8 @@
   .tgl input { width:16px; height:16px; accent-color:var(--t-accent); }
 </style>
 
+<script src="/pages/common.js"></script>
 <script>
-var pollTimer = null;
 var initialLoad = true;
 
 function toggleGainSliders() {
@@ -465,8 +465,7 @@ function applySettings() {
   status.style.color = '#ffcc00';
   var settings = gatherSettings();
   settings.cmd = 'tune';
-  fetch('/sdrcmd', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(settings) })
-    .then(function(r) { return r.json(); })
+  postJson('/sdrcmd', settings)
     .then(function(d) {
       btn.disabled = false;
       btn.textContent = 'Apply & Restart Both Tuners';
@@ -490,8 +489,7 @@ function applySettings() {
 
 function sdrCmd(cmd) {
   var status = document.getElementById('sdr-apply-status');
-  fetch('/sdrcmd', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cmd: cmd}) })
-    .then(function(r) { return r.json(); })
+  postJson('/sdrcmd', {cmd: cmd})
     .then(function(d) {
       status.textContent = d.ok ? cmd + ' OK' : 'Error: ' + (d.error || '');
       status.style.color = d.ok ? '#00ff88' : '#ff4444';
@@ -500,13 +498,7 @@ function sdrCmd(cmd) {
 }
 
 
-var _sdrBusy = false;
-function pollStatus() {
-  if (_sdrBusy) return;
-  _sdrBusy = true;
-  fetch('/sdrstatus')
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
+createPoller('/sdrstatus', 1000, function(d) {
       // SDR1 status
       var badge = document.getElementById('sdr-proc-badge');
       if (d.process_alive) {
@@ -552,15 +544,7 @@ function pollStatus() {
         loadSettingsToUI(d);
         initialLoad = false;
       }
-    })
-    .catch(function() {}).finally(function(){ _sdrBusy=false; });
-}
-
-// Initial poll and start timer
-pollStatus();
-pollTimer = setInterval(pollStatus, 1000);
+});
 </script>
-
-<script src="/pages/common.js"></script>
 </body>
 </html>

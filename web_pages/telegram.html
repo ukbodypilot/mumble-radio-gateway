@@ -107,13 +107,12 @@
   <div id="tg-log-box" class="tg-log-box"></div>
 </div>
 
+<script src="/pages/common.js"></script>
 <script>
 function tgCmd(cmd) {
   var fb = document.getElementById('tg-feedback');
   fb.style.color = '#f39c12'; fb.textContent = cmd + '...';
-  fetch('/telegramcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:cmd})})
-    .then(function(r){return r.json()})
+  postJson('/telegramcmd', {cmd:cmd})
     .then(function(d){
       fb.style.color = d.ok ? '#2ecc71' : '#e74c3c';
       fb.textContent = d.ok ? cmd + ' OK' : (d.error || 'failed');
@@ -124,24 +123,13 @@ function tgCmd(cmd) {
 }
 
 function tgLogs() {
-  fetch('/telegramcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:'logs'})})
-    .then(function(r){return r.json()})
+  postJson('/telegramcmd', {cmd:'logs'})
     .then(function(d){
       var box = document.getElementById('tg-log-box');
       box.style.display = 'block';
       box.textContent = d.logs || 'No logs available';
       box.scrollTop = box.scrollHeight;
     });
-}
-
-function openTmux() {
-  fetch('/open_tmux', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
-}
-
-function fmtTime(ts) {
-  if (!ts) return '--';
-  try { return new Date(ts).toLocaleTimeString(); } catch(e) { return ts; }
 }
 
 function tgPoll() {
@@ -179,14 +167,14 @@ function tgPoll() {
 
     // Activity
     document.getElementById('tg-msgs-today').textContent = d.messages_today != null ? d.messages_today : '--';
-    document.getElementById('tg-last-in').textContent = fmtTime(d.last_message_time);
-    document.getElementById('tg-last-out').textContent = fmtTime(d.last_reply_time);
+    document.getElementById('tg-last-in').textContent = fmtTimestamp(d.last_message_time);
+    document.getElementById('tg-last-out').textContent = fmtTimestamp(d.last_reply_time);
 
     // Last message preview
     var msgBox = document.getElementById('tg-last-msg');
     if (d.last_message_text) {
       msgBox.style.display = 'block';
-      document.getElementById('tg-last-msg-time').textContent = fmtTime(d.last_message_time);
+      document.getElementById('tg-last-msg-time').textContent = fmtTimestamp(d.last_message_time);
       document.getElementById('tg-last-msg-text').textContent = d.last_message_text;
     } else {
       msgBox.style.display = 'none';
@@ -197,7 +185,5 @@ function tgPoll() {
 setInterval(tgPoll, 3000);
 tgPoll();
 </script>
-
-<script src="/pages/common.js"></script>
 </body>
 </html>

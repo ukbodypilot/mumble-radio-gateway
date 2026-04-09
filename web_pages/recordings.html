@@ -222,15 +222,13 @@ function deleteSelected() {
   var sel = getSelected();
   if (!sel.length) { alert('No files selected'); return; }
   if (!confirm('Delete ' + sel.length + ' file(s)?')) return;
-  fetch('/recordingsdelete', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({files:sel})}).then(r=>r.json()).then(function(d) {
+  postJson('/recordingsdelete', {files:sel}).then(function(d) {
     loadFiles();
   });
 }
 
 function deleteAll() {
-  fetch('/recordingsdelete', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({delete_all:true})}).then(r=>r.json()).then(function(d) {
+  postJson('/recordingsdelete', {delete_all:true}).then(function(d) {
     loadFiles();
   });
 }
@@ -272,12 +270,6 @@ function playerVol(val) {
   document.getElementById('audio-player').volume = val / 100;
 }
 
-function fmtTime(s) {
-  if (!s || isNaN(s)) return '0:00';
-  var m = Math.floor(s / 60), sec = Math.floor(s % 60);
-  return m + ':' + (sec < 10 ? '0' : '') + sec;
-}
-
 (function() {
   var player = document.getElementById('audio-player');
   var seek = document.getElementById('player-seek');
@@ -289,7 +281,7 @@ function fmtTime(s) {
     if (player.duration) {
       seek.value = (player.currentTime / player.duration) * 1000;
     }
-    document.getElementById('player-time').textContent = fmtTime(player.currentTime) + ' / ' + fmtTime(player.duration);
+    document.getElementById('player-time').textContent = fmtDuration(player.currentTime) + ' / ' + fmtDuration(player.duration);
   });
 
   // User starts dragging — stop updating slider from audio

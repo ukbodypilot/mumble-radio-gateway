@@ -338,6 +338,7 @@
   .icon-badge { padding:2px 8px; border-radius:3px; background:#c0392b; color:#fff; font-size:0.85em; font-weight:bold; }
 </style>
 
+<script src="/pages/common.js"></script>
 <script>
 var _volTimer = {};
 
@@ -354,17 +355,16 @@ function showError(msg) {
 }
 
 function radioPower() {
-  fetch('/key', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:'j'})});
+  postJson('/key', {key:'j'});
 }
 
 function chargerToggle() {
-  fetch('/key', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:'h'})});
+  postJson('/key', {key:'h'});
 }
 
 function catCmd(cmd) {
-  fetch('/catcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:cmd})})
-    .then(function(r){return r.json()}).then(function(d) {
+  postJson('/catcmd', {cmd:cmd})
+    .then(function(d) {
       if (!d.ok && d.error) showError(d.error === 'serial not connected' ?
         'Serial not connected — press Connect first' : d.error);
     }).catch(function(){});
@@ -393,40 +393,34 @@ function catConnect() {
   var st = document.getElementById('cat-connect-status');
   btn.disabled = true; btn.textContent = 'Connecting...';
   st.textContent = '';
-  fetch('/catcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:'CAT_RECONNECT'})})
-    .then(function(r){return r.json()}).then(function(d) {
+  postJson('/catcmd', {cmd:'CAT_RECONNECT'})
+    .then(function(d) {
       btn.disabled = false; btn.textContent = 'Connect';
       if (!d.ok) st.textContent = d.error || 'Failed';
     }).catch(function(){ btn.disabled = false; btn.textContent = 'Connect'; });
 }
 
 function catDisconnect() {
-  fetch('/catcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:'CAT_DISCONNECT'})});
+  postJson('/catcmd', {cmd:'CAT_DISCONNECT'});
 }
 
 function catReconnect() {
-  fetch('/catcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:'CAT_RECONNECT'})});
+  postJson('/catcmd', {cmd:'CAT_RECONNECT'});
 }
 
 function serialDisconnect() {
-  fetch('/catcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:'SERIAL_DISCONNECT'})});
+  postJson('/catcmd', {cmd:'SERIAL_DISCONNECT'});
 }
 
 function serialConnect() {
   var el = document.getElementById('serial-state');
   el.textContent = 'connecting'; el.style.color = '#f39c12';
-  fetch('/catcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:'SERIAL_CONNECT'})});
+  postJson('/catcmd', {cmd:'SERIAL_CONNECT'});
 }
 
 function setupRadio() {
-  fetch('/catcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:'SETUP_RADIO'})})
-    .then(function(r){return r.json()}).then(function(d) {
+  postJson('/catcmd', {cmd:'SETUP_RADIO'})
+    .then(function(d) {
       if (!d.ok) showError(d.status || 'setup failed');
     });
 }
@@ -440,9 +434,8 @@ function catVol(target, value) {
   clearTimeout(_volTimer[target]);
   _volTimer[target] = setTimeout(function() {
     var cmd = isSq ? 'SQ_' + target.replace('_SQ','') : 'VOL_' + target;
-    fetch('/catcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({cmd:cmd, value:parseInt(value)})})
-      .then(function(r){return r.json()}).then(function(d) {
+    postJson('/catcmd', {cmd:cmd, value:parseInt(value)})
+      .then(function(d) {
         if (!d.ok && d.error) showError(d.error === 'serial not connected' ?
           'Serial not connected — press Connect first' : d.error);
       }).catch(function(){});
@@ -462,11 +455,7 @@ function setIcon(id, on) {
   if (el) el.className = on ? 'icon-on' : 'icon-off';
 }
 
-var _radioBusy = false;
-function updateRadio() {
-  if (_radioBusy) return;
-  _radioBusy = true;
-  fetch('/catstatus').then(function(r){return r.json()}).then(function(d) {
+createPoller('/catstatus', 1000, function(d) {
     if (!d.connected) {
       document.getElementById('cat-offline').style.display = 'block';
       document.getElementById('radio-panel').style.display = 'none';
@@ -536,11 +525,6 @@ function updateRadio() {
       if (lv && d.volume.left >= 0 && !lv.matches(':active')) { lv.value=d.volume.left; if(lvt) lvt.textContent=d.volume.left; }
       if (rv && d.volume.right >= 0 && !rv.matches(':active')) { rv.value=d.volume.right; if(rvt) rvt.textContent=d.volume.right; }
     }
-
-  }).catch(function(){}).finally(function(){ _radioBusy=false; });
-}
-
-setInterval(updateRadio, 1000);
-updateRadio();
+});
 </script>
 </body></html>

@@ -179,8 +179,7 @@ function sdrSet() {
   if (_sdr1) cmd.frequency = _sdr1.freq;
   if (_sdr2) cmd.frequency2 = _sdr2.freq;
 
-  fetch('/sdrcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cmd)})
-    .then(function(r){return r.json()})
+  postJson('/sdrcmd', cmd)
     .then(function(d){
       btn.textContent = 'SET';
       btn.disabled = false;
@@ -299,13 +298,11 @@ function tuneRepeater(idx) {
   var r = _repeaters[idx];
   if (!r) return;
   var body = {cmd:'freq', args:String(r.outputFrequency)};
-  fetch('/kv4pcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
-    .then(function(resp){return resp.json()})
+  postJson('/kv4pcmd', body)
     .then(function(d){
       if (d.ok) {
         if (r.ctcssTx) {
-          fetch('/kv4pcmd', {method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({cmd:'ctcss', args:r.ctcssTx + ' 0'})});
+          postJson('/kv4pcmd', {cmd:'ctcss', args:r.ctcssTx + ' 0'});
         }
         document.getElementById('rpt-status').textContent = 'Tuned KV4P to ' + r.callsign;
       } else {

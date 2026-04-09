@@ -43,3 +43,25 @@ a { color: var(--t-accent); }
   border-color: var(--t-accent);
   color: var(--t-accent);
 }
+
+/* Status colors */
+.green { color: #2ecc71; }
+.red { color: #e74c3c; }
+.yellow { color: #f39c12; }
+.cyan { color: var(--t-accent); }
+.white { color: #e0e0e0; }
+
+/* Status layout grid */
+.st-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 16px; margin: 8px 0; }
+.st-item { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+.st-label { color: #888; display: inline-block; width: 5.5em; text-align: right; margin-right: 16px; flex-shrink: 0; }
+.st-val { font-weight: bold; }
+
+/* Level bars */
+.bar { display: inline-block; height: 18px; border-radius: 3px; min-width: 4px; vertical-align: middle; }
+.bar-pct { display: inline-block; width: 3.5em; text-align: right; color: #ccc; }
+.bar-rx { background: #2ecc71; } .bar-tx { background: #e74c3c; }
+
+/* Accent inputs */
+input[type="range"] { accent-color: var(--t-accent); }
+.tgl input { accent-color: var(--t-accent); }

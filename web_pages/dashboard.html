@@ -131,7 +131,7 @@
 
 <style>
   #status { background: var(--t-panel); border: 1px solid var(--t-border); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 1.0em; }
-  .st-row { display: grid; grid-template-columns: repeat(auto-fill, 240px); gap: 10px 16px; margin: 8px 0; }
+  .st-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 16px; margin: 8px 0; }
   .st-item { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
   .st-label { color: #888; display: inline-block; width: 5.5em; text-align: right; margin-right: 16px; flex-shrink: 0; }
   .st-val { font-weight: bold; }
@@ -150,11 +150,8 @@
   .tgl input { accent-color: var(--t-accent); }
 </style>
 
+<script src="/pages/common.js"></script>
 <script>
-function openTmux() {
-  fetch('/open_tmux', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
-}
-
 var _lastNotifSeq = 0;
 function showToast(msg, level) {
   var c = document.getElementById('toast-container');
@@ -179,7 +176,7 @@ function updateStatus() {
     // Poll endpoint status every 10s
     if(s.link_enabled && s.link_endpoints && _statusPollCount % 10 === 0) {
       for(var _ei=0; _ei<s.link_endpoints.length; _ei++) {
-        fetch('/linkcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({endpoint:s.link_endpoints[_ei].name, cmd:'status'})}).catch(function(){});
+        postJson('/linkcmd', {endpoint:s.link_endpoints[_ei].name, cmd:'status'}).catch(function(){});
       }
     }
     _lostCount = 0;
@@ -690,60 +687,47 @@ function setWSVol(v) {
 }
 
 // --- System Status ---
-function fmtBytes(b) {
-  if (b >= 1048576) return (b/1048576).toFixed(1) + ' MB/s';
-  if (b >= 1024) return (b/1024).toFixed(1) + ' KB/s';
-  return b + ' B/s';
-}
 function sysBar(pct, color) {
   var c = pct > 80 ? '#e74c3c' : pct > 60 ? '#f39c12' : (color || '#2ecc71');
   var w = Math.round(Math.min(Math.max(pct, 0), 100));
   var p = pct < 10 ? '  '+pct : pct < 100 ? ' '+pct : ''+pct;
   return '<span class="bar-pct">'+p+'%</span><span class="bar" style="width:'+w+'px;background:'+c+'"></span>';
 }
-var _sysinfoBusy = false;
-function updateSysInfo() {
-  if (_sysinfoBusy) return;
-  _sysinfoBusy = true;
-  var _ac2 = new AbortController(); setTimeout(function(){_ac2.abort();}, 5000);
-  fetch('/sysinfo', {signal:_ac2.signal}).then(function(r){return r.json()}).then(function(s) {
-    var h = '<div class="st-row">';
-    h += '<div class="st-item"><span class="st-label">CPU:</span>'+sysBar(s.cpu_pct)+'</div>';
-    h += '<div class="st-item"><span class="st-label">Load:</span><span class="st-val cyan">'+s.load[0]+' '+s.load[1]+' '+s.load[2]+'</span></div>';
-    h += '<div class="st-item"><span class="st-label">RAM:</span>'+sysBar(s.mem_pct, _T.accent)+'<span class="st-label">'+s.mem_used_mb+'/'+s.mem_total_mb+'MB</span></div>';
-    if (s.swap_total_mb > 0) {
-      var swPct = Math.round(100*s.swap_used_mb/s.swap_total_mb);
-      h += '<div class="st-item"><span class="st-label">Swap:</span>'+sysBar(swPct, '#e056a0')+'<span class="st-label">'+s.swap_used_mb+'/'+s.swap_total_mb+'MB</span></div>';
+createPoller('/sysinfo', 2000, function(s) {
+  var h = '<div class="st-row">';
+  h += '<div class="st-item"><span class="st-label">CPU:</span>'+sysBar(s.cpu_pct)+'</div>';
+  h += '<div class="st-item"><span class="st-label">Load:</span><span class="st-val cyan">'+s.load[0]+' '+s.load[1]+' '+s.load[2]+'</span></div>';
+  h += '<div class="st-item"><span class="st-label">RAM:</span>'+sysBar(s.mem_pct, _T.accent)+'<span class="st-label">'+s.mem_used_mb+'/'+s.mem_total_mb+'MB</span></div>';
+  if (s.swap_total_mb > 0) {
+    var swPct = Math.round(100*s.swap_used_mb/s.swap_total_mb);
+    h += '<div class="st-item"><span class="st-label">Swap:</span>'+sysBar(swPct, '#e056a0')+'<span class="st-label">'+s.swap_used_mb+'/'+s.swap_total_mb+'MB</span></div>';
+  }
+  h += '<div class="st-item"><span class="st-label">Disk:</span>'+sysBar(s.disk_pct, '#f1c40f')+'<span class="st-label">'+s.disk_used_gb+'/'+s.disk_total_gb+'GB</span></div>';
+  h += '<div class="st-item"><span class="st-label">Disk I/O:</span><span class="st-val green">R:'+fmtBytes(s.disk_read_bps)+'</span> <span class="st-val yellow">W:'+fmtBytes(s.disk_write_bps)+'</span></div>';
+  h += '</div>';
+  h += '<div class="st-row">';
+  h += '<div class="st-item"><span class="st-label">Net:</span><span class="st-val green">RX:'+fmtBytes(s.net_rx_bps)+'</span> <span class="st-val cyan">TX:'+fmtBytes(s.net_tx_bps)+'</span></div>';
+  h += '<div class="st-item"><span class="st-label">TCP:</span><span class="st-val white">'+s.tcp_connections+'</span></div>';
+  if (s.temps && s.temps.length) {
+    for (var i=0; i<s.temps.length; i++) {
+      var t = s.temps[i];
+      var tc = t.temp > 80 ? 'red' : t.temp > 60 ? 'yellow' : 'green';
+      h += '<div class="st-item"><span class="st-label">'+t.label+':</span><span class="st-val '+tc+'">'+t.temp+'&deg;C</span></div>';
     }
-    h += '<div class="st-item"><span class="st-label">Disk:</span>'+sysBar(s.disk_pct, '#f1c40f')+'<span class="st-label">'+s.disk_used_gb+'/'+s.disk_total_gb+'GB</span></div>';
-    h += '<div class="st-item"><span class="st-label">Disk I/O:</span><span class="st-val green">R:'+fmtBytes(s.disk_read_bps)+'</span> <span class="st-val yellow">W:'+fmtBytes(s.disk_write_bps)+'</span></div>';
-    h += '</div>';
+  }
+  h += '</div>';
+  if (s.ips && s.ips.length) {
     h += '<div class="st-row">';
-    h += '<div class="st-item"><span class="st-label">Net:</span><span class="st-val green">RX:'+fmtBytes(s.net_rx_bps)+'</span> <span class="st-val cyan">TX:'+fmtBytes(s.net_tx_bps)+'</span></div>';
-    h += '<div class="st-item"><span class="st-label">TCP:</span><span class="st-val white">'+s.tcp_connections+'</span></div>';
-    if (s.temps && s.temps.length) {
-      for (var i=0; i<s.temps.length; i++) {
-        var t = s.temps[i];
-        var tc = t.temp > 80 ? 'red' : t.temp > 60 ? 'yellow' : 'green';
-        h += '<div class="st-item"><span class="st-label">'+t.label+':</span><span class="st-val '+tc+'">'+t.temp+'&deg;C</span></div>';
-      }
+    if (s.gateway_name) h += '<div class="st-item"><span class="st-label">Name:</span><span class="st-val white">'+s.gateway_name+'</span></div>';
+    if (s.hostname) h += '<div class="st-item"><span class="st-label">Host:</span><span class="st-val cyan">'+s.hostname+'</span></div>';
+    for (var i=0; i<s.ips.length; i++) {
+      h += '<div class="st-item"><span class="st-label">'+s.ips[i].iface+':</span><span class="st-val white">'+s.ips[i].addr+'</span></div>';
     }
+    if (s.tunnel_url) h += '<div class="st-item"><span class="st-label">CF:</span><span class="st-val green"><a href="'+s.tunnel_url+'" target="_blank" style="color:#2ecc71; text-decoration:none;">'+s.tunnel_url.replace('https://','').replace('.trycloudflare.com','')+'</a></span></div>';
     h += '</div>';
-    if (s.ips && s.ips.length) {
-      h += '<div class="st-row">';
-      if (s.gateway_name) h += '<div class="st-item"><span class="st-label">Name:</span><span class="st-val white">'+s.gateway_name+'</span></div>';
-      if (s.hostname) h += '<div class="st-item"><span class="st-label">Host:</span><span class="st-val cyan">'+s.hostname+'</span></div>';
-      for (var i=0; i<s.ips.length; i++) {
-        h += '<div class="st-item"><span class="st-label">'+s.ips[i].iface+':</span><span class="st-val white">'+s.ips[i].addr+'</span></div>';
-      }
-      if (s.tunnel_url) h += '<div class="st-item"><span class="st-label">CF:</span><span class="st-val green"><a href="'+s.tunnel_url+'" target="_blank" style="color:#2ecc71; text-decoration:none;">'+s.tunnel_url.replace('https://','').replace('.trycloudflare.com','')+'</a></span></div>';
-      h += '</div>';
-    }
-    document.getElementById('sysinfo').innerHTML = h;
-  }).catch(function(){}).finally(function(){ _sysinfoBusy=false; });
-}
-setInterval(updateSysInfo, 2000);
-updateSysInfo();
+  }
+  document.getElementById('sysinfo').innerHTML = h;
+});
 
 // --- Automation Engine ---
 var _autoBusy = false, _autoHistBusy = false;
@@ -831,105 +815,71 @@ function updateAutoHistory() {
     document.getElementById('auto-history').innerHTML = h;
   }).catch(function(){}).finally(function(){ _autoHistBusy=false; });
 }
-function fmtSecs(s) {
-  if (s===null||s===undefined) return '--';
-  if (s<60) return s+'s';
-  if (s<3600) return Math.floor(s/60)+'m '+Math.floor(s%60)+'s';
-  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
-}
 setInterval(updateAutomation, 2000);
 setInterval(updateAutoHistory, 5000);
 updateAutomation();
 updateAutoHistory();
 
 // --- ADS-B Status ---
-var _adsbBusy = false;
-function updateAdsb() {
-  if (_adsbBusy) return;
-  _adsbBusy = true;
-  var _ac = new AbortController(); setTimeout(function(){_ac.abort();}, 5000);
-  fetch('/adsbstatus', {signal:_ac.signal}).then(function(r){return r.json();}).then(function(d) {
-    var panel = document.getElementById('adsb-panel');
-    if (!d.enabled) { panel.style.display='none'; return; }
-    panel.style.display='';
-    function svcDot(el, ok) {
-      el.textContent = '\u25cf';
-      el.style.color = ok ? '#2ecc71' : '#e74c3c';
-      el.title = ok ? 'running' : 'stopped';
-    }
-    svcDot(document.getElementById('adsb-svc-d1090'), d.dump1090);
-    svcDot(document.getElementById('adsb-svc-web'), d.web);
-    svcDot(document.getElementById('adsb-svc-fr24'), d.fr24feed);
-    document.getElementById('adsb-aircraft').textContent = d.aircraft;
-    document.getElementById('adsb-messages').textContent = d.messages.toLocaleString();
-    document.getElementById('adsb-rate').textContent = d.messages_rate > 0 ? d.messages_rate.toFixed(1) : '0.0';
-  }).catch(function(){}).finally(function(){ _adsbBusy=false; });
-}
-setInterval(updateAdsb, 3000);
-updateAdsb();
+createPoller('/adsbstatus', 3000, function(d) {
+  var panel = document.getElementById('adsb-panel');
+  if (!d.enabled) { panel.style.display='none'; return; }
+  panel.style.display='';
+  function svcDot(el, ok) {
+    el.textContent = '\u25cf';
+    el.style.color = ok ? '#2ecc71' : '#e74c3c';
+    el.title = ok ? 'running' : 'stopped';
+  }
+  svcDot(document.getElementById('adsb-svc-d1090'), d.dump1090);
+  svcDot(document.getElementById('adsb-svc-web'), d.web);
+  svcDot(document.getElementById('adsb-svc-fr24'), d.fr24feed);
+  document.getElementById('adsb-aircraft').textContent = d.aircraft;
+  document.getElementById('adsb-messages').textContent = d.messages.toLocaleString();
+  document.getElementById('adsb-rate').textContent = d.messages_rate > 0 ? d.messages_rate.toFixed(1) : '0.0';
+});
 
 // --- USB/IP Status ---
-var _usbipBusy = false;
-function updateUsbip() {
-  if (_usbipBusy) return;
-  _usbipBusy = true;
-  var _ac = new AbortController(); setTimeout(function(){_ac.abort();}, 5000);
-  fetch('/usbipstatus', {signal:_ac.signal}).then(function(r){return r.json();}).then(function(d) {
-    var panel = document.getElementById('usbip-panel');
-    if (!d.enabled) { panel.style.display='none'; return; }
-    panel.style.display='';
-    document.getElementById('usbip-server-label').textContent = d.server || '';
-    var dot = document.getElementById('usbip-server-dot');
-    dot.textContent = '\u25cf';
-    dot.style.color = d.server_reachable ? '#2ecc71' : '#e74c3c';
-    dot.title = d.server_reachable ? 'reachable' : (d.last_error || 'unreachable');
-    var list = document.getElementById('usbip-devices-list');
-    if (!d.devices || d.devices.length === 0) {
-      list.textContent = d.server_reachable ? 'No exported devices' : 'Server unreachable';
-    } else {
-      list.innerHTML = d.devices.map(function(dev) {
-        var dot = '<span style="color:' + (dev.attached ? '#2ecc71' : '#e74c3c') + '">&#x25cf;</span>';
-        var status = dev.attached ? 'attached' : 'not attached';
-        return dot + ' <b>' + dev.bus_id + '</b> &nbsp;' + dev.description + ' <span style="color:#888;font-size:0.85em;">(' + status + ')</span>';
-      }).join('<br>');
-    }
-  }).catch(function(){}).finally(function(){ _usbipBusy=false; });
-}
-setInterval(updateUsbip, 10000);
-updateUsbip();
+createPoller('/usbipstatus', 10000, function(d) {
+  var panel = document.getElementById('usbip-panel');
+  if (!d.enabled) { panel.style.display='none'; return; }
+  panel.style.display='';
+  document.getElementById('usbip-server-label').textContent = d.server || '';
+  var dot = document.getElementById('usbip-server-dot');
+  dot.textContent = '\u25cf';
+  dot.style.color = d.server_reachable ? '#2ecc71' : '#e74c3c';
+  dot.title = d.server_reachable ? 'reachable' : (d.last_error || 'unreachable');
+  var list = document.getElementById('usbip-devices-list');
+  if (!d.devices || d.devices.length === 0) {
+    list.textContent = d.server_reachable ? 'No exported devices' : 'Server unreachable';
+  } else {
+    list.innerHTML = d.devices.map(function(dev) {
+      var dot = '<span style="color:' + (dev.attached ? '#2ecc71' : '#e74c3c') + '">&#x25cf;</span>';
+      var status = dev.attached ? 'attached' : 'not attached';
+      return dot + ' <b>' + dev.bus_id + '</b> &nbsp;' + dev.description + ' <span style="color:#888;font-size:0.85em;">(' + status + ')</span>';
+    }).join('<br>');
+  }
+});
 
 // --- Telegram Bot Status ---
-var _tgBusy = false;
-function updateTelegram() {
-  if (_tgBusy) return;
-  _tgBusy = true;
-  var _ac = new AbortController(); setTimeout(function(){_ac.abort();}, 5000);
-  fetch('/telegramstatus', {signal:_ac.signal}).then(function(r){return r.json();}).then(function(d) {
-    var panel = document.getElementById('tg-panel');
-    if (!d.enabled) { panel.style.display='none'; return; }
-    panel.style.display='';
-    function dot(id, ok, title) {
-      var el = document.getElementById(id);
-      el.textContent = '\u25cf';
-      el.style.color = ok ? '#2ecc71' : '#e74c3c';
-      el.title = title || (ok ? 'ok' : 'offline');
-    }
-    dot('tg-dot-bot', d.bot_running, d.bot_running ? 'bot running' : 'bot not running');
-    dot('tg-dot-tmux', d.tmux_active, d.tmux_active ? 'session active' : 'session not found');
-    document.getElementById('tg-bot-name').textContent = d.bot_username || '';
-    document.getElementById('tg-session').textContent = d.tmux_session || '--';
-    document.getElementById('tg-msgs-today').textContent = d.messages_today != null ? d.messages_today : '--';
-    function fmtTime(ts) {
-      if (!ts) return '--';
-      try { return new Date(ts).toLocaleTimeString(); } catch(e) { return ts.slice(11,19) || '--'; }
-    }
-    document.getElementById('tg-last-in').textContent = fmtTime(d.last_message_time);
-    document.getElementById('tg-last-out').textContent = fmtTime(d.last_reply_time);
-    document.getElementById('tg-last-text').textContent = d.last_message_text ? '\u00bb ' + d.last_message_text : '';
-  }).catch(function(){}).finally(function(){ _tgBusy=false; });
-}
-setInterval(updateTelegram, 5000);
-updateTelegram();
+createPoller('/telegramstatus', 5000, function(d) {
+  var panel = document.getElementById('tg-panel');
+  if (!d.enabled) { panel.style.display='none'; return; }
+  panel.style.display='';
+  function dot(id, ok, title) {
+    var el = document.getElementById(id);
+    el.textContent = '\u25cf';
+    el.style.color = ok ? '#2ecc71' : '#e74c3c';
+    el.title = title || (ok ? 'ok' : 'offline');
+  }
+  dot('tg-dot-bot', d.bot_running, d.bot_running ? 'bot running' : 'bot not running');
+  dot('tg-dot-tmux', d.tmux_active, d.tmux_active ? 'session active' : 'session not found');
+  document.getElementById('tg-bot-name').textContent = d.bot_username || '';
+  document.getElementById('tg-session').textContent = d.tmux_session || '--';
+  document.getElementById('tg-msgs-today').textContent = d.messages_today != null ? d.messages_today : '--';
+  document.getElementById('tg-last-in').textContent = fmtTimestamp(d.last_message_time);
+  document.getElementById('tg-last-out').textContent = fmtTimestamp(d.last_reply_time);
+  document.getElementById('tg-last-text').textContent = d.last_message_text ? '\u00bb ' + d.last_message_text : '';
+});
 
 // --- Loop Recorder Status ---
 function updateLoopRecorder() {
@@ -978,6 +928,5 @@ updateLoopRecorder();
 
 </script>
 
-<script src="/pages/common.js"></script>
 </body>
 </html>

@@ -361,10 +361,10 @@
 
 </div><!-- end d75-panel -->
 
+<script src="/pages/common.js"></script>
 <script>
 var _modes = {"0": "FM", "1": "DV", "2": "AM", "3": "LSB", "4": "USB", "5": "CW", "6": "NFM", "7": "DR", "8": "WFM", "9": "R-CW"};
 var _powers = {"0": "High", "1": "Med", "2": "Low", "3": "EL"};
-var _d75Busy = false;
 var _volTimer = null;
 
 function fmtFreq(f) {
@@ -379,15 +379,15 @@ function fmtFreq(f) {
 function d75cmd(cmd, args, feedbackEl) {
   var body = {cmd: cmd};
   if (args) body.args = args;
-  fetch('/d75cmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
-    .then(function(r){return r.json()}).then(function(d) {
+  postJson('/d75cmd', body)
+    .then(function(d) {
       if (d.error) {
         _d75flash('Error: ' + d.error, '#e74c3c');
       } else {
         _d75flash(cmd + ': OK', '#2ecc71');
         // Quick re-poll to pick up the change faster
-        setTimeout(updateD75, 500);
-        setTimeout(updateD75, 1200);
+        setTimeout(function(){ _d75Poller.poll(); }, 500);
+        setTimeout(function(){ _d75Poller.poll(); }, 1200);
       }
     }).catch(function(e){
       _d75flash('Send failed', '#e74c3c');
@@ -406,15 +406,13 @@ function d75svcAction(action) {
   if (action === 'btstart_via_reconnect') {
     // First reconnect, then btstart
     detail.textContent = 'Reconnecting...';
-    fetch('/d75cmd', {method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({cmd:'reconnect'})})
-      .then(function(r){return r.json()}).then(function(d) {
+    postJson('/d75cmd', {cmd:'reconnect'})
+      .then(function(d) {
         if (d.ok) {
           detail.textContent = 'Connected — starting BT...';
           setTimeout(function() {
-            fetch('/d75cmd', {method:'POST', headers:{'Content-Type':'application/json'},
-              body:JSON.stringify({cmd:'btstart'})})
-              .then(function(r){return r.json()}).then(function(d2) {
+            postJson('/d75cmd', {cmd:'btstart'})
+              .then(function(d2) {
                 detail.textContent = d2.ok ? 'BT start sent — waiting for connection...' : ('Error: ' + (d2.error||''));
                 detail.style.color = d2.ok ? '#2ecc71' : '#e74c3c';
               });
@@ -429,9 +427,8 @@ function d75svcAction(action) {
   var labels = {start_service: 'Starting service...', reconnect: 'Reconnecting...'};
   detail.textContent = labels[action] || 'Working...';
   detail.style.color = '#f39c12';
-  fetch('/d75cmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd: action})})
-    .then(function(r){return r.json()}).then(function(d) {
+  postJson('/d75cmd', {cmd: action})
+    .then(function(d) {
       if (d.ok) {
         detail.textContent = d.response || 'OK';
         detail.style.color = '#2ecc71';
@@ -688,10 +685,7 @@ function d75VolDebounce(val) {
   }, 150);
 }
 
-function updateD75() {
-  if (_d75Busy) return;
-  _d75Busy = true;
-  fetch('/d75status').then(function(r){return r.json()}).then(function(d) {
+function updateD75(d) {
     _d75LastStatus = d;
     var isFullyUp = d.connected && d.serial_connected;
     // Update status checklist in offline panel
@@ -725,7 +719,6 @@ function updateD75() {
     if (!d.d75_enabled) {
       document.getElementById('d75-offline').style.display = 'block';
       document.getElementById('d75-panel').style.display = 'none';
-      _d75Busy = false;
       return;
     }
     document.getElementById('d75-offline').style.display = isFullyUp ? 'none' : 'block';
@@ -871,12 +864,8 @@ function updateD75() {
     if (bvfm !== document.activeElement) bvfm.value = _bmm;
     var bch = document.getElementById('d75-b-ch');
     if (bch !== document.activeElement && b.channel) bch.value = b.channel;
-
-  }).catch(function(e){ console.error('D75 status error:', e); })
-    .finally(function(){ _d75Busy = false; });
 }
 
-setInterval(updateD75, 1000);
-updateD75();
+var _d75Poller = createPoller('/d75status', 1000, updateD75);
 </script>
 </body></html>

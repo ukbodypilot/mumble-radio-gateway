@@ -132,9 +132,7 @@ function toggleMode() {
   var btn = document.getElementById('gps-mode-btn');
   btn.style.color = '#f39c12';
   btn.textContent = 'Switching...';
-  fetch('/gpscmd', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:'switch_mode', mode:newMode})})
-    .then(function(r){return r.json()})
+  postJson('/gpscmd', {cmd:'switch_mode', mode:newMode})
     .then(function(d){
       if (!d.ok) { btn.style.color = '#e74c3c'; btn.textContent = 'Error'; }
     }).catch(function(){ btn.style.color = '#e74c3c'; btn.textContent = 'Error'; });
@@ -149,7 +147,7 @@ function simSet() {
     speed: parseFloat(document.getElementById('sim-speed').value),
     heading: parseFloat(document.getElementById('sim-hdg').value)
   };
-  fetch('/gpscmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  postJson('/gpscmd', body);
 }
 
 // --- Polling ---

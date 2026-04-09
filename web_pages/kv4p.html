@@ -201,8 +201,7 @@ function _ctcssCode2Hz(code) {
 function kvCmd(cmd, args) {
   var body = {cmd: cmd};
   if (args !== undefined) body.args = String(args);
-  fetch('/kv4pcmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
-    .then(function(r){return r.json()})
+  postJson('/kv4pcmd', body)
     .then(function(d){
       var fb = document.getElementById('kv-feedback');
       if (d.ok) {
@@ -216,8 +215,7 @@ function kvCmd(cmd, args) {
     });
 }
 
-function kvPoll() {
-  fetch('/kv4pstatus').then(function(r){return r.json()}).then(function(d) {
+function kvUpdate(d) {
     var offline = document.getElementById('kv-offline');
     var panel = document.getElementById('kv-panel');
 
@@ -301,10 +299,8 @@ function kvPoll() {
         document.getElementById('kv-vol-val').textContent = d.audio_boost + '%';
       }
     }
-  }).catch(function(){});
 }
 
-setInterval(kvPoll, 1500);
-kvPoll();
+createPoller('/kv4pstatus', 1500, kvUpdate);
 </script>
 </body></html>
