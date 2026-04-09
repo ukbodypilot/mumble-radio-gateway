@@ -1564,6 +1564,11 @@ class WebConfigServer:
                         bus_flags = flags.setdefault(bus_id, {'pcm': False, 'mp3': False, 'vad': False})
                         bus_flags[filt] = proc[filt]
                     bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+                    # Stop loop recorder when toggled off
+                    if filt == 'loop' and not proc[filt] and self.gateway:
+                        _lr = getattr(self.gateway, 'loop_recorder', None)
+                        if _lr:
+                            _lr.stop(bus_id)
                     if bm:
                         if bus_id in bm._bus_config:
                             bm._bus_config[bus_id][filt] = proc[filt]

@@ -852,7 +852,7 @@ class AudioPlugin(RadioPlugin):
         self._start_time = time.monotonic()
         # Noise gate — squelch AIOC noise floor when radio squelch is closed
         self._gate_enabled = True
-        self._gate_threshold_db = -48.0   # dB below full-scale (AIOC noise floor ~-44.5)
+        self._gate_threshold_db = -40.0   # dB below full-scale
         self._gate_envelope = 0.0         # smoothed RMS level
         self._gate_open = False
         self._gate_attack = 0.3           # envelope rise speed (0-1)
@@ -874,13 +874,16 @@ class AudioPlugin(RadioPlugin):
         import pyaudio
         self._last_config = dict(config)  # save for stream reopen
 
-        # Load saved gain settings
+        # Load saved settings (gains + gate)
         saved = self._load_settings()
         if saved:
             self._rx_gain_db = max(-10, min(10, float(saved.get('rx_gain_db', 0))))
             self._tx_gain_db = max(-10, min(10, float(saved.get('tx_gain_db', 0))))
-            if self._rx_gain_db != 0.0 or self._tx_gain_db != 0.0:
-                print(f"  [Link] AudioPlugin: restored gains RX={self._rx_gain_db:+.1f} dB, TX={self._tx_gain_db:+.1f} dB")
+            if 'gate_threshold_db' in saved:
+                self._gate_threshold_db = max(-60, min(-10, float(saved['gate_threshold_db'])))
+            if 'gate_enabled' in saved:
+                self._gate_enabled = bool(saved['gate_enabled'])
+            print(f"  [Link] AudioPlugin: restored settings RX={self._rx_gain_db:+.1f} dB, TX={self._tx_gain_db:+.1f} dB, gate={'on' if self._gate_enabled else 'off'} @ {self._gate_threshold_db:.0f} dB")
 
         self._pa = pyaudio.PyAudio()
         self._device_name = config.get('device', '')
@@ -1124,6 +1127,7 @@ class AudioPlugin(RadioPlugin):
                 self._gate_enabled = bool(cmd['enabled'])
             if 'threshold' in cmd:
                 self._gate_threshold_db = max(-60, min(-10, float(cmd['threshold'])))
+            self._save_settings()
             return {"ok": True, "gate_enabled": self._gate_enabled,
                     "gate_threshold_db": self._gate_threshold_db}
         if action == 'status':
@@ -1225,7 +1229,9 @@ class AudioPlugin(RadioPlugin):
                 os.makedirs(d, exist_ok=True)
             with open(self._settings_file, 'w') as f:
                 json.dump({"rx_gain_db": self._rx_gain_db,
-                           "tx_gain_db": self._tx_gain_db}, f)
+                           "tx_gain_db": self._tx_gain_db,
+                           "gate_threshold_db": self._gate_threshold_db,
+                           "gate_enabled": self._gate_enabled}, f)
         except Exception as e:
             print(f"  [Link] AudioPlugin: failed to save settings: {e}")
 

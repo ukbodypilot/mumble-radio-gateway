@@ -24,7 +24,10 @@ def handle_loop_api(handler, parent):
             for _bid, _bcfg in _bm._bus_config.items():
                 if _bcfg.get('loop', False):
                     _enabled.add(_bid)
-        _loop_json(handler, lr.get_buses(enabled_bus_ids=_enabled))
+        buses = lr.get_buses(enabled_bus_ids=_enabled)
+        # Only return buses that are enabled or actively recording
+        buses = [b for b in buses if b.get('active') or b['id'] in _enabled]
+        _loop_json(handler, buses)
 
     elif path == '/loop/waveform':
         if not lr:
