@@ -7,70 +7,73 @@ Radio-to-Mumble gateway with SDR, multiple radios, web UI, and AI features. Pyth
 **Start:** `sudo systemctl restart radio-gateway.service` (or start.sh)
 **Version:** 3.0 (released 2026-04-07)
 
-## Codebase Structure (post-3.0, 2026-04-07)
+## Codebase Structure (post-cleanup, 2026-04-09)
 - `gateway_core.py` (~3,200) — RadioGateway class, simplified main loop, audio setup, Mumble, status
-- `bus_manager.py` (~820) — BusManager: ALL bus ticks + sink delivery (listen, solo, duplex, simplex)
-- `audio_bus.py` — ListenBus, SoloBus (auto-switches endpoint data→audio on TX), DuplexRepeaterBus, SimplexRepeaterBus
-- `audio_sources.py` — AudioSource subclasses, StreamOutputSource
+- `bus_manager.py` (~900) — BusManager: ALL bus ticks + sink delivery; SDR1/SDR2 as separate source nodes
+- `audio_bus.py` — ListenBus, SoloBus, DuplexRepeaterBus, SimplexRepeaterBus
+- `audio_sources.py` (~2,200) — AudioSource subclasses, StreamOutputSource, LinkAudioSource
+- `audio_util.py` (300) — shared level metering (pcm_level, pcm_rms, pcm_db, rms_to_level, update_level), AudioProcessor, CW generation
 - `loop_recorder.py` (~480) — per-bus continuous recording, segmented MP3, waveform data
 - `plugin_loader.py` (~80) — auto-discovers plugins from `plugins/` directory
-- `plugins/example_radio.py` — template for external radio plugins
-- `web_server.py` (~2,050) — WebConfigServer, Handler dispatch, _CONFIG_LAYOUT
-- `web_routes_get.py` (~1,040) — core GET route handlers
-- `web_routes_post.py` (~1,390) — POST route handlers
+- `web_server.py` (~2,100) — WebConfigServer, Handler dispatch, _CONFIG_LAYOUT, bus rename
+- `web_routes_get.py` (~920) — core GET route handlers
+- `web_routes_post.py` (~1,350) — POST route handlers, _resolve_source() helper
 - `web_routes_stream.py` (379) — WebSocket/streaming handlers
-- `web_routes_loop.py` (~120) — Loop recorder API handlers
+- `web_routes_loop.py` (~130) — Loop recorder API handlers (includes bus display names)
 - `web_routes_packet.py` (~200) — Packet radio + Winlink API handlers
-- `text_commands.py` (718) — Mumble chat commands, key dispatch, TTS
+- `text_commands.py` (714) — Mumble chat commands, key dispatch, TTS
 - `audio_trace.py` (846) — watchdog trace loop + HTML trace dump
-- `stream_stats.py` (117) — DarkIce/Icecast stats
-- `sdr_plugin.py` — RSPduo dual tuner plugin
-- `th9800_plugin.py` — TH-9800 AIOC plugin (audio_level computed post-gate)
+- `stream_trace.py` (117) — per-stream trace with overflow/underrun/slow_drain events
+- `sdr_plugin.py` (~1,700) — RSPduo dual + single tuner modes, per-channel PipeWire sinks
+- `th9800_plugin.py` — TH-9800 AIOC plugin
 - `kv4p_plugin.py` — KV4P HT radio plugin
-- `gateway_link.py` — Link protocol, server, client, RadioPlugin base class
-- `gateway_mcp.py` — MCP server (stdio, 60+ tools including 6 loop recorder tools)
+- `gateway_link.py` — Link protocol, server, client, RadioPlugin base, AudioPlugin noise gate
+- `gateway_mcp.py` — MCP server (stdio, 60+ tools including sdr_set_mode)
 - `repeater_manager.py`, `transcriber.py`, `smart_announce.py`, `radio_automation.py`, `ptt.py`
-- Utility modules: `ddns_updater.py`, `email_notifier.py`, `cloudflare_tunnel.py`, `mumble_server.py`, `usbip_manager.py`, `gps_manager.py`
 
-## Web UI Pages
-`/` `/dashboard` `/routing` `/controls` `/radio` `/d75` `/kv4p` `/sdr` `/gps` `/repeaters` `/aircraft` `/telegram` `/monitor` `/recordings` `/recorder` `/transcribe` `/packet` `/config` `/logs` `/voice`
+## Web UI
+- Pages: `/dashboard` `/routing` `/controls` `/radio` `/d75` `/kv4p` `/sdr` `/gps` `/repeaters` `/aircraft` `/telegram` `/monitor` `/recordings` `/recorder` `/transcribe` `/packet` `/config` `/logs` `/voice`
+- `common.js` (124 lines) — postJson, getJson, createPoller, sendKey, openTmux, fmtSecs, fmtTimestamp, fmtDuration, fmtBytes
+- `common.css` (68 lines) — theme variables, status colors, layout grid, level bars, buttons
+- Routing page: bus rename (double-click), gain slider reset (double-click), alphabetical auto-arrange
 
 ## Key Subsystems
 
-### 3.0 Architecture (2026-04-07)
-- ALL buses managed by BusManager in a daemon thread
-- Main loop: drains BusManager queues, SDR rebroadcast TX, WebSocket push
-- `sync_listen_bus()` manages source add/remove from routing config
-- `self.mixer = bus_manager.listen_bus` for backward compat
+### SDR Single-Tuner Mode (2026-04-09)
+- `SDR_MODE`: 'dual' (master/slave rspduo_mode=4/8) or 'single' (rspduo_mode=1, multi-channel)
+- Single mode: one rtl_airband process, multiple channels in config, lower sample rates
+- CPU reduction: 31% → 13% (57% less) at 1 MHz sample rate
+- Per-channel PipeWire sinks: ch1 → sdr_capture, ch2 → sdr_capture2
+- SDR1/SDR2 registered as separate source nodes in bus_manager for independent routing
+- Settings persisted in `sdr_channels.json` (both dual and single sections, mode field)
+- Bandwidth viz on SDR page shows channels relative to tunable band
+- Mode switch: stop → verify → reconfigure → restart → verify → report (with rollback)
+- Max 2 channels in single mode (maps to sdr1/sdr2 ducking)
+- Queue: maxsize=16, slow drain above 4 chunks (target ~150-200ms latency)
+- RSPduo dual-tuner mode locked at 2 MS/s (hardware constraint) — single mode allows 0.25-10.66 MS/s
+- Instrumented: overflow, underrun, slow_drain in stream trace; mode switch timing in console
 
-### Loop Recorder (2026-04-07)
-- Enable via "R" button per bus in routing UI
-- Segmented MP3 (5-min chunks), `.wfm` sidecar (peak+RMS per second)
-- Silence padding from segment boundary for cross-bus alignment
-- Live waveform from active segment in memory
-- Canvas viewer: zoom/pan, click-to-play, right-click-drag select, export MP3/WAV
-- Stacked multi-bus view with independent playback
-- Configurable retention per bus (1h-7d), dashboard stats panel
-- HTTP Range support on `/loop/play` for seeking
-- MCP tools: status, toggle, retention, summary, activity, export
-- API: `/loop/buses`, `/loop/waveform`, `/loop/play`, `/loop/export`
+### D75 Link Endpoint (cleaned 2026-04-08)
+- D75 is link-endpoint-only — all legacy d75_plugin.py code removed (~1,136 lines deleted)
+- `scripts/remote_bt_proxy.py` kept (used by `tools/d75_link_plugin.py`)
+- Link endpoint on 192.168.2.134 via BT proxy
 
-### Plugin Auto-Discovery (2026-04-07)
-- Drop `.py` in `plugins/`, set `ENABLE_X = True`, restart — zero code changes
-- `plugin_loader.py` scans for classes with `PLUGIN_ID` attribute
-- Auto-registered in BusManager `_get_source()` and `sync_listen_bus()`
-- Template: `plugins/example_radio.py`
-- Docs: `docs/plugin-development.md` (local plugins + link endpoints)
+### AudioPlugin Noise Gate (2026-04-08)
+- Default threshold raised -48 → -40 dB (AIOC noise floor ~-45 dB)
+- Gate threshold + enabled state persisted in endpoint `settings.json`
+- FTM-150 endpoint on 192.168.2.121, files at `/home/user/link/`
 
-### FTM-150 Auto Mode Switch (2026-04-07)
-- SoloBus._fire_ptt checks endpoint mode before keying
-- If mode='data' (Direwolf), auto-sends mode switch to audio, waits 500ms, then keys
-- Logs warning so user knows it happened
-- Sink ID fix: strip trailing underscore (`ftm_150_tx` → `ftm_150`)
+### Loop Recorder
+- Toggle off calls `loop_recorder.stop(bus_id)` to close active segment immediately
+- Disabled buses filtered from `/loop/buses` API
+- Bus display names from routing config shown in dashboard + recorder page
 
-### Shell Nav Bar (2026-04-07)
-- MP3/PCM/MIC: fixed-width buttons, timer inside button text, no indicator dots
-- Play buttons turn red when active, default volume 50%
+### audio_util.py (2026-04-08)
+- Extracted from audio_sources.py: AudioProcessor, CW generation, level metering
+- `pcm_level(pcm, current, gain)` — one-call RMS→dB→0-100→smoothed
+- `pcm_db(pcm)` — dB level for threshold checks
+- `pcm_rms(pcm)` — raw RMS value
+- Used by all plugins (kv4p, th9800, sdr, link sources) — replaces ~55 inline metering sites
 
 ## Config Safety (CRITICAL)
 - `_CONFIG_LAYOUT` in web_server.py is master list — Save wipes keys not listed
@@ -79,15 +82,17 @@ Radio-to-Mumble gateway with SDR, multiple radios, web UI, and AI features. Pyth
 
 ## User Preferences
 - Commits requested explicitly, no auto-push, concise responses, no emojis
-- Instrument code rather than guess at bugs
+- Instrument code rather than guess at bugs — measure before fixing audio issues
 - Separate files for new features (not monolith)
 - Config file is master for startup state; runtime controls reset on restart
+- Every control must be closed-loop (confirm success/failure)
+- Protect working code — don't damage existing dual-tuner SDR mode
 
 ## Machine — user-optiplex3020 (Arch Linux)
-- Python 3.14, sudo password: `user`, Git user: ukbodypilot
+- Intel i5-4590 4-core, 16 GB RAM, Python 3.14, sudo password: `user`, Git user: ukbodypilot
 - AIOC: `/dev/ttyACM0`, KV4P: `/dev/kv4p`, Relay: `/dev/relay_radio`
 - D75: link endpoint on 192.168.2.134 via BT proxy
-- FTM-150: AIOC link endpoint on 192.168.2.121
+- FTM-150: AIOC link endpoint on 192.168.2.121 (`/home/user/link/`)
 - GPS: u-blox GNSS on `/dev/gps` (udev rule)
 
 ## See Also
@@ -100,7 +105,7 @@ Radio-to-Mumble gateway with SDR, multiple radios, web UI, and AI features. Pyth
 - [feedback_no_gateway_restart.md](feedback_no_gateway_restart.md) — Claude can restart gateway
 - [feedback_instrument_not_guess.md](feedback_instrument_not_guess.md) — measure before fixing audio issues
 - [project_audio_quality.md](project_audio_quality.md) — audio quality fixes, trace system
-- [project_d75_cleanup.md](project_d75_cleanup.md) — legacy D75 removal target ~2026-04-08
+- [project_d75_cleanup.md](project_d75_cleanup.md) — D75 cleanup COMPLETED 2026-04-08
 - [reference_gdrive_backup.md](reference_gdrive_backup.md) — rclone backup to Google Drive
 - [project_ftm150_endpoint.md](project_ftm150_endpoint.md) — FTM-150 AIOC endpoint
 - [project_packet_radio.md](project_packet_radio.md) — Packet Radio + Winlink email
@@ -108,3 +113,4 @@ Radio-to-Mumble gateway with SDR, multiple radios, web UI, and AI features. Pyth
 - [project_listen_bus_unify.md](project_listen_bus_unify.md) — listen bus unification (COMPLETED)
 - [project_rust_audio_core.md](project_rust_audio_core.md) — Rust audio core (future, deferred)
 - [project_loop_recorder.md](project_loop_recorder.md) — loop recorder details + bugs fixed
+- [project_sdr_single_mode.md](project_sdr_single_mode.md) — SDR single-tuner mode details

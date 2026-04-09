@@ -4,6 +4,54 @@ All notable changes to Radio Gateway.
 
 ## [Unreleased]
 
+## [3.1.0] -- 2026-04-09
+
+### Added
+- **SDR single-tuner mode** — RSPduo runs one tuner with multi-channel demodulation
+  - Mode selector on `/sdr` page and `sdr_set_mode` MCP tool
+  - Configurable sample rate (0.25–10.66 MHz) and center frequency
+  - Bandwidth visualization showing channel positions within tunable band
+  - Per-channel audio level bars in channel editor
+  - Auto-center button calculates optimal center freq and sample rate
+  - Max 2 channels with independent PipeWire sinks for per-channel routing
+  - SDR CPU reduced 57% (31% → 13%) at 1 MHz sample rate
+  - Mode, channels, and device settings persist across restarts
+  - Closed-loop controls: every action verifies and reports outcome
+  - Full stream trace instrumentation (overflow, underrun, slow drain, timing)
+- **SDR1/SDR2 as separate routing nodes** — each tuner channel independently routable
+  to any bus (no more internal-only ducking)
+- **Bus rename** — double-click bus name on routing page for inline editing
+- **Gain slider reset** — double-click any gain slider to reset to 100%
+- **Alphabetical bus sort** in routing auto-arrange
+- **`audio_util.py`** — shared level metering module (`pcm_level`, `pcm_db`, `pcm_rms`,
+  `rms_to_level`, `update_level`), AudioProcessor, and CW generation extracted from
+  audio_sources.py; used by all plugins
+- **`_resolve_source()`** in web_routes_post.py — unified plugin + link endpoint
+  attribute lookup for duck/boost/mute
+- **Web UI shared code** — `common.js` expanded with `postJson`, `getJson`,
+  `createPoller`, `sendKey`, `openTmux`, formatting helpers; `common.css` expanded
+  with status colors, layout grid, level bars
+- **Bus display names** shown in loop recorder dashboard and recorder page
+
+### Fixed
+- **Loop recorder toggle-off** — `stop(bus_id)` called immediately when loop flag
+  toggled off; disabled buses filtered from API
+- **Link endpoint noise gate** — default threshold raised -48 → -40 dB (AIOC noise
+  floor was passing through); gate settings now persist in endpoint `settings.json`
+- **LinkAudioSource TX metering** — `put_audio()` now updates `tx_audio_level` so
+  TX nodes show activity on routing page (affects all link endpoints)
+- **common.js load order** — fixed controls.html and recordings.html where common.js
+  loaded after inline scripts that depend on it
+- **Duplicate kv4p_plugin init** and no-op self-assignment in reconnect handler
+- **Controls page responsive layout** — fixed-width tiles replaced with flex:1 tiles;
+  inline container styles moved to CSS classes
+
+### Removed
+- **Legacy D75 plugin** — `d75_plugin.py` (730 lines) deleted; all d75_plugin
+  references removed from 11 files (~1,136 lines total). D75 is now link-endpoint-only.
+- **Duplicate level metering** — ~55 inline RMS→dB→level→decay patterns replaced
+  with `audio_util` calls across 10 files (-282 lines)
+
 ## [3.0.0] -- 2026-04-07
 
 ### Architecture
