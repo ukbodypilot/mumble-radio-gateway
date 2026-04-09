@@ -153,6 +153,7 @@
   .pb-key { font-weight: bold; display: inline-block; width: 1.5em; }
 </style>
 
+<script src="/pages/common.js"></script>
 <script>
 function toggleTestLoop(btn) {
   postJson('/testloop', {}).then(function(d) {
@@ -493,6 +494,5 @@ createPoller('/status', 1000, function(s) {
 })();
 </script>
 
-<script src="/pages/common.js"></script>
 </body>
 </html>
