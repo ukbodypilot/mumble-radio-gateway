@@ -30,7 +30,8 @@
     border-radius:3px; cursor:pointer; font-family:monospace; }
   .bus-controls button:hover { background:var(--t-btn-hover); }
   .bus-controls input[type=range] { width:50px; }
-  .time-display { font-family:monospace; color:#aaa; font-size:0.85em; min-width:100px; }
+  .time-display { font-family:monospace; color:#aaa; font-size:0.85em; min-width:60px; }
+  .play-clock { font-family:monospace; color:#e74c3c; font-size:0.95em; font-weight:bold; min-width:70px; }
 
   .export-row { display:flex; align-items:center; gap:8px; margin-top:6px; font-size:0.85em; flex-wrap:wrap; }
   .export-row label { color:#888; }
@@ -109,7 +110,8 @@ function buildUI() {
       + '<div class="bus-controls">'
       + '<button onclick="busPlay(\''+b.id+'\')">&#9654;</button>'
       + '<button onclick="busStop(\''+b.id+'\')">&#9632;</button>'
-      + '<span class="time-display" id="td-'+b.id+'">--:--:-- / --:--:--</span>'
+      + '<span class="time-display" id="td-'+b.id+'">--:--:--</span>'
+      + '<span class="play-clock" id="pc-'+b.id+'"></span>'
       + '<input type="range" min="0" max="1000" value="0" id="seek-'+b.id+'" oninput="busSeek(\''+b.id+'\',this.value)">'
       + '<span style="color:#666;font-size:0.8em;">Vol</span>'
       + '<input type="range" min="0" max="100" value="50" style="width:40px;" id="vol-'+b.id+'" oninput="busVol(\''+b.id+'\',this.value)">'
@@ -370,7 +372,9 @@ function busStop(busId) {
   st.player.pause();
   st.player.currentTime = 0;
   _highlightPlayBtn(busId, false);
-  document.getElementById('td-'+busId).textContent = '--:--:-- / --:--:--';
+  document.getElementById('td-'+busId).textContent = '--:--:--';
+  var pc = document.getElementById('pc-'+busId);
+  if (pc) pc.textContent = '';
   document.getElementById('seek-'+busId).value = 0;
   renderBus(busId);
 }
@@ -406,6 +410,12 @@ function animatePlayback(busId) {
   var cur = st.player.currentTime || 0;
   document.getElementById('seek-'+busId).value = dur>0 ? Math.floor((cur/dur)*1000) : 0;
   document.getElementById('td-'+busId).textContent = fmtTime(cur) + ' / ' + fmtTime(dur);
+  // Show actual local time of current playback position
+  var pc = document.getElementById('pc-'+busId);
+  if (pc && st.playStart) {
+    var epoch = st.playStart + cur;
+    pc.textContent = epochToHMS(epoch);
+  }
   renderBus(busId);
   requestAnimationFrame(function(){ animatePlayback(busId); });
 }

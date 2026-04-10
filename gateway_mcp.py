@@ -251,6 +251,72 @@ def sdr_set_mode(mode: str) -> str:
 
 
 @mcp.tool()
+def sdr_single_tune(
+    centerfreq: float | None = None,
+    sample_rate: float | None = None,
+    channels: list | None = None,
+) -> str:
+    """
+    Update single-mode SDR settings and restart. Only applies when SDR is in single mode.
+
+    Args:
+        centerfreq:   Center frequency in MHz (e.g. 446.70)
+        sample_rate:  Sample rate / bandwidth in MHz (e.g. 0.5, 1.0, 2.0)
+        channels:     List of channel dicts, each with 'freq' (MHz), 'modulation' ('nfm'/'am'),
+                      'squelch_threshold' (dBFS, e.g. -26), and optional 'label'.
+                      Example: [{"freq": 446.76, "modulation": "nfm", "squelch_threshold": -26, "label": "PMR 1"}]
+    """
+    payload: dict = {'cmd': 'single_tune'}
+    if centerfreq is not None:
+        payload['centerfreq'] = centerfreq
+    if sample_rate is not None:
+        payload['sample_rate'] = sample_rate
+    if channels is not None:
+        payload['channels'] = channels
+    result = _post('/sdrcmd', payload, timeout=20)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def sdr_add_channel(
+    freq: float,
+    modulation: str = "nfm",
+    squelch_db: int = -26,
+    label: str = "",
+) -> str:
+    """
+    Add a channel to single-mode SDR. Restarts the tuner.
+
+    Args:
+        freq:        Frequency in MHz (must fit within current bandwidth)
+        modulation:  'nfm' or 'am' (default 'nfm')
+        squelch_db:  Squelch threshold in dBFS (default -26)
+        label:       Display label for the channel
+    """
+    payload: dict = {
+        'cmd': 'single_add_channel',
+        'freq': freq,
+        'modulation': modulation,
+        'squelch_threshold': squelch_db,
+        'label': label,
+    }
+    result = _post('/sdrcmd', payload, timeout=20)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def sdr_remove_channel(index: int) -> str:
+    """
+    Remove a channel from single-mode SDR by index (0-based). Restarts the tuner.
+
+    Args:
+        index: Channel index to remove (0 = first channel). Use sdr_status to see channels.
+    """
+    result = _post('/sdrcmd', {'cmd': 'single_remove_channel', 'index': index}, timeout=20)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
 def sdr_restart() -> str:
     """
     Restart the rtl_airband SDR decoder process.  Use when SDR status shows
@@ -1242,6 +1308,26 @@ def bus_delete(bus_id: str) -> str:
     })
     if result.get('ok'):
         return f"Deleted bus '{bus_id}'"
+    return f"Error: {result.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def bus_rename(bus_id: str, name: str) -> str:
+    """
+    Rename a bus. Changes the display name shown in routing, dashboard,
+    and loop recorder.
+
+    Args:
+        bus_id: The bus ID (e.g. 'main', 'th9800')
+        name:   New display name
+    """
+    result = _post('/routing/cmd', {
+        'cmd': 'rename_bus',
+        'id': bus_id,
+        'name': name,
+    })
+    if result.get('ok'):
+        return f"Renamed bus '{bus_id}' to '{result.get('name')}'"
     return f"Error: {result.get('error', 'unknown')}"
 
 
