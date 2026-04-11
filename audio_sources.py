@@ -1764,7 +1764,7 @@ class LinkAudioSource(AudioSource):
         self._chunk_queue = _queue_mod.deque(maxlen=16)
         self._sub_buffer = b''
         self._link_server = None  # Set by gateway_core after init
-        self._jitter_prefill = 3  # wait for N chunks before draining (absorbs endpoint jitter)
+        self._jitter_prefill = 4  # wait for N chunks before draining (absorbs endpoint jitter)
         self._jitter_primed = False
 
     def setup_audio(self):
