@@ -711,6 +711,18 @@ class BusManager:
                                     gw.link_server.send_audio_to(_eln, audio)
                                 except Exception:
                                     pass
+                                # Auto-PTT: key endpoint when sending audio
+                                if not hasattr(self, '_sink_ptt_hold'):
+                                    self._sink_ptt_hold = {}
+                                _was_active = self._sink_ptt_hold.get(_eln, 0) > 0
+                                self._sink_ptt_hold[_eln] = time.monotonic() + 0.5  # 500ms hold
+                                if not _was_active or not gw._link_ptt_active.get(_eln, False):
+                                    try:
+                                        gw.link_server.send_command_to(
+                                            _eln, {"cmd": "ptt", "state": True})
+                                        gw._link_ptt_active[_eln] = True
+                                    except Exception:
+                                        pass
                         # Track TX level for routing display
                         if _audio_level and _audio_level > gw._link_tx_levels.get(_eln, 0):
                             gw._link_tx_levels[_eln] = _audio_level
@@ -925,6 +937,20 @@ class BusManager:
                 except Exception as e:
                     print(f"  [BusManager] {bus_id} tick error: {e}")
                     import traceback; traceback.print_exc()
+
+            # ── Auto-PTT release for link endpoint TX sinks ──────────────
+            if hasattr(self, '_sink_ptt_hold'):
+                _now_ptt = time.monotonic()
+                for _ptt_ep, _ptt_until in list(self._sink_ptt_hold.items()):
+                    if _ptt_until > 0 and _now_ptt > _ptt_until:
+                        if gw._link_ptt_active.get(_ptt_ep, False):
+                            try:
+                                gw.link_server.send_command_to(
+                                    _ptt_ep, {"cmd": "ptt", "state": False})
+                                gw._link_ptt_active[_ptt_ep] = False
+                            except Exception:
+                                pass
+                        self._sink_ptt_hold[_ptt_ep] = 0
 
             _tick_total = (time.monotonic() - _tick_start) * 1000
 
