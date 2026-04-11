@@ -372,16 +372,55 @@ def main():
     print(f"[Endpoint] Streaming to {_target} as '{args.name}' -- Ctrl+C to stop")
     use_gain = args.gain != 1.0
 
+    # Diagnostic counters for audio loop
+    _diag_time = time.monotonic()
+    _diag_reads = 0
+    _diag_nulls = 0
+    _diag_sends = 0
+    _diag_slow_reads = 0
+    _diag_slow_sends = 0
+    _diag_max_read = 0.0
+    _diag_max_send = 0.0
+    _DIAG_INTERVAL = 10.0
+
     try:
         while not shutdown_requested.is_set():
+            _t0 = time.monotonic()
             pcm, _ptt = plugin.get_audio()
+            _read_ms = (time.monotonic() - _t0) * 1000
+
             if pcm and client.connected:
                 if use_gain:
                     pcm = apply_gain(pcm, args.gain)
+                _t1 = time.monotonic()
                 client.send_audio(pcm)
+                _send_ms = (time.monotonic() - _t1) * 1000
+                _diag_sends += 1
+                if _send_ms > 10:
+                    _diag_slow_sends += 1
+                if _send_ms > _diag_max_send:
+                    _diag_max_send = _send_ms
             elif not pcm:
-                # No audio available -- brief sleep to avoid busy-wait
+                _diag_nulls += 1
                 time.sleep(0.01)
+
+            _diag_reads += 1
+            if _read_ms > 80:
+                _diag_slow_reads += 1
+            if _read_ms > _diag_max_read:
+                _diag_max_read = _read_ms
+
+            _now = time.monotonic()
+            if _now - _diag_time >= _DIAG_INTERVAL:
+                print(f"[Endpoint-DIAG] {_DIAG_INTERVAL:.0f}s: "
+                      f"reads={_diag_reads} nulls={_diag_nulls} sends={_diag_sends} "
+                      f"slow_read={_diag_slow_reads} (max={_diag_max_read:.0f}ms) "
+                      f"slow_send={_diag_slow_sends} (max={_diag_max_send:.0f}ms)")
+                _diag_time = _now
+                _diag_reads = _diag_nulls = _diag_sends = 0
+                _diag_slow_reads = _diag_slow_sends = 0
+                _diag_max_read = _diag_max_send = 0.0
+
     except Exception as e:
         print(f"[Endpoint] Audio loop error: {e}")
     finally:

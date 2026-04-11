@@ -1256,8 +1256,8 @@ class AudioPlugin(RadioPlugin):
     def __init__(self):
         super().__init__()
         self._pa = None
-        self._in_stream = None
-        self._out_stream = None
+        self._in_stream = None   # arecord subprocess (not PyAudio)
+        self._out_stream = None  # PyAudio output stream
         self._device_name = ""
         self._rx_gain_db = 0.0
         self._tx_gain_db = 0.0
@@ -1270,22 +1270,25 @@ class AudioPlugin(RadioPlugin):
         self._gate_open = False
         self._gate_attack = 0.3           # envelope rise speed (0-1)
         self._gate_release = 0.05         # envelope fall speed (0-1)
-        # Stream health — auto-reopen on stale/dead PyAudio stream
-        self._read_errors = 0             # consecutive read exceptions
-        self._zero_reads = 0              # consecutive zero-level reads (peak < 5)
-        self._reopen_count = 0            # total reopens for logging
+        # arecord reader thread
+        self._rx_queue = None
+        self._rx_thread = None
+        self._rx_running = False
+        self._stream_restart_count = 0
         self._last_config = None          # saved config for reopen
 
     def setup(self, config):
-        """Open PyAudio input + output streams.
+        """Open arecord for capture + PyAudio for output.
+
+        Input uses arecord (raw ALSA) in a dedicated reader thread for
+        reliable timing.  Output uses PyAudio for playback to the radio.
 
         *config* keys:
-            device (str)   — device name substring or index (default '')
+            device (str)   — ALSA device (e.g. 'hw:1,0') or name substring
             rate (int)     — sample rate (default 48000)
             channels (int) — channel count (default 1)
         """
-        import pyaudio
-        self._last_config = dict(config)  # save for stream reopen
+        self._last_config = dict(config)
 
         # Load saved settings (gains + gate)
         saved = self._load_settings()
@@ -1296,77 +1299,177 @@ class AudioPlugin(RadioPlugin):
                 self._gate_threshold_db = max(-60, min(-10, float(saved['gate_threshold_db'])))
             if 'gate_enabled' in saved:
                 self._gate_enabled = bool(saved['gate_enabled'])
-            print(f"  [Link] AudioPlugin: restored settings RX={self._rx_gain_db:+.1f} dB, TX={self._tx_gain_db:+.1f} dB, gate={'on' if self._gate_enabled else 'off'} @ {self._gate_threshold_db:.0f} dB")
+            print(f"  [Link] AudioPlugin: restored settings RX={self._rx_gain_db:+.1f} dB, "
+                  f"TX={self._tx_gain_db:+.1f} dB, gate={'on' if self._gate_enabled else 'off'} "
+                  f"@ {self._gate_threshold_db:.0f} dB")
 
-        self._pa = pyaudio.PyAudio()
         self._device_name = config.get('device', '')
         rate = int(config.get('rate', self.RATE))
         channels = int(config.get('channels', self.CHANNELS))
-        fmt = pyaudio.paInt16
 
-        dev_index = self._find_device(self._device_name)
-        # Find separate input/output indices — some backends (PipeWire)
-        # enumerate different indices for input vs output capability.
-        # dev_index may point to a device with only input OR only output,
-        # so always scan for the correct capability.
-        in_index = None
-        out_index = None
-        if self._pa and self._device_name:
-            _dn = self._device_name.lower()
-            for i in range(self._pa.get_device_count()):
-                try:
-                    info = self._pa.get_device_info_by_index(i)
-                    if _dn in info.get('name', '').lower():
-                        if info.get('maxInputChannels', 0) > 0 and in_index is None:
-                            in_index = i
-                        if info.get('maxOutputChannels', 0) > 0 and out_index is None:
+        # Resolve ALSA device — if device looks like hw:N,M use directly,
+        # otherwise scan /proc/asound/cards for a name match
+        alsa_dev = self._device_name
+        if not alsa_dev.startswith('hw:'):
+            card = self._find_alsa_card(alsa_dev or 'All-In-One')
+            if card is not None:
+                alsa_dev = f'hw:{card},0'
+                print(f"  [Link] AudioPlugin: matched ALSA card {card} → {alsa_dev}")
+            else:
+                print(f"  [Link] AudioPlugin: no ALSA card matched '{alsa_dev}', using default")
+                alsa_dev = 'default'
+
+        # Start arecord reader thread for input
+        import queue as _q
+        self._rx_queue = _q.Queue(maxsize=8)
+        self._rx_running = True
+        self._alsa_dev = alsa_dev
+        self._rate = rate
+        self._channels = channels
+        self._rx_thread = threading.Thread(
+            target=self._arecord_reader, daemon=True, name="arecord-reader")
+        self._rx_thread.start()
+
+        # Output via PyAudio (for playback to radio TX)
+        try:
+            import pyaudio
+            self._pa = pyaudio.PyAudio()
+            out_index = self._find_device(self._device_name)
+            # Scan for output-capable device matching name
+            if self._pa and self._device_name:
+                _dn = self._device_name.lower()
+                for i in range(self._pa.get_device_count()):
+                    try:
+                        info = self._pa.get_device_info_by_index(i)
+                        if _dn in info.get('name', '').lower() and info.get('maxOutputChannels', 0) > 0:
                             out_index = i
-                except Exception:
-                    continue
-        # Fall back to generic find if name scan didn't match
-        if in_index is None and dev_index is not None:
-            in_index = dev_index
-        if out_index is None and dev_index is not None:
-            out_index = dev_index
-        if in_index != out_index:
-            print(f"  [Link] AudioPlugin: separate I/O indices: in={in_index} out={out_index}")
-
-        try:
-            kw_in = {'input_device_index': in_index} if in_index is not None else {}
-            self._in_stream = self._pa.open(
-                format=fmt, channels=channels, rate=rate,
-                input=True, frames_per_buffer=self.CHUNK_FRAMES,
-                **kw_in)
-            print(f"  [Link] AudioPlugin: input stream opened"
-                  f" (device={self._device_name or 'default'}, idx={in_index}, rate={rate})")
-        except Exception as e:
-            print(f"  [Link] AudioPlugin: failed to open input stream: {e}")
-            self._in_stream = None
-
-        try:
+                            break
+                    except Exception:
+                        continue
             kw_out = {'output_device_index': out_index} if out_index is not None else {}
             self._out_stream = self._pa.open(
-                format=fmt, channels=channels, rate=rate,
+                format=pyaudio.paInt16, channels=channels, rate=rate,
                 output=True, frames_per_buffer=self.CHUNK_FRAMES,
                 **kw_out)
-            print(f"  [Link] AudioPlugin: output stream opened"
-                  f" (device={self._device_name or 'default'}, idx={out_index}, rate={rate})")
+            print(f"  [Link] AudioPlugin: output stream opened (idx={out_index})")
         except Exception as e:
-            print(f"  [Link] AudioPlugin: failed to open output stream: {e}")
+            print(f"  [Link] AudioPlugin: failed to open output: {e}")
             self._out_stream = None
 
-    def teardown(self):
-        """Close PyAudio streams, save gains, and terminate."""
-        self._save_settings()
-        for stream in (self._in_stream, self._out_stream):
-            if stream:
+    def _find_alsa_card(self, name_match):
+        """Find ALSA card number by name substring in /proc/asound/cards."""
+        try:
+            with open('/proc/asound/cards') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and line[0].isdigit() and name_match.lower() in line.lower():
+                        return int(line.split()[0])
+        except Exception:
+            pass
+        return None
+
+    def _arecord_reader(self):
+        """Read audio from ALSA via arecord subprocess (dedicated thread)."""
+        import subprocess
+        chunk_bytes = self.CHUNK_BYTES
+        while self._rx_running:
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    ['arecord', '-D', self._alsa_dev, '-f', 'S16_LE',
+                     '-r', str(self._rate), '-c', str(self._channels),
+                     '-t', 'raw', '--buffer-size', str(self.CHUNK_FRAMES * 4)],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                self._in_stream = proc
+                self._stream_restart_count += 1
+                print(f"  [Link] AudioPlugin: arecord opened on {self._alsa_dev} "
+                      f"pid={proc.pid} (restart #{self._stream_restart_count})")
+            except Exception as e:
+                print(f"  [Link] AudioPlugin: arecord failed: {e} — retrying in 2s")
+                time.sleep(2)
+                continue
+
+            # Read loop
+            while self._rx_running:
                 try:
-                    stream.stop_stream()
-                    stream.close()
+                    data = proc.stdout.read(chunk_bytes)
+                    if not data:
+                        break
+                    if len(data) < chunk_bytes:
+                        data += b'\x00' * (chunk_bytes - len(data))
+
+                    # RX gain
+                    if self._rx_gain_db != 0.0:
+                        data = self._apply_volume(data, self._db_to_linear(self._rx_gain_db))
+
+                    # Noise gate
+                    if self._gate_enabled:
+                        data = self._apply_gate(data)
+
+                    # Queue for get_audio
+                    try:
+                        self._rx_queue.put_nowait(data)
+                    except Exception:
+                        try:
+                            self._rx_queue.get_nowait()
+                        except Exception:
+                            pass
+                        try:
+                            self._rx_queue.put_nowait(data)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"  [Link] AudioPlugin: arecord read error: {e}")
+                    break
+
+            # Kill and retry
+            self._in_stream = None
+            if proc:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
                 except Exception:
                     pass
-        self._in_stream = None
-        self._out_stream = None
+            if self._rx_running:
+                print(f"  [Link] AudioPlugin: arecord died — restarting in 2s")
+                time.sleep(2)
+
+    def _apply_gate(self, data):
+        """Apply noise gate to PCM data. Returns data or silence."""
+        import struct as _st, math as _m
+        n = len(data) // 2
+        samples = _st.unpack(f'<{n}h', data)
+        rms = _m.sqrt(sum(s * s for s in samples) / n) if n else 0
+        db = 20 * _m.log10(rms / 32767.0) if rms > 0 else -100.0
+        if db > self._gate_threshold_db:
+            self._gate_envelope += self._gate_attack * (1.0 - self._gate_envelope)
+        else:
+            self._gate_envelope *= (1.0 - self._gate_release)
+        self._gate_open = self._gate_envelope > 0.1
+        if not self._gate_open:
+            return b'\x00' * len(data)
+        return data
+
+    def teardown(self):
+        """Stop arecord reader, close PyAudio output, save settings."""
+        self._save_settings()
+        self._rx_running = False
+        if self._in_stream:
+            try:
+                self._in_stream.kill()
+                self._in_stream.wait(timeout=2)
+            except Exception:
+                pass
+            self._in_stream = None
+        if self._rx_thread:
+            self._rx_thread.join(timeout=3)
+        if self._out_stream:
+            try:
+                self._out_stream.stop_stream()
+                self._out_stream.close()
+            except Exception:
+                pass
+            self._out_stream = None
         if self._pa:
             try:
                 self._pa.terminate()
@@ -1376,140 +1479,22 @@ class AudioPlugin(RadioPlugin):
         print("  [Link] AudioPlugin: teardown complete")
 
     def get_audio(self, chunk_size=None):
-        """Read one 50 ms chunk from the input stream, applying RX gain and noise gate."""
-        # In data mode, Direwolf owns the capture device — don't read or reopen
+        """Read one 50 ms chunk from the arecord queue."""
         if getattr(self, '_mode', 'audio') == 'data':
             return None, False
-        if not self._in_stream:
-            # Stream is dead — try to reopen if we have config
-            if self._last_config and self._pa:
-                self.reopen_audio()
+        if not self._rx_queue:
             return None, False
         try:
-            data = self._in_stream.read(self.CHUNK_FRAMES, exception_on_overflow=False)
-            self._read_errors = 0  # reset on successful read
-
-            # Detect dead stream: all-zero audio for 10s (200 reads at 50ms)
-            # AIOC always produces noise, so sustained silence = dead hardware
-            if data and not self._gate_enabled:
-                import struct as _st2
-                _pk = max(abs(x) for x in _st2.unpack(f'<{len(data)//2}h', data))
-                if _pk < 5:
-                    self._zero_reads += 1
-                    if self._zero_reads >= 200:
-                        print(f"  [Link] AudioPlugin: 200 consecutive zero reads — reopening stream", flush=True)
-                        self.reopen_audio()
-                        return None, False
-                else:
-                    self._zero_reads = 0
-            elif data:
-                self._zero_reads = 0
-
-            if data and self._rx_gain_db != 0.0:
-                data = self._apply_volume(data, self._db_to_linear(self._rx_gain_db))
-            # Noise gate — suppress AIOC noise floor
-            if data and self._gate_enabled:
-                import struct as _st, math as _m
-                n = len(data) // 2
-                samples = _st.unpack(f'<{n}h', data)
-                rms = _m.sqrt(sum(s * s for s in samples) / n) if n else 0
-                db = 20 * _m.log10(rms / 32767.0) if rms > 0 else -100.0
-                # Smooth envelope
-                if db > self._gate_envelope:
-                    self._gate_envelope += (db - self._gate_envelope) * self._gate_attack
-                else:
-                    self._gate_envelope += (db - self._gate_envelope) * self._gate_release
-                if self._gate_envelope > self._gate_threshold_db:
-                    self._gate_open = True
-                elif self._gate_envelope < self._gate_threshold_db - 3:  # 3 dB hysteresis
-                    self._gate_open = False
-                if not self._gate_open:
-                    return None, False
+            import queue as _q
+            data = self._rx_queue.get(timeout=0.06)  # slightly > 50ms to avoid busy spin
             return data, False
-        except Exception as e:
-            self._read_errors += 1
-            if getattr(self, '_mode', 'audio') == 'data':
-                return None, False  # expected — stream was closed for data mode
-            if self._read_errors <= 3 or self._read_errors % 50 == 0:
-                print(f"  [Link] AudioPlugin: read error: {e} [{self._read_errors}]", flush=True)
-            if self._read_errors >= 5:
-                print(f"  [Link] AudioPlugin: {self._read_errors} consecutive errors — reopening stream", flush=True)
-                self.reopen_audio()
+        except _q.Empty:
             return None, False
 
     def reopen_audio(self):
-        """Close and reopen audio streams on the existing PyAudio instance.
-
-        Called on gateway reconnect or stale stream detection.
-        Does NOT terminate PyAudio — PipeWire loses device enumeration on re-init.
-        """
-        import pyaudio
-        print(f"  [Link] AudioPlugin: reopening audio streams", flush=True)
-        self._reopen_count += 1
-        self._read_errors = 0
-        self._zero_reads = 0
-        # Close existing streams
-        for stream in (self._in_stream, self._out_stream):
-            if stream:
-                try:
-                    stream.stop_stream()
-                    stream.close()
-                except Exception:
-                    pass
-        self._in_stream = None
-        self._out_stream = None
-        # Terminate and reinit PyAudio to fully release ALSA device handles.
-        # PipeWire may lose some device enumeration, but we search by name anyway.
-        if self._pa:
-            try:
-                self._pa.terminate()
-            except Exception:
-                pass
-            self._pa = None
-        time.sleep(1)  # pause for ALSA to release device
-
-        if not self._pa:
-            self._pa = pyaudio.PyAudio()
-
-        config = self._last_config or {}
-        rate = int(config.get('rate', self.RATE))
-        channels = int(config.get('channels', self.CHANNELS))
-
-        # Find device indices — scan for correct input/output capability
-        in_index = None
-        out_index = None
-        if self._device_name:
-            _dn = self._device_name.lower()
-            for i in range(self._pa.get_device_count()):
-                try:
-                    info = self._pa.get_device_info_by_index(i)
-                    if _dn in info.get('name', '').lower():
-                        if info.get('maxInputChannels', 0) > 0 and in_index is None:
-                            in_index = i
-                        if info.get('maxOutputChannels', 0) > 0 and out_index is None:
-                            out_index = i
-                except Exception:
-                    continue
-
-        try:
-            kw_in = {'input_device_index': in_index} if in_index is not None else {}
-            self._in_stream = self._pa.open(
-                format=pyaudio.paInt16, channels=channels, rate=rate,
-                input=True, frames_per_buffer=self.CHUNK_FRAMES, **kw_in)
-            print(f"  [Link] AudioPlugin: input stream reopened (idx={in_index})", flush=True)
-        except Exception as e:
-            print(f"  [Link] AudioPlugin: input reopen failed: {e}", flush=True)
-            self._in_stream = None
-
-        try:
-            kw_out = {'output_device_index': out_index} if out_index is not None else {}
-            self._out_stream = self._pa.open(
-                format=pyaudio.paInt16, channels=channels, rate=rate,
-                output=True, frames_per_buffer=self.CHUNK_FRAMES, **kw_out)
-            print(f"  [Link] AudioPlugin: output stream reopened (idx={out_index})", flush=True)
-        except Exception as e:
-            print(f"  [Link] AudioPlugin: output reopen failed: {e}", flush=True)
-            self._out_stream = None
+        """Restart arecord reader (called on gateway reconnect)."""
+        # arecord reader thread auto-restarts — just log
+        print(f"  [Link] AudioPlugin: reopen requested (arecord auto-restarts)")
 
     def put_audio(self, pcm):
         """Write PCM audio to the output stream, applying TX gain."""
