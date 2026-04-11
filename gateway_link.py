@@ -1358,7 +1358,7 @@ class AudioPlugin(RadioPlugin):
 
     def _arecord_reader(self):
         """Read audio from ALSA via arecord subprocess (dedicated thread)."""
-        import subprocess
+        import subprocess, struct as _st, math as _m
         chunk_bytes = self.CHUNK_BYTES
         while self._rx_running:
             proc = None
@@ -1377,14 +1377,37 @@ class AudioPlugin(RadioPlugin):
                 time.sleep(2)
                 continue
 
-            # Read loop
+            # Read loop with diagnostics
+            _diag_time = time.monotonic()
+            _diag_reads = 0
+            _diag_gated = 0
+            _diag_short = 0
+            _diag_overflow = 0
+            _diag_max_read_ms = 0.0
+            _diag_rms_sum = 0.0
+            _DIAG_INTERVAL = 10.0
+
             while self._rx_running:
                 try:
+                    _t0 = time.monotonic()
                     data = proc.stdout.read(chunk_bytes)
+                    _read_ms = (time.monotonic() - _t0) * 1000
+                    if _read_ms > _diag_max_read_ms:
+                        _diag_max_read_ms = _read_ms
+
                     if not data:
                         break
+                    _diag_reads += 1
+
                     if len(data) < chunk_bytes:
+                        _diag_short += 1
                         data += b'\x00' * (chunk_bytes - len(data))
+
+                    # Compute RMS for diagnostics
+                    n = len(data) // 2
+                    samples = _st.unpack(f'<{n}h', data)
+                    rms = _m.sqrt(sum(s * s for s in samples) / n) if n else 0
+                    _diag_rms_sum += rms
 
                     # RX gain
                     if self._rx_gain_db != 0.0:
@@ -1393,11 +1416,14 @@ class AudioPlugin(RadioPlugin):
                     # Noise gate
                     if self._gate_enabled:
                         data = self._apply_gate(data)
+                        if self._gate_open is False:
+                            _diag_gated += 1
 
                     # Queue for get_audio
                     try:
                         self._rx_queue.put_nowait(data)
                     except Exception:
+                        _diag_overflow += 1
                         try:
                             self._rx_queue.get_nowait()
                         except Exception:
@@ -1406,6 +1432,22 @@ class AudioPlugin(RadioPlugin):
                             self._rx_queue.put_nowait(data)
                         except Exception:
                             pass
+
+                    # Periodic diagnostic dump
+                    _now = time.monotonic()
+                    if _now - _diag_time >= _DIAG_INTERVAL:
+                        _avg_rms = _diag_rms_sum / max(_diag_reads, 1)
+                        _db = 20 * _m.log10(_avg_rms / 32767.0) if _avg_rms > 0 else -100.0
+                        print(f"  [RX-DIAG] {_DIAG_INTERVAL:.0f}s: reads={_diag_reads} "
+                              f"gated={_diag_gated} short={_diag_short} overflow={_diag_overflow} "
+                              f"max_read={_diag_max_read_ms:.0f}ms avg_rms={_avg_rms:.0f} "
+                              f"({_db:.1f}dB) gate={'open' if self._gate_open else 'closed'} "
+                              f"qd={self._rx_queue.qsize()}")
+                        _diag_time = _now
+                        _diag_reads = _diag_gated = _diag_short = _diag_overflow = 0
+                        _diag_max_read_ms = 0.0
+                        _diag_rms_sum = 0.0
+
                 except Exception as e:
                     print(f"  [Link] AudioPlugin: arecord read error: {e}")
                     break
