@@ -796,15 +796,17 @@ def handle_linkcmd(handler, parent):
             result = {'ok': False, 'error': f'endpoint not connected: {endpoint_name}'}
         else:
             cmd_name = data.get('cmd', '')
-            if cmd_name == 'status':
-                gw._link_last_status[endpoint_name] = {}
+            # Mark that we're waiting for a fresh status (don't clear existing)
+            _prev_status = gw._link_last_status.get(endpoint_name, {})
+            _prev_uptime = _prev_status.get('uptime', -1)
             gw.link_server.send_command_to(endpoint_name, data)
             if cmd_name == 'status':
                 import time as _time
                 for _ in range(10):  # 1 second max
                     _time.sleep(0.1)
-                    if gw._link_last_status.get(endpoint_name):
-                        break
+                    _cur = gw._link_last_status.get(endpoint_name, {})
+                    if _cur and _cur.get('uptime', -1) != _prev_uptime:
+                        break  # new status arrived
                 result = {'ok': True, 'status': gw._link_last_status.get(endpoint_name, {})}
             else:
                 result = {'ok': True, 'sent': data}

@@ -395,13 +395,26 @@ class GatewayLinkServer:
                 ep.audio_sink = audio_sink
 
             # --- Main frame dispatch loop ---
+            _frame_count = 0
+            _last_frame_time = time.monotonic()
             while not self._stop.is_set():
-                result = P.recv_frame(sock)
+                try:
+                    result = P.recv_frame(sock)
+                except socket.timeout:
+                    _silence = time.monotonic() - _last_frame_time
+                    print(f"  [Link] {ep_name}: socket timeout after {_frame_count} frames "
+                          f"({_silence:.1f}s since last frame)")
+                    result = None
                 if result is None:
+                    _silence = time.monotonic() - _last_frame_time
+                    print(f"  [Link] {ep_name}: recv_frame returned None after "
+                          f"{_frame_count} frames ({_silence:.1f}s since last frame)")
                     break
+                _frame_count += 1
+                _last_frame_time = time.monotonic()
                 ftype, payload = result
                 # Any frame is proof of life
-                ep.last_heartbeat = time.monotonic()
+                ep.last_heartbeat = _last_frame_time
                 try:
                     if ftype == P.AUDIO:
                         if ep.audio_sink:
@@ -439,7 +452,9 @@ class GatewayLinkServer:
             print(f"  [Link] {addr[0]}:{addr[1]} REGISTER timeout, closing")
         except Exception as e:
             if not self._stop.is_set():
+                import traceback
                 print(f"  [Link] Reader error for {ep_name or addr}: {e}")
+                traceback.print_exc()
         finally:
             # Remove from endpoints dict (only if this reader owns the entry)
             _reader_removed = False
@@ -481,16 +496,16 @@ class GatewayLinkServer:
                 with ep.send_lock:
                     try:
                         GatewayLinkProtocol.send_frame(ep.sock, GatewayLinkProtocol.STATUS, hb_payload)
-                    except (OSError, ConnectionError):
-                        pass  # reader thread handles disconnect
+                    except (OSError, ConnectionError) as e:
+                        print(f"  [Link] Heartbeat send to {ep.name} failed: {e}")
                 # Dead peer detection
                 if ep.last_heartbeat > 0:
                     silence = now - ep.last_heartbeat
                     if silence > self._DEAD_PEER_TIMEOUT:
-                        dead.append(ep.name)
+                        dead.append((ep.name, silence))
 
-            for name in dead:
-                print(f"  [Link] Dead peer detected: {name} — closing")
+            for name, silence in dead:
+                print(f"  [Link] Dead peer detected: {name} — {silence:.1f}s silent, closing")
                 self._remove_endpoint(name, reason="dead_peer")
 
 
@@ -1001,14 +1016,23 @@ class GatewayLinkClient:
         """Read frames from the server until disconnect."""
         P = GatewayLinkProtocol
         _frame_count = 0
-        # Socket already has 10s timeout from _connect_loop.
-        # Server heartbeat every 5s — 10s timeout means dead connection.
+        _last_frame_time = time.monotonic()
         try:
             while not self._stop.is_set():
-                result = P.recv_frame(sock)
-                if result is None:
-                    print(f"  [Link] Disconnected from server (after {_frame_count} frames)")
+                try:
+                    result = P.recv_frame(sock)
+                except socket.timeout:
+                    _silence = time.monotonic() - _last_frame_time
+                    print(f"  [Link] Client: socket timeout ({_silence:.1f}s since last frame, "
+                          f"{_frame_count} frames total)")
                     break
+                if result is None:
+                    _silence = time.monotonic() - _last_frame_time
+                    print(f"  [Link] Disconnected from server (after {_frame_count} frames, "
+                          f"{_silence:.1f}s since last frame)")
+                    break
+                _frame_count += 1
+                _last_frame_time = time.monotonic()
                 _frame_count += 1
                 ftype, payload = result
                 try:
