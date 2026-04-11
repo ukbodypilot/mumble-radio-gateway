@@ -1678,11 +1678,16 @@ class AIOCPlugin(AudioPlugin):
         # Open audio streams via parent class
         super().setup(config)
 
-        # Open HID for PTT
+        # Open HID for PTT (support both hid.Device and hid.device APIs)
         try:
             import hid as _hid_mod
-            self._hid = _hid_mod.Device(vid=self._vid, pid=self._pid)
-            print(f"  [Link] AIOCPlugin: HID opened ({self._hid.product})")
+            if hasattr(_hid_mod, 'Device'):
+                self._hid = _hid_mod.Device(vid=self._vid, pid=self._pid)
+            else:
+                self._hid = _hid_mod.device()
+                self._hid.open(self._vid, self._pid)
+            _prod = getattr(self._hid, 'product', '') or getattr(self._hid, 'get_product_string', lambda: '')()
+            print(f"  [Link] AIOCPlugin: HID opened ({_prod})")
         except Exception as e:
             print(f"  [Link] AIOCPlugin: HID open failed: {e}")
             print(f"         PTT will not work. Check USB connection and permissions.")
