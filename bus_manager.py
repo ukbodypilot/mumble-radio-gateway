@@ -299,9 +299,26 @@ class BusManager:
 
     def reload(self):
         """Reload config and recreate busses."""
+        # Unkey all auto-PTT endpoints before tearing down buses
+        self._release_all_ptt()
         self.stop()
         self._busses.clear()
         self.start()
+
+    def _release_all_ptt(self):
+        """Send PTT-off to all endpoints with active auto-PTT."""
+        gw = self.gateway
+        if not hasattr(self, '_sink_ptt_hold'):
+            return
+        for _ep, _until in list(self._sink_ptt_hold.items()):
+            if gw._link_ptt_active.get(_ep, False):
+                try:
+                    gw.link_server.send_command_to(
+                        _ep, {"cmd": "ptt", "state": False})
+                    gw._link_ptt_active[_ep] = False
+                except Exception:
+                    pass
+            self._sink_ptt_hold[_ep] = 0
 
     def update_radio_reference(self, source_id):
         """Hot-swap a bus's radio reference when a link endpoint reconnects.
@@ -711,18 +728,23 @@ class BusManager:
                                     gw.link_server.send_audio_to(_eln, audio)
                                 except Exception:
                                     pass
-                                # Auto-PTT: key endpoint when sending audio
+                                # Auto-PTT: key endpoint when audio is above noise floor
                                 if not hasattr(self, '_sink_ptt_hold'):
                                     self._sink_ptt_hold = {}
-                                _was_active = self._sink_ptt_hold.get(_eln, 0) > 0
-                                self._sink_ptt_hold[_eln] = time.monotonic() + 0.5  # 500ms hold
-                                if not _was_active or not gw._link_ptt_active.get(_eln, False):
-                                    try:
-                                        gw.link_server.send_command_to(
-                                            _eln, {"cmd": "ptt", "state": True})
-                                        gw._link_ptt_active[_eln] = True
-                                    except Exception:
-                                        pass
+                                _ptt_threshold = 10  # minimum audio level to trigger PTT
+                                if _audio_level is not None and _audio_level >= _ptt_threshold:
+                                    if not hasattr(self, '_sink_ptt_start'):
+                                        self._sink_ptt_start = {}
+                                    _was_active = self._sink_ptt_hold.get(_eln, 0) > 0
+                                    self._sink_ptt_hold[_eln] = time.monotonic() + 0.5
+                                    if not _was_active or not gw._link_ptt_active.get(_eln, False):
+                                        self._sink_ptt_start[_eln] = time.monotonic()
+                                        try:
+                                            gw.link_server.send_command_to(
+                                                _eln, {"cmd": "ptt", "state": True})
+                                            gw._link_ptt_active[_eln] = True
+                                        except Exception:
+                                            pass
                         # Track TX level for routing display
                         if _audio_level and _audio_level > gw._link_tx_levels.get(_eln, 0):
                             gw._link_tx_levels[_eln] = _audio_level
@@ -939,9 +961,27 @@ class BusManager:
                     import traceback; traceback.print_exc()
 
             # ── Auto-PTT release for link endpoint TX sinks ──────────────
+            if not hasattr(self, '_sink_ptt_start'):
+                self._sink_ptt_start = {}  # ep → monotonic time PTT was first keyed
+            _PTT_SAFETY_TIMEOUT = 180.0  # 3 minute max TX
             if hasattr(self, '_sink_ptt_hold'):
                 _now_ptt = time.monotonic()
                 for _ptt_ep, _ptt_until in list(self._sink_ptt_hold.items()):
+                    # Safety timeout — force unkey after 3 minutes
+                    _ptt_start = self._sink_ptt_start.get(_ptt_ep, 0)
+                    if _ptt_start > 0 and _now_ptt - _ptt_start > _PTT_SAFETY_TIMEOUT:
+                        if gw._link_ptt_active.get(_ptt_ep, False):
+                            print(f"  [BusManager] PTT safety timeout on {_ptt_ep} — forcing unkey")
+                            try:
+                                gw.link_server.send_command_to(
+                                    _ptt_ep, {"cmd": "ptt", "state": False})
+                                gw._link_ptt_active[_ptt_ep] = False
+                            except Exception:
+                                pass
+                        self._sink_ptt_hold[_ptt_ep] = 0
+                        self._sink_ptt_start[_ptt_ep] = 0
+                        continue
+                    # Normal release after hold timer
                     if _ptt_until > 0 and _now_ptt > _ptt_until:
                         if gw._link_ptt_active.get(_ptt_ep, False):
                             try:
@@ -951,6 +991,7 @@ class BusManager:
                             except Exception:
                                 pass
                         self._sink_ptt_hold[_ptt_ep] = 0
+                        self._sink_ptt_start[_ptt_ep] = 0
 
             _tick_total = (time.monotonic() - _tick_start) * 1000
 

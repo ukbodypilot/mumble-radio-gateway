@@ -871,11 +871,20 @@ def handle_routing_levels(handler, parent):
         if _bm and _bm.listen_bus:
             _listen_id = getattr(_bm, '_listen_bus_id', 'listen')
             data['bus_' + _listen_id] = _bm._bus_levels.get(_listen_id, 0)
-        # PTT state for TX sinks
+        # PTT state for TX sinks — map endpoint names to sink node IDs
         _ptt = {}
+        _bm_sinks = getattr(_bm, '_bus_config', {}) if _bm else {}
         for _pn, _pa in gw._link_ptt_active.items():
-            _pid = _re.sub(r'[^a-z0-9_]', '_', _pn.lower()) + '_tx'
-            _ptt[_pid] = _pa
+            _san = _re.sub(r'[^a-z0-9_]', '_', _pn.lower())
+            # Find which TX sink ID matches this endpoint
+            for _sid in data:
+                if _sid.endswith('_tx'):
+                    _base = _sid[:-3]
+                    if _san == _base or _san.startswith(_base + '_'):
+                        _ptt[_sid] = _pa
+                        break
+            else:
+                _ptt[_san + '_tx'] = _pa
         if gw.kv4p_plugin and hasattr(gw.kv4p_plugin, 'ptt_active'):
             _ptt['kv4p_tx'] = gw.kv4p_plugin.ptt_active
         if getattr(gw, 'th9800_plugin', None) and hasattr(gw.th9800_plugin, 'ptt_active'):
