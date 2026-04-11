@@ -1041,15 +1041,18 @@ class GatewayLinkClient:
                     break
                 _frame_count += 1
                 _last_frame_time = time.monotonic()
-                _frame_count += 1
                 ftype, payload = result
                 try:
                     if ftype == P.AUDIO:
                         if self._on_audio:
                             self._on_audio(payload)
                     elif ftype == P.COMMAND:
-                        if self._on_command:
-                            self._on_command(json.loads(payload))
+                        # Fast-path: respond to ping immediately without plugin
+                        cmd = json.loads(payload)
+                        if cmd.get('cmd') == 'ping':
+                            self.send_ack('ping', {'ok': True})
+                        elif self._on_command:
+                            self._on_command(cmd)
                     elif ftype == P.STATUS:
                         if self._on_status:
                             self._on_status(json.loads(payload))
@@ -1087,8 +1090,11 @@ class GatewayLinkClient:
                         if self._on_audio:
                             self._on_audio(payload)
                     elif ftype == P.COMMAND:
-                        if self._on_command:
-                            self._on_command(json.loads(payload))
+                        cmd = json.loads(payload)
+                        if cmd.get('cmd') == 'ping':
+                            self.send_ack('ping', {'ok': True})
+                        elif self._on_command:
+                            self._on_command(cmd)
                     elif ftype == P.STATUS:
                         if self._on_status:
                             self._on_status(json.loads(payload))
