@@ -522,10 +522,206 @@ def discover_gateway(timeout=5):
 # Client (endpoint side)
 # ---------------------------------------------------------------------------
 
+class WebSocketTransport:
+    """WebSocket client transport using stdlib only (ssl + http.client).
+
+    Wraps a WebSocket connection to look like a socket for the link protocol.
+    Each link protocol frame is sent/received as one WS binary message.
+    """
+
+    def __init__(self):
+        self._sock = None
+        self._lock = threading.Lock()
+
+    def connect(self, ws_url, timeout=10):
+        """Connect to a WebSocket URL (ws:// or wss://).  Returns True on success."""
+        import ssl
+        import hashlib
+        import base64
+
+        # Parse URL
+        if ws_url.startswith('wss://'):
+            host_path = ws_url[6:]
+            use_ssl = True
+            default_port = 443
+        elif ws_url.startswith('ws://'):
+            host_path = ws_url[5:]
+            use_ssl = False
+            default_port = 80
+        else:
+            raise ValueError(f"Invalid WS URL: {ws_url}")
+
+        if '/' in host_path:
+            host_port, path = host_path.split('/', 1)
+            path = '/' + path
+        else:
+            host_port = host_path
+            path = '/'
+
+        if ':' in host_port:
+            host, port = host_port.rsplit(':', 1)
+            port = int(port)
+        else:
+            host = host_port
+            port = default_port
+
+        # TCP connect
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw.settimeout(timeout)
+        raw.connect((host, port))
+        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+        if use_ssl:
+            ctx = ssl.create_default_context()
+            sock = ctx.wrap_socket(raw, server_hostname=host)
+        else:
+            sock = raw
+
+        # WS handshake
+        import os as _os
+        ws_key = base64.b64encode(_os.urandom(16)).decode()
+        handshake = (
+            f'GET {path} HTTP/1.1\r\n'
+            f'Host: {host}\r\n'
+            f'Upgrade: websocket\r\n'
+            f'Connection: Upgrade\r\n'
+            f'Sec-WebSocket-Key: {ws_key}\r\n'
+            f'Sec-WebSocket-Version: 13\r\n'
+            f'\r\n'
+        )
+        sock.sendall(handshake.encode())
+
+        # Read response (look for 101)
+        resp = b''
+        while b'\r\n\r\n' not in resp:
+            chunk = sock.recv(1024)
+            if not chunk:
+                sock.close()
+                return False
+            resp += chunk
+
+        if b'101' not in resp.split(b'\r\n')[0]:
+            sock.close()
+            return False
+
+        sock.settimeout(15)  # match link protocol timeout
+        self._sock = sock
+        return True
+
+    def send_frame(self, frame_type, payload):
+        """Send a link protocol frame as a WS binary message."""
+        frame_data = struct.pack('>BH', frame_type, len(payload)) + payload
+        self._ws_send(frame_data)
+
+    def recv_frame(self):
+        """Receive a link protocol frame from a WS binary message.
+
+        Returns (frame_type, payload) or None on disconnect.
+        """
+        data = self._ws_recv()
+        if data is None or len(data) < 3:
+            return None
+        frame_type, length = struct.unpack('>BH', data[:3])
+        payload = data[3:]
+        if len(payload) < length:
+            return None
+        return (frame_type, payload[:length])
+
+    def close(self):
+        """Close the WebSocket connection."""
+        sock = self._sock
+        self._sock = None
+        if sock:
+            try:
+                sock.sendall(b'\x88\x02\x03\xe8')  # WS close frame
+            except Exception:
+                pass
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def _ws_send(self, data):
+        """Send a masked WS binary frame (clients MUST mask)."""
+        import os as _os
+        frame = bytearray()
+        frame.append(0x82)  # FIN + binary
+        mask_key = _os.urandom(4)
+        length = len(data)
+        if length < 126:
+            frame.append(0x80 | length)  # masked
+        elif length < 65536:
+            frame.append(0x80 | 126)
+            frame.extend(length.to_bytes(2, 'big'))
+        else:
+            frame.append(0x80 | 127)
+            frame.extend(length.to_bytes(8, 'big'))
+        frame.extend(mask_key)
+        masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(data))
+        frame.extend(masked)
+        self._sock.sendall(bytes(frame))
+
+    def _ws_recv(self):
+        """Receive one WS message. Returns payload bytes or None."""
+        sock = self._sock
+        if not sock:
+            return None
+        try:
+            hdr = self._recv_exact(2)
+            if not hdr:
+                return None
+            opcode = hdr[0] & 0x0F
+            masked = (hdr[1] & 0x80) != 0
+            plen = hdr[1] & 0x7F
+            if plen == 126:
+                ext = self._recv_exact(2)
+                if not ext:
+                    return None
+                plen = int.from_bytes(ext, 'big')
+            elif plen == 127:
+                ext = self._recv_exact(8)
+                if not ext:
+                    return None
+                plen = int.from_bytes(ext, 'big')
+            mask_key = self._recv_exact(4) if masked else None
+            payload = self._recv_exact(plen) if plen else b''
+            if payload is None and plen > 0:
+                return None
+            if masked and mask_key and payload:
+                payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+            if opcode == 0x08:  # Close
+                return None
+            if opcode == 0x09:  # Ping → Pong
+                pong = bytearray([0x8A, len(payload) if len(payload) < 126 else 0])
+                pong.extend(payload)
+                try:
+                    sock.sendall(bytes(pong))
+                except Exception:
+                    pass
+                return self._ws_recv()
+            return payload
+        except (OSError, ConnectionError):
+            return None
+
+    def _recv_exact(self, n):
+        """Read exactly n bytes."""
+        buf = bytearray()
+        while len(buf) < n:
+            try:
+                chunk = self._sock.recv(n - len(buf))
+            except (OSError, ConnectionError):
+                return None
+            if not chunk:
+                return None
+            buf.extend(chunk)
+        return bytes(buf)
+
+
 class GatewayLinkClient:
     """Connects to a GatewayLinkServer and exchanges framed messages.
 
     Automatically reconnects on disconnect (5 s backoff).
+    Supports both direct TCP and WebSocket (for tunnel) connections.
 
     Callbacks (all optional, called from reader thread):
         on_audio(pcm_bytes)
@@ -535,12 +731,15 @@ class GatewayLinkClient:
 
     def __init__(self, host, port, name, capabilities, plugin_name="audio",
                  on_audio=None, on_command=None, on_status=None,
-                 on_connect=None, on_disconnect=None):
+                 on_connect=None, on_disconnect=None,
+                 ws_url=None, url_resolver=None):
         self._host = host
         self._port = port
         self._name = name
         self._capabilities = capabilities
         self._plugin_name = plugin_name
+        self._ws_url = ws_url            # WebSocket URL for tunnel mode
+        self._url_resolver = url_resolver  # callable() → ws_url (e.g. Drive lookup)
 
         self._on_audio = on_audio
         self._on_command = on_command
@@ -549,6 +748,7 @@ class GatewayLinkClient:
         self._on_disconnect = on_disconnect
 
         self._sock = None
+        self._ws_transport = None  # WebSocketTransport when using tunnel
         self._send_lock = threading.Lock()
         self._stop = threading.Event()
         self._connect_thread = None
@@ -599,68 +799,147 @@ class GatewayLinkClient:
 
     @property
     def connected(self):
-        return self._sock is not None
+        return self._sock is not None or self._ws_transport is not None
 
     # -- internal -----------------------------------------------------------
 
     def _send(self, frame_type, payload):
-        """Thread-safe send to the server socket."""
+        """Thread-safe send to the server (TCP or WS)."""
         _need_close = False
         with self._send_lock:
+            ws = self._ws_transport
             sock = self._sock
-            if sock is None:
+            if ws:
+                try:
+                    ws.send_frame(frame_type, payload)
+                except (OSError, ConnectionError) as e:
+                    print(f"  [Link] Client WS send error: {e}")
+                    self._ws_transport = None
+                    _need_close = True
+            elif sock:
+                try:
+                    GatewayLinkProtocol.send_frame(sock, frame_type, payload)
+                except (OSError, ConnectionError) as e:
+                    print(f"  [Link] Client send error: {e}")
+                    self._sock = None
+                    _need_close = True
+            else:
                 return
-            try:
-                GatewayLinkProtocol.send_frame(sock, frame_type, payload)
-            except (OSError, ConnectionError) as e:
-                print(f"  [Link] Client send error: {e}")
-                self._sock = None  # Mark as disconnected
-                _need_close = True
         if _need_close:
-            try:
-                sock.close()
-            except OSError:
-                pass
+            self._close()
 
     def _close(self):
-        """Close the connection."""
+        """Close the connection (TCP or WS)."""
         with self._send_lock:
             sock = self._sock
+            ws = self._ws_transport
             self._sock = None
+            self._ws_transport = None
         if sock:
             try:
                 sock.close()
             except OSError:
                 pass
+        if ws:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
     def _connect_loop(self):
-        """Connect to the server, auto-reconnect on failure."""
+        """Connect to the server, auto-reconnect on failure.
+
+        Connection strategy:
+        1. Try direct TCP to host:port (LAN mode)
+        2. If TCP fails and ws_url is available: try WebSocket (tunnel mode)
+        3. If WS fails: call url_resolver to fetch fresh URL from Google Drive
+        4. Retry with exponential backoff (5s → 10s → 30s → 60s max)
+        """
+        _backoff = 5.0
+        _MAX_BACKOFF = 60.0
+        _ws_failures = 0
+
         while not self._stop.is_set():
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(10.0)
-                sock.connect((self._host, self._port))
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                # Keep 10s timeout for both send and recv — detects cable pull
-            except (OSError, ConnectionError) as e:
-                print(f"  [Link] Connect to {self._host}:{self._port} failed: {e}")
-                sock.close()
-                if self._stop.wait(5.0):
+            connected_via = None
+
+            # ── Attempt 1: Direct TCP ──
+            if self._host and self._port:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(10.0)
+                    sock.connect((self._host, self._port))
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    print(f"  [Link] Connected to {self._host}:{self._port} (TCP)")
+                    with self._send_lock:
+                        self._sock = sock
+                        self._ws_transport = None
+                    connected_via = 'tcp'
+                    _backoff = 5.0
+                except (OSError, ConnectionError) as e:
+                    print(f"  [Link] TCP {self._host}:{self._port} failed: {e}")
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+
+            # ── Attempt 2: WebSocket via tunnel ──
+            if not connected_via and self._ws_url:
+                ws = WebSocketTransport()
+                try:
+                    if ws.connect(self._ws_url, timeout=15):
+                        print(f"  [Link] Connected via WebSocket tunnel")
+                        with self._send_lock:
+                            self._ws_transport = ws
+                            self._sock = None
+                        connected_via = 'ws'
+                        _backoff = 5.0
+                        _ws_failures = 0
+                    else:
+                        print(f"  [Link] WS handshake failed (URL may be expired)")
+                        _ws_failures += 1
+                except Exception as e:
+                    print(f"  [Link] WS connect failed: {e}")
+                    _ws_failures += 1
+
+            # ── Attempt 3: Resolve fresh URL from Google Drive ──
+            if not connected_via and _ws_failures >= 2 and self._url_resolver:
+                print(f"  [Link] Fetching fresh tunnel URL from Drive...")
+                try:
+                    new_url = self._url_resolver()
+                    if new_url and new_url != self._ws_url:
+                        print(f"  [Link] New tunnel URL obtained")
+                        self._ws_url = new_url
+                        _ws_failures = 0  # retry with new URL immediately
+                        continue
+                    elif new_url:
+                        print(f"  [Link] Same URL from Drive (still stale)")
+                    else:
+                        print(f"  [Link] No URL from Drive")
+                except Exception as e:
+                    print(f"  [Link] Drive URL resolve error: {e}")
+
+            # ── No connection — backoff and retry ──
+            if not connected_via:
+                print(f"  [Link] Retrying in {_backoff:.0f}s...")
+                if self._stop.wait(_backoff):
                     break
+                _backoff = min(_backoff * 1.5, _MAX_BACKOFF)
                 continue
 
-            print(f"  [Link] Connected to {self._host}:{self._port}")
-            with self._send_lock:
-                self._sock = sock
-
-            # Send registration
+            # ── Connected — send registration ──
+            reg_info = {
+                "name": self._name,
+                "plugin": self._plugin_name,
+                "capabilities": self._capabilities,
+                "version": "1.0",
+            }
             try:
-                GatewayLinkProtocol.send_register(sock, {
-                    "name": self._name,
-                    "plugin": self._plugin_name,
-                    "capabilities": self._capabilities,
-                    "version": "1.0",
-                })
+                if connected_via == 'ws':
+                    self._ws_transport.send_frame(
+                        GatewayLinkProtocol.REGISTER,
+                        json.dumps(reg_info).encode('utf-8'))
+                else:
+                    GatewayLinkProtocol.send_register(self._sock, reg_info)
             except (OSError, ConnectionError) as e:
                 print(f"  [Link] Registration send failed: {e}")
                 self._close()
@@ -668,14 +947,14 @@ class GatewayLinkClient:
                     break
                 continue
 
-            # Notify caller that we're connected (reopen audio etc.)
+            # Notify caller
             if self._on_connect:
                 try:
                     self._on_connect()
                 except Exception as e:
                     print(f"  [Link] on_connect callback error: {e}")
 
-            # Start client heartbeat thread
+            # Heartbeat thread
             hb_stop = threading.Event()
             def _client_heartbeat():
                 while not hb_stop.is_set():
@@ -687,20 +966,22 @@ class GatewayLinkClient:
                                          name="LinkClientHB", daemon=True)
             hb_thread.start()
 
-            # Run reader until disconnect
-            self._reader_loop(sock)
-            hb_stop.set()
-            self._close()  # Clean up socket before reconnect
-            print(f"  [Link] Connection closed, stop={self._stop.is_set()}")
+            # Reader loop (works with both TCP sock and WS transport)
+            if connected_via == 'ws':
+                self._reader_loop_ws(self._ws_transport)
+            else:
+                self._reader_loop(self._sock)
 
-            # Notify caller of disconnect
+            hb_stop.set()
+            self._close()
+            print(f"  [Link] Connection closed ({connected_via})")
+
             if self._on_disconnect:
                 try:
                     self._on_disconnect()
                 except Exception as e:
                     print(f"  [Link] on_disconnect callback error: {e}")
 
-            # Disconnected — retry
             if not self._stop.is_set():
                 print(f"  [Link] Reconnecting in 5s...")
                 if self._stop.wait(5.0):
@@ -745,6 +1026,42 @@ class GatewayLinkClient:
                 print(f"  [Link] Client reader error: {e}")
         finally:
             print("  [Link] Disconnected from server")
+            self._close()
+
+    def _reader_loop_ws(self, ws):
+        """Read frames from the server via WebSocket until disconnect."""
+        P = GatewayLinkProtocol
+        _frame_count = 0
+        try:
+            while not self._stop.is_set():
+                result = ws.recv_frame()
+                if result is None:
+                    print(f"  [Link] WS disconnected (after {_frame_count} frames)")
+                    break
+                _frame_count += 1
+                ftype, payload = result
+                try:
+                    if ftype == P.AUDIO:
+                        if self._on_audio:
+                            self._on_audio(payload)
+                    elif ftype == P.COMMAND:
+                        if self._on_command:
+                            self._on_command(json.loads(payload))
+                    elif ftype == P.STATUS:
+                        if self._on_status:
+                            self._on_status(json.loads(payload))
+                    elif ftype == P.ACK:
+                        ack = json.loads(payload)
+                        print(f"  [Link] ACK from server: cmd_id={ack.get('cmd_id')}")
+                except json.JSONDecodeError as e:
+                    print(f"  [Link] Bad JSON from server: {e}")
+                except Exception as e:
+                    print(f"  [Link] Client callback error: {e}")
+        except Exception as e:
+            if not self._stop.is_set():
+                print(f"  [Link] WS reader error: {e}")
+        finally:
+            print("  [Link] WS disconnected from server")
             self._close()
 
 

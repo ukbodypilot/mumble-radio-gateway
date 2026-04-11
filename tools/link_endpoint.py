@@ -209,6 +209,14 @@ def main():
                         help='Input gain multiplier (default: 1.0)')
     parser.add_argument('--status-interval', type=float, default=10.0,
                         help='Status report interval in seconds (default: 10)')
+    parser.add_argument('--tunnel-url',
+                        help='WebSocket tunnel URL (wss://xxx.trycloudflare.com/ws/link)')
+    parser.add_argument('--gdrive-remote', default='gdrive',
+                        help='rclone remote name for Google Drive (default: gdrive)')
+    parser.add_argument('--gdrive-folder', default='radio-gateway',
+                        help='Google Drive folder path (default: radio-gateway)')
+    parser.add_argument('--rclone-config', default='',
+                        help='Path to rclone.conf (default: system default)')
     parser.add_argument('--list-devices', action='store_true',
                         help='List available audio devices and exit')
 
@@ -219,7 +227,17 @@ def main():
         list_audio_devices()
         sys.exit(0)
 
-    # Resolve server address — auto-discover via mDNS if --server not given
+    # Load cached settings
+    _settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'settings.json')
+    _settings = {}
+    try:
+        with open(_settings_path) as f:
+            _settings = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    # Resolve server address
+    host, port = None, None
     if args.server:
         host, port = parse_server(args.server)
     else:
@@ -228,7 +246,44 @@ def main():
         if result:
             host, port = result
         else:
-            parser.error('Gateway not found via mDNS. Use --server HOST:PORT')
+            print("[Endpoint] mDNS discovery failed — will use tunnel fallback")
+
+    # Resolve tunnel URL: CLI → settings cache → Google Drive
+    ws_url = args.tunnel_url or _settings.get('tunnel_url')
+
+    def _resolve_tunnel_url():
+        """Fetch tunnel URL from Google Drive via rclone."""
+        try:
+            cmd = ['rclone']
+            if args.rclone_config:
+                cmd += ['--config', args.rclone_config]
+            cmd += ['cat', f'{args.gdrive_remote}:{args.gdrive_folder}/tunnel_url.json']
+            r = __import__('subprocess').run(cmd, capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                data = json.loads(r.stdout)
+                url = data.get('ws_link')
+                if url:
+                    print(f"  [Link] Tunnel URL from Drive: {url}")
+                    # Cache it
+                    _settings['tunnel_url'] = url
+                    try:
+                        with open(_settings_path, 'w') as f:
+                            json.dump(_settings, f, indent=2)
+                    except Exception:
+                        pass
+                    return url
+        except Exception as e:
+            print(f"  [Link] Drive URL fetch failed: {e}")
+        return None
+
+    # If no URL at all, try Drive now
+    if not ws_url and not host:
+        ws_url = _resolve_tunnel_url()
+
+    if not host and not ws_url:
+        parser.error('No server, no tunnel URL, and Drive lookup failed. '
+                     'Use --server HOST:PORT or --tunnel-url URL')
+
     if not args.name:
         parser.error('--name is required (e.g. --name garage-radio)')
 
@@ -286,6 +341,8 @@ def main():
         on_audio=on_audio_from_master,
         on_command=on_command_from_master,
         on_status=on_status_from_master,
+        ws_url=ws_url,
+        url_resolver=_resolve_tunnel_url,
     )
 
     # Graceful shutdown
@@ -309,7 +366,10 @@ def main():
     reporter.start()
 
     # Audio capture loop (main thread)
-    print(f"[Endpoint] Streaming to {host}:{port} as '{args.name}' -- Ctrl+C to stop")
+    _target = f"{host}:{port}" if host else "(tunnel)"
+    if ws_url:
+        _target += f" fallback: WS tunnel"
+    print(f"[Endpoint] Streaming to {_target} as '{args.name}' -- Ctrl+C to stop")
     use_gain = args.gain != 1.0
 
     try:
