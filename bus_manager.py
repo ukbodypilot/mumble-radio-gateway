@@ -730,23 +730,19 @@ class BusManager:
                                         _st.record(f'{bus_id}_deliver', f'link_tx:{_eln}', audio)
                                 except Exception:
                                     pass
-                                # Auto-PTT: key endpoint when audio is above noise floor
+                                # Auto-PTT: track hold timer (actual send deferred to tick loop)
                                 if not hasattr(self, '_sink_ptt_hold'):
                                     self._sink_ptt_hold = {}
-                                _ptt_threshold = 10  # minimum audio level to trigger PTT
+                                _ptt_threshold = 10
                                 if _audio_level is not None and _audio_level >= _ptt_threshold:
                                     if not hasattr(self, '_sink_ptt_start'):
                                         self._sink_ptt_start = {}
-                                    _was_active = self._sink_ptt_hold.get(_eln, 0) > 0
+                                    if not hasattr(self, '_sink_ptt_pending'):
+                                        self._sink_ptt_pending = {}
                                     self._sink_ptt_hold[_eln] = time.monotonic() + 0.5
-                                    if not _was_active or not gw._link_ptt_active.get(_eln, False):
+                                    if not gw._link_ptt_active.get(_eln, False):
+                                        self._sink_ptt_pending[_eln] = True
                                         self._sink_ptt_start[_eln] = time.monotonic()
-                                        try:
-                                            gw.link_server.send_command_to(
-                                                _eln, {"cmd": "ptt", "state": True})
-                                            gw._link_ptt_active[_eln] = True
-                                        except Exception:
-                                            pass
                         # Track TX level for routing display
                         if _audio_level and _audio_level > gw._link_tx_levels.get(_eln, 0):
                             gw._link_tx_levels[_eln] = _audio_level
@@ -962,10 +958,22 @@ class BusManager:
                     print(f"  [BusManager] {bus_id} tick error: {e}")
                     import traceback; traceback.print_exc()
 
-            # ── Auto-PTT release for link endpoint TX sinks ──────────────
+            # ── Auto-PTT key/release for link endpoint TX sinks ─────────
+            # PTT commands sent here (outside deliver) to avoid blocking tick
             if not hasattr(self, '_sink_ptt_start'):
-                self._sink_ptt_start = {}  # ep → monotonic time PTT was first keyed
-            _PTT_SAFETY_TIMEOUT = 180.0  # 3 minute max TX
+                self._sink_ptt_start = {}
+            if not hasattr(self, '_sink_ptt_pending'):
+                self._sink_ptt_pending = {}
+            # Send pending PTT-on commands
+            for _ptt_ep in list(self._sink_ptt_pending):
+                if self._sink_ptt_pending.pop(_ptt_ep, False):
+                    try:
+                        gw.link_server.send_command_to(
+                            _ptt_ep, {"cmd": "ptt", "state": True})
+                        gw._link_ptt_active[_ptt_ep] = True
+                    except Exception:
+                        pass
+            _PTT_SAFETY_TIMEOUT = 180.0
             if hasattr(self, '_sink_ptt_hold'):
                 _now_ptt = time.monotonic()
                 for _ptt_ep, _ptt_until in list(self._sink_ptt_hold.items()):
