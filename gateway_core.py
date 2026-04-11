@@ -1652,6 +1652,26 @@ class RadioGateway:
                 except Exception as e:
                     print(f"  [Email] Init error: {e}")
 
+            # Initialize Google Drive integration
+            self.gdrive = None
+            if getattr(self.config, 'ENABLE_GDRIVE', False):
+                try:
+                    from gdrive import GDriveClient
+                    _remote = str(getattr(self.config, 'GDRIVE_REMOTE', 'gdrive'))
+                    _folder = str(getattr(self.config, 'GDRIVE_FOLDER', 'radio-gateway'))
+                    _rclone_conf = str(getattr(self.config, 'GDRIVE_RCLONE_CONFIG', '') or '')
+                    self.gdrive = GDriveClient(
+                        remote=_remote,
+                        folder_path=_folder,
+                        rclone_config=_rclone_conf or None)
+                    # Publish tunnel URL on startup (in background)
+                    if self.cloudflare_tunnel:
+                        import threading as _gd_thr
+                        _gd_thr.Thread(target=self._publish_tunnel_url,
+                                       daemon=True, name="gdrive-publish").start()
+                except Exception as e:
+                    print(f"  [GDrive] Init error: {e}")
+
             # Initialize GPS receiver
             if getattr(self.config, 'ENABLE_GPS', False):
                 try:
@@ -3397,5 +3417,32 @@ class RadioGateway:
                 self.email_notifier.send_tunnel_changed(new_url)
             except Exception as e:
                 print(f"  [Gateway] Failed to send tunnel change email: {e}")
+        # Publish new URL to Google Drive
+        self._publish_tunnel_url()
+
+    def _publish_tunnel_url(self):
+        """Write current tunnel URL to Google Drive for endpoint discovery."""
+        if not self.gdrive or not self.cloudflare_tunnel:
+            return
+        # Wait for tunnel URL if not yet available
+        for _ in range(30):
+            url = self.cloudflare_tunnel.get_url()
+            if url:
+                break
+            time.sleep(1)
+        if not url:
+            print("  [GDrive] No tunnel URL to publish")
+            return
+        import datetime
+        data = {
+            'url': url,
+            'ws_link': url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/') + '/ws/link',
+            'updated': datetime.datetime.utcnow().isoformat() + 'Z',
+        }
+        try:
+            self.gdrive.write_json(data, 'tunnel_url.json')
+            print(f"  [GDrive] Published tunnel URL: {url}")
+        except Exception as e:
+            print(f"  [GDrive] Failed to publish tunnel URL: {e}")
 
 

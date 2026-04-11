@@ -925,3 +925,65 @@ from web_routes_packet import handle_packet_packets, handle_packet_aprs_stations
 from web_routes_packet import handle_packet_bbs_buffer, handle_packet_log
 from web_routes_loop import handle_loop_api, handle_loop_post
 
+
+# ── Google Drive + Tunnel URL API ──
+
+def handle_tunnel_link_url(handler, parent):
+    """GET /api/tunnel/link-url — return current WS link URL via tunnel."""
+    gw = parent.gateway if parent else None
+    tunnel = getattr(gw, 'cloudflare_tunnel', None) if gw else None
+    url = tunnel.get_url() if tunnel else None
+    data = {}
+    if url:
+        data['url'] = url
+        data['ws_link'] = url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/') + '/ws/link'
+    else:
+        data['url'] = None
+        data['ws_link'] = None
+    body = json_mod.dumps(data).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def handle_gdrive_status(handler, parent):
+    """GET /api/gdrive/status — Google Drive integration status."""
+    gw = parent.gateway if parent else None
+    gdrive = getattr(gw, 'gdrive', None) if gw else None
+    if gdrive:
+        data = gdrive.get_status()
+    else:
+        data = {'configured': False}
+    body = json_mod.dumps(data).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def handle_gdrive_files(handler, parent):
+    """GET /api/gdrive/files — list files in the gateway Drive folder."""
+    gw = parent.gateway if parent else None
+    gdrive = getattr(gw, 'gdrive', None) if gw else None
+    if not gdrive:
+        body = json_mod.dumps({'files': [], 'error': 'not configured'}).encode()
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Content-Length', str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+        return
+    try:
+        files = gdrive.list_files()
+    except Exception as e:
+        files = []
+    body = json_mod.dumps({'files': files}).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+

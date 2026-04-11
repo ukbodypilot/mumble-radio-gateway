@@ -377,3 +377,199 @@ def handle_stream(handler, parent):
         print(f"[Stream] Disconnected {_client_ip} ({_kb}KB sent)")
         parent._unsubscribe_stream(ev)
     return
+
+
+# ---------------------------------------------------------------------------
+# WebSocket Link Bridge — proxies endpoint connections through CF tunnel
+# ---------------------------------------------------------------------------
+
+def handle_ws_link(handler, parent):
+    """GET /ws/link -- WebSocket bridge to the Gateway Link server (TCP 9700).
+
+    Allows remote endpoints to connect through the Cloudflare tunnel.
+    Each WS binary message = one complete link protocol frame.
+    The bridge opens a local TCP connection to the link server and
+    bidirectionally forwards frames between WS and TCP.
+    """
+    handler._upgrading_ws = True
+    ws_key = handler.headers.get('Sec-WebSocket-Key', '')
+    if not ws_key or handler.headers.get('Upgrade', '').lower() != 'websocket':
+        handler._upgrading_ws = False
+        handler.send_response(400)
+        handler.end_headers()
+        return
+
+    gw = parent.gateway if parent else None
+    link_port = int(getattr(gw.config, 'LINK_PORT', 9700)) if gw else 9700
+
+    # WebSocket handshake
+    _WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+    accept = base64.b64encode(
+        hashlib.sha1((ws_key + _WS_MAGIC).encode()).digest()
+    ).decode()
+    handler.wfile.flush()
+    handshake = (
+        'HTTP/1.1 101 Switching Protocols\r\n'
+        'Upgrade: websocket\r\n'
+        'Connection: Upgrade\r\n'
+        f'Sec-WebSocket-Accept: {accept}\r\n'
+        '\r\n'
+    )
+    handler.request.sendall(handshake.encode('ascii'))
+    handler.close_connection = True
+
+    ws_sock = handler.request
+    _client_ip = handler.client_address[0]
+    ws_sock.settimeout(15)
+    ws_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+    # Open local TCP connection to link server
+    try:
+        tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp_sock.settimeout(5)
+        tcp_sock.connect(('127.0.0.1', link_port))
+        tcp_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        tcp_sock.settimeout(15)
+    except Exception as e:
+        print(f"[WS-Link] Failed to connect to link server: {e}")
+        try:
+            ws_sock.sendall(b'\x88\x00')  # WS close
+        except Exception:
+            pass
+        return
+
+    print(f"[WS-Link] Bridge connected from {_client_ip}")
+    _stop = _thr.Event()
+
+    def _tcp_to_ws():
+        """Read link frames from TCP, send as WS binary messages."""
+        import struct as _st
+        _hdr_struct = _st.Struct('>BH')
+        try:
+            while not _stop.is_set():
+                # Read 3-byte link frame header
+                hdr = _recv_exact(tcp_sock, 3)
+                if hdr is None:
+                    break
+                _type, _length = _hdr_struct.unpack(hdr)
+                payload = _recv_exact(tcp_sock, _length) if _length else b''
+                if payload is None and _length > 0:
+                    break
+                # Send complete frame as one WS binary message
+                frame_data = hdr + (payload or b'')
+                _ws_send_binary(ws_sock, frame_data)
+        except (OSError, ConnectionError):
+            pass
+        finally:
+            _stop.set()
+
+    def _ws_to_tcp():
+        """Read WS binary messages, write raw bytes to TCP."""
+        try:
+            while not _stop.is_set():
+                data = _ws_recv_message(ws_sock)
+                if data is None:
+                    break
+                tcp_sock.sendall(data)
+        except (OSError, ConnectionError):
+            pass
+        finally:
+            _stop.set()
+
+    tcp_thread = _thr.Thread(target=_tcp_to_ws, daemon=True,
+                              name="ws-link-tcp2ws")
+    tcp_thread.start()
+
+    try:
+        _ws_to_tcp()  # runs in handler thread
+    finally:
+        _stop.set()
+        try:
+            tcp_sock.close()
+        except Exception:
+            pass
+        try:
+            ws_sock.sendall(b'\x88\x00')
+        except Exception:
+            pass
+        tcp_thread.join(timeout=5)
+        print(f"[WS-Link] Bridge disconnected {_client_ip}")
+
+
+# -- WS frame helpers for link bridge --------------------------------------
+
+def _recv_exact(sock, n):
+    """Read exactly n bytes from a socket.  Returns bytes or None."""
+    buf = bytearray()
+    while len(buf) < n:
+        try:
+            chunk = sock.recv(n - len(buf))
+        except (OSError, ConnectionError):
+            return None
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _ws_send_binary(sock, data):
+    """Send a binary WS frame."""
+    frame = bytearray()
+    frame.append(0x82)  # FIN + binary opcode
+    length = len(data)
+    if length < 126:
+        frame.append(length)
+    elif length < 65536:
+        frame.append(126)
+        frame.extend(length.to_bytes(2, 'big'))
+    else:
+        frame.append(127)
+        frame.extend(length.to_bytes(8, 'big'))
+    frame.extend(data)
+    sock.sendall(bytes(frame))
+
+
+def _ws_recv_message(sock):
+    """Read one complete WS message.  Returns payload bytes or None.
+
+    Handles masked frames (from clients), ping/pong, and close.
+    """
+    hdr = _recv_exact(sock, 2)
+    if not hdr:
+        return None
+    opcode = hdr[0] & 0x0F
+    masked = (hdr[1] & 0x80) != 0
+    payload_len = hdr[1] & 0x7F
+    if payload_len == 126:
+        ext = _recv_exact(sock, 2)
+        if not ext:
+            return None
+        payload_len = int.from_bytes(ext, 'big')
+    elif payload_len == 127:
+        ext = _recv_exact(sock, 8)
+        if not ext:
+            return None
+        payload_len = int.from_bytes(ext, 'big')
+    mask_key = _recv_exact(sock, 4) if masked else None
+    if masked and mask_key is None:
+        return None
+    payload = _recv_exact(sock, payload_len) if payload_len else b''
+    if payload is None and payload_len > 0:
+        return None
+    if masked and mask_key and payload:
+        payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+    if opcode == 0x08:  # Close
+        try:
+            sock.sendall(b'\x88\x00')
+        except Exception:
+            pass
+        return None
+    if opcode == 0x09:  # Ping → Pong
+        pong = bytearray([0x8A, len(payload) if len(payload) < 126 else 0])
+        pong.extend(payload)
+        try:
+            sock.sendall(bytes(pong))
+        except Exception:
+            pass
+        return _ws_recv_message(sock)  # recurse for next real message
+    return payload

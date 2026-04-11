@@ -525,6 +525,7 @@ class WebConfigServer:
             'ENABLE_WEB_MIC', 'WEB_MIC_VOLUME',
             'ENABLE_WEB_MONITOR', 'WEB_MONITOR_VOLUME', 'MONITOR_VAD_THRESHOLD',
             'ENABLE_CLOUDFLARE_TUNNEL',
+            'ENABLE_GDRIVE', 'GDRIVE_REMOTE', 'GDRIVE_FOLDER',
         ]),
         ('telegram', 'Telegram Bot', [
             'ENABLE_TELEGRAM', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
@@ -682,6 +683,7 @@ class WebConfigServer:
                 '/voice': 'voice.html',
                 '/routing': 'routing.html',
                 '/packet': 'packet.html',
+                '/gdrive': 'gdrive.html',
             }
 
             def do_GET(self):
@@ -752,6 +754,8 @@ class WebConfigServer:
                     _rs.handle_ws_mic(self, parent)
                 elif self.path == '/ws_monitor':
                     _rs.handle_ws_monitor(self, parent)
+                elif self.path == '/ws/link':
+                    _rs.handle_ws_link(self, parent)
                 elif self.path == '/stream':
                     _rs.handle_stream(self, parent)
                 elif self.path == '/tracestatus':
@@ -788,6 +792,12 @@ class WebConfigServer:
                     _rg.handle_packet_log(self, parent)
                 elif self.path.startswith('/loop/'):
                     _rg.handle_loop_api(self, parent)
+                elif self.path == '/api/tunnel/link-url':
+                    _rg.handle_tunnel_link_url(self, parent)
+                elif self.path == '/api/gdrive/status':
+                    _rg.handle_gdrive_status(self, parent)
+                elif self.path == '/api/gdrive/files':
+                    _rg.handle_gdrive_files(self, parent)
                 elif self.path.startswith('/packet/winlink/'):
                     _rg.handle_winlink_api(self, parent)
 
@@ -857,6 +867,20 @@ class WebConfigServer:
                     _rp.handle_loop_export(self, parent)
                 elif self.path.startswith('/loop/'):
                     _rl.handle_loop_post(self, parent)
+                elif self.path == '/api/gdrive/publish-tunnel':
+                    _gw = parent.gateway if parent else None
+                    if _gw and _gw.gdrive:
+                        import threading as _gd_t
+                        _gd_t.Thread(target=_gw._publish_tunnel_url,
+                                     daemon=True).start()
+                        _body = json_mod.dumps({'ok': True}).encode()
+                    else:
+                        _body = json_mod.dumps({'ok': False, 'error': 'GDrive not configured'}).encode()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(_body)))
+                    self.end_headers()
+                    self.wfile.write(_body)
                 elif self.path == '/pat' or self.path.startswith('/pat/'):
                     _rg.handle_pat_proxy(self, parent)
                 elif self.path.startswith('/packet/'):
