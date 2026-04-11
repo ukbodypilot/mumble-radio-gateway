@@ -1764,6 +1764,8 @@ class LinkAudioSource(AudioSource):
         self._chunk_queue = _queue_mod.deque(maxlen=16)
         self._sub_buffer = b''
         self._link_server = None  # Set by gateway_core after init
+        self._jitter_prefill = 3  # wait for N chunks before draining (absorbs endpoint jitter)
+        self._jitter_primed = False
 
     def setup_audio(self):
         return True
@@ -1773,6 +1775,8 @@ class LinkAudioSource(AudioSource):
         _st = getattr(self, '_stream_trace', None)
         _qd = len(self._chunk_queue)
         self._chunk_queue.append(pcm)
+        if not self._jitter_primed and len(self._chunk_queue) >= self._jitter_prefill:
+            self._jitter_primed = True
         if _st and _st.active:
             _extra = f'overflow' if _qd >= self._chunk_queue.maxlen else ''
             _st.record(f'{self.endpoint_name}_rx', 'push_audio', pcm, _qd, _extra)
@@ -1788,6 +1792,11 @@ class LinkAudioSource(AudioSource):
             return None, False
         if not self.server_connected:
             self.audio_level = max(0, int(self.audio_level * 0.7))
+            self._jitter_primed = False
+            return None, False
+
+        # Jitter buffer: wait for prefill before starting to drain
+        if not self._jitter_primed:
             return None, False
 
         cb = self._chunk_bytes
@@ -1798,14 +1807,16 @@ class LinkAudioSource(AudioSource):
             except IndexError:
                 self.audio_level = max(0, int(self.audio_level * 0.7))
                 if _st and _st.active:
-                    _st.record(f'{self.endpoint_name}_rx', 'get_audio', None, 0, 'UNDERRUN')
+                    _st.record(f'{self.endpoint_name}_rx', 'get_audio', None,
+                               0, 'UNDERRUN')
                 return None, False
 
         raw = self._sub_buffer[:cb]
         self._sub_buffer = self._sub_buffer[cb:]
 
         if _st and _st.active:
-            _st.record(f'{self.endpoint_name}_rx', 'get_audio', raw, len(self._chunk_queue))
+            _st.record(f'{self.endpoint_name}_rx', 'get_audio', raw,
+                       len(self._chunk_queue))
 
         # Level metering — no VAD gate here, bus handles that
         self.audio_level = pcm_level(raw, self.audio_level, gain=self.display_gain)
