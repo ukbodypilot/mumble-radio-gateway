@@ -111,7 +111,7 @@ class _EndpointConn:
     """State for one connected endpoint."""
     __slots__ = ('name', 'sock', 'send_lock', 'reader_thread', 'info',
                  'capabilities', 'last_heartbeat', 'audio_sink', 'addr',
-                 'via_tunnel')
+                 'via_tunnel', 'ping_ms', '_ping_sent')
 
     def __init__(self, name, sock, addr=None):
         self.name = name
@@ -124,6 +124,8 @@ class _EndpointConn:
         self.capabilities = {}
         self.last_heartbeat = time.monotonic()
         self.audio_sink = None  # set by on_register callback return value
+        self.ping_ms = -1       # last measured round-trip time (-1 = no data)
+        self._ping_sent = 0.0   # monotonic time when last ping was sent
 
 
 class GatewayLinkServer:
@@ -270,6 +272,7 @@ class GatewayLinkServer:
             info = dict(ep.info)
             info['via_tunnel'] = ep.via_tunnel
             info['addr'] = f"{ep.addr[0]}:{ep.addr[1]}" if ep.addr else None
+            info['ping_ms'] = ep.ping_ms
             return info
 
     # -- internal -----------------------------------------------------------
@@ -426,7 +429,9 @@ class GatewayLinkServer:
                         ack = json.loads(payload)
                         cmd_name = ack.get('cmd', ack.get('cmd_id', '?'))
                         ok = ack.get('ok', False)
-                        if cmd_name != 'status':
+                        if cmd_name == 'ping' and ep._ping_sent > 0:
+                            ep.ping_ms = round((time.monotonic() - ep._ping_sent) * 1000, 1)
+                        elif cmd_name not in ('status', 'ping'):
                             print(f"  [Link] ACK received from {ep_name}: cmd={cmd_name} ok={ok}")
                         if self._on_ack:
                             try:
@@ -491,11 +496,14 @@ class GatewayLinkServer:
                 snapshot = list(self._endpoints.values())
 
             dead = []
+            _ping_payload = json.dumps({"cmd": "ping"}).encode('utf-8')
             for ep in snapshot:
-                # Send heartbeat
+                # Send heartbeat + ping
                 with ep.send_lock:
                     try:
                         GatewayLinkProtocol.send_frame(ep.sock, GatewayLinkProtocol.STATUS, hb_payload)
+                        ep._ping_sent = time.monotonic()
+                        GatewayLinkProtocol.send_frame(ep.sock, GatewayLinkProtocol.COMMAND, _ping_payload)
                     except (OSError, ConnectionError) as e:
                         print(f"  [Link] Heartbeat send to {ep.name} failed: {e}")
                 # Dead peer detection
@@ -1153,6 +1161,8 @@ class RadioPlugin:
         action = cmd.get('cmd', '') if isinstance(cmd, dict) else ''
         if action == 'status':
             return {"ok": True, "status": self.get_status()}
+        if action == 'ping':
+            return {"ok": True}
         return {"ok": False, "error": "not implemented"}
 
     def get_status(self):

@@ -261,8 +261,9 @@ function updateStatus() {
           // Header: name + connection badge + model + plugin
           var _model = est.model || le.plugin || '';
           var _conn = le.via_tunnel ? '<span style="color:#f39c12;font-size:0.8em;margin-left:6px;">CF</span>' : '<span style="color:#2ecc71;font-size:0.8em;margin-left:6px;">LAN</span>';
+          var _ping = le.ping_ms >= 0 ? '<span style="color:#888;font-size:0.8em;margin-left:6px;">'+le.ping_ms+'ms</span>' : '';
           lh += '<div style="display:flex; justify-content:space-between; margin-bottom:4px;">';
-          lh += '<span class="st-val white">'+le.name+_conn+'</span>';
+          lh += '<span class="st-val white">'+le.name+_conn+_ping+'</span>';
           lh += '<span class="st-val cyan">'+_model+'</span>';
           lh += '</div>';
           // Curated status row
