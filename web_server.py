@@ -1376,11 +1376,6 @@ class WebConfigServer:
             if gw.kv4p_plugin:
                 sources.append({**{'id': 'kv4p', 'name': 'KV4P [RX]', 'enabled': True,
                                 'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(gw.kv4p_plugin)})
-            if any('d75' in n.lower() for n in gw.link_endpoints):
-                _d75_src = next((s for n, s in gw.link_endpoints.items() if 'd75' in n.lower()), None)
-                if _d75_src:
-                    sources.append({**{'id': 'd75', 'name': 'TH-D75 [RX]', 'enabled': True,
-                                    'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(_d75_src)})
             if getattr(gw, 'th9800_plugin', None):
                 sources.append({**{'id': 'aioc', 'name': 'TH-9800 [RX]', 'enabled': True,
                                 'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(gw.th9800_plugin)})
@@ -1406,16 +1401,11 @@ class WebConfigServer:
             if getattr(gw, 'remote_audio_source', None):
                 sources.append({**{'id': 'remote_audio', 'name': 'Remote Audio [RX]', 'enabled': True,
                                 'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(gw.remote_audio_source)})
-            # TNC source/sink removed — Direwolf runs on remote endpoint
-            # Generic link endpoints (skip D75 — handled above with special ID mapping)
-            _covered_ids = set()
-            if any('d75' in n.lower() for n in gw.link_endpoints):
-                _covered_ids.update(n for n in gw.link_endpoints if 'd75' in n.lower())
+            # Link endpoints — all dynamic, using pre-computed source_id
             for _ep_name, _ep_src in gw.link_endpoints.items():
-                if _ep_name in _covered_ids:
+                _ep_id = getattr(_ep_src, 'source_id', None)
+                if not _ep_id:
                     continue
-                import re as _re
-                _ep_id = _re.sub(r'[^a-z0-9_]', '_', _ep_name.lower())
                 _ep_label = _ep_name.replace('-', ' ').replace('_', ' ').title()
                 sources.append({**{'id': _ep_id, 'name': f'{_ep_label} [RX]', 'enabled': True,
                                 'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(_ep_src)})
@@ -1440,24 +1430,18 @@ class WebConfigServer:
         if gw:
             if gw.kv4p_plugin:
                 sinks.append({**{'id': 'kv4p_tx', 'name': 'KV4P [TX]', 'type': 'Radio TX', 'enabled': True}, **_src_info(gw.kv4p_plugin)})
-            if any('d75' in n.lower() for n in gw.link_endpoints):
-                _d75_src = next((s for n, s in gw.link_endpoints.items() if 'd75' in n.lower()), None)
-                if _d75_src:
-                    sinks.append({**{'id': 'd75_tx', 'name': 'TH-D75 [TX]', 'type': 'Radio TX', 'enabled': True}, **_src_info(_d75_src)})
             if getattr(gw, 'th9800_plugin', None):
                 sinks.append({**{'id': 'aioc_tx', 'name': 'TH-9800 [TX]', 'type': 'Radio TX', 'enabled': True}, **_src_info(gw.th9800_plugin)})
-            # TNC sink removed — Direwolf runs on remote endpoint
-            # Generic link endpoint TX sinks (skip D75 — handled above)
+            # Link endpoint TX sinks — all dynamic, using pre-computed sink_id
             for _ep_name, _ep_src in gw.link_endpoints.items():
-                if _ep_name in _covered_ids:
+                _sink_id = getattr(_ep_src, 'sink_id', None)
+                if not _sink_id:
                     continue
-                import re as _re
-                _ep_id = _re.sub(r'[^a-z0-9_]', '_', _ep_name.lower())
                 _ep_label = _ep_name.replace('-', ' ').replace('_', ' ').title()
                 _caps = getattr(_ep_src, '_endpoint_caps', {})
                 if _caps.get('ptt') or _caps.get('audio_tx', True):
                     _tx_gain = int(getattr(_ep_src, 'tx_audio_boost', 1.0) * 100)
-                    sinks.append({'id': f'{_ep_id}_tx', 'name': f'{_ep_label} [TX]', 'type': 'Radio TX',
+                    sinks.append({'id': _sink_id, 'name': f'{_ep_label} [TX]', 'type': 'Radio TX',
                                   'enabled': True, 'muted': getattr(_ep_src, 'muted', False), 'gain': _tx_gain})
 
         # Load bus config
@@ -1776,17 +1760,10 @@ class WebConfigServer:
             'remote_audio': getattr(gw, 'remote_audio_source', None),
         }
         result = _map.get(id)
-        # Fallback to link endpoints for D75 when plugin is None
-        if result is None and id in ('d75', 'd75_tx'):
-            for name, src in gw.link_endpoints.items():
-                if 'd75' in name.lower():
-                    return src
-        # Generic link endpoint lookup: match by sanitised endpoint name
+        # Link endpoint lookup by source_id or sink_id
         if result is None:
-            import re as _re
-            _base = id[:-3] if id.endswith('_tx') else id
             for name, src in gw.link_endpoints.items():
-                if _re.sub(r'[^a-z0-9_]', '_', name.lower()) == _base:
+                if getattr(src, 'source_id', None) == id or getattr(src, 'sink_id', None) == id:
                     return src
         return result
 

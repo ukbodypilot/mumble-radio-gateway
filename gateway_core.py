@@ -1471,6 +1471,9 @@ class RadioGateway:
                     print(f"Initializing Gateway Link server (port {link_port})...")
                     self._load_link_settings()
 
+                    def _sanitize_ep_name(n):
+                        return re.sub(r'[^a-z0-9_]', '_', n.lower()).strip('_')
+
                     def _link_on_register(info):
                         """Called when an endpoint registers — create its audio source."""
                         name = info.get('name', '')
@@ -1479,6 +1482,41 @@ class RadioGateway:
                         src = LinkAudioSource(self.config, self, endpoint_name=name)
                         src.setup_audio()
                         src.enabled = True
+
+                        # Compute device identity from REGISTER payload
+                        _raw_id = _sanitize_ep_name(name)
+                        _plugin = info.get('plugin', 'audio')
+                        src.plugin_type = _plugin
+
+                        # Backward compat: if routing config references plugin type
+                        # as a source ID and no other endpoint claimed it, use the
+                        # plugin type so existing configs keep working
+                        _existing_ids = {getattr(s, 'source_id', None)
+                                         for s in self.link_endpoints.values()}
+                        if _raw_id != _plugin and _plugin not in _existing_ids:
+                            try:
+                                import json as _rc_json
+                                _rc_path = os.path.join(
+                                    os.path.dirname(os.path.abspath(__file__)),
+                                    'routing_config.json')
+                                with open(_rc_path) as _f:
+                                    _rc = _rc_json.load(_f)
+                                _rc_ids = {c['from'] for c in _rc.get('connections', [])
+                                           if c['type'] == 'source-bus'}
+                                _rc_ids.update(
+                                    c['to'].replace('_tx', '')
+                                    for c in _rc.get('connections', [])
+                                    if c['type'] == 'bus-sink')
+                                if _plugin in _rc_ids:
+                                    _raw_id = _plugin
+                            except Exception:
+                                pass
+
+                        src.source_id = _raw_id
+                        src.sink_id = _raw_id + '_tx'
+                        print(f"  [Link] {name}: source_id={src.source_id} "
+                              f"sink_id={src.sink_id} plugin={_plugin}")
+
                         # Restore saved settings
                         saved = self.link_endpoint_settings.get(name, {})
                         src.muted = saved.get('rx_muted', False)
@@ -2720,7 +2758,7 @@ class RadioGateway:
                 }
 
         # Pre-scan for D75 link endpoint (avoid repeated scans in dict below)
-        _d75_link = next((src for n, src in self.link_endpoints.items() if 'd75' in n.lower()), None)
+        _d75_link = next((src for src in self.link_endpoints.values() if getattr(src, 'plugin_type', None) == 'd75'), None)
 
         return {
             'uptime': uptime_str,

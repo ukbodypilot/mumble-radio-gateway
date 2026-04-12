@@ -18,11 +18,9 @@ def _resolve_source(gw, source_id):
     }
     if source_id in _plugin_map:
         return getattr(gw, _plugin_map[source_id], None)
-    # Link endpoint lookup (d75, ftm_150, etc.)
-    import re as _re
+    # Link endpoint lookup by source_id
     for name, src in getattr(gw, 'link_endpoints', {}).items():
-        _ep_id = 'd75' if 'd75' in name.lower() else _re.sub(r'[^a-z0-9_]', '_', name.lower())
-        if _ep_id == source_id:
+        if getattr(src, 'source_id', None) == source_id:
             return src
     return None
 
@@ -596,8 +594,8 @@ def handle_d75cmd(handler, parent):
         _link = getattr(gw, 'link_server', None) if gw else None
         _d75_ep = None
         if _link:
-            for ep_name in _link.get_endpoint_names():
-                if 'd75' in ep_name.lower():
+            for ep_name, ep_src in gw.link_endpoints.items():
+                if getattr(ep_src, 'plugin_type', None) == 'd75':
                     _d75_ep = ep_name
                     break
 
@@ -624,7 +622,7 @@ def handle_d75cmd(handler, parent):
                 # Mute the link audio source on the gateway side
                 _link_src = None
                 for _src_name, _src in getattr(gw, 'link_endpoints', {}).items():
-                    if 'd75' in _src_name.lower():
+                    if getattr(_src, 'plugin_type', None) == 'd75':
                         _link_src = _src
                         break
                 if _link_src:

@@ -231,9 +231,9 @@ class BusManager:
                                           getattr(gw.config, 'REMOTE_AUDIO_DUCK', True))
         if getattr(gw, 'echolink_source', None):
             source_map['echolink'] = (gw.echolink_source, 2, False)
-        # Link endpoints
+        # Link endpoints — use pre-computed source_id from registration
         for name, src in gw.link_endpoints.items():
-            _sid = 'd75' if 'd75' in name.lower() else _re.sub(r'[^a-z0-9_]', '_', name.lower())
+            _sid = getattr(src, 'source_id', None) or _re.sub(r'[^a-z0-9_]', '_', name.lower())
             source_map[_sid] = (src,
                                 int(getattr(gw.config, 'LINK_AUDIO_PRIORITY', 3)) + 10,
                                 getattr(gw.config, 'LINK_AUDIO_DUCK', False))
@@ -329,12 +329,12 @@ class BusManager:
         the old radio object may have been garbage collected on disconnect.
         No bus teardown — just swaps the pointer.
         """
-        import re as _re, json as _json
+        import json as _json
         gw = self.gateway
         new_radio = None
         ep_name = None
         for name, src in gw.link_endpoints.items():
-            if _re.sub(r'[^a-z0-9_]', '_', name.lower()) == source_id:
+            if getattr(src, 'source_id', None) == source_id:
                 new_radio = src
                 ep_name = name
                 break
@@ -515,20 +515,11 @@ class BusManager:
             return gw.th9800_plugin
         elif sink_id == 'kv4p' and gw.kv4p_plugin:
             return gw.kv4p_plugin
-        # Check link endpoints for D75
-        if sink_id in ('d75_tx', 'd75'):
-            for name, src in gw.link_endpoints.items():
-                if 'd75' in name.lower():
-                    return src
-        # Generic link endpoint lookup by sanitised name
-        import re as _re
-        _base = sink_id
-        if _base.endswith('_tx'):
-            _base = _base[:-3]
-            if _base.endswith('_'):
-                _base = _base[:-1]  # 'ftm_150_tx' → 'ftm_150' not 'ftm_150_'
+        # Link endpoint lookup by source_id or sink_id
         for name, src in gw.link_endpoints.items():
-            if _re.sub(r'[^a-z0-9_]', '_', name.lower()) == _base:
+            if getattr(src, 'sink_id', None) == sink_id:
+                return src
+            if getattr(src, 'source_id', None) == sink_id:
                 return src
         return None
 
@@ -566,10 +557,9 @@ class BusManager:
         _ext = getattr(gw, '_external_plugins', {})
         if source_id in _ext:
             return _ext[source_id]
-        # Generic link endpoint lookup by sanitised name
-        import re as _re
+        # Link endpoint lookup by source_id
         for name, src in gw.link_endpoints.items():
-            if _re.sub(r'[^a-z0-9_]', '_', name.lower()) == source_id:
+            if getattr(src, 'source_id', None) == source_id:
                 return src
         return None
 
@@ -714,12 +704,9 @@ class BusManager:
             # Radio TX sinks — SoloBus Phase 3 already calls put_audio(),
             # so here we only track TX level for the routing page display.
             # Listen bus: actually send audio to link endpoints via link_server.
-            elif sink_id in ('kv4p_tx', 'd75_tx', 'aioc_tx') or self._get_radio_plugin(sink_id):
-                import re as _re2
-                _base2 = sink_id[:-3] if sink_id.endswith('_tx') else sink_id
+            elif sink_id in ('kv4p_tx', 'aioc_tx') or self._get_radio_plugin(sink_id):
                 for _eln, _els in gw.link_endpoints.items():
-                    _san = _re2.sub(r'[^a-z0-9_]', '_', _eln.lower())
-                    if _san == _base2 or _san.startswith(_base2 + '_'):
+                    if getattr(_els, 'sink_id', None) == sink_id:
                         # Send audio to link endpoint for TX
                         # Skip if the bus already sent via put_audio (solo bus Phase 3)
                         _bus_obj = self._busses.get(bus_id)

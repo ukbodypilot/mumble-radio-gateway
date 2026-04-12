@@ -44,9 +44,9 @@ def _resolve_freq_tag(gateway, source_id):
             kv = getattr(gateway, 'kv4p_plugin', None)
             if kv:
                 return f'{kv._frequency:.3f}'
-        if source_id == 'd75':
-            for name in getattr(gateway, 'link_endpoints', {}):
-                if 'd75' in name.lower():
+        # Link endpoint frequency lookup by source_id
+        for name, _ep_src in getattr(gateway, 'link_endpoints', {}).items():
+            if getattr(_ep_src, 'source_id', None) == source_id:
                     status = getattr(gateway, '_link_last_status', {}).get(name, {})
                     bands = status.get('band', [])
                     if bands:

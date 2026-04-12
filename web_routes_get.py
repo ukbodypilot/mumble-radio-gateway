@@ -158,8 +158,8 @@ def handle_d75status(handler, parent):
         _link = getattr(gw, 'link_server', None)
         _d75_ep = None
         if _link:
-            for ep_name in _link.get_endpoint_names():
-                if 'd75' in ep_name.lower():
+            for ep_name, ep_src in gw.link_endpoints.items():
+                if getattr(ep_src, 'plugin_type', None) == 'd75':
                     _d75_ep = ep_name
                     break
 
@@ -192,7 +192,7 @@ def handle_d75status(handler, parent):
                     data[_bkey] = _bd
             # Audio level from the link audio source
             for _src_name, _src in getattr(gw, 'link_endpoints', {}).items():
-                if 'd75' in _src_name.lower():
+                if getattr(_src, 'plugin_type', None) == 'd75':
                     data['audio_connected'] = True
                     data['audio_level'] = getattr(_src, 'audio_level', 0)
                     data['audio_boost'] = int(getattr(_src, 'audio_boost', 1.0) * 100)
@@ -244,8 +244,8 @@ def handle_d75memlist(handler, parent):
     _link = getattr(gw, 'link_server', None) if gw else None
     _d75_ep = None
     if _link:
-        for ep_name in _link.get_endpoint_names():
-            if 'd75' in ep_name.lower():
+        for ep_name, ep_src in gw.link_endpoints.items():
+            if getattr(ep_src, 'plugin_type', None) == 'd75':
                 _d75_ep = ep_name
                 break
     if _d75_ep and _link:
@@ -784,11 +784,6 @@ def handle_routing_levels(handler, parent):
                 data['sdr2'] = _sdr._tuner2.audio_level
         if gw.kv4p_plugin:
             data['kv4p'] = gw.kv4p_plugin.audio_level
-        if not data.get('d75'):
-            for _ln, _ls in gw.link_endpoints.items():
-                if 'd75' in _ln.lower():
-                    data['d75'] = getattr(_ls, 'audio_level', 0)
-                    break
         if getattr(gw, 'th9800_plugin', None):
             data['aioc'] = gw.th9800_plugin.audio_level
         if getattr(gw, 'playback_source', None):
@@ -807,32 +802,20 @@ def handle_routing_levels(handler, parent):
             data['mumble_rx'] = getattr(gw, 'rx_audio_level', 0)
         if getattr(gw, 'remote_audio_source', None):
             data['remote_audio'] = gw.remote_audio_source.audio_level
-        # TNC levels removed — Direwolf runs on remote endpoint
-        # Generic link endpoint RX levels (skip D75 — handled above)
-        import re as _re
+        # Link endpoint RX + TX levels — all dynamic via source_id/sink_id
         for _ln, _ls in gw.link_endpoints.items():
-            if 'd75' in _ln.lower():
-                continue
-            _ep_id = _re.sub(r'[^a-z0-9_]', '_', _ln.lower())
-            # Decay level each poll so it drops to zero when gate blocks
-            _ls.audio_level = max(0, int(getattr(_ls, 'audio_level', 0) * 0.8))
-            data[_ep_id] = _ls.audio_level
-        # TX levels (radio destinations)
+            _ep_id = getattr(_ls, 'source_id', None)
+            _sink_id = getattr(_ls, 'sink_id', None)
+            if _ep_id:
+                _ls.audio_level = max(0, int(getattr(_ls, 'audio_level', 0) * 0.8))
+                data[_ep_id] = _ls.audio_level
+            if _sink_id:
+                data[_sink_id] = gw._link_tx_levels.get(_ln, 0)
+        # TX levels (built-in radios)
         if gw.kv4p_plugin:
             data['kv4p_tx'] = getattr(gw.kv4p_plugin, 'tx_audio_level', 0)
-        if not data.get('d75_tx'):
-            for _ln, _ls in gw.link_endpoints.items():
-                if 'd75' in _ln.lower():
-                    data['d75_tx'] = gw._link_tx_levels.get(_ln, 0)
-                    break
         if getattr(gw, 'th9800_plugin', None):
             data['aioc_tx'] = getattr(gw.th9800_plugin, 'tx_audio_level', 0)
-        # Generic link endpoint TX levels
-        for _ln, _ls in gw.link_endpoints.items():
-            if 'd75' in _ln.lower():
-                continue
-            _ep_id = _re.sub(r'[^a-z0-9_]', '_', _ln.lower())
-            data[_ep_id + '_tx'] = gw._link_tx_levels.get(_ln, 0)
         # Passive sinks — only show level if connected to a bus
         _all_sinks = getattr(gw, '_bus_sinks', {})
         _all_connected = set()

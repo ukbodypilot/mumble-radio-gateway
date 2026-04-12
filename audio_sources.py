@@ -1768,6 +1768,10 @@ class LinkAudioSource(AudioSource):
         self._sub_buffer = b''
         self._link_server = None  # Set by gateway_core after init
         self._jitter_prefill = 4  # wait for N chunks before draining (absorbs endpoint jitter)
+        # Device identity — set by _link_on_register, used by all consumers
+        self.source_id = None      # routing source ID, e.g. "d75", "ftm_150"
+        self.sink_id = None        # routing TX sink ID, e.g. "d75_tx", "ftm_150_tx"
+        self.plugin_type = None    # device class from REGISTER, e.g. "d75", "aioc", "audio"
         self._jitter_primed = False
 
     def setup_audio(self):
