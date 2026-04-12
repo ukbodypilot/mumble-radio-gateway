@@ -261,7 +261,67 @@ class D75Plugin(RadioPlugin):
             status["band"] = [full.get('band_0', {}), full.get('band_1', {})]
         if self._audio:
             status["audio_connected"] = self._audio.connected
+        # RX/TX active state
+        status["input_active"] = bool(self._audio and self._audio.connected)
+        status["output_active"] = bool(self._audio and self._audio.connected)
+        # System stats (CPU, RAM, disk, temp)
+        status.update(self._get_system_stats())
         return status
+
+    @classmethod
+    def _get_system_stats(cls):
+        """Get CPU, RAM, disk, temp for the endpoint machine."""
+        import os, time
+        stats = {}
+        try:
+            with open('/proc/stat') as f:
+                parts = f.readline().split()
+            vals = [int(v) for v in parts[1:]]
+            total = sum(vals)
+            idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+            if not hasattr(cls, '_prev_cpu'):
+                cls._prev_cpu = None
+            if cls._prev_cpu:
+                dt = total - cls._prev_cpu[0]
+                di = idle - cls._prev_cpu[1]
+                stats['cpu_pct'] = round((1.0 - di / dt) * 100, 1) if dt > 0 else 0.0
+            else:
+                stats['cpu_pct'] = 0.0
+            cls._prev_cpu = (total, idle)
+        except Exception:
+            pass
+        try:
+            mem = {}
+            with open('/proc/meminfo') as f:
+                for line in f:
+                    p = line.split()
+                    k = p[0].rstrip(':')
+                    if k in ('MemTotal', 'MemAvailable'):
+                        mem[k] = int(p[1])
+            total = mem.get('MemTotal', 0)
+            avail = mem.get('MemAvailable', 0)
+            stats['ram_pct'] = round(100.0 * (total - avail) / total) if total else 0
+            stats['ram_mb'] = (total - avail) // 1024
+            stats['ram_total_mb'] = total // 1024
+        except Exception:
+            pass
+        try:
+            import shutil
+            st = shutil.disk_usage('/')
+            stats['disk_pct'] = round(100.0 * st.used / st.total) if st.total else 0
+            stats['disk_free_gb'] = round(st.free / (1024**3), 1)
+        except Exception:
+            pass
+        try:
+            for zp in sorted(__import__('glob').glob('/sys/class/thermal/thermal_zone*/temp')):
+                with open(zp) as f:
+                    t = int(f.read().strip()) / 1000
+                if t > 0:
+                    stats['cpu_temp_c'] = round(t, 1)
+                    break
+        except Exception:
+            pass
+        return stats
 
     # -- Internal: memory scan --
 
