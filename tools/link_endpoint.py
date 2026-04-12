@@ -156,6 +156,7 @@ class StatusReporter:
                     try:
                         status = self._plugin.get_status()
                         status['uptime'] = round(time.monotonic() - self._start_time, 1)
+                        status['code_version'] = _compute_local_version()
                         self._client.send_status(status)
                         _last_send = time.monotonic()
                     except Exception as e:
@@ -401,8 +402,19 @@ def main():
 
     def on_command_from_master(cmd):
         """Called from reader thread when master sends a command."""
-        result = plugin.execute(cmd)
         cmd_str = cmd.get('cmd', str(cmd)) if isinstance(cmd, dict) else str(cmd)
+
+        # Restart command — ACK then os.execv
+        if cmd_str == 'restart':
+            print(f"[Endpoint] Restart requested by gateway")
+            try:
+                client.send_ack('restart', {"ok": True})
+            except Exception:
+                pass
+            time.sleep(0.5)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        result = plugin.execute(cmd)
         ok = result.get('ok', False) if isinstance(result, dict) else False
         print(f"[Endpoint] Command: {cmd_str} -> {'OK' if ok else result}")
         # Send ACK back to master with the result

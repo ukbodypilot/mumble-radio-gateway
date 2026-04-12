@@ -153,6 +153,14 @@
 <script src="/pages/common.js"></script>
 <script>
 var _lastNotifSeq = 0;
+
+function restartEndpoint(name) {
+  if (!confirm('Restart endpoint "' + name + '"?')) return;
+  postJson('/linkcmd', {endpoint: name, cmd: 'restart'}).then(function(d) {
+    showToast(name + ' restarting...', 'info');
+  }).catch(function(e) { showToast('Restart failed: ' + e, 'error'); });
+}
+
 function showToast(msg, level) {
   var c = document.getElementById('toast-container');
   if (!c) return;
@@ -262,9 +270,11 @@ function updateStatus() {
           var _model = est.model || le.plugin || '';
           var _conn = le.via_tunnel ? '<span style="color:#f39c12;font-size:0.8em;margin-left:6px;">CF</span>' : '<span style="color:#2ecc71;font-size:0.8em;margin-left:6px;">LAN</span>';
           var _ping = le.ping_ms >= 0 ? '<span style="color:#888;font-size:0.8em;margin-left:6px;">'+le.ping_ms+'ms</span>' : '';
+          var _ver = (est.code_version || '').substring(0,8);
+          var _verSpan = _ver ? '<span style="color:#555;font-size:0.7em;margin-left:6px;">'+_ver+'</span>' : '';
           lh += '<div style="display:flex; justify-content:space-between; margin-bottom:4px;">';
-          lh += '<span class="st-val white">'+le.name+_conn+_ping+'</span>';
-          lh += '<span class="st-val cyan">'+_model+'</span>';
+          lh += '<span class="st-val white">'+le.name+_conn+_ping+_verSpan+'</span>';
+          lh += '<span style="display:flex;align-items:center;gap:6px;"><span class="st-val cyan">'+_model+'</span><button onclick="restartEndpoint(\''+le.name+'\')" style="font-size:0.65em;padding:1px 6px;background:var(--t-btn);color:#888;border:1px solid var(--t-btn-border);border-radius:3px;cursor:pointer;" title="Restart endpoint">&#x21bb;</button></span>';
           lh += '</div>';
           // Curated status row
           var eh = '';
