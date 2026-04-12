@@ -792,6 +792,10 @@ class WebConfigServer:
                     _rg.handle_packet_log(self, parent)
                 elif self.path.startswith('/loop/'):
                     _rg.handle_loop_api(self, parent)
+                elif self.path == '/api/endpoint/version':
+                    _rg.handle_endpoint_version(self, parent)
+                elif self.path == '/api/endpoint/files':
+                    _rg.handle_endpoint_files(self, parent)
                 elif self.path == '/api/tunnel/link-url':
                     _rg.handle_tunnel_link_url(self, parent)
                 elif self.path == '/api/gdrive/status':

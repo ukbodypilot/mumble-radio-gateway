@@ -184,6 +184,75 @@ def apply_gain(pcm, gain):
 
 
 # ---------------------------------------------------------------------------
+# Self-update — check gateway for newer endpoint code
+# ---------------------------------------------------------------------------
+
+def _compute_local_version():
+    """Compute hash of local endpoint files."""
+    import hashlib
+    h = hashlib.sha256()
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    for fname in ['gateway_link.py', 'link_endpoint.py',
+                  'd75_link_plugin.py', 'remote_bt_proxy.py']:
+        path = os.path.join(_dir, fname)
+        if os.path.isfile(path):
+            with open(path, 'rb') as f:
+                h.update(f.read())
+    return h.hexdigest()[:16]
+
+
+def _check_for_update(gateway_url):
+    """Check gateway for newer endpoint code. Returns True if updated + restart needed."""
+    import urllib.request, base64
+    try:
+        # Check version
+        local_ver = _compute_local_version()
+        req = urllib.request.Request(f'{gateway_url}/api/endpoint/version')
+        resp = urllib.request.urlopen(req, timeout=10)
+        remote = json.loads(resp.read())
+        remote_ver = remote.get('version', '')
+
+        if remote_ver == local_ver:
+            print(f"[Update] Code is up to date (v={local_ver})")
+            return False
+
+        print(f"[Update] New version available: local={local_ver} remote={remote_ver}")
+
+        # Download files
+        req = urllib.request.Request(f'{gateway_url}/api/endpoint/files')
+        resp = urllib.request.urlopen(req, timeout=30)
+        bundle = json.loads(resp.read())
+
+        _dir = os.path.dirname(os.path.abspath(__file__))
+        updated = 0
+        for fname, b64data in bundle.items():
+            content = base64.b64decode(b64data)
+            path = os.path.join(_dir, fname)
+            # Check if content actually changed
+            try:
+                with open(path, 'rb') as f:
+                    if f.read() == content:
+                        continue
+            except FileNotFoundError:
+                pass
+            with open(path, 'wb') as f:
+                f.write(content)
+            updated += 1
+            print(f"[Update] Updated: {fname} ({len(content)} bytes)")
+
+        if updated > 0:
+            print(f"[Update] {updated} file(s) updated — restarting...")
+            return True
+        else:
+            print(f"[Update] Files unchanged despite version mismatch")
+            return False
+
+    except Exception as e:
+        print(f"[Update] Check failed: {e} (continuing with current code)")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -217,6 +286,8 @@ def main():
                         help='Google Drive folder path (default: radio-gateway)')
     parser.add_argument('--rclone-config', default='',
                         help='Path to rclone.conf (default: system default)')
+    parser.add_argument('--no-update', action='store_true',
+                        help='Skip self-update check on startup')
     parser.add_argument('--list-devices', action='store_true',
                         help='List available audio devices and exit')
 
@@ -226,6 +297,21 @@ def main():
     if args.list_devices:
         list_audio_devices()
         sys.exit(0)
+
+    # Self-update check — try LAN gateway first, then tunnel URL
+    if not args.no_update:
+        _update_url = None
+        if args.server:
+            _host = args.server.rsplit(':', 1)[0]
+            _update_url = f'http://{_host}:8080'
+        if _update_url and _check_for_update(_update_url):
+            os.execv(sys.executable, [sys.executable] + sys.argv + ['--no-update'])
+        elif args.tunnel_url:
+            # Try via tunnel (convert wss:// ws link to https:// base)
+            _tun = args.tunnel_url.replace('wss://', 'https://').replace('ws://', 'http://')
+            _tun = _tun.replace('/ws/link', '')
+            if _check_for_update(_tun):
+                os.execv(sys.executable, [sys.executable] + sys.argv + ['--no-update'])
 
     # Load cached settings
     _settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'settings.json')

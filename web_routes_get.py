@@ -921,6 +921,62 @@ from web_routes_packet import handle_packet_bbs_buffer, handle_packet_log
 from web_routes_loop import handle_loop_api, handle_loop_post
 
 
+# ── Endpoint self-update API ──
+
+_ENDPOINT_FILES = [
+    'gateway_link.py',
+    'link_endpoint.py',
+    'd75_link_plugin.py',
+    'remote_bt_proxy.py',
+]
+
+
+def handle_endpoint_version(handler, parent):
+    """GET /api/endpoint/version — hash of endpoint files for update check."""
+    import hashlib
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha256()
+    files = {}
+    for fname in _ENDPOINT_FILES:
+        for path in [os.path.join(_dir, fname),
+                     os.path.join(_dir, 'tools', fname),
+                     os.path.join(_dir, 'scripts', fname)]:
+            if os.path.isfile(path):
+                with open(path, 'rb') as f:
+                    content = f.read()
+                h.update(content)
+                files[fname] = len(content)
+                break
+    data = {'version': h.hexdigest()[:16], 'files': files}
+    body = json_mod.dumps(data).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def handle_endpoint_files(handler, parent):
+    """GET /api/endpoint/files — download all endpoint files as JSON bundle."""
+    import base64
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    bundle = {}
+    for fname in _ENDPOINT_FILES:
+        for path in [os.path.join(_dir, fname),
+                     os.path.join(_dir, 'tools', fname),
+                     os.path.join(_dir, 'scripts', fname)]:
+            if os.path.isfile(path):
+                with open(path, 'rb') as f:
+                    bundle[fname] = base64.b64encode(f.read()).decode()
+                break
+    body = json_mod.dumps(bundle).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 # ── Google Drive + Tunnel URL API ──
 
 def handle_tunnel_link_url(handler, parent):
