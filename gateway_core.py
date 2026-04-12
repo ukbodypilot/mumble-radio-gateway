@@ -2266,14 +2266,12 @@ class RadioGateway:
                     else:
                         _tr_rebro = 'hold'
 
-                # WebSocket PCM push (all buses mixed by BusManager)
+                # WebSocket PCM push — now done directly from bus tick thread
+                # Main loop drain kept for level metering only, no WS push
                 if _bm_pcm is not None:
                     if self._stream_trace and self._stream_trace.active:
-                        _extra = f'dt={_tick_dt:.0f}ms' if _tick_dt > 80 else ''
-                        self._stream_trace.record('pcm_ws', 'push', _bm_pcm,
-                                                  self._last_pcm_drain_n, _extra)
-                    if self.web_config_server and self.web_config_server._ws_clients:
-                        self.web_config_server.push_ws_audio(_bm_pcm)
+                        self._stream_trace.record('pcm_ws', 'drain_only', _bm_pcm,
+                                                  self._last_pcm_drain_n)
 
                 # MP3 stream push
                 if _bm_mp3 is not None:
