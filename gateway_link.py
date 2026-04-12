@@ -1807,7 +1807,8 @@ class AIOCPlugin(AudioPlugin):
         else:
             self._aioc_hw = config.get('device', '')
 
-        # Open HID for PTT BEFORE audio — plughw: can reset USB and kill hidraw
+        # Open HID BEFORE audio — arecord on hw: kills /dev/hidraw but an
+        # already-open file descriptor survives and stays usable for writes
         try:
             import hid as _hid_mod
             if hasattr(_hid_mod, 'Device'):
@@ -1822,7 +1823,7 @@ class AIOCPlugin(AudioPlugin):
             print(f"         PTT will not work. Check USB connection and permissions.")
             self._hid = None
 
-        # Open audio streams via parent class (after HID to avoid USB reset)
+        # Open audio streams AFTER HID
         super().setup(config)
 
     def teardown(self):
