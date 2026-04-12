@@ -1770,6 +1770,12 @@ class LinkAudioSource(AudioSource):
     def setup_audio(self):
         return True
 
+    def flush_buffers(self):
+        """Flush jitter buffer and sub-buffer. Called on playback stop or bus change."""
+        self._chunk_queue.clear()
+        self._sub_buffer = b''
+        self._jitter_primed = False
+
     def push_audio(self, pcm):
         """Called by GatewayLinkServer reader thread when AUDIO frame arrives."""
         _st = getattr(self, '_stream_trace', None)
