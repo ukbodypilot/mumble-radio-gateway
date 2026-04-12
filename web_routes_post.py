@@ -268,11 +268,10 @@ def handle_mixer(handler, parent):
                     result = {'ok': True, 'muted': want}
             else:
                 # Try generic link endpoint by sanitised name
-                import re as _re
                 _ep_src = None
                 _ep_name = None
                 for _n, _s in gw.link_endpoints.items():
-                    if _re.sub(r'[^a-z0-9_]', '_', _n.lower()) == source:
+                    if getattr(_s, 'source_id', None) == source:
                         _ep_src = _s
                         _ep_name = _n
                         break
