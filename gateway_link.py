@@ -187,7 +187,7 @@ class GatewayLinkServer:
         self._server_sock = None
         self._stop = threading.Event()
         self._start_time = time.monotonic()
-        self._DEAD_PEER_TIMEOUT = 30.0     # seconds without any frame before declaring dead
+        self._DEAD_PEER_TIMEOUT = 90.0     # seconds without any frame before declaring dead
         self._REGISTER_TIMEOUT = 10.0      # seconds to wait for REGISTER after connect
 
         # dict keyed by endpoint name -> _EndpointConn
@@ -399,7 +399,7 @@ class GatewayLinkServer:
                     pass
                 return
 
-            sock.settimeout(20.0)  # 20s timeout for send+recv — detects cable pull
+            sock.settimeout(60.0)  # 60s timeout — generous for lossy WiFi links
 
             info = json.loads(payload)
             ep_name = info.get('name', '')
@@ -954,6 +954,7 @@ class GatewayLinkClient:
                     sock.settimeout(10.0)
                     sock.connect((self._host, self._port))
                     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    sock.settimeout(60.0)  # generous timeout for lossy WiFi
                     print(f"  [{_ts()}] [Link] Connected to {self._host}:{self._port} (TCP) [#{_connect_count}]")
                     with self._send_lock:
                         self._sock = sock
