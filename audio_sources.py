@@ -2384,6 +2384,9 @@ class StreamOutputSource:
         self._bytes_sent = 0
         self._connect_time = 0
         self._reconnect_backoff = 5
+        self._reconnect_count = 0
+        self._last_drop_time = 0   # monotonic time of last connection drop
+        self._was_connected = False  # True once first successful connection
 
         if config.ENABLE_STREAM_OUTPUT:
             self._connect()
@@ -2472,19 +2475,27 @@ class StreamOutputSource:
                         if self._icecast_sock:
                             self._icecast_sock.sendall(data)
                             self._bytes_sent += len(data)
-                except (BrokenPipeError, OSError, ConnectionError):
-                    print("  [Broadcastify] Connection lost")
+                except (BrokenPipeError, OSError, ConnectionError) as e:
+                    uptime_s = int(time.time() - self._connect_time) if self._connect_time else 0
+                    print(f"  [Broadcastify] Connection lost after {uptime_s}s: {e}")
                     self.connected = False
+                    self._last_drop_time = time.monotonic()
                     break
-                except Exception:
+                except Exception as e:
+                    print(f"  [Broadcastify] Reader error: {e}")
                     break
             # Clean up on exit
+            if self.connected:
+                uptime_s = int(time.time() - self._connect_time) if self._connect_time else 0
+                print(f"  [Broadcastify] Reader thread exited (was connected {uptime_s}s)")
+                self._last_drop_time = time.monotonic()
             self.connected = False
 
         self._reader_thread = threading.Thread(target=_reader, daemon=True,
                                                 name="Broadcastify-sender")
         self._reader_thread.start()
         self.connected = True
+        self._was_connected = True
         self._connect_time = time.time()
         self._last_audio_time = time.monotonic()
         self._bytes_sent = 0
@@ -2500,13 +2511,19 @@ class StreamOutputSource:
         """Send raw PCM audio to the MP3 encoder. Auto-reconnects on failure."""
         if not self.connected or not self._encoder:
             # Auto-reconnect if we were previously connected
-            if self._connect_time > 0 and not getattr(self, '_reconnecting', False):
+            if self._was_connected and not getattr(self, '_reconnecting', False):
                 self._reconnecting = True
+                self._reconnect_count += 1
+                count = self._reconnect_count
                 def _auto_reconnect():
                     time.sleep(5)
-                    print("  [Broadcastify] Auto-reconnecting...")
+                    print(f"  [Broadcastify] Auto-reconnecting (attempt #{count})...")
                     self.close()
                     self._connect()
+                    if self.connected:
+                        print(f"  [Broadcastify] Reconnected successfully (attempt #{count})")
+                    else:
+                        print(f"  [Broadcastify] Reconnect failed (attempt #{count})")
                     self._reconnecting = False
                 threading.Thread(target=_auto_reconnect, daemon=True).start()
             return

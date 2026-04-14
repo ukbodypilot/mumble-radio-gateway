@@ -392,6 +392,11 @@ class RadioGateway:
         self._darkice_stats_cache = None   # Cached stats dict
         self._darkice_stats_time = 0       # Last stats fetch timestamp
 
+        # Broadcastify stream health monitoring
+        self._stream_was_connected = False  # Set True once stream connects
+        self._stream_drop_alerted = False   # Prevent repeated alerts
+        self._last_stream_health_check = 0
+
         # Watchdog trace — low-fidelity long-running diagnostics (press 'u')
         # Samples every 5s into memory, flushes to disk every 60s.
         # Designed to run overnight/multi-day to catch freezes.
@@ -2442,6 +2447,36 @@ class RadioGateway:
     def _restart_darkice(self):
         from stream_stats import restart_darkice
         restart_darkice(self)
+
+    def _send_stream_alert(self, message):
+        """Send Broadcastify stream alert via email and Telegram."""
+        import datetime
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # Email alert
+        if self.email_notifier:
+            try:
+                import socket
+                hostname = socket.gethostname()
+            except Exception:
+                hostname = ''
+            subject = f"Broadcastify Stream Down{' — ' + hostname if hostname else ''}"
+            body = f"{message}\n\nTime: {now}\n\n-- Radio Gateway"
+            self.email_notifier.send(subject, body)
+        # Telegram alert
+        bot_token = str(getattr(self.config, 'TELEGRAM_BOT_TOKEN', '') or '').strip()
+        chat_id = str(getattr(self.config, 'TELEGRAM_CHAT_ID', '') or '').strip()
+        if bot_token and chat_id:
+            try:
+                import urllib.request, json
+                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                data = json.dumps({'chat_id': chat_id, 'text': f"[Gateway] {message}\n{now}"}).encode()
+                req = urllib.request.Request(url, data=data,
+                                            headers={'Content-Type': 'application/json'})
+                urllib.request.urlopen(req, timeout=10)
+                print(f"  [Telegram] Stream alert sent")
+            except Exception as e:
+                print(f"  [Telegram] Alert failed: {e}")
+
     def restart_audio_input(self):
         """Attempt to restart the audio input stream"""
         # Suppress ALL stderr during restart (ALSA is very noisy)
@@ -2868,7 +2903,7 @@ class RadioGateway:
             'darkice_running': bool(getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
             'darkice_pid': self._darkice_pid,
             'darkice_restarts': self._darkice_restart_count,
-            'stream_restarts': getattr(self.th9800_plugin, '_stream_restart_count', 0) if self.th9800_plugin else 0,
+            'stream_restarts': getattr(getattr(self, 'stream_output', None), '_reconnect_count', 0),
             'stream_health': bool(getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
             'darkice_stats': self._get_stream_stats(),
             'notifications': list(self._notifications),
@@ -2933,6 +2968,30 @@ class RadioGateway:
                     self._restart_darkice()
                 elif pid != self._darkice_pid:
                     self._darkice_pid = pid  # PID changed (external restart)
+
+            # Broadcastify stream health check (every 30s)
+            so = getattr(self, 'stream_output', None)
+            if (so and getattr(self.config, 'ENABLE_STREAM_OUTPUT', False) and
+                    current_time - self._last_stream_health_check > 30):
+                self._last_stream_health_check = current_time
+                if so.connected:
+                    if not self._stream_was_connected:
+                        self._stream_was_connected = True
+                        print("  [Broadcastify] Stream healthy")
+                    if self._stream_drop_alerted:
+                        # Stream recovered after a drop
+                        rc = getattr(so, '_reconnect_count', 0)
+                        print(f"  [Broadcastify] Stream recovered (after {rc} reconnect attempts)")
+                        self.notify("Broadcastify stream recovered", level='info')
+                        self._send_stream_alert("Broadcastify stream recovered.")
+                    self._stream_drop_alerted = False
+                elif self._stream_was_connected and not self._stream_drop_alerted:
+                    # Stream was connected but now it's not
+                    self._stream_drop_alerted = True
+                    rc = getattr(so, '_reconnect_count', 0)
+                    print(f"  [Broadcastify] Stream dropped! (reconnect attempts: {rc})")
+                    self.notify("Broadcastify stream dropped", level='error')
+                    self._send_stream_alert("Broadcastify stream dropped and is reconnecting.")
 
             # Charger relay schedule check
             # When manually overridden, wait until the schedule's *next* transition
