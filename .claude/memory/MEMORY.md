@@ -58,10 +58,39 @@ Radio-to-Mumble gateway with SDR, multiple radios, web UI, and AI features. Pyth
 - 500 kHz has parec jitter — use 1 MHz minimum for clean audio
 - D75 endpoint host (192.168.2.134): Intel Celeron N2807, sysbench 1157 evt/s — Pi Zero 2W (~1228 evt/s) is viable replacement
 
-### D75 Link Endpoint (cleaned 2026-04-08)
+### D75 Link Endpoint (cleaned 2026-04-08, Pi rebuilt 2026-04-13)
 - D75 is link-endpoint-only — all legacy d75_plugin.py code removed (~1,136 lines deleted)
 - `scripts/remote_bt_proxy.py` kept (used by `tools/d75_link_plugin.py`)
-- Link endpoint on 192.168.2.134 via BT proxy
+- **Pi Zero 2W** at 192.168.2.186 (static IP, WiFi MAC `88:a2:9e:82:14:99`)
+- DietPi OS, read-only root, tmpfs for /tmp /var/log /var/tmp /var/lib/dhcp /var/lib/systemd /var/lib/bluetooth
+- Code runs from `/home/user/link/run/` (tmpfs), copied from `/home/user/link/` at boot by `deploy-endpoint.service`
+- Self-update: remounts rw briefly to persist updated code to `/home/user/link/`
+- BT firmware: `bluez-firmware` package required (BCM43430A1.hcd)
+- SCO-over-HCI: vendor command `0x3f 0x1c` must be sent via `sudo` before EVERY SCO connect
+- `bt-wifi-coex.service`: loads rfcomm, noscan, txpower 15dBm (runs before bluetooth.service)
+- Waveshare 1.44" ST7735S SPI display: `pi_status_display.py` (4 pages, joystick/buttons)
+- Celeron at 192.168.2.134 still runs as secondary D75+AIOC host
+- Pi-hole DNS on gateway (.140:53) + dnscrypt-proxy DoH (127.0.0.1:5053)
+- Gateway static IP .140 (manual NM config)
+
+### Pi Status Display (2026-04-13)
+- `tools/pi_status_display.py` — Waveshare 1.44" ST7735S (128x128 SPI)
+- 4 pages: Status, Network (live traffic rates), D75 Radio, Audio
+- Battery monitoring: INA219 at I2C 0x43, bus 1 (Waveshare UPS HAT C, 1000mAh LiPo)
+- Buttons: KEY1=restart EP, KEY2=toggle BT discoverable, KEY3=backlight
+- Joystick: up/down/left/right=page cycle, short press=refresh, long press 3s=shutdown
+- Boot safety: joystick must be released once before accepting any press
+- `pi-ina219` library for battery, `st7735` + `gpiodevice` + `gpiod` for display
+
+### Read-Only Root (DietPi, 2026-04-13)
+- cmdline.txt: `ro` flag, no fsck.repair
+- Static WiFi IP .186 (no DHCP disk writes), resolv.conf symlinked to /tmp
+- tmpfs mounts: /tmp /var/log /var/tmp /var/lib/dhcp /var/lib/systemd /var/lib/bluetooth /home/user/link/run /home/user/.config/rclone
+- Dropbear keys on real filesystem (NOT tmpfs)
+- `deploy-endpoint.service`: copies code to tmpfs, restores BT state, writes resolv.conf
+- Self-update: writes to tmpfs run dir, remounts rw briefly to persist to /home/user/link/
+- Disabled: bluealsa, mpris-proxy, filter-chain, serial-getty, dietpi-ramlog, fake-hwclock, apt timers, cron
+- ifup timeout override: 30s (was 5min default)
 
 ### AudioPlugin Noise Gate (2026-04-08)
 - Default threshold raised -48 → -40 dB (AIOC noise floor ~-45 dB)
@@ -157,3 +186,4 @@ Radio-to-Mumble gateway with SDR, multiple radios, web UI, and AI features. Pyth
 - [project_loop_recorder.md](project_loop_recorder.md) — loop recorder details + bugs fixed
 - [project_sdr_single_mode.md](project_sdr_single_mode.md) — SDR single-tuner mode details
 - [project_internet_endpoints.md](project_internet_endpoints.md) — internet endpoint connectivity (WIP)
+- [bugs_2026_04_13.md](bugs_2026_04_13.md) — DietPi rebuild: BT firmware, SCO-over-HCI, rfcomm
