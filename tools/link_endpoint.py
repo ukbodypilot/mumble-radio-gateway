@@ -243,6 +243,22 @@ def _check_for_update(gateway_url):
 
         if updated > 0:
             print(f"[Update] {updated} file(s) updated — restarting...")
+            # Try to persist updates to base dir (survives reboot on ro root)
+            _base = os.path.join(_dir, '..')
+            if os.path.isdir(os.path.join(_base, 'run')):
+                # We're in a tmpfs /run subdir — persist to parent
+                try:
+                    subprocess.run(['sudo', '-n', 'mount', '-o', 'remount,rw', '/'],
+                                   capture_output=True, timeout=5)
+                    for fname, b64data in bundle.items():
+                        _ppath = os.path.join(_base, fname)
+                        with open(_ppath, 'wb') as pf:
+                            pf.write(base64.b64decode(b64data))
+                    subprocess.run(['sudo', '-n', 'mount', '-o', 'remount,ro', '/'],
+                                   capture_output=True, timeout=5)
+                    print(f"[Update] Persisted to base dir")
+                except Exception as pe:
+                    print(f"[Update] Persist failed (ok, tmpfs has new code): {pe}")
             return True
         else:
             print(f"[Update] Files unchanged despite version mismatch")
