@@ -67,6 +67,14 @@ PAGE_NAMES = ['Status', 'Network', 'D75 Radio', 'Audio']
 NUM_PAGES = len(PAGE_NAMES)
 backlight_on = True
 force_refresh = False
+
+def _init_backlight_pwm():
+    """Backlight init — no-op, HAT backlight is hardwired."""
+    pass
+
+def _set_brightness(level):
+    """Backlight brightness — no-op, HAT backlight is hardwired."""
+    pass
 status_message = None  # temporary message overlay
 status_message_until = 0
 
@@ -563,12 +571,6 @@ def action_toggle_discoverable():
         show_message('BT: discoverable', 2)
 
 
-def action_toggle_backlight():
-    global backlight_on
-    backlight_on = not backlight_on
-    DISPLAY.set_backlight(backlight_on)
-
-
 def action_page_up():
     global current_page
     current_page = (current_page - 1) % NUM_PAGES
@@ -591,8 +593,9 @@ def action_shutdown():
     show_message('Shutting down...', 3)
     time.sleep(3)
     if _shutdown_pending:
-        # Clear display before shutdown
+        # Clear display and turn off backlight
         DISPLAY.display(Image.new('RGB', (WIDTH, HEIGHT), BLACK))
+        _set_brightness(0)
         subprocess.run(['sudo', '-n', 'shutdown', '-h', 'now'],
                        capture_output=True, timeout=5)
 
@@ -613,10 +616,9 @@ def button_thread():
     handlers = {
         KEY1: action_restart_endpoint,
         KEY2: action_toggle_discoverable,
-        KEY3: action_toggle_backlight,
+        KEY3: action_force_refresh,
         JOY_UP: action_page_up,
         JOY_DOWN: action_page_down,
-        JOY_PRESS: action_force_refresh,
         JOY_LEFT: action_page_up,
         JOY_RIGHT: action_page_down,
     }
@@ -685,6 +687,9 @@ def render_frame():
 
 
 def main():
+    # Init PWM backlight (max brightness at startup)
+    _init_backlight_pwm()
+
     # Start button polling in background
     t = threading.Thread(target=button_thread, daemon=True)
     t.start()
