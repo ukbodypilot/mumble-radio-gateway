@@ -233,9 +233,22 @@ def get_d75_info():
 
 
 def get_battery():
-    """Read battery voltage/percentage. Returns (voltage, pct) or None."""
-    # TODO: implement when battery module is added (I2C INA219/ADS1115)
-    return None
+    """Read battery voltage/percentage from Waveshare UPS HAT C (INA219).
+    Returns (voltage, current_mA, percentage) or None if not available."""
+    try:
+        from ina219 import INA219, DeviceRangeError
+        ina = INA219(0.1, address=0x43, busnum=1)
+        ina.configure(ina.RANGE_16V, ina.GAIN_AUTO)
+        voltage = ina.voltage()
+        try:
+            current = ina.current()  # mA (negative = discharging)
+        except DeviceRangeError:
+            current = 0.0
+        # Li-Po percentage estimate: 4.2V=100%, 3.0V=0%
+        pct = max(0, min(100, (voltage - 3.0) / 1.2 * 100))
+        return (voltage, current, pct)
+    except Exception:
+        return None
 
 
 # ── Drawing helpers ──────────────────────────────────────────────────────
@@ -315,10 +328,12 @@ def page_status(draw):
 
     batt = get_battery()
     if batt:
-        volts, pct = batt
+        volts, current, pct = batt
+        charging = current > 0
         draw.text((L, y), f'BAT {pct:2.0f}%', font=FONT, fill=WHITE)
-        draw.text((62, y), f'{volts:.1f}V', font=FONT, fill=GREY)
-        draw_bar(draw, 92, y + 1, R - 92, 7, pct, color_for_pct(100 - pct, invert=True))
+        state = 'CHG' if charging else f'{abs(current):.0f}mA'
+        draw.text((56, y), state, font=FONT, fill=GREEN if charging else GREY)
+        draw_bar(draw, 92, y + 1, R - 92, 7, pct, GREEN if charging else color_for_pct(100 - pct, invert=True))
 
     try:
         with open('/proc/uptime') as f:
