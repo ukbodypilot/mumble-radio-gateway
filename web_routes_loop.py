@@ -107,27 +107,33 @@ def handle_loop_api(handler, parent):
                 handler.send_header('Content-Length', str(content_len))
                 handler.send_header('Accept-Ranges', 'bytes')
                 handler.end_headers()
-                with open(serve_path, 'rb') as f:
-                    f.seek(start_byte)
-                    remaining = content_len
-                    while remaining > 0:
-                        chunk = f.read(min(65536, remaining))
-                        if not chunk:
-                            break
-                        handler.wfile.write(chunk)
-                        remaining -= len(chunk)
+                try:
+                    with open(serve_path, 'rb') as f:
+                        f.seek(start_byte)
+                        remaining = content_len
+                        while remaining > 0:
+                            chunk = f.read(min(65536, remaining))
+                            if not chunk:
+                                break
+                            handler.wfile.write(chunk)
+                            remaining -= len(chunk)
+                except (ConnectionResetError, BrokenPipeError):
+                    pass
             else:
                 handler.send_response(200)
                 handler.send_header('Content-Type', 'audio/mpeg')
                 handler.send_header('Content-Length', str(file_size))
                 handler.send_header('Accept-Ranges', 'bytes')
                 handler.end_headers()
-                with open(serve_path, 'rb') as f:
-                    while True:
-                        chunk = f.read(65536)
-                        if not chunk:
-                            break
-                        handler.wfile.write(chunk)
+                try:
+                    with open(serve_path, 'rb') as f:
+                        while True:
+                            chunk = f.read(65536)
+                            if not chunk:
+                                break
+                            handler.wfile.write(chunk)
+                except (ConnectionResetError, BrokenPipeError):
+                    pass
         except BrokenPipeError:
             pass
         finally:
