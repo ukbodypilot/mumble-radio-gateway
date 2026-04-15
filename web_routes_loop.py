@@ -57,6 +57,26 @@ def handle_loop_api(handler, parent):
             return
         _loop_json(handler, data)
 
+    elif path == '/loop/segments':
+        if not lr:
+            _loop_json(handler, {"segments": []})
+            return
+        bus = params.get('bus', [''])[0]
+        start = params.get('start', [''])[0]
+        end = params.get('end', [''])[0]
+        if bus and start and end:
+            try:
+                segs = lr.get_segments(bus, float(start), float(end))
+                _loop_json(handler, {"segments": [
+                    {"start": s["start"], "end": s["end"], "size": s["size"]}
+                    for s in segs
+                ]})
+            except Exception as e:
+                _loop_json(handler, {"segments": [], "error": str(e)})
+        else:
+            _loop_json(handler, {"segments": [], "error": "missing params"})
+        return
+
     elif path == '/loop/play':
         if not lr:
             handler.send_error(503, 'Loop recorder not available')
