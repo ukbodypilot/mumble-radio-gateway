@@ -286,8 +286,9 @@ function updateStatus() {
           if(est.transmitting !== undefined) eh += '<div class="st-item"><span class="st-label">TX:</span><span class="st-val '+(est.transmitting?'red':'green')+'">'+(est.transmitting?'ON':'off')+'</span></div>';
           if(est.battery_level !== undefined) eh += '<div class="st-item"><span class="st-label">Batt:</span><span class="st-val '+(est.battery_level>1?'green':'red')+'">'+est.battery_level+'</span></div>';
           if(est.firmware) eh += '<div class="st-item"><span class="st-label">FW:</span><span class="st-val white">'+est.firmware+'</span></div>';
-          // AIOC-specific: PTT, HID, gate, audio I/O
-          if(est.hid_connected !== undefined) eh += '<div class="st-item"><span class="st-label">HID:</span><span class="st-val '+(est.hid_connected?'green':'red')+'">'+(est.hid_connected?'Yes':'No')+'</span></div>';
+          // AIOC-specific: mode, PTT, HID, gate, audio I/O
+          if(est.mode !== undefined) eh += '<div class="st-item"><span class="st-label">Mode:</span><span class="st-val '+(est.mode==='audio'?'green':'yellow')+'">'+(est.mode==='audio'?'Audio':'Data')+'</span></div>';
+          if(est.hid_connected !== undefined) eh += '<div class="st-item"><span class="st-label">HID:</span><span class="st-val '+(est.hid_connected?'green':est.mode==='data'?'yellow':'red')+'">'+(est.hid_connected?'Yes':'No')+'</span></div>';
           if(est.ptt_active !== undefined) eh += '<div class="st-item"><span class="st-label">PTT:</span><span class="st-val '+(est.ptt_active?'red':'green')+'">'+(est.ptt_active?'ON':'off')+'</span></div>';
           if(est.input_active !== undefined && est.audio_connected === undefined) eh += '<div class="st-item"><span class="st-label">Audio:</span><span class="st-val '+(est.input_active && est.output_active?'green':'red')+'">'+(est.input_active?'In':'—')+'/'+(est.output_active?'Out':'—')+'</span></div>';
           if(est.gate_enabled !== undefined) eh += '<div class="st-item"><span class="st-label">Gate:</span><span class="st-val '+(est.gate_open?'green':'yellow')+'">'+(est.gate_open?'Open':'Closed')+'</span></div>';

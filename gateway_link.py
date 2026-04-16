@@ -1800,6 +1800,7 @@ class AIOCPlugin(AudioPlugin):
         self._ptt_timer = None
         self._ptt_timer_lock = threading.Lock()
         # Data mode (Direwolf TNC)
+        self._mode_lock = threading.Lock()   # serialise _set_mode calls
         self._mode = 'audio'             # 'audio' or 'data'
         self._direwolf_proc = None
         self._direwolf_conf_path = '/tmp/direwolf_endpoint.conf'
@@ -1916,8 +1917,17 @@ class AIOCPlugin(AudioPlugin):
         new_mode = cmd.get('mode', 'audio')
         if new_mode not in ('audio', 'data'):
             return {"ok": False, "error": f"invalid mode: {new_mode}"}
+        with self._mode_lock:
+            return self._set_mode_locked(cmd, new_mode)
+
+    def _set_mode_locked(self, cmd, new_mode):
+        # Same-mode: only skip for audio; for data, skip if Direwolf is already healthy
         if new_mode == self._mode:
-            return {"ok": True, "mode": self._mode}
+            if new_mode == 'audio':
+                return {"ok": True, "mode": self._mode}
+            if new_mode == 'data' and self._direwolf_proc and self._direwolf_proc.poll() is None:
+                # Direwolf is running — don't disrupt it with a redundant restart
+                return {"ok": True, "mode": self._mode}
 
         # Read optional TNC config from command
         if 'callsign' in cmd:
@@ -1939,24 +1949,35 @@ class AIOCPlugin(AudioPlugin):
         self._mode = new_mode
 
         if new_mode == 'data':
-            # Close streams AND terminate PyAudio — Direwolf needs exclusive ALSA access.
-            # Just closing streams isn't enough; PyAudio holds ALSA handles until terminated.
-            for _sa in ('_in_stream', '_out_stream'):
-                _s = getattr(self, _sa, None)
-                if _s:
-                    try:
-                        _s.stop_stream()
-                        _s.close()
-                    except Exception:
-                        pass
-                    setattr(self, _sa, None)
-            if self._pa:
+            # Kill any existing Direwolf first (handles same-mode restart)
+            self._stop_direwolf()
+            # Stop arecord/aplay subprocesses — Direwolf needs exclusive ALSA access.
+            self._rx_running = False
+            if self._in_stream:
                 try:
-                    self._pa.terminate()
+                    self._in_stream.kill()
+                    self._in_stream.wait(timeout=2)
                 except Exception:
                     pass
-                self._pa = None
-            time.sleep(1.0)
+                self._in_stream = None
+            if self._out_stream:
+                try:
+                    self._out_stream.stdin.close()
+                    self._out_stream.kill()
+                    self._out_stream.wait(timeout=2)
+                except Exception:
+                    pass
+                self._out_stream = None
+            # Close HID device (libusb backend holds exclusive access).
+            # Rebind usbhid so Direwolf can use /dev/hidraw for CM108 PTT.
+            if self._hid:
+                try:
+                    self._hid.close()
+                except Exception:
+                    pass
+                self._hid = None
+                self._rebind_usbhid()
+            time.sleep(0.5)
             # Start Direwolf
             ok = self._start_direwolf()
             if not ok:
@@ -1964,32 +1985,100 @@ class AIOCPlugin(AudioPlugin):
                 self.reopen_audio()
                 return {"ok": False, "error": "failed to start direwolf"}
         else:
-            # Stop Direwolf, reopen PyAudio
+            # Stop Direwolf, restart arecord/aplay and reopen HID
             self._stop_direwolf()
             time.sleep(0.5)
-            self.reopen_audio()
+            self._rx_running = True
+            if self._last_config:
+                self.setup(self._last_config)
+            else:
+                self.reopen_audio()
+            # Reopen HID (was closed for data mode)
+            if not self._hid:
+                try:
+                    import hid as _hid_mod
+                    if hasattr(_hid_mod, 'Device'):
+                        self._hid = _hid_mod.Device(vid=self._vid, pid=self._pid)
+                    else:
+                        self._hid = _hid_mod.device()
+                        self._hid.open(self._vid, self._pid)
+                    print("  [Link] AIOCPlugin: HID reopened after data mode", flush=True)
+                except Exception as e:
+                    print(f"  [Link] AIOCPlugin: HID reopen failed: {e}", flush=True)
 
         return {"ok": True, "mode": new_mode}
+
+    def _rebind_usbhid(self):
+        """Bind usbhid to the AIOC HID interface so Direwolf gets a hidraw device.
+
+        The Python hid module uses libusb which claims the interface exclusively,
+        preventing the kernel from creating /dev/hidrawX.  After closing the hid
+        device we rebind usbhid via sysfs (requires passwordless sudo rule for tee).
+        """
+        import subprocess as _sp, os as _os, time as _t
+        # Find the HID interface path for the AIOC (vid=1209, class=03)
+        iface_path = None
+        try:
+            base = '/sys/bus/usb/devices'
+            for dev in sorted(_os.listdir(base)):
+                dev_path = f'{base}/{dev}'
+                class_file = f'{dev_path}/bInterfaceClass'
+                uevent_file = f'{dev_path}/uevent'
+                if not _os.path.exists(class_file):
+                    continue
+                with open(class_file) as f:
+                    if f.read().strip() != '03':
+                        continue
+                if _os.path.exists(uevent_file):
+                    with open(uevent_file) as f:
+                        content = f.read()
+                    if '1209' in content and '7388' in content:
+                        iface_path = dev
+                        break
+        except Exception as e:
+            print(f'  [Link] AIOCPlugin: HID iface scan error: {e}', flush=True)
+
+        if not iface_path:
+            print('  [Link] AIOCPlugin: could not find AIOC HID interface for usbhid rebind', flush=True)
+            return
+
+        try:
+            result = _sp.run(
+                ['sudo', '-n', 'tee', '/sys/bus/usb/drivers/usbhid/bind'],
+                input=iface_path.encode(), capture_output=True, timeout=3)
+            if result.returncode == 0:
+                print(f'  [Link] AIOCPlugin: usbhid bound to {iface_path}', flush=True)
+                # Wait for /dev/hidrawX to appear
+                for _ in range(10):
+                    _t.sleep(0.2)
+                    if _os.path.exists('/dev/hidraw0') or any(
+                            f.startswith('hidraw') for f in _os.listdir('/dev')):
+                        break
+            else:
+                print(f'  [Link] AIOCPlugin: usbhid bind failed: {result.stderr.decode().strip()}', flush=True)
+        except Exception as e:
+            print(f'  [Link] AIOCPlugin: usbhid bind error: {e}', flush=True)
 
     def _start_direwolf(self):
         """Start Direwolf as a subprocess reading directly from AIOC."""
         import subprocess as _sp, signal as _sig
-        # Find AIOC ALSA device
+        # Find AIOC ALSA device — use hw: (not plughw:) to match aplay behaviour
         aioc_dev = self._aioc_hw
         if not aioc_dev:
             try:
                 with open('/proc/asound/cards') as f:
                     for line in f:
                         if 'AllInOneCable' in line or 'All-In-One' in line:
-                            aioc_dev = f'plughw:{line.strip().split()[0]},0'
+                            aioc_dev = f'hw:{line.strip().split()[0]},0'
                             break
             except Exception:
                 pass
         if not aioc_dev:
             print("  [Link] AIOCPlugin: AIOC device not found for Direwolf", flush=True)
             return False
-        if not aioc_dev.startswith('plughw:'):
-            aioc_dev = f'plughw:{aioc_dev.replace("hw:", "")}'
+        # Normalise to hw: — plughw: caused silent TX output on Debian/AIOC
+        if aioc_dev.startswith('plughw:'):
+            aioc_dev = aioc_dev.replace('plughw:', 'hw:', 1)
 
         # Auto-detect AIOC HID for CM108 PTT (VID 1209 = AIOC)
         _ptt_line = ''
@@ -2046,8 +2135,9 @@ class AIOCPlugin(AudioPlugin):
             return False
 
     def _stop_direwolf(self):
-        """Stop Direwolf subprocess if running."""
-        import signal as _sig
+        """Stop Direwolf subprocess if running.
+        Also kills any orphaned direwolf processes from previous sessions."""
+        import signal as _sig, subprocess as _sp
         if self._direwolf_proc:
             try:
                 self._direwolf_proc.send_signal(_sig.SIGTERM)
@@ -2060,9 +2150,16 @@ class AIOCPlugin(AudioPlugin):
                     pass
             print(f"  [Link] AIOCPlugin: Direwolf stopped", flush=True)
             self._direwolf_proc = None
+        # Kill any orphaned direwolf processes (e.g. from previous endpoint restart)
+        try:
+            _sp.run(['pkill', '-x', 'direwolf'], capture_output=True)
+        except Exception:
+            pass
 
     def _direwolf_log_reader(self):
-        """Read Direwolf stdout, print locally, and forward to gateway."""
+        """Read Direwolf stdout, print locally, and forward to gateway.
+        When Direwolf exits unexpectedly (crash/hang) while still in data mode,
+        restart it automatically."""
         proc = self._direwolf_proc
         if not proc or not proc.stdout:
             return
@@ -2073,7 +2170,6 @@ class AIOCPlugin(AudioPlugin):
                 text = line.decode('utf-8', errors='replace').rstrip()
                 if text:
                     print(f"  [Direwolf] {text}", flush=True)
-                    # Forward to gateway via link protocol
                     client = getattr(self, '_link_client', None)
                     if client and client.connected:
                         try:
@@ -2082,6 +2178,14 @@ class AIOCPlugin(AudioPlugin):
                             pass
         except Exception:
             pass
+
+        # If we are still in data mode, Direwolf exited unexpectedly — restart it
+        if self._mode == 'data' and self._direwolf_proc is proc:
+            print("  [Link] AIOCPlugin: Direwolf exited unexpectedly — restarting", flush=True)
+            self._direwolf_proc = None
+            time.sleep(2)
+            if self._mode == 'data':   # check again after sleep
+                self._start_direwolf()
 
     def _set_ptt(self, state_on):
         """Key or unkey the radio via AIOC HID GPIO."""

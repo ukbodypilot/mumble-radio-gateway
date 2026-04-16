@@ -322,9 +322,17 @@ function pollStatus() {
     var mismatch = s.mode === 'idle' && ep.connected && epMode === 'data';
     document.getElementById('ep-mismatch').style.display = mismatch ? 'flex' : 'none';
 
-    // Winlink status
+    // Winlink status + button state
     var wlSt = document.getElementById('wl-status');
-    if (wlSt) wlSt.textContent = s.mode === 'winlink' ? (s.pat_running ? 'ready' : 'starting...') : 'switch to winlink mode';
+    var wlBtn = document.getElementById('wl-connect-btn');
+    if (wlSt) {
+      if (s.mode === 'winlink') {
+        wlSt.textContent = s.pat_running ? 'ready — press Connect & Sync' : 'starting Direwolf...';
+      } else {
+        wlSt.textContent = 'will auto-switch to winlink mode on connect';
+      }
+    }
+    if (wlBtn && !wlBtn._userDisabled) wlBtn.disabled = false;
 
     // BBS status
     document.getElementById('bbs-status').textContent = s.bbs_connected ? 'connected to ' + s.bbs_callsign : 'disconnected';
@@ -665,6 +673,21 @@ function wlConnect() {
   var st = document.getElementById('wl-status');
   var log = document.getElementById('wl-log');
   btn.disabled = true;
+  // Auto-switch to winlink mode if not already active
+  var curMode = (document.getElementById('st-mode') || {}).textContent || '';
+  if (curMode && curMode !== 'winlink') {
+    st.textContent = 'switching to winlink mode...';
+    log.textContent = 'Switching to winlink mode...\n';
+    pktPost('mode', {mode: 'winlink'}).then(function(r) {
+      if (!r.ok) { st.textContent = 'error: ' + (r.error||'mode switch failed'); btn.disabled = false; return; }
+      // Wait for Direwolf to start then connect
+      setTimeout(function() { _doWlConnect(gw, btn, st, log); }, 3000);
+    });
+    return;
+  }
+  _doWlConnect(gw, btn, st, log);
+}
+function _doWlConnect(gw, btn, st, log) {
   st.textContent = 'connecting to ' + gw + '...';
   log.textContent = 'Connecting to ' + gw + '...\n';
   // Start polling log

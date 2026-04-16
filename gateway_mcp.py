@@ -2331,7 +2331,7 @@ def packet_mode(mode: str) -> str:
     mode = mode.lower().strip()
     if mode not in ('idle', 'aprs', 'winlink', 'bbs'):
         return f"Error: mode must be idle, aprs, winlink, or bbs"
-    result = _post('/packet/set_mode', {'cmd': 'set_mode', 'mode': mode})
+    result = _post('/packet/mode', {'mode': mode})
     if result.get('ok'):
         return f"Packet mode set to: {mode}"
     return f"Failed: {result.get('error', 'unknown')}"

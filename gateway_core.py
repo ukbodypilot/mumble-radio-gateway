@@ -1551,6 +1551,16 @@ class RadioGateway:
                                 print(f"  [Link] Bus manager reloaded for {name}")
                             except Exception as _bme:
                                 print(f"  [Link] Bus reload error: {_bme}")
+                        # Re-send data mode if packet plugin was active on this endpoint
+                        if self.packet_plugin and self.packet_plugin._mode in ('winlink', 'bbs', 'aprs'):
+                            _pp = self.packet_plugin
+                            if _pp._find_endpoint() == name:
+                                import threading as _thr
+                                _thr.Thread(
+                                    target=lambda: _pp._send_endpoint_mode('data'),
+                                    daemon=True, name='pkt-mode-restore'
+                                ).start()
+                                print(f"  [Link] Restoring data mode on reconnected endpoint {name}")
                         return src  # server stores src.push_audio as audio callback
 
                     def _link_on_disconnect(name):

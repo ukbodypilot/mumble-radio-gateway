@@ -120,6 +120,7 @@ class PacketRadioPlugin:
         self._running = True
         self.server_connected = True
         self._agwpe_proxy_sock = None
+        self._proxy_sessions_active = 0   # count of in-flight proxy sessions
         # Start AGWPE proxy so Pat always connects to 127.0.0.1:8010
         self._start_agwpe_proxy()
         print(f"  [Packet] Plugin initialized (callsign={self._callsign}-{self._ssid}, "
@@ -144,7 +145,12 @@ class PacketRadioPlugin:
             print(f"  [Packet] AGWPE proxy failed to start: {e}")
 
     def _agwpe_proxy_loop(self):
-        """Accept connections on local AGWPE proxy and forward to endpoint."""
+        """Accept connections on local AGWPE proxy and forward to endpoint.
+
+        If the endpoint isn't in data mode when Pat connects, automatically
+        switches to data mode and waits for Direwolf's AGW port to open
+        (up to 20 seconds).
+        """
         srv = self._agwpe_proxy_sock
         while self._running and srv:
             try:
@@ -153,38 +159,110 @@ class PacketRadioPlugin:
                 continue
             except OSError:
                 break
-            ep_ip = self._get_endpoint_ip()
-            if not ep_ip:
-                print(f"  [Packet] AGWPE proxy: no endpoint available, rejecting")
-                client.close()
-                continue
+            threading.Thread(target=self._agwpe_proxy_handle,
+                             args=(client, addr), daemon=True,
+                             name="agwpe-proxy-conn").start()
+
+    def _agwpe_proxy_handle(self, client, addr):
+        """Handle one Pat → endpoint AGWPE forwarding session."""
+        self._proxy_sessions_active += 1
+        try:
+            self._agwpe_proxy_session(client, addr)
+        finally:
+            self._proxy_sessions_active -= 1
+
+    def _agwpe_proxy_session(self, client, addr):
+        """Inner session handler — called from _agwpe_proxy_handle."""
+        ep_ip = self._get_endpoint_ip()
+        if not ep_ip:
+            print(f"  [Packet] AGWPE proxy: no endpoint available, rejecting {addr}")
+            client.close()
+            return
+
+        # Auto-switch to data mode if needed so Direwolf starts
+        if self._mode == 'idle':
+            print(f"  [Packet] AGWPE proxy: Pat connected, auto-switching to winlink mode")
+            self._set_mode('winlink')
+
+        # Retry connecting to endpoint AGW port while Direwolf starts (up to 20s)
+        remote = None
+        deadline = time.monotonic() + 20.0
+        attempt = 0
+        while time.monotonic() < deadline and self._running:
+            attempt += 1
             try:
-                remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                remote.settimeout(10.0)
-                remote.connect((ep_ip, 8010))
-                print(f"  [Packet] AGWPE proxy: connected {addr} → {ep_ip}:8010")
-                import threading
-                def _fwd(src, dst, label):
-                    try:
-                        while self._running:
-                            data = src.recv(4096)
-                            if not data:
-                                break
-                            dst.sendall(data)
-                    except Exception:
-                        pass
-                    finally:
-                        try: src.close()
-                        except: pass
-                        try: dst.close()
-                        except: pass
-                threading.Thread(target=_fwd, args=(client, remote, 'c→r'),
-                                 daemon=True).start()
-                threading.Thread(target=_fwd, args=(remote, client, 'r→c'),
-                                 daemon=True).start()
-            except Exception as e:
-                print(f"  [Packet] AGWPE proxy: connect to {ep_ip}:8010 failed: {e}")
-                client.close()
+                ep_ip = self._get_endpoint_ip()  # re-resolve in case endpoint reconnected
+                r = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                r.settimeout(2.0)
+                r.connect((ep_ip, 8010))
+                r.settimeout(None)  # clear connect timeout for data transfer
+                remote = r
+                break
+            except Exception:
+                if attempt == 1:
+                    print(f"  [Packet] AGWPE proxy: waiting for Direwolf on {ep_ip}:8010...")
+                time.sleep(1.0)
+
+        if remote is None:
+            print(f"  [Packet] AGWPE proxy: Direwolf not ready on {ep_ip}:8010 after 20s, rejecting")
+            client.close()
+            return
+
+        print(f"  [Packet] AGWPE proxy: connected {addr} → {ep_ip}:8010 (attempt {attempt})")
+        done = threading.Event()
+        _t0 = time.monotonic()
+
+        def _fwd(src, dst, label):
+            _bytes = 0
+            _frames = 0
+            _last_t = _t0
+            try:
+                while self._running:
+                    data = src.recv(4096)
+                    if not data:
+                        elapsed = time.monotonic() - _t0
+                        print(f"  [Packet] AGWPE [{label}]: EOF after {_frames}f "
+                              f"{_bytes}B {elapsed:.1f}s", flush=True)
+                        break
+                    now = time.monotonic()
+                    gap = now - _last_t
+                    _last_t = now
+                    _bytes += len(data)
+                    _frames += 1
+                    elapsed = now - _t0
+                    print(f"  [Packet] AGWPE [{label}]: #{_frames} {len(data)}B "
+                          f"t={elapsed:.1f}s gap={gap:.1f}s", flush=True)
+                    dst.sendall(data)
+            except Exception as _e:
+                elapsed = time.monotonic() - _t0
+                print(f"  [Packet] AGWPE [{label}]: ERR after {_frames}f "
+                      f"{_bytes}B {elapsed:.1f}s: {_e}", flush=True)
+            finally:
+                try: src.close()
+                except: pass
+                try: dst.close()
+                except: pass
+                done.set()
+
+        threading.Thread(target=_fwd, args=(client, remote, 'pat→dw'),
+                         daemon=True).start()
+        threading.Thread(target=_fwd, args=(remote, client, 'dw→pat'),
+                         daemon=True).start()
+
+        # Block until session ends — keeps _proxy_sessions_active > 0 while live
+        done.wait()
+        elapsed = time.monotonic() - _t0
+        print(f"  [Packet] AGWPE proxy: session ended after {elapsed:.1f}s "
+              f"(active_sessions={self._proxy_sessions_active})", flush=True)
+
+        if self._mode in ('winlink', 'bbs'):
+            # If another session already started, skip Direwolf restart to avoid
+            # disrupting the new active connection (counter still includes us here)
+            if self._proxy_sessions_active > 1:
+                print("  [Packet] AGWPE proxy: new session active — skipping restart")
+            else:
+                print("  [Packet] AGWPE proxy: restarting Direwolf for clean reconnect")
+                self._send_endpoint_mode('data')
 
     def _find_endpoint(self, force=False):
         """Find the target endpoint name for mode commands.
@@ -406,23 +484,31 @@ class PacketRadioPlugin:
         # Connect KISS TCP to remote Direwolf
         threading.Thread(target=self._kiss_connect_loop, daemon=True,
                          name="KISSConnect").start()
-        # Pat Winlink: no need to start pat http — our own UI calls pat CLI directly.
-        # Direwolf + AGW port is all that's needed.
+        # Start Pat HTTP server so the web UI is available
+        if mode == 'winlink':
+            threading.Thread(target=self._delayed_pat_start, daemon=True,
+                             name="PatStart").start()
         return {"ok": True, "mode": mode}
 
     def _delayed_pat_start(self):
-        """Wait for Direwolf AGW port then start Pat."""
+        """Wait for Direwolf to be ready then start Pat HTTP server.
+        Tests the remote KISS port (not the local AGWPE proxy) to avoid
+        opening a spurious AGWPE session that would trigger a Direwolf restart."""
         import socket as _sock
-        for _attempt in range(15):
-            time.sleep(2)
-            try:
-                s = _sock.socket()
-                s.settimeout(2)
-                s.connect((self._get_endpoint_ip(), 8010))
-                s.close()
-                break
-            except Exception:
-                continue
+        if self._pat_proc and self._pat_proc.poll() is None:
+            return  # already running
+        ep_ip = self._get_endpoint_ip()
+        if ep_ip:
+            for _attempt in range(15):
+                time.sleep(1)
+                try:
+                    s = _sock.socket()
+                    s.settimeout(2)
+                    s.connect((ep_ip, self._kiss_port))
+                    s.close()
+                    break
+                except Exception:
+                    continue
         self._start_pat()
 
     def _disconnect_kiss(self):
