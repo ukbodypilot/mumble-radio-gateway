@@ -115,7 +115,7 @@ class PacketRadioPlugin:
         self._digipeat = bool(getattr(config, 'PACKET_DIGIPEAT', True))
 
         if not self._remote_tnc:
-            print(f"  [Packet] WARNING: PACKET_REMOTE_TNC not set — no endpoint for Direwolf")
+            print(f"  [Packet] PACKET_REMOTE_TNC not set — will auto-discover AIOC endpoint")
 
         self._running = True
         self.server_connected = True
@@ -125,36 +125,51 @@ class PacketRadioPlugin:
 
     def _find_endpoint(self, force=False):
         """Find the target endpoint name for mode commands.
+        Uses plugin_type match, falls back to config IP if set.
         Caches result; pass force=True to re-scan."""
         if not force and self._cached_endpoint:
-            # Verify still connected
             if self._gateway and self._cached_endpoint in self._gateway.link_endpoints:
                 return self._cached_endpoint
             self._cached_endpoint = None
         if not self._gateway or not self._gateway.link_server:
             return None
-        for name in self._gateway.link_endpoints:
-            ep = self._gateway.link_server._endpoints.get(name)
-            if ep:
-                try:
-                    peer = ep.sock.getpeername()[0]
-                    if peer == self._remote_tnc:
-                        self._cached_endpoint = name
-                        return name
-                except Exception:
-                    pass
+        # Prefer plugin_type match
         for name, src in self._gateway.link_endpoints.items():
             if getattr(src, 'plugin_type', None) == 'aioc':
                 self._cached_endpoint = name
                 return name
+        # Fallback: match by config IP if set
+        if self._remote_tnc:
+            for name in self._gateway.link_endpoints:
+                ep = self._gateway.link_server._endpoints.get(name)
+                if ep:
+                    try:
+                        if ep.sock.getpeername()[0] == self._remote_tnc:
+                            self._cached_endpoint = name
+                            return name
+                    except Exception:
+                        pass
         return None
+
+    def _get_endpoint_ip(self):
+        """Get the IP address of the packet endpoint dynamically."""
+        target = self._find_endpoint()
+        if not target or not self._gateway or not self._gateway.link_server:
+            return self._remote_tnc  # fallback to config
+        ep = self._gateway.link_server._endpoints.get(target)
+        if ep:
+            try:
+                return ep.sock.getpeername()[0]
+            except Exception:
+                pass
+        return self._remote_tnc
 
     def _send_endpoint_mode(self, mode):
         """Send mode command to the remote AIOC endpoint via the link server.
         Returns True on success, False on failure."""
         target = self._find_endpoint(force=True)
         if not target:
-            print(f"  [Packet] No endpoint found matching {self._remote_tnc}")
+            print(f"  [Packet] No AIOC endpoint found for packet radio")
             return False
         cmd = {
             'cmd': 'mode', 'mode': mode,
@@ -317,9 +332,9 @@ class PacketRadioPlugin:
                         "warning": "mode set to idle but failed to send audio command to endpoint"}
             return {"ok": True, "mode": "idle"}
 
-        if not self._remote_tnc:
+        if not self._find_endpoint() and not self._remote_tnc:
             self._mode = 'idle'
-            return {"ok": False, "error": "PACKET_REMOTE_TNC not configured"}
+            return {"ok": False, "error": "No AIOC endpoint connected for packet radio"}
 
         # Tell endpoint to switch to data mode (starts Direwolf)
         if not self._send_endpoint_mode('data'):
@@ -340,7 +355,7 @@ class PacketRadioPlugin:
             try:
                 s = _sock.socket()
                 s.settimeout(2)
-                s.connect((self._remote_tnc, 8010))
+                s.connect((self._get_endpoint_ip(), 8010))
                 s.close()
                 break
             except Exception:
@@ -361,7 +376,7 @@ class PacketRadioPlugin:
 
     def _kiss_connect_loop(self):
         """Connect to remote Direwolf's KISS TCP port with retries."""
-        kiss_host = self._remote_tnc
+        kiss_host = self._get_endpoint_ip()
         attempt = 0
         while self._running and self._mode != 'idle':
             attempt += 1
@@ -817,8 +832,8 @@ class PacketRadioPlugin:
             return {"ok": False, "error": "callsign required"}
         if self._bbs_connected:
             return {"ok": False, "error": f"already connected to {self._bbs_callsign}"}
-        if not self._remote_tnc:
-            return {"ok": False, "error": "no remote TNC configured"}
+        if not self._find_endpoint() and not self._remote_tnc:
+            return {"ok": False, "error": "no AIOC endpoint connected"}
 
         callsign = callsign.upper().strip()
         mycall = f"{self._callsign}-{self._ssid}"
@@ -831,7 +846,7 @@ class PacketRadioPlugin:
             try:
                 s = socket.socket()
                 s.settimeout(60)
-                s.connect((self._remote_tnc, 8010))
+                s.connect((self._get_endpoint_ip(), 8010))
                 self._bbs_agw_sock = s
 
                 # Register callsign
