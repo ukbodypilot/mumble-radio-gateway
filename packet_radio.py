@@ -119,9 +119,72 @@ class PacketRadioPlugin:
 
         self._running = True
         self.server_connected = True
+        self._agwpe_proxy_sock = None
+        # Start AGWPE proxy so Pat always connects to 127.0.0.1:8010
+        self._start_agwpe_proxy()
         print(f"  [Packet] Plugin initialized (callsign={self._callsign}-{self._ssid}, "
-              f"modem={self._modem_rate}, endpoint={self._remote_tnc or 'NONE'})")
+              f"modem={self._modem_rate}, endpoint={self._remote_tnc or 'auto-discover'})")
         return True
+
+    def _start_agwpe_proxy(self):
+        """Start a local TCP proxy on 127.0.0.1:8010 → endpoint AGWPE port.
+        Pat connects here; we forward to whichever endpoint is the packet radio."""
+        import threading
+        try:
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(('127.0.0.1', 8010))
+            srv.listen(2)
+            srv.settimeout(1.0)
+            self._agwpe_proxy_sock = srv
+            threading.Thread(target=self._agwpe_proxy_loop, daemon=True,
+                             name="agwpe-proxy").start()
+            print(f"  [Packet] AGWPE proxy listening on 127.0.0.1:8010")
+        except OSError as e:
+            print(f"  [Packet] AGWPE proxy failed to start: {e}")
+
+    def _agwpe_proxy_loop(self):
+        """Accept connections on local AGWPE proxy and forward to endpoint."""
+        srv = self._agwpe_proxy_sock
+        while self._running and srv:
+            try:
+                client, addr = srv.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            ep_ip = self._get_endpoint_ip()
+            if not ep_ip:
+                print(f"  [Packet] AGWPE proxy: no endpoint available, rejecting")
+                client.close()
+                continue
+            try:
+                remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                remote.settimeout(10.0)
+                remote.connect((ep_ip, 8010))
+                print(f"  [Packet] AGWPE proxy: connected {addr} → {ep_ip}:8010")
+                import threading
+                def _fwd(src, dst, label):
+                    try:
+                        while self._running:
+                            data = src.recv(4096)
+                            if not data:
+                                break
+                            dst.sendall(data)
+                    except Exception:
+                        pass
+                    finally:
+                        try: src.close()
+                        except: pass
+                        try: dst.close()
+                        except: pass
+                threading.Thread(target=_fwd, args=(client, remote, 'c→r'),
+                                 daemon=True).start()
+                threading.Thread(target=_fwd, args=(remote, client, 'r→c'),
+                                 daemon=True).start()
+            except Exception as e:
+                print(f"  [Packet] AGWPE proxy: connect to {ep_ip}:8010 failed: {e}")
+                client.close()
 
     def _find_endpoint(self, force=False):
         """Find the target endpoint name for mode commands.
