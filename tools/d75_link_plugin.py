@@ -321,6 +321,25 @@ class D75Plugin(RadioPlugin):
                     break
         except Exception:
             pass
+        try:
+            with open('/proc/net/route') as f:
+                for line in f:
+                    fields = line.strip().split()
+                    if fields[1] == '00000000':
+                        stats['net_iface'] = fields[0]
+                        break
+            if 'net_iface' in stats:
+                import subprocess
+                out = subprocess.check_output(
+                    ['ip', '-4', 'addr', 'show', stats['net_iface']],
+                    stderr=subprocess.DEVNULL, timeout=2).decode()
+                for line in out.split('\n'):
+                    line = line.strip()
+                    if line.startswith('inet '):
+                        stats['net_ip'] = line.split()[1].split('/')[0]
+                        break
+        except Exception:
+            pass
         return stats
 
     # -- Internal: memory scan --

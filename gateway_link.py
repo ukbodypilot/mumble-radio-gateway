@@ -1656,6 +1656,27 @@ class AudioPlugin(RadioPlugin):
                 stats['cpu_temp_c'] = round(int(f.read().strip()) / 1000, 1)
         except Exception:
             pass
+        try:
+            # Network interface — find default route interface and its IP
+            with open('/proc/net/route') as f:
+                for line in f:
+                    fields = line.strip().split()
+                    if fields[1] == '00000000':  # default route
+                        iface = fields[0]
+                        stats['net_iface'] = iface
+                        break
+            if 'net_iface' in stats:
+                import subprocess
+                out = subprocess.check_output(
+                    ['ip', '-4', 'addr', 'show', stats['net_iface']],
+                    stderr=subprocess.DEVNULL, timeout=2).decode()
+                for line in out.split('\n'):
+                    line = line.strip()
+                    if line.startswith('inet '):
+                        stats['net_ip'] = line.split()[1].split('/')[0]
+                        break
+        except Exception:
+            pass
         return stats
 
     @staticmethod
