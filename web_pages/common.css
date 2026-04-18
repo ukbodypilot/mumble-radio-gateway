@@ -1,67 +1,116 @@
-/* Common styles for all gateway pages — loaded from /pages/common.css */
+/* Radio Gateway — shared theme and base styles.
+   --t-* variables are referenced across every page; change values here
+   to restyle the whole UI. Do not rename without a sweep across all pages. */
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/pages/fonts/JetBrainsMono.woff2') format('woff2-variations'),
+       url('/pages/fonts/JetBrainsMono.woff2') format('woff2');
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  /* Theme colors injected by common.js from /theme endpoint */
-  --t-bg: #1a1a2e;
-  --t-panel: #16213e;
-  --t-border: #0f3460;
-  --t-accent: #3498db;
-  --t-btn: #1a1a3e;
-  --t-btn-border: #2a2a5e;
-  --t-btn-hover: #2a2a5e;
-  --t-btn-active: #0f3460;
-  --t-checkbox: #3498db;
+  /* Palette — phosphor/instrument-panel: deep base, hairline borders,
+     one bright accent (cyan) + green/red/amber signal colors. */
+  --t-bg:         #0b1014;
+  --t-panel:      #121820;
+  --t-panel-hi:   #1a2230;
+  --t-border:     #1e2a38;
+  --t-border-hi:  #2c3e52;
+  --t-accent:     #4fd6e6;  /* live/active/focused */
+  --t-text:       #d6dee6;
+  --t-text-dim:   #7a8a99;  /* labels, secondary */
+  --t-text-mute:  #4d5a68;  /* disabled, tertiary */
+  --t-ok:         #5dc47a;  /* rx, success */
+  --t-warn:       #e89d3c;
+  --t-err:        #e04848;  /* tx, error */
+
+  /* Legacy button aliases — widely referenced across pages */
+  --t-btn:        #0e131a;
+  --t-btn-border: var(--t-border);
+  --t-btn-hover:  var(--t-panel-hi);
+  --t-btn-active: var(--t-border-hi);
+  --t-checkbox:   var(--t-accent);
+
+  /* Scales — use only these steps; do not introduce new sizes */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px;  --s-4: 16px;  --s-5: 24px;  --s-6: 32px;
+  --f-xs: 11px; --f-sm: 12px; --f-base: 13px; --f-md: 15px; --f-lg: 18px; --f-xl: 24px;
+  --r-sm: 2px; --r-md: 4px;
 }
 
 * { box-sizing: border-box; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--f-base);
+  line-height: 1.45;
   background: var(--t-bg);
-  color: #e0e0e0;
+  color: var(--t-text);
   margin: 0;
-  padding: 20px;
+  padding: var(--s-4);
+  -webkit-font-smoothing: antialiased;
 }
 
-h1 { color: var(--t-accent); margin: 0 0 20px; font-size: 1.4em; }
-h2 { color: var(--t-accent); margin: 10px 0; font-size: 1.2em; }
-a { color: var(--t-accent); }
+::selection { background: var(--t-accent); color: var(--t-bg); }
+:focus-visible { outline: 1px solid var(--t-accent); outline-offset: 2px; }
 
-/* Reusable button styles */
+h1, h2, h3 {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0 0 var(--s-3);
+  color: var(--t-text);
+}
+h1 { font-size: var(--f-lg); }
+h2 { font-size: var(--f-md); }
+h3 { font-size: var(--f-sm); font-weight: 500; color: var(--t-text-dim); margin: 0 0 var(--s-2); }
+
+a { color: var(--t-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Reusable buttons */
 .rb {
+  font: inherit;
+  font-size: var(--f-sm);
   background: var(--t-btn);
   border: 1px solid var(--t-btn-border);
-  color: #e0e0e0;
-  border-radius: 4px;
-  padding: 6px 14px;
+  color: var(--t-text);
+  border-radius: var(--r-md);
+  padding: var(--s-1) var(--s-3);
   cursor: pointer;
-  font-size: 0.85em;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
 }
-.rb:hover { background: var(--t-btn-hover); }
-.rb-sm { padding: 4px 10px; font-size: 0.8em; }
+.rb:hover { background: var(--t-btn-hover); border-color: var(--t-border-hi); }
+.rb-sm { padding: 3px var(--s-2); font-size: var(--f-xs); }
 .rb-active {
   background: var(--t-btn-active);
   border-color: var(--t-accent);
   color: var(--t-accent);
 }
 
-/* Status colors */
-.green { color: #2ecc71; }
-.red { color: #e74c3c; }
-.yellow { color: #f39c12; }
-.cyan { color: var(--t-accent); }
-.white { color: #e0e0e0; }
+/* Status text colors */
+.green  { color: var(--t-ok); }
+.red    { color: var(--t-err); }
+.yellow { color: var(--t-warn); }
+.cyan   { color: var(--t-accent); }
+.white  { color: var(--t-text); }
 
-/* Status layout grid */
-.st-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 16px; margin: 8px 0; }
-.st-item { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
-.st-label { color: #888; display: inline-block; width: 5.5em; text-align: right; margin-right: 16px; flex-shrink: 0; }
-.st-val { font-weight: bold; }
+/* Status grid rows (key/value readouts) */
+.st-row  { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--s-2) var(--s-4); margin: var(--s-2) 0; }
+.st-item { display: flex; gap: var(--s-2); align-items: center; white-space: nowrap; font-size: var(--f-sm); }
+.st-label{ color: var(--t-text-dim); display: inline-block; width: 5.5em; text-align: right; margin-right: var(--s-4); flex-shrink: 0; }
+.st-val  { font-weight: 500; }
 
 /* Level bars */
-.bar { display: inline-block; height: 18px; border-radius: 3px; min-width: 4px; vertical-align: middle; }
-.bar-pct { display: inline-block; width: 3.5em; text-align: right; color: #ccc; }
-.bar-rx { background: #2ecc71; } .bar-tx { background: #e74c3c; }
+.bar { display: inline-block; height: 14px; border-radius: var(--r-sm); min-width: 4px; vertical-align: middle; }
+.bar-pct { display: inline-block; width: 3.5em; text-align: right; color: var(--t-text-dim); font-size: var(--f-xs); }
+.bar-rx { background: var(--t-ok); }
+.bar-tx { background: var(--t-err); }
 
-/* Accent inputs */
+/* Form controls */
+input, select, textarea, button { font-family: inherit; }
 input[type="range"] { accent-color: var(--t-accent); }
-.tgl input { accent-color: var(--t-accent); }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--t-accent); }
+.tgl { display: inline-flex; align-items: center; gap: var(--s-2); font-size: var(--f-sm); color: var(--t-text-dim); cursor: pointer; user-select: none; }

@@ -567,11 +567,13 @@ class WebConfigServer:
         self._ws_clients = []         # list of (socket, queue) tuples for WebSocket PCM clients
         self._ws_lock = _thr.Lock()
 
-    # Color themes — all dark backgrounds with colored accents
+    # Color themes — values here override common.css defaults via /theme endpoint.
+    # Default 'blue' is now the phosphor palette (matches common.css).
+    # Other themes are legacy — to be retuned in a later pass.
     THEMES = {
-        'blue':   {'bg': '#1a1a2e', 'panel': '#16213e', 'border': '#0f3460', 'accent': '#00d4ff',
-                   'btn': '#0d1b2a', 'btn_border': '#1b3a5c', 'btn_hover': '#1a2744',
-                   'btn_active_bg': '#0f3460', 'checkbox': '#00d4ff'},
+        'blue':   {'bg': '#0b1014', 'panel': '#121820', 'border': '#1e2a38', 'accent': '#4fd6e6',
+                   'btn': '#0e131a', 'btn_border': '#1e2a38', 'btn_hover': '#1a2230',
+                   'btn_active_bg': '#2c3e52', 'checkbox': '#4fd6e6'},
         'red':    {'bg': '#1a1212', 'panel': '#2e1616', 'border': '#601010', 'accent': '#ff4444',
                    'btn': '#1e0d0d', 'btn_border': '#5c1b1b', 'btn_hover': '#3a1a1a',
                    'btn_active_bg': '#601010', 'checkbox': '#ff4444'},

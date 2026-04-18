@@ -37,21 +37,27 @@ def handle_theme(handler, parent):
 
 def handle_pages(handler, parent):
     """GET /pages/*"""
-    # Serve static HTML files from web_pages/ directory
+    # Serve static HTML files from web_pages/ directory (and subdirs like fonts/)
     import os as _os
     _page_name = handler.path[7:]  # strip '/pages/'
-    if '..' in _page_name or '/' in _page_name:
+    if '..' in _page_name:
         handler.send_response(403)
         handler.end_headers()
         return
-    _page_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'web_pages')
-    _page_path = _os.path.join(_page_dir, _page_name)
+    _page_dir = _os.path.realpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'web_pages'))
+    _page_path = _os.path.realpath(_os.path.join(_page_dir, _page_name))
+    if not _page_path.startswith(_page_dir + _os.sep):
+        handler.send_response(403)
+        handler.end_headers()
+        return
     if _os.path.isfile(_page_path):
         _ct = 'text/html; charset=utf-8'
         if _page_name.endswith('.css'):
             _ct = 'text/css'
         elif _page_name.endswith('.js'):
             _ct = 'application/javascript'
+        elif _page_name.endswith('.woff2'):
+            _ct = 'font/woff2'
         try:
             with open(_page_path, 'rb') as _f:
                 _body = _f.read()
