@@ -3,361 +3,530 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dell - Radio Gateway - D75 Control</title>
+<link rel="stylesheet" href="/pages/common.css">
 <style>
-  :root {
-    --t-bg: #1a1a2e; --t-panel: #16213e; --t-border: #0f3460;
-    --t-accent: #00d4ff; --t-btn: #0d1b2a; --t-btn-border: #1b3a5c;
-    --t-btn-hover: #1a2744; --t-btn-active: #0f3460;
-    --t-checkbox: #00d4ff;
+  /* D75 layout — shares the phosphor vocabulary from radio.html / kv4p.html. */
+
+  .conn-bar {
+    margin-bottom: var(--s-3);
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    padding: var(--s-2) var(--s-3);
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    flex-wrap: wrap;
   }
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
-         background: var(--t-bg); color: #e0e0e0; margin: 0; padding: 20px; }
-  h1 { color: var(--t-accent); margin: 0 0 20px; font-size: 1.4em; }
-  h2 { color: var(--t-accent); margin: 10px 0; font-size: 1.2em; }
-  a { color: var(--t-accent); }
-  details { background: var(--t-panel); border: 1px solid var(--t-border); border-radius: 6px;
-            margin: 8px 0; }
-  summary { cursor: pointer; padding: 10px 14px; font-weight: bold; color: var(--t-accent);
-            font-size: 0.95em; user-select: none; }
-  summary:hover { background: var(--t-btn-hover); }
-  .fields { padding: 8px 14px 14px; }
-  .field { display: flex; align-items: center; margin: 4px 0; gap: 8px; }
-  .field label { min-width: 320px; font-size: 0.85em; color: #b0b0b0; }
-  .field input[type="text"], .field input[type="number"], .field input[type="password"], .field select {
-    flex: 1; background: var(--t-btn); border: 1px solid var(--t-btn-border); color: #e0e0e0;
-    padding: 5px 8px; border-radius: 3px; font-family: monospace; font-size: 0.85em;
-    max-width: 500px; }
-  .field input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--t-checkbox); }
-  .field .default { font-size: 0.75em; color: #ffffff; margin-left: 8px; }
-  .buttons { position: sticky; top: 0; background: var(--t-bg); padding: 10px 0;
-             z-index: 10; border-bottom: 1px solid var(--t-border); margin-bottom: 10px;
-             display: flex; gap: 10px; }
-  button { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer;
-           font-size: 0.9em; font-weight: bold; }
-  .btn-save { background: var(--t-border); color: #e0e0e0; }
-  .btn-save:hover { background: var(--t-btn-hover); }
-  .btn-restart { background: #c0392b; color: #fff; }
-  .btn-restart:hover { background: #e74c3c; }
-  .btn-exit { background: #7d3c98; color: #fff; margin-left: auto; }
-  .btn-exit:hover { background: #9b59b6; }
+  .conn-bar .sep { color: var(--t-border); }
+  .d75-label { color: var(--t-text-dim); font-size: var(--f-sm); }
+  .d75-val   { color: var(--t-text); font-variant-numeric: tabular-nums; }
+  .d75-val.ok   { color: var(--t-ok); }
+  .d75-val.warn { color: var(--t-warn); }
+  .d75-val.err  { color: var(--t-err); }
+  .d75-val.dim  { color: var(--t-text-dim); }
+
+  /* Offline notice + status checklist */
+  .offline {
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    padding: var(--s-3);
+    margin-bottom: var(--s-3);
+  }
+  .offline .head { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
+  .offline .msg  { color: var(--t-err); font-weight: 600; }
+  .offline .detail { color: var(--t-warn); font-size: var(--f-sm); }
+  .offline .checklist { margin-top: var(--s-3); font-size: var(--f-sm); }
+  .offline .checklist > div { margin: var(--s-1) 0; }
+  .dot { display: inline-block; width: 0.7em; }
+  .dot.pending { color: var(--t-text-dim); }
+  .dot.ok      { color: var(--t-ok); }
+  .dot.err     { color: var(--t-err); }
+
+  /* TX badge */
+  .tx-badge {
+    display: none;
+    background: var(--t-err);
+    color: var(--t-bg);
+    padding: 2px var(--s-2);
+    border-radius: var(--r-sm);
+    font-size: var(--f-xs);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  .tx-badge.on { display: inline-block; }
+
+  .feedback { font-size: var(--f-sm); min-width: 120px; font-variant-numeric: tabular-nums; color: var(--t-text-dim); }
+  .feedback.ok  { color: var(--t-ok); }
+  .feedback.err { color: var(--t-err); }
+
+  /* Band cards */
+  .band-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: var(--s-3);
+    margin-bottom: var(--s-3);
+  }
+  .band-card {
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    padding: var(--s-3);
+    transition: opacity 0.15s;
+  }
+  .band-card.inactive { opacity: 0.3; pointer-events: none; }
+  .band-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--s-2);
+  }
+  .band-title {
+    color: var(--t-accent);
+    font-weight: 600;
+    font-size: var(--f-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .band-mode { color: var(--t-warn); font-weight: 600; font-size: var(--f-sm); }
+
+  .main-badge {
+    display: none;
+    padding: 1px var(--s-2);
+    border-radius: var(--r-sm);
+    background: var(--t-accent);
+    color: var(--t-bg);
+    font-size: var(--f-xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .main-badge.on { display: inline-block; }
+
+  /* Frequency display inside band card */
+  .freq-box {
+    background: var(--t-bg);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-sm);
+    padding: var(--s-2);
+    margin-bottom: var(--s-2);
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .freq-box.tx {
+    background: color-mix(in srgb, var(--t-err) 18%, var(--t-bg));
+    border-color: var(--t-err);
+  }
+  .freq-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: var(--f-xs);
+    color: var(--t-text-dim);
+  }
+  .freq-head .pwr       { color: var(--t-warn); }
+  .freq-head .tone-info { color: var(--t-text-dim); }
+  .freq-head .tone-info.on { color: var(--t-ok); }
+  .freq-head .shift-info { color: var(--t-text-dim); }
+  .freq-head .shift-info.on { color: var(--t-warn); }
+  .freq-text {
+    color: var(--t-ok);
+    font-size: 24px;
+    text-align: center;
+    letter-spacing: 2px;
+    margin: var(--s-1) 0;
+  }
+
+  /* Rows / meters / inputs */
+  .d75-row { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-1); }
+
+  .d75-meter {
+    flex: 1;
+    background: var(--t-bg);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-sm);
+    height: 14px;
+    position: relative;
+    overflow: hidden;
+  }
+  .d75-meter-fill { height: 100%; background: var(--t-ok); width: 0%; transition: width 0.2s; }
+  .d75-meter-text {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    font-size: var(--f-xs); color: var(--t-text);
+    font-weight: 600; font-variant-numeric: tabular-nums;
+  }
+
+  .d75-input {
+    background: var(--t-btn);
+    border: 1px solid var(--t-border);
+    color: var(--t-ok);
+    padding: var(--s-1) var(--s-2);
+    border-radius: var(--r-sm);
+    font-family: inherit;
+    font-size: var(--f-md);
+    width: 140px;
+    text-align: center;
+  }
+  .d75-select {
+    background: var(--t-btn);
+    border: 1px solid var(--t-border);
+    color: var(--t-text);
+    padding: var(--s-1) var(--s-2);
+    border-radius: var(--r-sm);
+    font-family: inherit;
+    font-size: var(--f-sm);
+  }
+
+  .sq-slider { accent-color: var(--t-warn); }
+
+  /* Memory list */
+  .mem-panel { background: var(--t-panel); border: 1px solid var(--t-border); border-radius: var(--r-md); padding: var(--s-2) var(--s-3); margin-bottom: var(--s-3); }
+  .mem-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--s-2);
+  }
+  .mem-title {
+    color: var(--t-accent);
+    font-weight: 600;
+    font-size: var(--f-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .mem-body {
+    max-height: 300px;
+    overflow-y: auto;
+    font-size: var(--f-sm);
+  }
+  .mem-tbl {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .mem-tbl th {
+    color: var(--t-text-dim);
+    text-align: left;
+    padding: 2px var(--s-2);
+    font-weight: 500;
+    font-size: var(--f-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--t-border);
+  }
+  .mem-tbl td { padding: 3px var(--s-2); }
+  .mem-tbl tr.mem-row:hover td { background: var(--t-panel-hi); }
+
+  .vol-panel {
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    padding: var(--s-2) var(--s-3);
+    margin-bottom: var(--s-3);
+  }
+  .vol-panel input[type="range"] { accent-color: var(--t-accent); }
+
+  .gps-row {
+    margin-bottom: var(--s-3);
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    padding: var(--s-2) var(--s-3);
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    flex-wrap: wrap;
+  }
+  .gps-row .sec-head {
+    color: var(--t-accent);
+    font-weight: 600;
+    font-size: var(--f-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
 </style>
-<script>var _T={bg:'#1a1a2e',panel:'#16213e',border:'#0f3460',accent:'#00d4ff',btn:'#0d1b2a',btnBorder:'#1b3a5c',btnHover:'#1a2744',btnActive:'#0f3460'}</script>
 </head><body>
 
-<style>
-.rb { padding:8px 14px; border:1px solid var(--t-btn-border); border-radius:4px; background:var(--t-btn);
-  color:#e0e0e0; cursor:pointer; font-family:monospace; font-size:0.95em; min-width:44px; }
-.rb:hover { background:var(--t-btn-hover); border-color:var(--t-accent); }
-.rb:active { background:var(--t-border); }
-.rb-sm { font-size:0.8em; padding:5px 10px; }
-.rb-active { background:var(--t-accent) !important; color:#fff !important; border-color:var(--t-accent) !important; }
-.d75-band { background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; }
-.d75-freq { color:#2ecc71; font-size:2.2em; text-align:center; letter-spacing:2px; margin:8px 0; font-family:monospace; }
-.mem-row { cursor:pointer; }
-.mem-row:hover { background:rgba(255,255,255,0.05); }
-.d75-label { color:#888; font-size:0.85em; }
-.d75-val { color:#e0e0e0; font-family:monospace; }
-.d75-row { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
-.d75-meter { flex:1; background:var(--t-btn); border:1px solid var(--t-btn-border); border-radius:3px; height:18px; position:relative; overflow:hidden; }
-.d75-meter-fill { height:100%; transition:width 0.3s; }
-.d75-meter-text { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); font-size:0.75em; color:#fff; font-weight:bold; }
-.d75-input { background:var(--t-btn); border:1px solid var(--t-btn-border); color:#2ecc71; padding:6px 10px;
-  border-radius:4px; font-family:monospace; font-size:1.1em; width:140px; text-align:center; }
-.d75-select { background:var(--t-btn); border:1px solid var(--t-btn-border); color:#e0e0e0; padding:5px 8px;
-  border-radius:3px; font-family:monospace; font-size:0.9em; }
-</style>
-
-<div id="d75-offline" style="display:none; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; margin-bottom:14px;">
-  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-    <span style="color:#e74c3c; font-weight:bold;">D75 Not Connected</span>
-    <span id="d75-status-detail" style="color:#f39c12; font-size:0.9em;"></span>
+<div id="d75-offline" class="offline" style="display:none;">
+  <div class="head">
+    <span class="msg">D75 Not Connected</span>
+    <span id="d75-status-detail" class="detail"></span>
   </div>
-  <div id="d75-status-steps" style="margin-top:10px; font-size:0.85em; font-family:monospace;">
-    <div><span id="d75-chk-tcp" style="color:#888;">&#x25cf;</span> Gateway TCP Link: <span id="d75-chk-tcp-text">checking...</span>
-      <button id="d75-reconnect-btn" class="rb rb-sm" onclick="d75svcAction('reconnect')" style="display:none; margin-left:8px;">Reconnect</button></div>
-    <div><span id="d75-chk-serial" style="color:#888;">&#x25cf;</span> Radio BT Serial: <span id="d75-chk-serial-text">checking...</span>
-      <button id="d75-offline-btstart-btn" class="rb rb-sm" onclick="d75svcAction('btstart_via_reconnect')" style="display:none; margin-left:8px;">BT Start</button></div>
-    <div><span id="d75-chk-svc" style="color:#888;">&#x25cf;</span> Local CAT Service: <span id="d75-chk-svc-text">checking...</span>
-      <button id="d75-start-svc-btn" class="rb rb-sm" onclick="d75svcAction('start_service')" style="display:none; margin-left:8px;">Start Service</button></div>
+  <div class="checklist">
+    <div>
+      <span id="d75-chk-tcp" class="dot pending">&#x25cf;</span>
+      Gateway TCP Link: <span id="d75-chk-tcp-text" class="d75-val dim">checking...</span>
+      <button id="d75-reconnect-btn" class="rb rb-sm" onclick="d75svcAction('reconnect')" style="display:none; margin-left:var(--s-2);">Reconnect</button>
+    </div>
+    <div>
+      <span id="d75-chk-serial" class="dot pending">&#x25cf;</span>
+      Radio BT Serial: <span id="d75-chk-serial-text" class="d75-val dim">checking...</span>
+      <button id="d75-offline-btstart-btn" class="rb rb-sm" onclick="d75svcAction('btstart_via_reconnect')" style="display:none; margin-left:var(--s-2);">BT Start</button>
+    </div>
+    <div>
+      <span id="d75-chk-svc" class="dot pending">&#x25cf;</span>
+      Local CAT Service: <span id="d75-chk-svc-text" class="d75-val dim">checking...</span>
+      <button id="d75-start-svc-btn" class="rb rb-sm" onclick="d75svcAction('start_service')" style="display:none; margin-left:var(--s-2);">Start Service</button>
+    </div>
   </div>
 </div>
 
 <div id="d75-panel" style="display:none;">
 
-<!-- Status bar -->
-<div style="margin-bottom:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
-  <span class="d75-label">Model:</span> <span id="d75-model" class="d75-val">—</span>
-  <span style="color:#333;">|</span>
-  <span class="d75-label">S/N:</span> <span id="d75-sn" class="d75-val">—</span>
-  <span style="color:#333;">|</span>
-  <span class="d75-label">FW:</span> <span id="d75-fw" class="d75-val">—</span>
-  <span style="color:#333;">|</span>
-  <span class="d75-label">Mode:</span> <span id="d75-mode" class="d75-val">—</span>
-  <span id="d75-audio-row"><span style="color:#333;">|</span>
-  <span class="d75-label">Audio:</span> <span id="d75-audio-status" class="d75-val">—</span></span>
-  <span style="flex:1;"></span>
-  <span id="d75-tx-badge" style="display:none; background:#c0392b; color:#fff; padding:2px 8px; border-radius:3px; font-weight:bold;">TX</span>
-  <span style="flex:1;"></span>
-  <span id="d75-feedback" style="font-family:monospace; font-size:0.85em; min-width:120px;"></span>
-  <button id="d75-btstart-btn" class="rb rb-sm" onclick="d75cmd('btstart')" style="display:none;">BT Start</button>
-  <button id="d75-btstop-btn" class="rb rb-sm" onclick="d75cmd('btstop')" style="display:none;">BT Stop</button>
-  <button id="d75-audio-off-btn" class="rb rb-sm" onclick="d75cmd('audio','disconnect')" style="display:none;">Audio Off</button>
-  <button id="d75-audio-on-btn" class="rb rb-sm" onclick="d75cmd('audio','connect')" style="display:none;">Audio On</button>
-  <button class="rb rb-sm" onclick="d75cmd('ptt')" id="d75-ptt-btn">PTT</button>
-</div>
-
-<!-- Radio Controls Row -->
-<div style="margin-bottom:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-  <span class="d75-label">Band:</span>
-  <select id="d75-active-band" class="d75-select" onfocus="_ctrlEditUntil=Date.now()+5000" onchange="_ctrlEditUntil=Date.now()+3000;d75cmd('cat','BC '+this.value)">
-    <option value="0">A</option><option value="1">B</option>
-  </select>
-  <span class="d75-label">Dual:</span>
-  <select id="d75-dual" class="d75-select" onfocus="_ctrlEditUntil=Date.now()+5000" onchange="_ctrlEditUntil=Date.now()+3000;d75cmd('cat','DL '+this.value)">
-    <option value="0">Dual</option><option value="1">Single</option>
-  </select>
-  <span style="color:#333;">|</span>
-  <button class="rb rb-sm" onclick="d75cmd('cat','UP')">Up</button>
-  <button class="rb rb-sm" onclick="d75cmd('cat','DN')">Down</button>
-  <span style="color:#333;">|</span>
-  <span class="d75-label">Battery:</span> <span id="d75-battery" class="d75-val">—</span>
-  <span class="d75-label">BT:</span> <span id="d75-bt-state" class="d75-val">—</span>
-  <span style="color:#333;">|</span>
-  <span class="d75-label">TNC:</span> <span id="d75-tnc" class="d75-val">—</span>
-  <span class="d75-label">Beacon:</span> <span id="d75-beacon" class="d75-val">—</span>
-</div>
-
-<!-- GPS Row -->
-<div id="d75-gps-row" style="margin-bottom:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
-  <span style="color:var(--t-accent); font-weight:bold;">GPS</span>
-  <span class="d75-label">Lat:</span> <span id="d75-gps-lat" class="d75-val">—</span>
-  <span class="d75-label">Lon:</span> <span id="d75-gps-lon" class="d75-val">—</span>
-  <span class="d75-label">Alt:</span> <span id="d75-gps-alt" class="d75-val">—</span>
-  <span class="d75-label">Speed:</span> <span id="d75-gps-spd" class="d75-val">—</span>
-  <span class="d75-label">Sats:</span> <span id="d75-gps-sat" class="d75-val">—</span>
-</div>
-
-<!-- Memory Channels -->
-<div style="margin-bottom:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px;">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-    <span style="color:var(--t-accent); font-weight:bold;">Memory Channels</span>
-    <div style="display:flex; gap:6px; align-items:center;">
-      <span id="d75-mem-count" style="color:#888; font-size:0.85em;"></span>
-      <button class="rb rb-sm" onclick="d75LoadMemories()" id="d75-mem-scan-btn">Scan</button>
-    </div>
+  <!-- Status bar -->
+  <div class="conn-bar">
+    <span class="d75-label">Model:</span> <span id="d75-model" class="d75-val">&mdash;</span>
+    <span class="sep">|</span>
+    <span class="d75-label">S/N:</span> <span id="d75-sn" class="d75-val">&mdash;</span>
+    <span class="sep">|</span>
+    <span class="d75-label">FW:</span> <span id="d75-fw" class="d75-val">&mdash;</span>
+    <span class="sep">|</span>
+    <span class="d75-label">Mode:</span> <span id="d75-mode" class="d75-val">&mdash;</span>
+    <span id="d75-audio-row"><span class="sep">|</span>
+    <span class="d75-label">Audio:</span> <span id="d75-audio-status" class="d75-val">&mdash;</span></span>
+    <span style="flex:1;"></span>
+    <span id="d75-tx-badge" class="tx-badge">TX</span>
+    <span style="flex:1;"></span>
+    <span id="d75-feedback" class="feedback"></span>
+    <button id="d75-btstart-btn" class="rb rb-sm" onclick="d75cmd('btstart')" style="display:none;">BT Start</button>
+    <button id="d75-btstop-btn" class="rb rb-sm" onclick="d75cmd('btstop')" style="display:none;">BT Stop</button>
+    <button id="d75-audio-off-btn" class="rb rb-sm" onclick="d75cmd('audio','disconnect')" style="display:none;">Audio Off</button>
+    <button id="d75-audio-on-btn" class="rb rb-sm" onclick="d75cmd('audio','connect')" style="display:none;">Audio On</button>
+    <button class="rb rb-sm" onclick="d75cmd('ptt')" id="d75-ptt-btn">PTT</button>
   </div>
-  <div id="d75-mem-list" style="max-height:300px; overflow-y:auto; font-family:monospace; font-size:0.85em;">
-    <span style="color:#888;">Press Scan to read memory channels from radio</span>
+
+  <!-- Radio Controls Row -->
+  <div class="conn-bar">
+    <span class="d75-label">Band:</span>
+    <select id="d75-active-band" class="d75-select" onfocus="_ctrlEditUntil=Date.now()+5000" onchange="_ctrlEditUntil=Date.now()+3000;d75cmd('cat','BC '+this.value)">
+      <option value="0">A</option><option value="1">B</option>
+    </select>
+    <span class="d75-label">Dual:</span>
+    <select id="d75-dual" class="d75-select" onfocus="_ctrlEditUntil=Date.now()+5000" onchange="_ctrlEditUntil=Date.now()+3000;d75cmd('cat','DL '+this.value)">
+      <option value="0">Dual</option><option value="1">Single</option>
+    </select>
+    <span class="sep">|</span>
+    <button class="rb rb-sm" onclick="d75cmd('cat','UP')">Up</button>
+    <button class="rb rb-sm" onclick="d75cmd('cat','DN')">Down</button>
+    <span class="sep">|</span>
+    <span class="d75-label">Battery:</span> <span id="d75-battery" class="d75-val">&mdash;</span>
+    <span class="d75-label">BT:</span> <span id="d75-bt-state" class="d75-val dim">&mdash;</span>
+    <span class="sep">|</span>
+    <span class="d75-label">TNC:</span> <span id="d75-tnc" class="d75-val">&mdash;</span>
+    <span class="d75-label">Beacon:</span> <span id="d75-beacon" class="d75-val">&mdash;</span>
   </div>
-</div>
 
-<!-- Volume control (full width) -->
-<div style="margin-bottom:14px; background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:10px 14px;">
-  <div class="d75-row">
-    <span class="d75-label" style="min-width:50px;">Volume</span>
-    <input id="d75-vol" type="range" min="0" max="500" value="100" step="10" style="flex:1; accent-color:var(--t-accent);"
-      oninput="d75VolDebounce(this.value)">
-    <span id="d75-vol-val" class="d75-val" style="min-width:3.5em;">100%</span>
+  <!-- GPS Row -->
+  <div id="d75-gps-row" class="gps-row">
+    <span class="sec-head">GPS</span>
+    <span class="d75-label">Lat:</span> <span id="d75-gps-lat" class="d75-val">&mdash;</span>
+    <span class="d75-label">Lon:</span> <span id="d75-gps-lon" class="d75-val">&mdash;</span>
+    <span class="d75-label">Alt:</span> <span id="d75-gps-alt" class="d75-val">&mdash;</span>
+    <span class="d75-label">Speed:</span> <span id="d75-gps-spd" class="d75-val">&mdash;</span>
+    <span class="d75-label">Sats:</span> <span id="d75-gps-sat" class="d75-val">&mdash;</span>
   </div>
-</div>
 
-<!-- Two-column band display -->
-<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(350px, 1fr)); gap:14px; margin-bottom:14px;">
-
-  <!-- BAND A -->
-  <div class="d75-band" id="d75-band-a">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-      <span style="display:flex; align-items:center; gap:8px;">
-        <span style="color:var(--t-accent); font-weight:bold; font-size:1.1em;">Band A</span>
-        <span id="d75-a-main" style="display:none; background:#c0392b; color:#fff; padding:1px 7px; border-radius:3px; font-size:0.8em; font-weight:bold;">MAIN</span>
-      </span>
-      <span id="d75-a-mode" style="color:#f39c12; font-weight:bold;">FM</span>
-    </div>
-
-    <!-- Frequency display -->
-    <div style="background:var(--t-btn); border:1px solid var(--t-btn-border); border-radius:4px; padding:10px; margin-bottom:10px;">
-      <div style="display:flex; justify-content:space-between; align-items:baseline;">
-        <span id="d75-a-power" style="color:#f39c12; font-size:0.85em;">—</span>
-        <span id="d75-a-tone-info" style="color:#888; font-size:0.8em;"></span>
-        <span id="d75-a-shift-info" style="color:#888; font-size:0.8em;"></span>
-      </div>
-      <div id="d75-a-freq" class="d75-freq">———.———</div>
-    </div>
-
-    <!-- VFO/Memory mode + Channel -->
-    <div class="d75-row">
-      <select id="d75-a-vfomode" class="d75-select" onchange="d75cmd('cat','VM 0,'+this.value)">
-        <option value="0">VFO</option><option value="1">Memory</option><option value="2">Call</option><option value="3">DV</option>
-      </select>
-      <span class="d75-label">CH:</span>
-      <input id="d75-a-ch" class="d75-input" style="width:60px;" placeholder="001"
-        onkeydown="if(event.key==='Enter')d75cmd('cat','MC 0,'+this.value)">
-      <button class="rb rb-sm" onclick="d75cmd('cat','MC 0,'+document.getElementById('d75-a-ch').value)">Go</button>
-    </div>
-
-    <!-- S-Meter -->
-    <div class="d75-row">
-      <span class="d75-label">S:</span>
-      <div class="d75-meter">
-        <div id="d75-a-sig-bar" class="d75-meter-fill" style="background:#2ecc71; width:0%;"></div>
-        <span id="d75-a-sig-text" class="d75-meter-text">S0</span>
+  <!-- Memory Channels -->
+  <div class="mem-panel">
+    <div class="mem-head">
+      <span class="mem-title">Memory Channels</span>
+      <div style="display:flex; gap:var(--s-1); align-items:center;">
+        <span id="d75-mem-count" class="d75-label"></span>
+        <button class="rb rb-sm" onclick="d75LoadMemories()" id="d75-mem-scan-btn">Scan</button>
       </div>
     </div>
-
-    <!-- Squelch -->
-    <div class="d75-row">
-      <span class="d75-label" style="min-width:30px;">SQ</span>
-      <input id="d75-a-sq" type="range" min="0" max="5" value="2" style="flex:1; accent-color:#f39c12;"
-        oninput="d75sq(0,this.value)">
-      <span id="d75-a-sq-val" class="d75-val" style="min-width:2em;">2</span>
-    </div>
-
-    <!-- Frequency input -->
-    <div class="d75-row" style="margin-top:8px;">
-      <span class="d75-label">Freq:</span>
-      <input id="d75-a-freq-input" class="d75-input" placeholder="145.500" onkeydown="if(event.key==='Enter')d75setFreq(0,this.value)">
-      <span class="d75-label">MHz</span>
-      <button class="rb rb-sm" onclick="d75setFreq(0,document.getElementById('d75-a-freq-input').value)">Set</button>
-    </div>
-
-    <!-- Mode & Power -->
-    <div class="d75-row" style="margin-top:6px;">
-      <span class="d75-label">Mode:</span>
-      <select id="d75-a-mode-sel" class="d75-select" onfocus="_toneEditUntil[0]=Date.now()+5000" onchange="_toneEditUntil[0]=Date.now()+3000;d75setMode(0,this.value)">
-        <option value="0">FM</option><option value="1">DV</option><option value="2">AM</option><option value="3">LSB</option><option value="4">USB</option><option value="5">CW</option><option value="6">NFM</option><option value="7">DR</option><option value="8">WFM</option><option value="9">R-CW</option>
-      </select>
-      <span class="d75-label" style="margin-left:10px;">Power:</span>
-      <select id="d75-a-pwr-sel" class="d75-select" onfocus="_toneEditUntil[0]=Date.now()+5000" onchange="_toneEditUntil[0]=Date.now()+3000;d75setPower(0,this.value)">
-        <option value="0">High</option><option value="1">Med</option><option value="2">Low</option><option value="3">EL</option>
-      </select>
-    </div>
-
-    <!-- Tone -->
-    <div class="d75-row" style="margin-top:6px;">
-      <span class="d75-label">Tone:</span>
-      <select id="d75-a-tone-type" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setTone(0)">
-        <option value="off">Off</option><option value="tone">Tone</option>
-        <option value="ctcss">CTCSS</option><option value="dcs">DCS</option>
-      </select>
-      <select id="d75-a-tone-freq" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setTone(0)" style="display:none;">
-        <option value="67.0">67.0 Hz</option><option value="69.3">69.3 Hz</option><option value="71.9">71.9 Hz</option><option value="74.4">74.4 Hz</option><option value="77.0">77.0 Hz</option><option value="79.7">79.7 Hz</option><option value="82.5">82.5 Hz</option><option value="85.4">85.4 Hz</option><option value="88.5">88.5 Hz</option><option value="91.5">91.5 Hz</option><option value="94.8">94.8 Hz</option><option value="97.4">97.4 Hz</option><option value="100.0">100.0 Hz</option><option value="103.5">103.5 Hz</option><option value="107.2">107.2 Hz</option><option value="110.9">110.9 Hz</option><option value="114.8">114.8 Hz</option><option value="118.8">118.8 Hz</option><option value="123.0">123.0 Hz</option><option value="127.3">127.3 Hz</option><option value="131.8">131.8 Hz</option><option value="136.5">136.5 Hz</option><option value="141.3">141.3 Hz</option><option value="146.2">146.2 Hz</option><option value="151.4">151.4 Hz</option><option value="156.7">156.7 Hz</option><option value="162.2">162.2 Hz</option><option value="167.9">167.9 Hz</option><option value="173.8">173.8 Hz</option><option value="179.9">179.9 Hz</option><option value="186.2">186.2 Hz</option><option value="192.8">192.8 Hz</option><option value="203.5">203.5 Hz</option><option value="206.5">206.5 Hz</option><option value="210.7">210.7 Hz</option><option value="218.1">218.1 Hz</option><option value="225.7">225.7 Hz</option><option value="229.1">229.1 Hz</option><option value="233.6">233.6 Hz</option><option value="241.8">241.8 Hz</option><option value="250.3">250.3 Hz</option><option value="254.1">254.1 Hz</option>
-      </select>
-      <select id="d75-a-dcs-code" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setTone(0)" style="display:none;">
-        <option value="023">023</option><option value="025">025</option><option value="026">026</option><option value="031">031</option><option value="032">032</option><option value="036">036</option><option value="043">043</option><option value="047">047</option><option value="051">051</option><option value="053">053</option><option value="054">054</option><option value="065">065</option><option value="071">071</option><option value="072">072</option><option value="073">073</option><option value="074">074</option><option value="114">114</option><option value="115">115</option><option value="116">116</option><option value="122">122</option><option value="125">125</option><option value="131">131</option><option value="132">132</option><option value="134">134</option><option value="143">143</option><option value="145">145</option><option value="152">152</option><option value="155">155</option><option value="156">156</option><option value="162">162</option><option value="165">165</option><option value="172">172</option><option value="174">174</option><option value="205">205</option><option value="212">212</option><option value="223">223</option><option value="225">225</option><option value="226">226</option><option value="243">243</option><option value="244">244</option><option value="245">245</option><option value="246">246</option><option value="251">251</option><option value="252">252</option><option value="255">255</option><option value="261">261</option><option value="263">263</option><option value="265">265</option><option value="266">266</option><option value="271">271</option><option value="274">274</option><option value="306">306</option><option value="311">311</option><option value="315">315</option><option value="325">325</option><option value="331">331</option><option value="332">332</option><option value="343">343</option><option value="346">346</option><option value="351">351</option><option value="356">356</option><option value="364">364</option><option value="365">365</option><option value="371">371</option><option value="411">411</option><option value="412">412</option><option value="413">413</option><option value="423">423</option><option value="431">431</option><option value="432">432</option><option value="445">445</option><option value="446">446</option><option value="452">452</option><option value="454">454</option><option value="455">455</option><option value="462">462</option><option value="464">464</option><option value="465">465</option><option value="466">466</option><option value="503">503</option><option value="506">506</option><option value="516">516</option><option value="523">523</option><option value="526">526</option><option value="532">532</option><option value="546">546</option><option value="565">565</option><option value="606">606</option><option value="612">612</option><option value="624">624</option><option value="627">627</option><option value="631">631</option><option value="632">632</option><option value="654">654</option><option value="662">662</option><option value="664">664</option><option value="703">703</option><option value="712">712</option><option value="723">723</option><option value="731">731</option><option value="732">732</option><option value="734">734</option><option value="743">743</option><option value="754">754</option>
-      </select>
-    </div>
-
-    <!-- Offset & Shift -->
-    <div class="d75-row" style="margin-top:6px;">
-      <span class="d75-label">Shift:</span>
-      <select id="d75-a-shift" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setShift(0,this.value)">
-        <option value="0">Off</option><option value="1">+</option><option value="2">-</option>
-      </select>
-      <span class="d75-label" style="margin-left:10px;">Offset:</span>
-      <input id="d75-a-offset" class="d75-input" style="width:80px;" placeholder="0.600"
-        onfocus="_toneTouched(0)" onkeydown="if(event.key==='Enter')d75setOffset(0,this.value)">
-      <button class="rb rb-sm" onclick="d75setOffset(0,document.getElementById('d75-a-offset').value)">Set</button>
+    <div id="d75-mem-list" class="mem-body">
+      <span class="d75-label">Press Scan to read memory channels from radio</span>
     </div>
   </div>
 
-  <!-- BAND B -->
-  <div class="d75-band" id="d75-band-b">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-      <span style="display:flex; align-items:center; gap:8px;">
-        <span style="color:var(--t-accent); font-weight:bold; font-size:1.1em;">Band B</span>
-        <span id="d75-b-main" style="display:none; background:#c0392b; color:#fff; padding:1px 7px; border-radius:3px; font-size:0.8em; font-weight:bold;">MAIN</span>
-      </span>
-      <span id="d75-b-mode" style="color:#f39c12; font-weight:bold;">FM</span>
+  <!-- Volume -->
+  <div class="vol-panel">
+    <div class="d75-row">
+      <span class="d75-label" style="min-width:50px;">Volume</span>
+      <input id="d75-vol" type="range" min="0" max="500" value="100" step="10" style="flex:1;"
+        oninput="d75VolDebounce(this.value)">
+      <span id="d75-vol-val" class="d75-val" style="min-width:3.5em;">100%</span>
     </div>
+  </div>
 
-    <!-- Frequency display -->
-    <div style="background:var(--t-btn); border:1px solid var(--t-btn-border); border-radius:4px; padding:10px; margin-bottom:10px;">
-      <div style="display:flex; justify-content:space-between; align-items:baseline;">
-        <span id="d75-b-power" style="color:#f39c12; font-size:0.85em;">—</span>
-        <span id="d75-b-tone-info" style="color:#888; font-size:0.8em;"></span>
-        <span id="d75-b-shift-info" style="color:#888; font-size:0.8em;"></span>
+  <!-- Band A/B -->
+  <div class="band-grid">
+
+    <div class="band-card" id="d75-band-a">
+      <div class="band-head">
+        <span style="display:flex; align-items:center; gap:var(--s-2);">
+          <span class="band-title">Band A</span>
+          <span id="d75-a-main" class="main-badge">MAIN</span>
+        </span>
+        <span id="d75-a-mode" class="band-mode">FM</span>
       </div>
-      <div id="d75-b-freq" class="d75-freq">———.———</div>
-    </div>
 
-    <!-- VFO/Memory mode + Channel -->
-    <div class="d75-row">
-      <select id="d75-b-vfomode" class="d75-select" onchange="d75cmd('cat','VM 1,'+this.value)">
-        <option value="0">VFO</option><option value="1">Memory</option><option value="2">Call</option><option value="3">DV</option>
-      </select>
-      <span class="d75-label">CH:</span>
-      <input id="d75-b-ch" class="d75-input" style="width:60px;" placeholder="001"
-        onkeydown="if(event.key==='Enter')d75cmd('cat','MC 1,'+this.value)">
-      <button class="rb rb-sm" onclick="d75cmd('cat','MC 1,'+document.getElementById('d75-b-ch').value)">Go</button>
-    </div>
+      <div id="d75-a-freq-box" class="freq-box">
+        <div class="freq-head">
+          <span id="d75-a-power" class="pwr">&mdash;</span>
+          <span id="d75-a-tone-info" class="tone-info"></span>
+          <span id="d75-a-shift-info" class="shift-info"></span>
+        </div>
+        <div id="d75-a-freq" class="freq-text">&mdash;&mdash;&mdash;.&mdash;&mdash;&mdash;</div>
+      </div>
 
-    <!-- S-Meter -->
-    <div class="d75-row">
-      <span class="d75-label">S:</span>
-      <div class="d75-meter">
-        <div id="d75-b-sig-bar" class="d75-meter-fill" style="background:#2ecc71; width:0%;"></div>
-        <span id="d75-b-sig-text" class="d75-meter-text">S0</span>
+      <div class="d75-row">
+        <select id="d75-a-vfomode" class="d75-select" onchange="d75cmd('cat','VM 0,'+this.value)">
+          <option value="0">VFO</option><option value="1">Memory</option><option value="2">Call</option><option value="3">DV</option>
+        </select>
+        <span class="d75-label">CH:</span>
+        <input id="d75-a-ch" class="d75-input" style="width:60px;" placeholder="001"
+          onkeydown="if(event.key==='Enter')d75cmd('cat','MC 0,'+this.value)">
+        <button class="rb rb-sm" onclick="d75cmd('cat','MC 0,'+document.getElementById('d75-a-ch').value)">Go</button>
+      </div>
+
+      <div class="d75-row">
+        <span class="d75-label">S:</span>
+        <div class="d75-meter">
+          <div id="d75-a-sig-bar" class="d75-meter-fill"></div>
+          <span id="d75-a-sig-text" class="d75-meter-text">S0</span>
+        </div>
+      </div>
+
+      <div class="d75-row">
+        <span class="d75-label" style="min-width:30px;">SQ</span>
+        <input id="d75-a-sq" class="sq-slider" type="range" min="0" max="5" value="2" style="flex:1;"
+          oninput="d75sq(0,this.value)">
+        <span id="d75-a-sq-val" class="d75-val" style="min-width:2em;">2</span>
+      </div>
+
+      <div class="d75-row" style="margin-top:var(--s-2);">
+        <span class="d75-label">Freq:</span>
+        <input id="d75-a-freq-input" class="d75-input" placeholder="145.500" onkeydown="if(event.key==='Enter')d75setFreq(0,this.value)">
+        <span class="d75-label">MHz</span>
+        <button class="rb rb-sm" onclick="d75setFreq(0,document.getElementById('d75-a-freq-input').value)">Set</button>
+      </div>
+
+      <div class="d75-row" style="margin-top:var(--s-1);">
+        <span class="d75-label">Mode:</span>
+        <select id="d75-a-mode-sel" class="d75-select" onfocus="_toneEditUntil[0]=Date.now()+5000" onchange="_toneEditUntil[0]=Date.now()+3000;d75setMode(0,this.value)">
+          <option value="0">FM</option><option value="1">DV</option><option value="2">AM</option><option value="3">LSB</option><option value="4">USB</option><option value="5">CW</option><option value="6">NFM</option><option value="7">DR</option><option value="8">WFM</option><option value="9">R-CW</option>
+        </select>
+        <span class="d75-label" style="margin-left:var(--s-2);">Power:</span>
+        <select id="d75-a-pwr-sel" class="d75-select" onfocus="_toneEditUntil[0]=Date.now()+5000" onchange="_toneEditUntil[0]=Date.now()+3000;d75setPower(0,this.value)">
+          <option value="0">High</option><option value="1">Med</option><option value="2">Low</option><option value="3">EL</option>
+        </select>
+      </div>
+
+      <div class="d75-row" style="margin-top:var(--s-1);">
+        <span class="d75-label">Tone:</span>
+        <select id="d75-a-tone-type" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setTone(0)">
+          <option value="off">Off</option><option value="tone">Tone</option>
+          <option value="ctcss">CTCSS</option><option value="dcs">DCS</option>
+        </select>
+        <select id="d75-a-tone-freq" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setTone(0)" style="display:none;">
+          <option value="67.0">67.0 Hz</option><option value="69.3">69.3 Hz</option><option value="71.9">71.9 Hz</option><option value="74.4">74.4 Hz</option><option value="77.0">77.0 Hz</option><option value="79.7">79.7 Hz</option><option value="82.5">82.5 Hz</option><option value="85.4">85.4 Hz</option><option value="88.5">88.5 Hz</option><option value="91.5">91.5 Hz</option><option value="94.8">94.8 Hz</option><option value="97.4">97.4 Hz</option><option value="100.0">100.0 Hz</option><option value="103.5">103.5 Hz</option><option value="107.2">107.2 Hz</option><option value="110.9">110.9 Hz</option><option value="114.8">114.8 Hz</option><option value="118.8">118.8 Hz</option><option value="123.0">123.0 Hz</option><option value="127.3">127.3 Hz</option><option value="131.8">131.8 Hz</option><option value="136.5">136.5 Hz</option><option value="141.3">141.3 Hz</option><option value="146.2">146.2 Hz</option><option value="151.4">151.4 Hz</option><option value="156.7">156.7 Hz</option><option value="162.2">162.2 Hz</option><option value="167.9">167.9 Hz</option><option value="173.8">173.8 Hz</option><option value="179.9">179.9 Hz</option><option value="186.2">186.2 Hz</option><option value="192.8">192.8 Hz</option><option value="203.5">203.5 Hz</option><option value="206.5">206.5 Hz</option><option value="210.7">210.7 Hz</option><option value="218.1">218.1 Hz</option><option value="225.7">225.7 Hz</option><option value="229.1">229.1 Hz</option><option value="233.6">233.6 Hz</option><option value="241.8">241.8 Hz</option><option value="250.3">250.3 Hz</option><option value="254.1">254.1 Hz</option>
+        </select>
+        <select id="d75-a-dcs-code" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setTone(0)" style="display:none;">
+          <option value="023">023</option><option value="025">025</option><option value="026">026</option><option value="031">031</option><option value="032">032</option><option value="036">036</option><option value="043">043</option><option value="047">047</option><option value="051">051</option><option value="053">053</option><option value="054">054</option><option value="065">065</option><option value="071">071</option><option value="072">072</option><option value="073">073</option><option value="074">074</option><option value="114">114</option><option value="115">115</option><option value="116">116</option><option value="122">122</option><option value="125">125</option><option value="131">131</option><option value="132">132</option><option value="134">134</option><option value="143">143</option><option value="145">145</option><option value="152">152</option><option value="155">155</option><option value="156">156</option><option value="162">162</option><option value="165">165</option><option value="172">172</option><option value="174">174</option><option value="205">205</option><option value="212">212</option><option value="223">223</option><option value="225">225</option><option value="226">226</option><option value="243">243</option><option value="244">244</option><option value="245">245</option><option value="246">246</option><option value="251">251</option><option value="252">252</option><option value="255">255</option><option value="261">261</option><option value="263">263</option><option value="265">265</option><option value="266">266</option><option value="271">271</option><option value="274">274</option><option value="306">306</option><option value="311">311</option><option value="315">315</option><option value="325">325</option><option value="331">331</option><option value="332">332</option><option value="343">343</option><option value="346">346</option><option value="351">351</option><option value="356">356</option><option value="364">364</option><option value="365">365</option><option value="371">371</option><option value="411">411</option><option value="412">412</option><option value="413">413</option><option value="423">423</option><option value="431">431</option><option value="432">432</option><option value="445">445</option><option value="446">446</option><option value="452">452</option><option value="454">454</option><option value="455">455</option><option value="462">462</option><option value="464">464</option><option value="465">465</option><option value="466">466</option><option value="503">503</option><option value="506">506</option><option value="516">516</option><option value="523">523</option><option value="526">526</option><option value="532">532</option><option value="546">546</option><option value="565">565</option><option value="606">606</option><option value="612">612</option><option value="624">624</option><option value="627">627</option><option value="631">631</option><option value="632">632</option><option value="654">654</option><option value="662">662</option><option value="664">664</option><option value="703">703</option><option value="712">712</option><option value="723">723</option><option value="731">731</option><option value="732">732</option><option value="734">734</option><option value="743">743</option><option value="754">754</option>
+        </select>
+      </div>
+
+      <div class="d75-row" style="margin-top:var(--s-1);">
+        <span class="d75-label">Shift:</span>
+        <select id="d75-a-shift" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setShift(0,this.value)">
+          <option value="0">Off</option><option value="1">+</option><option value="2">-</option>
+        </select>
+        <span class="d75-label" style="margin-left:var(--s-2);">Offset:</span>
+        <input id="d75-a-offset" class="d75-input" style="width:80px;" placeholder="0.600"
+          onfocus="_toneTouched(0)" onkeydown="if(event.key==='Enter')d75setOffset(0,this.value)">
+        <button class="rb rb-sm" onclick="d75setOffset(0,document.getElementById('d75-a-offset').value)">Set</button>
       </div>
     </div>
 
-    <!-- Squelch -->
-    <div class="d75-row">
-      <span class="d75-label" style="min-width:30px;">SQ</span>
-      <input id="d75-b-sq" type="range" min="0" max="5" value="2" style="flex:1; accent-color:#f39c12;"
-        oninput="d75sq(1,this.value)">
-      <span id="d75-b-sq-val" class="d75-val" style="min-width:2em;">2</span>
+    <div class="band-card" id="d75-band-b">
+      <div class="band-head">
+        <span style="display:flex; align-items:center; gap:var(--s-2);">
+          <span class="band-title">Band B</span>
+          <span id="d75-b-main" class="main-badge">MAIN</span>
+        </span>
+        <span id="d75-b-mode" class="band-mode">FM</span>
+      </div>
+
+      <div id="d75-b-freq-box" class="freq-box">
+        <div class="freq-head">
+          <span id="d75-b-power" class="pwr">&mdash;</span>
+          <span id="d75-b-tone-info" class="tone-info"></span>
+          <span id="d75-b-shift-info" class="shift-info"></span>
+        </div>
+        <div id="d75-b-freq" class="freq-text">&mdash;&mdash;&mdash;.&mdash;&mdash;&mdash;</div>
+      </div>
+
+      <div class="d75-row">
+        <select id="d75-b-vfomode" class="d75-select" onchange="d75cmd('cat','VM 1,'+this.value)">
+          <option value="0">VFO</option><option value="1">Memory</option><option value="2">Call</option><option value="3">DV</option>
+        </select>
+        <span class="d75-label">CH:</span>
+        <input id="d75-b-ch" class="d75-input" style="width:60px;" placeholder="001"
+          onkeydown="if(event.key==='Enter')d75cmd('cat','MC 1,'+this.value)">
+        <button class="rb rb-sm" onclick="d75cmd('cat','MC 1,'+document.getElementById('d75-b-ch').value)">Go</button>
+      </div>
+
+      <div class="d75-row">
+        <span class="d75-label">S:</span>
+        <div class="d75-meter">
+          <div id="d75-b-sig-bar" class="d75-meter-fill"></div>
+          <span id="d75-b-sig-text" class="d75-meter-text">S0</span>
+        </div>
+      </div>
+
+      <div class="d75-row">
+        <span class="d75-label" style="min-width:30px;">SQ</span>
+        <input id="d75-b-sq" class="sq-slider" type="range" min="0" max="5" value="2" style="flex:1;"
+          oninput="d75sq(1,this.value)">
+        <span id="d75-b-sq-val" class="d75-val" style="min-width:2em;">2</span>
+      </div>
+
+      <div class="d75-row" style="margin-top:var(--s-2);">
+        <span class="d75-label">Freq:</span>
+        <input id="d75-b-freq-input" class="d75-input" placeholder="446.000" onkeydown="if(event.key==='Enter')d75setFreq(1,this.value)">
+        <span class="d75-label">MHz</span>
+        <button class="rb rb-sm" onclick="d75setFreq(1,document.getElementById('d75-b-freq-input').value)">Set</button>
+      </div>
+
+      <div class="d75-row" style="margin-top:var(--s-1);">
+        <span class="d75-label">Mode:</span>
+        <select id="d75-b-mode-sel" class="d75-select" onfocus="_toneEditUntil[1]=Date.now()+5000" onchange="_toneEditUntil[1]=Date.now()+3000;d75setMode(1,this.value)">
+          <option value="0">FM</option><option value="1">DV</option><option value="2">AM</option><option value="3">LSB</option><option value="4">USB</option><option value="5">CW</option><option value="6">NFM</option><option value="7">DR</option><option value="8">WFM</option><option value="9">R-CW</option>
+        </select>
+        <span class="d75-label" style="margin-left:var(--s-2);">Power:</span>
+        <select id="d75-b-pwr-sel" class="d75-select" onfocus="_toneEditUntil[1]=Date.now()+5000" onchange="_toneEditUntil[1]=Date.now()+3000;d75setPower(1,this.value)">
+          <option value="0">High</option><option value="1">Med</option><option value="2">Low</option><option value="3">EL</option>
+        </select>
+      </div>
+
+      <div class="d75-row" style="margin-top:var(--s-1);">
+        <span class="d75-label">Tone:</span>
+        <select id="d75-b-tone-type" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setTone(1)">
+          <option value="off">Off</option><option value="tone">Tone</option>
+          <option value="ctcss">CTCSS</option><option value="dcs">DCS</option>
+        </select>
+        <select id="d75-b-tone-freq" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setTone(1)" style="display:none;">
+          <option value="67.0">67.0 Hz</option><option value="69.3">69.3 Hz</option><option value="71.9">71.9 Hz</option><option value="74.4">74.4 Hz</option><option value="77.0">77.0 Hz</option><option value="79.7">79.7 Hz</option><option value="82.5">82.5 Hz</option><option value="85.4">85.4 Hz</option><option value="88.5">88.5 Hz</option><option value="91.5">91.5 Hz</option><option value="94.8">94.8 Hz</option><option value="97.4">97.4 Hz</option><option value="100.0">100.0 Hz</option><option value="103.5">103.5 Hz</option><option value="107.2">107.2 Hz</option><option value="110.9">110.9 Hz</option><option value="114.8">114.8 Hz</option><option value="118.8">118.8 Hz</option><option value="123.0">123.0 Hz</option><option value="127.3">127.3 Hz</option><option value="131.8">131.8 Hz</option><option value="136.5">136.5 Hz</option><option value="141.3">141.3 Hz</option><option value="146.2">146.2 Hz</option><option value="151.4">151.4 Hz</option><option value="156.7">156.7 Hz</option><option value="162.2">162.2 Hz</option><option value="167.9">167.9 Hz</option><option value="173.8">173.8 Hz</option><option value="179.9">179.9 Hz</option><option value="186.2">186.2 Hz</option><option value="192.8">192.8 Hz</option><option value="203.5">203.5 Hz</option><option value="206.5">206.5 Hz</option><option value="210.7">210.7 Hz</option><option value="218.1">218.1 Hz</option><option value="225.7">225.7 Hz</option><option value="229.1">229.1 Hz</option><option value="233.6">233.6 Hz</option><option value="241.8">241.8 Hz</option><option value="250.3">250.3 Hz</option><option value="254.1">254.1 Hz</option>
+        </select>
+        <select id="d75-b-dcs-code" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setTone(1)" style="display:none;">
+          <option value="023">023</option><option value="025">025</option><option value="026">026</option><option value="031">031</option><option value="032">032</option><option value="036">036</option><option value="043">043</option><option value="047">047</option><option value="051">051</option><option value="053">053</option><option value="054">054</option><option value="065">065</option><option value="071">071</option><option value="072">072</option><option value="073">073</option><option value="074">074</option><option value="114">114</option><option value="115">115</option><option value="116">116</option><option value="122">122</option><option value="125">125</option><option value="131">131</option><option value="132">132</option><option value="134">134</option><option value="143">143</option><option value="145">145</option><option value="152">152</option><option value="155">155</option><option value="156">156</option><option value="162">162</option><option value="165">165</option><option value="172">172</option><option value="174">174</option><option value="205">205</option><option value="212">212</option><option value="223">223</option><option value="225">225</option><option value="226">226</option><option value="243">243</option><option value="244">244</option><option value="245">245</option><option value="246">246</option><option value="251">251</option><option value="252">252</option><option value="255">255</option><option value="261">261</option><option value="263">263</option><option value="265">265</option><option value="266">266</option><option value="271">271</option><option value="274">274</option><option value="306">306</option><option value="311">311</option><option value="315">315</option><option value="325">325</option><option value="331">331</option><option value="332">332</option><option value="343">343</option><option value="346">346</option><option value="351">351</option><option value="356">356</option><option value="364">364</option><option value="365">365</option><option value="371">371</option><option value="411">411</option><option value="412">412</option><option value="413">413</option><option value="423">423</option><option value="431">431</option><option value="432">432</option><option value="445">445</option><option value="446">446</option><option value="452">452</option><option value="454">454</option><option value="455">455</option><option value="462">462</option><option value="464">464</option><option value="465">465</option><option value="466">466</option><option value="503">503</option><option value="506">506</option><option value="516">516</option><option value="523">523</option><option value="526">526</option><option value="532">532</option><option value="546">546</option><option value="565">565</option><option value="606">606</option><option value="612">612</option><option value="624">624</option><option value="627">627</option><option value="631">631</option><option value="632">632</option><option value="654">654</option><option value="662">662</option><option value="664">664</option><option value="703">703</option><option value="712">712</option><option value="723">723</option><option value="731">731</option><option value="732">732</option><option value="734">734</option><option value="743">743</option><option value="754">754</option>
+        </select>
+      </div>
+
+      <div class="d75-row" style="margin-top:var(--s-1);">
+        <span class="d75-label">Shift:</span>
+        <select id="d75-b-shift" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setShift(1,this.value)">
+          <option value="0">Off</option><option value="1">+</option><option value="2">-</option>
+        </select>
+        <span class="d75-label" style="margin-left:var(--s-2);">Offset:</span>
+        <input id="d75-b-offset" class="d75-input" style="width:80px;" placeholder="0.600"
+          onfocus="_toneTouched(1)" onkeydown="if(event.key==='Enter')d75setOffset(1,this.value)">
+        <button class="rb rb-sm" onclick="d75setOffset(1,document.getElementById('d75-b-offset').value)">Set</button>
+      </div>
     </div>
 
-    <!-- Frequency input -->
-    <div class="d75-row" style="margin-top:8px;">
-      <span class="d75-label">Freq:</span>
-      <input id="d75-b-freq-input" class="d75-input" placeholder="446.000" onkeydown="if(event.key==='Enter')d75setFreq(1,this.value)">
-      <span class="d75-label">MHz</span>
-      <button class="rb rb-sm" onclick="d75setFreq(1,document.getElementById('d75-b-freq-input').value)">Set</button>
-    </div>
-
-    <!-- Mode & Power -->
-    <div class="d75-row" style="margin-top:6px;">
-      <span class="d75-label">Mode:</span>
-      <select id="d75-b-mode-sel" class="d75-select" onfocus="_toneEditUntil[1]=Date.now()+5000" onchange="_toneEditUntil[1]=Date.now()+3000;d75setMode(1,this.value)">
-        <option value="0">FM</option><option value="1">DV</option><option value="2">AM</option><option value="3">LSB</option><option value="4">USB</option><option value="5">CW</option><option value="6">NFM</option><option value="7">DR</option><option value="8">WFM</option><option value="9">R-CW</option>
-      </select>
-      <span class="d75-label" style="margin-left:10px;">Power:</span>
-      <select id="d75-b-pwr-sel" class="d75-select" onfocus="_toneEditUntil[1]=Date.now()+5000" onchange="_toneEditUntil[1]=Date.now()+3000;d75setPower(1,this.value)">
-        <option value="0">High</option><option value="1">Med</option><option value="2">Low</option><option value="3">EL</option>
-      </select>
-    </div>
-
-    <!-- Tone -->
-    <div class="d75-row" style="margin-top:6px;">
-      <span class="d75-label">Tone:</span>
-      <select id="d75-b-tone-type" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setTone(1)">
-        <option value="off">Off</option><option value="tone">Tone</option>
-        <option value="ctcss">CTCSS</option><option value="dcs">DCS</option>
-      </select>
-      <select id="d75-b-tone-freq" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setTone(1)" style="display:none;">
-        <option value="67.0">67.0 Hz</option><option value="69.3">69.3 Hz</option><option value="71.9">71.9 Hz</option><option value="74.4">74.4 Hz</option><option value="77.0">77.0 Hz</option><option value="79.7">79.7 Hz</option><option value="82.5">82.5 Hz</option><option value="85.4">85.4 Hz</option><option value="88.5">88.5 Hz</option><option value="91.5">91.5 Hz</option><option value="94.8">94.8 Hz</option><option value="97.4">97.4 Hz</option><option value="100.0">100.0 Hz</option><option value="103.5">103.5 Hz</option><option value="107.2">107.2 Hz</option><option value="110.9">110.9 Hz</option><option value="114.8">114.8 Hz</option><option value="118.8">118.8 Hz</option><option value="123.0">123.0 Hz</option><option value="127.3">127.3 Hz</option><option value="131.8">131.8 Hz</option><option value="136.5">136.5 Hz</option><option value="141.3">141.3 Hz</option><option value="146.2">146.2 Hz</option><option value="151.4">151.4 Hz</option><option value="156.7">156.7 Hz</option><option value="162.2">162.2 Hz</option><option value="167.9">167.9 Hz</option><option value="173.8">173.8 Hz</option><option value="179.9">179.9 Hz</option><option value="186.2">186.2 Hz</option><option value="192.8">192.8 Hz</option><option value="203.5">203.5 Hz</option><option value="206.5">206.5 Hz</option><option value="210.7">210.7 Hz</option><option value="218.1">218.1 Hz</option><option value="225.7">225.7 Hz</option><option value="229.1">229.1 Hz</option><option value="233.6">233.6 Hz</option><option value="241.8">241.8 Hz</option><option value="250.3">250.3 Hz</option><option value="254.1">254.1 Hz</option>
-      </select>
-      <select id="d75-b-dcs-code" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setTone(1)" style="display:none;">
-        <option value="023">023</option><option value="025">025</option><option value="026">026</option><option value="031">031</option><option value="032">032</option><option value="036">036</option><option value="043">043</option><option value="047">047</option><option value="051">051</option><option value="053">053</option><option value="054">054</option><option value="065">065</option><option value="071">071</option><option value="072">072</option><option value="073">073</option><option value="074">074</option><option value="114">114</option><option value="115">115</option><option value="116">116</option><option value="122">122</option><option value="125">125</option><option value="131">131</option><option value="132">132</option><option value="134">134</option><option value="143">143</option><option value="145">145</option><option value="152">152</option><option value="155">155</option><option value="156">156</option><option value="162">162</option><option value="165">165</option><option value="172">172</option><option value="174">174</option><option value="205">205</option><option value="212">212</option><option value="223">223</option><option value="225">225</option><option value="226">226</option><option value="243">243</option><option value="244">244</option><option value="245">245</option><option value="246">246</option><option value="251">251</option><option value="252">252</option><option value="255">255</option><option value="261">261</option><option value="263">263</option><option value="265">265</option><option value="266">266</option><option value="271">271</option><option value="274">274</option><option value="306">306</option><option value="311">311</option><option value="315">315</option><option value="325">325</option><option value="331">331</option><option value="332">332</option><option value="343">343</option><option value="346">346</option><option value="351">351</option><option value="356">356</option><option value="364">364</option><option value="365">365</option><option value="371">371</option><option value="411">411</option><option value="412">412</option><option value="413">413</option><option value="423">423</option><option value="431">431</option><option value="432">432</option><option value="445">445</option><option value="446">446</option><option value="452">452</option><option value="454">454</option><option value="455">455</option><option value="462">462</option><option value="464">464</option><option value="465">465</option><option value="466">466</option><option value="503">503</option><option value="506">506</option><option value="516">516</option><option value="523">523</option><option value="526">526</option><option value="532">532</option><option value="546">546</option><option value="565">565</option><option value="606">606</option><option value="612">612</option><option value="624">624</option><option value="627">627</option><option value="631">631</option><option value="632">632</option><option value="654">654</option><option value="662">662</option><option value="664">664</option><option value="703">703</option><option value="712">712</option><option value="723">723</option><option value="731">731</option><option value="732">732</option><option value="734">734</option><option value="743">743</option><option value="754">754</option>
-      </select>
-    </div>
-
-    <!-- Offset & Shift -->
-    <div class="d75-row" style="margin-top:6px;">
-      <span class="d75-label">Shift:</span>
-      <select id="d75-b-shift" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setShift(1,this.value)">
-        <option value="0">Off</option><option value="1">+</option><option value="2">-</option>
-      </select>
-      <span class="d75-label" style="margin-left:10px;">Offset:</span>
-      <input id="d75-b-offset" class="d75-input" style="width:80px;" placeholder="0.600"
-        onfocus="_toneTouched(1)" onkeydown="if(event.key==='Enter')d75setOffset(1,this.value)">
-      <button class="rb rb-sm" onclick="d75setOffset(1,document.getElementById('d75-b-offset').value)">Set</button>
-    </div>
   </div>
-
-</div><!-- end grid -->
 
 </div><!-- end d75-panel -->
 
@@ -368,84 +537,93 @@ var _powers = {"0": "High", "1": "Med", "2": "Low", "3": "EL"};
 var _volTimer = null;
 
 function fmtFreq(f) {
-  if (!f) return '———.———';
+  if (!f) return '\u2014\u2014\u2014.\u2014\u2014\u2014';
   var s = String(f);
-  // If raw number like "445.975", format to 3 decimal places
   var n = parseFloat(s);
   if (isNaN(n)) return s;
   return n.toFixed(3);
 }
 
-function d75cmd(cmd, args, feedbackEl) {
+function _setCls(id, base, extra) {
+  var el = document.getElementById(id);
+  if (el) el.className = base + (extra ? ' ' + extra : '');
+}
+
+function d75cmd(cmd, args) {
   var body = {cmd: cmd};
   if (args) body.args = args;
   postJson('/d75cmd', body)
     .then(function(d) {
-      if (d.error) {
-        _d75flash('Error: ' + d.error, '#e74c3c');
-      } else {
-        _d75flash(cmd + ': OK', '#2ecc71');
-        // Quick re-poll to pick up the change faster
+      if (d.error) _d75flash('Error: ' + d.error, 'err');
+      else {
+        _d75flash(cmd + ': OK', 'ok');
         setTimeout(function(){ _d75Poller.poll(); }, 500);
         setTimeout(function(){ _d75Poller.poll(); }, 1200);
       }
-    }).catch(function(e){
-      _d75flash('Send failed', '#e74c3c');
+    }).catch(function(){
+      _d75flash('Send failed', 'err');
     });
 }
-function _d75flash(msg, color) {
+
+function _d75flash(msg, cls) {
   var el = document.getElementById('d75-feedback');
   if (!el) return;
+  el.className = 'feedback ' + (cls || 'ok');
   el.textContent = msg;
-  el.style.color = color || '#2ecc71';
   clearTimeout(el._timer);
-  el._timer = setTimeout(function(){ el.textContent = ''; }, 3000);
+  el._timer = setTimeout(function(){ el.textContent = ''; el.className = 'feedback'; }, 3000);
 }
+
 function d75svcAction(action) {
   var detail = document.getElementById('d75-status-detail');
+  function setDetail(text, cls) {
+    detail.className = 'detail' + (cls ? ' ' + cls : '');
+    detail.textContent = text;
+  }
+  // .detail defaults to warn color; override with .ok or .err via class swap.
+  // But .detail is a fixed style. Use inline class logic to swap colors via d75-val variants.
+  // Simpler: use d75-val.ok/err on the detail by re-using those color rules.
+  function setDetailVal(text, cls) {
+    detail.textContent = text;
+    detail.className = 'detail ' + (cls === 'ok' ? 'd75-val ok' : cls === 'err' ? 'd75-val err' : cls === 'warn' ? 'd75-val warn' : '');
+  }
+
   if (action === 'btstart_via_reconnect') {
-    // First reconnect, then btstart
-    detail.textContent = 'Reconnecting...';
+    setDetailVal('Reconnecting...', 'warn');
     postJson('/d75cmd', {cmd:'reconnect'})
       .then(function(d) {
         if (d.ok) {
-          detail.textContent = 'Connected — starting BT...';
+          setDetailVal('Connected — starting BT...', 'warn');
           setTimeout(function() {
             postJson('/d75cmd', {cmd:'btstart'})
               .then(function(d2) {
-                detail.textContent = d2.ok ? 'BT start sent — waiting for connection...' : ('Error: ' + (d2.error||''));
-                detail.style.color = d2.ok ? '#2ecc71' : '#e74c3c';
+                setDetailVal(d2.ok ? 'BT start sent — waiting for connection...' : ('Error: ' + (d2.error||'')),
+                             d2.ok ? 'ok' : 'err');
               });
           }, 1000);
         } else {
-          detail.textContent = d.error || 'Reconnect failed';
-          detail.style.color = '#e74c3c';
+          setDetailVal(d.error || 'Reconnect failed', 'err');
         }
-      }).catch(function(e) { detail.textContent = 'Request failed'; detail.style.color = '#e74c3c'; });
+      }).catch(function(){ setDetailVal('Request failed', 'err'); });
     return;
   }
   var labels = {start_service: 'Starting service...', reconnect: 'Reconnecting...'};
-  detail.textContent = labels[action] || 'Working...';
-  detail.style.color = '#f39c12';
+  setDetailVal(labels[action] || 'Working...', 'warn');
   postJson('/d75cmd', {cmd: action})
     .then(function(d) {
       if (d.ok) {
-        detail.textContent = d.response || 'OK';
-        detail.style.color = '#2ecc71';
-        // After starting service, auto-attempt reconnect after a short delay
+        setDetailVal(d.response || 'OK', 'ok');
         if (action === 'start_service') {
           setTimeout(function() { d75svcAction('reconnect'); }, 2000);
         }
       } else {
-        detail.textContent = d.error || 'Failed';
-        detail.style.color = '#e74c3c';
+        setDetailVal(d.error || 'Failed', 'err');
       }
-    }).catch(function(e) { detail.textContent = 'Request failed'; detail.style.color = '#e74c3c'; });
+    }).catch(function(){ setDetailVal('Request failed', 'err'); });
 }
 
 function d75setFreq(band, freq) {
   if (!freq) return;
-  // Convert MHz to D75 format (10-digit Hz padded)
   var hz = Math.round(parseFloat(freq) * 1000000);
   var padded = ('0000000000' + hz).slice(-10);
   d75cmd('cat', 'FQ ' + band + ',' + padded);
@@ -456,9 +634,7 @@ function d75sq(band, val) {
   d75cmd('cat', 'SQ ' + band + ',' + val);
 }
 
-function d75setMode(band, mode) {
-  d75cmd('cat', 'MD ' + band + ',' + mode);
-}
+function d75setMode(band, mode) { d75cmd('cat', 'MD ' + band + ',' + mode); }
 
 function d75setPower(band, pwr) {
   _ctrlEditUntil = Date.now() + 3000;
@@ -466,9 +642,9 @@ function d75setPower(band, pwr) {
 }
 
 // Edit locks: pause poll updates after user changes to prevent snap-back
-var _toneEditUntil = [0, 0];  // per-band timestamps for tone/offset/shift
-var _ctrlEditUntil = 0;       // timestamp for band/dual controls
-var _volEditUntil = 0;        // timestamp for volume slider
+var _toneEditUntil = [0, 0];
+var _ctrlEditUntil = 0;
+var _volEditUntil = 0;
 function _toneTouched(band) { _toneEditUntil[band] = Date.now() + 5000; }
 function _toneSent(band) { _toneEditUntil[band] = Date.now() + 20000; }
 
@@ -478,10 +654,8 @@ function d75setTone(band) {
   var type = document.getElementById('d75-' + p + '-tone-type').value;
   var freqSel = document.getElementById('d75-' + p + '-tone-freq');
   var dcsSel = document.getElementById('d75-' + p + '-dcs-code');
-  // Show/hide appropriate selector
   freqSel.style.display = (type === 'tone' || type === 'ctcss') ? '' : 'none';
   dcsSel.style.display = (type === 'dcs') ? '' : 'none';
-  // Build command
   var args = type;
   if (type === 'tone' || type === 'ctcss') args += ' ' + freqSel.value;
   else if (type === 'dcs') args += ' ' + dcsSel.value;
@@ -489,10 +663,7 @@ function d75setTone(band) {
   d75cmd('tone', band + ' ' + args);
 }
 
-function d75setShift(band, val) {
-  _toneSent(band);
-  d75cmd('shift', band + ' ' + val);
-}
+function d75setShift(band, val) { _toneSent(band); d75cmd('shift', band + ' ' + val); }
 
 function d75setOffset(band, val) {
   _toneSent(band);
@@ -501,9 +672,7 @@ function d75setOffset(band, val) {
 }
 
 function _updateToneUI(band, fi) {
-  // Skip poll updates while user is editing (5s grace period)
   if (Date.now() < _toneEditUntil[band]) return;
-  // Update tone/offset/shift controls from freq_info
   var p = band ? 'b' : 'a';
   if (!fi) return;
   var typeSel = document.getElementById('d75-' + p + '-tone-type');
@@ -525,38 +694,33 @@ function _updateToneUI(band, fi) {
 }
 
 function _updateToneDisplay(band, fi) {
-  // Update read-only tone/shift info on the frequency display row
   var p = band ? 'b' : 'a';
   var toneEl = document.getElementById('d75-' + p + '-tone-info');
   var shiftEl = document.getElementById('d75-' + p + '-shift-info');
-  if (!fi) { toneEl.textContent = ''; shiftEl.textContent = ''; return; }
-  // Tone info
-  var t = '';
-  if (fi.ctcss_status) {
-    t = 'CTCSS ' + (fi.ctcss_hz || '?') + ' Hz';
-    toneEl.style.color = '#2ecc71';
-  } else if (fi.dcs_status) {
-    t = 'DCS ' + (fi.dcs_code || '?');
-    toneEl.style.color = '#2ecc71';
-  } else if (fi.tone_status) {
-    t = 'Tone ' + (fi.tone_hz || '?') + ' Hz';
-    toneEl.style.color = '#2ecc71';
-  } else {
-    t = 'No Tone';
-    toneEl.style.color = '#888';
+  if (!fi) {
+    toneEl.textContent = ''; toneEl.className = 'tone-info';
+    shiftEl.textContent = ''; shiftEl.className = 'shift-info';
+    return;
   }
+  var t = '', tOn = false;
+  if (fi.ctcss_status)     { t = 'CTCSS ' + (fi.ctcss_hz || '?') + ' Hz'; tOn = true; }
+  else if (fi.dcs_status)  { t = 'DCS ' + (fi.dcs_code || '?'); tOn = true; }
+  else if (fi.tone_status) { t = 'Tone ' + (fi.tone_hz || '?') + ' Hz'; tOn = true; }
+  else                     { t = 'No Tone'; }
   toneEl.textContent = t;
-  // Shift info
-  var s = '';
+  toneEl.className = 'tone-info' + (tOn ? ' on' : '');
+
+  var s = '', sOn = false;
   var sd = fi.shift_direction || '0';
-  if (sd === '1' || sd === 1) { s = '+' + (fi.offset || ''); shiftEl.style.color = '#f39c12'; }
-  else if (sd === '2' || sd === 2) { s = '-' + (fi.offset || ''); shiftEl.style.color = '#f39c12'; }
-  else { s = 'Simplex'; shiftEl.style.color = '#888'; }
+  if (sd === '1' || sd === 1)      { s = '+' + (fi.offset || ''); sOn = true; }
+  else if (sd === '2' || sd === 2) { s = '-' + (fi.offset || ''); sOn = true; }
+  else                             { s = 'Simplex'; }
   shiftEl.textContent = s;
+  shiftEl.className = 'shift-info' + (sOn ? ' on' : '');
 }
 
-var _d75Channels = [];  // cached channel list for re-rendering
-var _d75LastStatus = {};  // last polled status (dual_band, active_band, etc.)
+var _d75Channels = [];
+var _d75LastStatus = {};
 
 function d75LoadMemories() {
   var btn = document.getElementById('d75-mem-scan-btn');
@@ -564,18 +728,18 @@ function d75LoadMemories() {
   var count = document.getElementById('d75-mem-count');
   btn.disabled = true;
   btn.textContent = 'Scanning...';
-  list.innerHTML = '<span style="color:#888;">Scanning channels...</span>';
+  list.innerHTML = '<span class="d75-label">Scanning channels...</span>';
   fetch('/d75memlist').then(function(r){return r.json()}).then(function(channels) {
     _d75Channels = channels;
     if (!channels.length) {
-      list.innerHTML = '<span style="color:#888;">No programmed channels found</span>';
+      list.innerHTML = '<span class="d75-label">No programmed channels found</span>';
       count.textContent = '';
       return;
     }
     count.textContent = channels.length + ' channels';
     _d75RenderMemList();
   }).catch(function(e) {
-    list.innerHTML = '<span style="color:#e74c3c;">Scan failed: ' + e + '</span>';
+    list.innerHTML = '<span class="d75-val err">Scan failed: ' + e + '</span>';
   }).finally(function() {
     btn.disabled = false;
     btn.textContent = 'Scan';
@@ -587,30 +751,26 @@ function _d75RenderMemList() {
   if (!_d75Channels.length) return;
   var ab = parseInt(document.getElementById('d75-active-band').value) || 0;
   var dual = parseInt(document.getElementById('d75-dual').value) || 0;
-  // DL 0=dual (both bands active), DL 1=single (only active band)
   var aOk = (dual === 0 || ab === 0);
   var bOk = (dual === 0 || ab === 1);
-  var h = '<table style="width:100%; border-collapse:collapse;">';
-  h += '<tr style="color:#888; text-align:left;">';
-  h += '<th style="padding:2px 6px;">CH</th><th style="padding:2px 6px;">Freq</th>';
-  h += '<th style="padding:2px 6px;">Name</th><th style="padding:2px 6px;">Mode</th>';
-  h += '<th style="padding:2px 6px;">Tone</th><th style="padding:2px 6px;">Shift</th>';
-  h += '<th style="padding:2px 6px;">Offset</th><th style="padding:2px 6px;">Pwr</th>';
-  h += '<th style="padding:2px 6px; text-align:center;">Load</th></tr>';
+  var h = '<table class="mem-tbl">';
+  h += '<tr><th>CH</th><th>Freq</th><th>Name</th><th>Mode</th><th>Tone</th><th>Shift</th><th>Offset</th><th>Pwr</th><th style="text-align:center;">Load</th></tr>';
+  var _pn = {0:'H',1:'L',2:'EL',3:'EL2'};
   _d75Channels.forEach(function(c) {
+    var toneCls = c.tone ? 'green' : 'dim';
+    var shiftCls = c.shift==='X' ? 'red' : c.shift==='S' ? 'dim' : 'yellow';
     h += '<tr class="mem-row">';
-    h += '<td style="padding:3px 6px; color:var(--t-accent);">' + c.ch + '</td>';
-    h += '<td style="padding:3px 6px; color:#fff; font-weight:bold;">' + c.freq.toFixed(4) + '</td>';
-    h += '<td style="padding:3px 6px; color:#e0e0e0;">' + (c.name || '') + '</td>';
-    h += '<td style="padding:3px 6px; color:#f39c12;">' + c.mode + '</td>';
-    h += '<td style="padding:3px 6px; color:' + (c.tone ? '#2ecc71' : '#888') + ';">' + (c.tone || '—') + '</td>';
-    var _sc = c.shift==='X'?'#e74c3c':c.shift==='S'?'#888':'#f39c12';
-    h += '<td style="padding:3px 6px; color:'+_sc+';">' + (c.shift==='X'?'Xband':c.shift) + '</td>';
-    h += '<td style="padding:3px 6px;">' + (c.offset || '') + '</td>';
-    var _pn = {0:'H',1:'L',2:'EL',3:'EL2'}; h += '<td style="padding:3px 6px; color:#f39c12;">' + (_pn[c.power] || '') + '</td>';
-    h += '<td style="padding:3px 6px; white-space:nowrap;">';
-    h += '<button class="rb rb-sm" style="padding:2px 6px;' + (aOk ? '' : 'opacity:0.3;cursor:default;') + '" onclick="' + (aOk ? "d75GoChannel(0," + "'" + c.ch + "'" + ")" : '') + '"' + (aOk ? '' : ' disabled') + '>A</button> ';
-    h += '<button class="rb rb-sm" style="padding:2px 6px;' + (bOk ? '' : 'opacity:0.3;cursor:default;') + '" onclick="' + (bOk ? "d75GoChannel(1," + "'" + c.ch + "'" + ")" : '') + '"' + (bOk ? '' : ' disabled') + '>B</button>';
+    h += '<td class="cyan">' + c.ch + '</td>';
+    h += '<td class="white" style="font-weight:600;">' + c.freq.toFixed(4) + '</td>';
+    h += '<td>' + (c.name || '') + '</td>';
+    h += '<td class="yellow">' + c.mode + '</td>';
+    h += '<td class="' + toneCls + '">' + (c.tone || '\u2014') + '</td>';
+    h += '<td class="' + shiftCls + '">' + (c.shift==='X'?'Xband':c.shift) + '</td>';
+    h += '<td>' + (c.offset || '') + '</td>';
+    h += '<td class="yellow">' + (_pn[c.power] || '') + '</td>';
+    h += '<td style="white-space:nowrap;">';
+    h += '<button class="rb rb-sm' + (aOk?'':' dim') + '"' + (aOk?'':' disabled') + ' onclick="' + (aOk?"d75GoChannel(0,'"+c.ch+"')":'') + '">A</button> ';
+    h += '<button class="rb rb-sm' + (bOk?'':' dim') + '"' + (bOk?'':' disabled') + ' onclick="' + (bOk?"d75GoChannel(1,'"+c.ch+"')":'') + '">B</button>';
     h += '</td></tr>';
   });
   h += '</table>';
@@ -618,9 +778,9 @@ function _d75RenderMemList() {
 }
 
 function d75GoChannel(band, ch) {
-  if (!_d75LastStatus.serial_connected) { _d75flash('D75 not connected', '#e74c3c'); return; }
+  if (!_d75LastStatus.serial_connected) { _d75flash('D75 not connected', 'err'); return; }
   var chData = (_d75Channels || []).find(function(c) { return c.ch === ch; });
-  if (!chData) { _d75flash('CH ' + ch + ' not in list — rescan first', '#e74c3c'); return; }
+  if (!chData) { _d75flash('CH ' + ch + ' not in list — rescan first', 'err'); return; }
   var isDual = (_d75LastStatus.dual_band === 0);
   var activeBand = (_d75LastStatus.active_band !== undefined) ? _d75LastStatus.active_band : band;
 
@@ -631,20 +791,17 @@ function d75GoChannel(band, ch) {
         // ME field[2] has dual meaning:
         //   Small value (< 100 MHz) → already an offset (e.g. 600000 = 600 kHz)
         //   Large value (>= 100 MHz) → TX frequency (e.g. 437450000 for cross-band)
-        // FO field[2] always wants offset in Hz
         var mf = chData.me_fields.split(',');
         var rxHz = parseInt(mf[0]) || 0;
         var field2 = parseInt(mf[1]) || 0;
         var shift = parseInt(mf[12]) || 0;
         var offsetHz;
         if (field2 >= 100000000) {
-          // TX frequency — calculate offset
           offsetHz = Math.abs(field2 - rxHz);
           if (field2 > rxHz) shift = 1;
           else if (field2 < rxHz) shift = 2;
           else { shift = 0; offsetHz = 0; }
         } else {
-          // Already an offset — use as-is
           offsetHz = field2;
         }
         mf[1] = ('0000000000' + offsetHz).slice(-10);
@@ -672,7 +829,7 @@ function d75GoChannel(band, ch) {
   }
   var info = chData.freq + ' MHz';
   if (chData.tone) info += ' ' + chData.tone;
-  _d75flash('Band ' + (band ? 'B' : 'A') + ' → ' + info, '#2ecc71');
+  _d75flash('Band ' + (band ? 'B' : 'A') + ' \u2192 ' + info, 'ok');
 }
 
 function d75VolDebounce(val) {
@@ -685,35 +842,39 @@ function d75VolDebounce(val) {
   }, 150);
 }
 
+// Battery level (0 empty → 3 full) → class mapping
+// Phosphor palette collapses to err/warn/ok; med is just warn.
+var _batCls = ['err', 'warn', 'warn', 'ok'];
+var _batNames = ['Empty','Low','Med','Full'];
+
 function updateD75(d) {
     _d75LastStatus = d;
     var isFullyUp = d.connected && d.serial_connected;
-    // Update status checklist in offline panel
-    var _green = '#2ecc71', _red = '#e74c3c', _grey = '#888';
-    function _chk(id, ok) {
-      var el = document.getElementById(id);
-      if (el) { el.style.color = ok ? _green : _red; }
-    }
-    _chk('d75-chk-svc', d.service_running);
+
+    // Offline checklist dots
+    function _dot(id, ok) { _setCls(id, 'dot', ok ? 'ok' : 'err'); }
+    _dot('d75-chk-svc', d.service_running);
+    _setCls('d75-chk-svc-text', 'd75-val', d.service_running ? 'ok' : 'err');
     document.getElementById('d75-chk-svc-text').textContent = d.service_running ? 'Running' : 'Stopped';
-    document.getElementById('d75-chk-svc-text').style.color = d.service_running ? _green : _red;
     document.getElementById('d75-start-svc-btn').style.display = d.service_running ? 'none' : '';
 
-    _chk('d75-chk-tcp', d.tcp_connected);
+    _dot('d75-chk-tcp', d.tcp_connected);
+    _setCls('d75-chk-tcp-text', 'd75-val', d.tcp_connected ? 'ok' : 'err');
     document.getElementById('d75-chk-tcp-text').textContent = d.tcp_connected ? 'Connected' : 'Disconnected';
-    document.getElementById('d75-chk-tcp-text').style.color = d.tcp_connected ? _green : _red;
     document.getElementById('d75-reconnect-btn').style.display = !d.tcp_connected ? '' : 'none';
 
-    _chk('d75-chk-serial', d.serial_connected);
     var isBTMode = (d.d75_mode || 'bluetooth') === 'bluetooth';
     var btPending = d.btstart_in_progress && !d.serial_connected;
+    _dot('d75-chk-serial', d.serial_connected);
+    var serialCls = d.serial_connected ? 'ok' : (btPending ? 'warn' : 'err');
+    _setCls('d75-chk-serial-text', 'd75-val', serialCls);
     document.getElementById('d75-chk-serial-text').textContent = d.serial_connected ? 'Connected' : (btPending ? 'Connecting...' : 'Not responding');
-    document.getElementById('d75-chk-serial-text').style.color = d.serial_connected ? _green : (btPending ? '#f39c12' : _red);
     document.getElementById('d75-offline-btstart-btn').style.display = (d.tcp_connected && !d.serial_connected && isBTMode && !btPending) ? '' : 'none';
 
     if (d.status_detail) {
-      document.getElementById('d75-status-detail').textContent = d.status_detail;
-      document.getElementById('d75-status-detail').style.color = btPending ? '#f39c12' : _red;
+      var det = document.getElementById('d75-status-detail');
+      det.textContent = d.status_detail;
+      det.className = 'detail' + (btPending ? ' d75-val warn' : ' d75-val err');
     }
 
     if (!d.d75_enabled) {
@@ -725,94 +886,80 @@ function updateD75(d) {
     document.getElementById('d75-panel').style.display = (d.tcp_connected || isFullyUp) ? 'block' : 'none';
 
     // Info bar
-    document.getElementById('d75-model').textContent = d.model || '—';
-    document.getElementById('d75-sn').textContent = d.serial_number || '—';
-    document.getElementById('d75-fw').textContent = d.firmware || '—';
+    document.getElementById('d75-model').textContent = d.model || '\u2014';
+    document.getElementById('d75-sn').textContent = d.serial_number || '\u2014';
+    document.getElementById('d75-fw').textContent = d.firmware || '\u2014';
 
     // Connection mode
-    var isBT = isBTMode;
-    document.getElementById('d75-mode').textContent = isBT ? 'Bluetooth' : 'USB';
-    document.getElementById('d75-mode').style.color = d.serial_connected ? '#2ecc71' : '#e74c3c';
-    document.getElementById('d75-audio-row').style.display = isBT ? '' : 'none';
-    document.getElementById('d75-btstart-btn').style.display = (isBT && d.tcp_connected && !d.serial_connected && !btPending) ? '' : 'none';
-    document.getElementById('d75-btstop-btn').style.display = (isBT && d.tcp_connected && d.serial_connected) ? '' : 'none';
-    document.getElementById('d75-audio-off-btn').style.display = (isBT && d.tcp_connected && d.serial_connected && d.audio_connected) ? '' : 'none';
-    document.getElementById('d75-audio-on-btn').style.display = (isBT && d.tcp_connected && d.serial_connected && !d.audio_connected) ? '' : 'none';
+    document.getElementById('d75-mode').textContent = isBTMode ? 'Bluetooth' : 'USB';
+    _setCls('d75-mode', 'd75-val', d.serial_connected ? 'ok' : 'err');
+    document.getElementById('d75-audio-row').style.display = isBTMode ? '' : 'none';
+    document.getElementById('d75-btstart-btn').style.display = (isBTMode && d.tcp_connected && !d.serial_connected && !btPending) ? '' : 'none';
+    document.getElementById('d75-btstop-btn').style.display = (isBTMode && d.tcp_connected && d.serial_connected) ? '' : 'none';
+    document.getElementById('d75-audio-off-btn').style.display = (isBTMode && d.tcp_connected && d.serial_connected && d.audio_connected) ? '' : 'none';
+    document.getElementById('d75-audio-on-btn').style.display = (isBTMode && d.tcp_connected && d.serial_connected && !d.audio_connected) ? '' : 'none';
 
-    // Audio status (bluetooth only)
-    if (isBT) {
-      var audioEl = document.getElementById('d75-audio-status');
-      if (d.audio_connected) {
-        audioEl.textContent = 'Connected';
-        audioEl.style.color = '#2ecc71';
-      } else {
-        audioEl.textContent = 'Disconnected';
-        audioEl.style.color = '#e74c3c';
-      }
+    if (isBTMode) {
+      _setCls('d75-audio-status', 'd75-val', d.audio_connected ? 'ok' : 'err');
+      document.getElementById('d75-audio-status').textContent = d.audio_connected ? 'Connected' : 'Disconnected';
     }
 
-    // Radio-wide state
-    document.getElementById('d75-tx-badge').style.display = d.transmitting ? '' : 'none';
-    // Flash active band frequency display red during TX
+    // TX state → class toggles on freq-box
+    document.getElementById('d75-tx-badge').classList.toggle('on', !!d.transmitting);
     var ab = d.active_band || 0;
-    var aDisp = document.getElementById('d75-a-freq').parentElement;
-    var bDisp = document.getElementById('d75-b-freq').parentElement;
-    aDisp.style.background = (d.transmitting && ab === 0) ? '#5c1a1a' : '';
-    aDisp.style.borderColor = (d.transmitting && ab === 0) ? '#c0392b' : '';
-    bDisp.style.background = (d.transmitting && ab === 1) ? '#5c1a1a' : '';
-    bDisp.style.borderColor = (d.transmitting && ab === 1) ? '#c0392b' : '';
+    document.getElementById('d75-a-freq-box').classList.toggle('tx', d.transmitting && ab === 0);
+    document.getElementById('d75-b-freq-box').classList.toggle('tx', d.transmitting && ab === 1);
+
     if (Date.now() > _ctrlEditUntil) {
-      var abSel = document.getElementById('d75-active-band');
-      abSel.value = d.active_band || 0;
-      var dlSel = document.getElementById('d75-dual');
-      dlSel.value = d.dual_band || 0;
+      document.getElementById('d75-active-band').value = d.active_band || 0;
+      document.getElementById('d75-dual').value = d.dual_band || 0;
     }
-    // Single/dual band display: DL 0=Dual, DL 1=Single
+
+    // Single/dual band visibility
     var isDual = (d.dual_band === 0);
     var bandA = document.getElementById('d75-band-a');
     var bandB = document.getElementById('d75-band-b');
     if (isDual) {
-      // Dual mode: show both bands, MAIN badge on active band
-      bandA.style.opacity = ''; bandA.style.pointerEvents = '';
-      bandB.style.opacity = ''; bandB.style.pointerEvents = '';
-      document.getElementById('d75-a-main').style.display = (ab === 0) ? '' : 'none';
-      document.getElementById('d75-b-main').style.display = (ab === 1) ? '' : 'none';
+      bandA.classList.remove('inactive');
+      bandB.classList.remove('inactive');
+      document.getElementById('d75-a-main').classList.toggle('on', ab === 0);
+      document.getElementById('d75-b-main').classList.toggle('on', ab === 1);
     } else {
-      // Single mode: grey out inactive band
       var activeIsA = (ab === 0);
-      bandA.style.opacity = activeIsA ? '' : '0.3'; bandA.style.pointerEvents = activeIsA ? '' : 'none';
-      bandB.style.opacity = activeIsA ? '0.3' : ''; bandB.style.pointerEvents = activeIsA ? 'none' : '';
-      document.getElementById('d75-a-main').style.display = 'none';
-      document.getElementById('d75-b-main').style.display = 'none';
+      bandA.classList.toggle('inactive', !activeIsA);
+      bandB.classList.toggle('inactive', activeIsA);
+      document.getElementById('d75-a-main').classList.remove('on');
+      document.getElementById('d75-b-main').classList.remove('on');
     }
-    // Always re-render channel list buttons based on current band/dual state
+
+    // Re-render channel list buttons based on current band/dual state
     if (_d75Channels.length) _d75RenderMemList();
+
     // Battery
     var _batLvl = d.battery_level;
     var _batEl = document.getElementById('d75-battery');
     if (_batLvl >= 0) {
-      var _batNames = ['Empty','Low','Med','Full'];
-      var _batColors = ['#e74c3c','#f39c12','#f1c40f','#2ecc71'];
       _batEl.textContent = _batNames[_batLvl] || _batLvl;
-      _batEl.style.color = _batColors[_batLvl] || '#888';
+      _batEl.className = 'd75-val ' + (_batCls[_batLvl] || 'dim');
     } else {
-      _batEl.textContent = '—';
-      _batEl.style.color = '#888';
+      _batEl.textContent = '\u2014';
+      _batEl.className = 'd75-val dim';
     }
+
+    _setCls('d75-bt-state', 'd75-val', d.bluetooth ? 'ok' : 'dim');
     document.getElementById('d75-bt-state').textContent = d.bluetooth ? 'On' : 'Off';
-    document.getElementById('d75-bt-state').style.color = d.bluetooth ? '#2ecc71' : '#888';
     document.getElementById('d75-tnc').textContent = d.tnc || 'Off';
     document.getElementById('d75-beacon').textContent = d.beacon_type || 'Manual';
 
     // GPS
     var gps = d.gps_data || {};
-    document.getElementById('d75-gps-lat').textContent = gps.lat ? (gps.lat + ' ' + (gps.lat_dir||'')) : '—';
-    document.getElementById('d75-gps-lon').textContent = gps.lon ? (gps.lon + ' ' + (gps.lon_dir||'')) : '—';
-    document.getElementById('d75-gps-alt').textContent = gps.alt || '—';
-    document.getElementById('d75-gps-spd').textContent = gps.speed || '—';
-    document.getElementById('d75-gps-sat').textContent = gps.sat_num || '—';
+    document.getElementById('d75-gps-lat').textContent = gps.lat ? (gps.lat + ' ' + (gps.lat_dir||'')) : '\u2014';
+    document.getElementById('d75-gps-lon').textContent = gps.lon ? (gps.lon + ' ' + (gps.lon_dir||'')) : '\u2014';
+    document.getElementById('d75-gps-alt').textContent = gps.alt || '\u2014';
+    document.getElementById('d75-gps-spd').textContent = gps.speed || '\u2014';
+    document.getElementById('d75-gps-sat').textContent = gps.sat_num || '\u2014';
 
-    // Volume boost (skip update while user is adjusting)
+    // Volume boost (skip while user is adjusting)
     var volSlider = document.getElementById('d75-vol');
     if (d.audio_boost !== undefined && Date.now() > _volEditUntil) {
       volSlider.value = d.audio_boost;
@@ -827,7 +974,6 @@ function updateD75(d) {
     var aSig = a.signal || 0;
     document.getElementById('d75-a-sig-bar').style.width = (aSig / 5 * 100) + '%';
     document.getElementById('d75-a-sig-text').textContent = 'S' + aSig;
-    // Update selects (skip while user is editing)
     if (Date.now() > _toneEditUntil[0] && Date.now() > _ctrlEditUntil) {
       document.getElementById('d75-a-mode-sel').value = a.mode != null ? a.mode : 0;
       document.getElementById('d75-a-pwr-sel').value = a.power != null ? a.power : 0;
