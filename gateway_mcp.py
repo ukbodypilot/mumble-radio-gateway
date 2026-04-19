@@ -1374,6 +1374,7 @@ def bus_toggle_processing(bus_id: str, filter_name: str) -> str:
                      'hpf'   — high-pass filter
                      'lpf'   — low-pass filter
                      'notch' — notch filter
+                     'dfn'   — neural denoise (RNNoise)
                      'pcm'   — feed PCM stream output
                      'mp3'   — feed MP3 stream output
                      'vad'   — VAD (voice activity detection) gate
@@ -1447,20 +1448,20 @@ def transcription_config(
     Args:
         key:   Setting to change — one of:
                'enabled'     — true/false (pause/resume without restart)
-               'model'       — tiny/base/small/medium (requires restart)
-               'mode'        — chunked/streaming (requires restart)
-               'language'    — en/es/fr/de/ja/auto
-               'vad_threshold' — dB level, e.g. -35
+               'model'       — tiny/base (requires restart)
+               'vad_threshold' — Silero probability 0.0–1.0 (default 0.5)
                'vad_hold'    — seconds, e.g. 1.0
                'min_duration' — seconds, e.g. 0.5
                'audio_boost' — percentage, e.g. 200
                'forward_mumble' — true/false
                'forward_telegram' — true/false
+               'denoise'     — true/false (neural denoise on ASR path)
+               'denoise_mix' — wet/dry mix 0.0–1.0 (default 0.5)
                'restart'     — restart transcriber with saved settings
                'clear'       — clear all results
         value: The value to set (ignored for restart/clear).
     """
-    if key in ('enabled', 'forward_mumble', 'forward_telegram'):
+    if key in ('enabled', 'forward_mumble', 'forward_telegram', 'denoise'):
         value = value.lower() in ('true', '1', 'yes')
     result = _post('/transcribe_config', {'key': key, 'value': value})
     if result.get('ok'):

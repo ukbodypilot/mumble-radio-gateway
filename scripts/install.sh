@@ -337,14 +337,35 @@ else
     fi
 fi
 
-# faster-whisper — local voice-to-text transcription engine (optional, ~500MB model download on first use)
+# Moonshine — local voice-to-text transcription engine (CPU-efficient ONNX, ~60MB model)
 set +e
-if python3 -c "import faster_whisper" 2>/dev/null; then
-    echo "  ✓ faster-whisper already installed"
+if python3 -c "import moonshine_onnx" 2>/dev/null; then
+    echo "  ✓ useful-moonshine-onnx already installed"
 else
-    _pip faster-whisper 2>/dev/null \
-        && echo "  ✓ faster-whisper installed (transcription engine)" \
-        || echo "  ⚠ Could not pip install faster-whisper — transcription will not work"
+    _pip useful-moonshine-onnx 2>/dev/null \
+        && echo "  ✓ useful-moonshine-onnx installed (transcription engine)" \
+        || echo "  ⚠ Could not pip install useful-moonshine-onnx — transcription will not work"
+fi
+
+# Silero VAD — ML speech classifier (bundled ONNX model, ~2MB).
+# Install --no-deps to skip torch; we use the bundled .onnx directly via onnxruntime.
+if python3 -c "import silero_vad.data" 2>/dev/null; then
+    echo "  ✓ silero-vad already installed"
+else
+    _pip --no-deps silero-vad 2>/dev/null \
+        && echo "  ✓ silero-vad installed (VAD bundled ONNX model)" \
+        || echo "  ⚠ Could not pip install silero-vad — transcription VAD will not work"
+fi
+
+# RNNoise — neural speech denoise via pyrnnoise (ships librnnoise.so in wheel, ~13MB).
+# We bind to the ctypes wrapper directly and skip the package __init__ (which pulls
+# audiolab/matplotlib/tqdm — none of which we need).
+if python3 -c "import importlib.util; s=importlib.util.find_spec('pyrnnoise'); exit(0 if s else 1)" 2>/dev/null; then
+    echo "  ✓ pyrnnoise already installed"
+else
+    _pip --no-deps pyrnnoise 2>/dev/null \
+        && echo "  ✓ pyrnnoise installed (DFN neural denoise)" \
+        || echo "  ⚠ Could not pip install pyrnnoise — DFN denoise will not work"
 fi
 set -e
 

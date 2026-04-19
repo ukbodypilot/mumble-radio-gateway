@@ -9,6 +9,88 @@ import math as _math
 import numpy as np
 
 
+# ── Neural denoise (RNNoise) ────────────────────────────────────────────────
+#
+# We bind to pyrnnoise's ctypes wrapper directly and skip its __init__.py,
+# which imports audiolab/matplotlib/tqdm — none of which we want in the
+# gateway's dependency tree. The C library ships inside the wheel.
+
+_RNN_MOD = None   # lazy-loaded module handle (shared across streams)
+
+
+def _load_rnnoise():
+    """Load pyrnnoise.rnnoise as a standalone module, bypassing its package
+    __init__.py. Returns the module on success, None if unavailable."""
+    global _RNN_MOD
+    if _RNN_MOD is not None:
+        return _RNN_MOD
+    try:
+        import importlib.util, os
+        spec = importlib.util.find_spec('pyrnnoise')
+        if spec is None or not spec.submodule_search_locations:
+            return None
+        sub_path = os.path.join(spec.submodule_search_locations[0], 'rnnoise.py')
+        sub_spec = importlib.util.spec_from_file_location('_rnnoise_lowlevel', sub_path)
+        mod = importlib.util.module_from_spec(sub_spec)
+        sub_spec.loader.exec_module(mod)
+        _RNN_MOD = mod
+        return mod
+    except Exception as e:
+        print(f"[DFN] rnnoise unavailable: {e}")
+        return None
+
+
+class _RNNoiseStream:
+    """Per-source denoise state. Feed int16 PCM bytes in any length — the
+    stream buffers to the native 480-sample (10 ms @ 48 kHz) frame size."""
+
+    def __init__(self):
+        mod = _load_rnnoise()
+        if mod is None:
+            raise RuntimeError("rnnoise library not available")
+        self._mod = mod
+        self._state = mod.create()
+        self._buf = np.empty(0, dtype=np.int16)
+        self.last_prob = 0.0
+
+    def close(self):
+        if self._state is not None:
+            try:
+                self._mod.destroy(self._state)
+            except Exception:
+                pass
+            self._state = None
+
+    def __del__(self):
+        self.close()
+
+    def process(self, samples_i16):
+        """Process a numpy int16 mono array. Returns denoised int16 array
+        of the same length. Residual (<1 frame) is carried over internally."""
+        if samples_i16.size == 0:
+            return samples_i16
+
+        frame_size = self._mod.FRAME_SIZE
+        buf = np.concatenate([self._buf, samples_i16]) if self._buf.size else samples_i16
+        n_frames = buf.size // frame_size
+
+        if n_frames == 0:
+            self._buf = buf.copy()
+            return np.empty(0, dtype=np.int16)
+
+        out_chunks = []
+        last_prob = self.last_prob
+        for i in range(n_frames):
+            frame = buf[i * frame_size : (i + 1) * frame_size]
+            denoised, prob = self._mod.process_mono_frame(self._state, frame)
+            out_chunks.append(denoised)
+            last_prob = float(prob)
+
+        self._buf = buf[n_frames * frame_size :].copy()
+        self.last_prob = last_prob
+        return np.concatenate(out_chunks)
+
+
 # ── Level metering ──────────────────────────────────────────────────────────
 
 def pcm_rms(pcm_bytes):
@@ -88,12 +170,22 @@ class AudioProcessor:
         self.gate_threshold = -40     # dB
         self.gate_attack = 0.01       # seconds
         self.gate_release = 0.1       # seconds
+        self.enable_dfn = False       # Neural denoise (RNNoise). Kept as
+                                      # "dfn" in the API surface so a future
+                                      # DeepFilterNet swap is a model swap
+                                      # rather than a rename.
+        self.dfn_mix = 0.5            # Wet/dry mix — 1.0 = fully denoised,
+                                      # 0.0 = pass-through. RNNoise over-cuts
+                                      # on radio audio, so default to 50%.
+                                      # Per-bus override via routing cmd
+                                      # 'dfn_mix' (see web_server.py).
 
         # Filter state (persists across audio chunks for continuity)
         self.highpass_state = None
         self.lowpass_state = None
         self.notch_state = None
         self.gate_envelope = 0.0
+        self.dfn_stream = None
 
     def reset_state(self):
         """Reset all filter states (e.g. when source restarts)."""
@@ -101,10 +193,16 @@ class AudioProcessor:
         self.lowpass_state = None
         self.notch_state = None
         self.gate_envelope = 0.0
+        if self.dfn_stream is not None:
+            self.dfn_stream.close()
+            self.dfn_stream = None
 
     def process(self, pcm_data):
         """Run the full processing chain on PCM data. Order:
-        HPF → LPF → Notch → Noise Gate
+        HPF → DFN → LPF → Notch → Noise Gate
+
+        HPF runs before DFN so subsonic rumble is removed cheaply; LPF/notch
+        run after DFN so the denoiser sees the full band.
         """
         if not pcm_data:
             return pcm_data
@@ -113,6 +211,9 @@ class AudioProcessor:
 
         if self.enable_hpf:
             processed = self._apply_hpf(processed)
+
+        if self.enable_dfn:
+            processed = self._apply_dfn(processed)
 
         if self.enable_lpf:
             processed = self._apply_lpf(processed)
@@ -130,6 +231,7 @@ class AudioProcessor:
         active = []
         if self.enable_noise_gate: active.append('Gate')
         if self.enable_hpf: active.append('HPF')
+        if self.enable_dfn: active.append('DFN')
         if self.enable_lpf: active.append('LPF')
         if self.enable_notch: active.append('Notch')
         return active
@@ -214,6 +316,65 @@ class AudioProcessor:
             filtered, self.notch_state = lfilter(b, a, samples, zi=self.notch_state)
             return np.clip(filtered, -32768, 32767).astype(np.int16).tobytes()
         except Exception:
+            return pcm_data
+
+    def _apply_dfn(self, pcm_data):
+        """Neural denoise (RNNoise).
+
+        Assumes 48 kHz mono int16 input — the gateway-wide AUDIO_RATE. If
+        the library can't be loaded, silently pass-through so a missing dep
+        doesn't kill the audio path.
+
+        Output is a wet/dry mix — RNNoise is aggressive on radio audio (its
+        training data was consumer noise, not FM carrier hiss / squelch
+        tails), so a full-wet output kills too much signal. `dfn_mix` is the
+        wet fraction: 1.0 = fully denoised, 0.0 = pass-through. The default
+        of 0.5 leaves voice clearly audible while still knocking the noise
+        floor down by ~6 dB.
+        """
+        try:
+            if self.dfn_stream is None:
+                try:
+                    self.dfn_stream = _RNNoiseStream()
+                except Exception as e:
+                    # Downgrade to pass-through and stop trying.
+                    print(f"[DFN] {self.name}: disabling — {e}")
+                    self.enable_dfn = False
+                    return pcm_data
+
+            samples = np.frombuffer(pcm_data, dtype=np.int16)
+            if samples.size == 0:
+                return pcm_data
+
+            denoised = self.dfn_stream.process(samples)
+            if denoised.size == 0:
+                # All samples buffered as <1 frame residue; emit the dry
+                # signal so we don't drop audio at startup.
+                return pcm_data
+
+            # Align lengths — block-in = block-out contract for downstream sinks.
+            if denoised.size < samples.size:
+                denoised = np.concatenate([
+                    denoised,
+                    samples[denoised.size:],  # dry fill, not silence
+                ])
+            elif denoised.size > samples.size:
+                denoised = denoised[: samples.size]
+
+            wet = float(getattr(self, 'dfn_mix', 0.5))
+            wet = max(0.0, min(1.0, wet))
+            if wet >= 0.999:
+                out = denoised
+            elif wet <= 0.001:
+                out = samples
+            else:
+                mixed = (samples.astype(np.int32) * (1.0 - wet)
+                         + denoised.astype(np.int32) * wet)
+                out = np.clip(mixed, -32768, 32767).astype(np.int16)
+
+            return out.astype(np.int16).tobytes()
+        except Exception as e:
+            print(f"[DFN] {self.name}: process error — {e}")
             return pcm_data
 
     def _apply_noise_gate(self, pcm_data):

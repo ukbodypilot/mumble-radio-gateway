@@ -3248,15 +3248,8 @@ class RadioGateway:
         # Start Transcriber if enabled
         if getattr(self.config, 'ENABLE_TRANSCRIPTION', False):
             try:
-                from transcriber import _load_saved_settings as _load_tx_settings
-                _tx_saved = _load_tx_settings()
-                _tx_mode = _tx_saved.get('mode', str(getattr(self.config, 'TRANSCRIBE_MODE', 'chunked'))).lower()
-                if _tx_mode == 'streaming':
-                    from transcriber import StreamingTranscriber
-                    self.transcriber = StreamingTranscriber(self.config, self)
-                else:
-                    from transcriber import RadioTranscriber
-                    self.transcriber = RadioTranscriber(self.config, self)
+                from transcriber import RadioTranscriber
+                self.transcriber = RadioTranscriber(self.config, self)
                 self.transcriber.start()
             except Exception as e:
                 print(f"[Transcribe] Failed to start: {e}")

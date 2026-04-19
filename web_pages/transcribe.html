@@ -100,16 +100,6 @@
   .ps-bar.ok  { background: var(--t-ok); }
   .ps-bar.err { background: var(--t-err); }
 
-  #partial-bar {
-    display: none; padding: var(--s-1) var(--s-3);
-    background: color-mix(in srgb, var(--t-ok) 10%, var(--t-panel));
-    border: 1px solid var(--t-ok); border-left: 3px solid var(--t-ok);
-    border-radius: var(--r-md); margin-bottom: var(--s-1);
-    font-size: var(--f-md);
-  }
-  .partial-tag { color: var(--t-ok); font-weight: 700; letter-spacing: 0.08em; }
-  #partial-text { color: var(--t-text); margin-left: var(--s-2); }
-
   .tx-state.warn { color: var(--t-warn); }
   .tx-state.ok   { color: var(--t-ok); }
   .tx-state.dim  { color: var(--t-text-dim); }
@@ -119,7 +109,7 @@
 
 <div class="status-bar">
   <span><label class="tgl"><input type="checkbox" id="st-enabled" onchange="setConfig('enabled', this.checked)" checked> <span class="dot" id="st-dot"></span> <span id="st-state">—</span></label></span>
-  <span><span class="st-label">Mode:</span> <span id="st-mode" class="cyan">—</span></span>
+  <span><span class="st-label">Engine:</span> <span id="st-engine" class="cyan">moonshine</span></span>
   <span><span class="st-label">Model:</span> <span id="st-model-disp" class="cyan">—</span></span>
   <span><div class="vad-bar"><div class="vad-fill" id="st-vad"></div><div id="st-vad-mark" class="vad-mark"></div></div> <span id="st-vad-db" class="vad-db">—</span></span>
   <span><span class="st-label">Pending:</span> <span id="st-pending">0</span></span>
@@ -130,38 +120,18 @@
   <summary class="ctrl-summary">Controls</summary>
   <div class="ctrl-panel">
     <div class="ctrl-field">
-      <label>Mode</label>
-      <select id="st-mode-sel" onchange="setConfig('mode', this.value)" class="ctrl-sel">
-        <option value="chunked">Chunked (per TX)</option>
-        <option value="streaming">Streaming (live)</option>
-      </select>
-      <div class="ctrl-hint">Change requires restart</div>
-    </div>
-    <div class="ctrl-field">
       <label>Model</label>
       <select id="st-model-sel" onchange="setConfig('model', this.value)" class="ctrl-sel">
         <option value="tiny">tiny (fastest)</option>
         <option value="base" selected>base (balanced)</option>
-        <option value="small">small (better)</option>
-        <option value="medium">medium (best, slow)</option>
       </select>
-      <div class="ctrl-hint">Change requires restart</div>
+      <div class="ctrl-hint">Moonshine — English only. Change requires restart.</div>
     </div>
     <div class="ctrl-field">
-      <label>Language</label>
-      <select id="st-lang-sel" onchange="setConfig('language', this.value)" class="ctrl-sel">
-        <option value="en">English</option>
-        <option value="es">Spanish</option>
-        <option value="fr">French</option>
-        <option value="de">German</option>
-        <option value="ja">Japanese</option>
-        <option value="auto">Auto-detect</option>
-      </select>
-    </div>
-    <div class="ctrl-field">
-      <label>VAD Threshold</label>
-      <input type="range" id="st-vad-thresh" min="-60" max="-10" value="-35" oninput="document.getElementById('st-vad-val').textContent=this.value+'dB'" onchange="setConfig('vad_threshold', this.value)">
-      <span id="st-vad-val" class="ctrl-val">-35dB</span>
+      <label>VAD Threshold (Silero probability)</label>
+      <input type="range" id="st-vad-thresh" min="0.1" max="0.9" step="0.05" value="0.5" oninput="document.getElementById('st-vad-val').textContent=parseFloat(this.value).toFixed(2)" onchange="setConfig('vad_threshold', this.value)">
+      <span id="st-vad-val" class="ctrl-val">0.50</span>
+      <div class="ctrl-hint">Higher = less sensitive. Exit = value − 0.15.</div>
     </div>
     <div class="ctrl-field">
       <label>VAD Hold</label>
@@ -178,6 +148,16 @@
       <input type="range" id="st-boost" min="100" max="1000" step="50" value="100" oninput="document.getElementById('st-boost-val').textContent=this.value+'%'" onchange="setConfig('audio_boost', this.value)">
       <span id="st-boost-val" class="ctrl-val">100%</span>
       <div class="ctrl-hint">Amplify before transcription</div>
+    </div>
+    <div class="ctrl-group">
+      <label class="st-label">Denoise</label>
+      <label class="tgl"><input type="checkbox" id="st-denoise" onchange="setConfig('denoise', this.checked)"> Neural denoise (RNNoise)</label>
+    </div>
+    <div class="ctrl-field">
+      <label>Denoise Mix</label>
+      <input type="range" id="st-denoise-mix" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('st-denoise-mix-val').textContent=Math.round(this.value*100)+'%'" onchange="setConfig('denoise_mix', this.value)">
+      <span id="st-denoise-mix-val" class="ctrl-val">50%</span>
+      <div class="ctrl-hint">0% = dry, 100% = fully denoised</div>
     </div>
     <div class="ctrl-group">
       <label class="st-label">Forward to</label>
@@ -213,11 +193,6 @@
   <div id="ps-chart"></div>
 </div>
 
-<div id="partial-bar">
-  <span class="partial-tag">LIVE</span>
-  <span id="partial-text"></span>
-</div>
-
 <div id="transcript-list">
   <div class="empty-msg">Waiting for transmissions...</div>
 </div>
@@ -250,45 +225,29 @@ function poll() {
         state.textContent = 'Loading model...';
         state.className = 'tx-state warn';
       }
-      var _vdb = s.vad_db || -100;
-      var _vth = s.vad_threshold || -35;
-      var vad_pct = Math.max(0, Math.min(100, (_vdb + 60) * (100/60)));
+      var _vprob = (s.vad_prob !== undefined) ? s.vad_prob : 0;
+      var _vth = (s.vad_threshold !== undefined) ? s.vad_threshold : 0.5;
+      var _vexit = Math.max(0, _vth - 0.15);
+      var vad_pct = Math.max(0, Math.min(100, _vprob * 100));
       var vadFill = document.getElementById('st-vad');
       vadFill.style.width = vad_pct + '%';
-      // Green = above threshold (speech), Orange = within 6dB of threshold, Red = below (gating)
-      vadFill.className = 'vad-fill ' + (_vdb > _vth ? 'speech' : (_vdb > _vth - 6 ? 'edge' : 'gated'));
-      // Position threshold marker on the bar
-      var _thPct = Math.max(0, Math.min(100, (_vth + 60) * (100/60)));
-      document.getElementById('st-vad-mark').style.left = _thPct + '%';
-      document.getElementById('st-vad-db').textContent = _vdb.toFixed(0) + 'dB';
+      // Green = above enter, Orange = between exit & enter (hysteresis zone), Red = below exit
+      vadFill.className = 'vad-fill ' + (_vprob >= _vth ? 'speech' : (_vprob >= _vexit ? 'edge' : 'gated'));
+      document.getElementById('st-vad-mark').style.left = (_vth * 100) + '%';
+      document.getElementById('st-vad-db').textContent = _vprob.toFixed(2);
       document.getElementById('st-pending').textContent = s.pending || 0;
       document.getElementById('st-total').textContent = s.total_transcriptions || 0;
-      document.getElementById('st-mode').textContent = s.mode || 'chunked';
+      document.getElementById('st-engine').textContent = s.engine || 'moonshine';
       document.getElementById('st-model-disp').textContent = s.model || '—';
-
-      // Streaming mode: show partial text
-      var partialBar = document.getElementById('partial-bar');
-      if (s.partial && s.vad_open) {
-        partialBar.style.display = '';
-        document.getElementById('partial-text').textContent = s.partial;
-      } else {
-        partialBar.style.display = 'none';
-      }
-      // Buffer size in status
-      if (s.buffer_secs !== undefined && s.buffer_secs > 0) {
-        document.getElementById('st-pending').textContent = s.buffer_secs + 's buf';
-      }
 
       // Sync control values from server on first poll
       if (!_configSynced && s.model_loaded) {
         _configSynced = true;
         if (s.enabled !== undefined) document.getElementById('st-enabled').checked = s.enabled;
-        if (s.mode) document.getElementById('st-mode-sel').value = s.mode;
         if (s.model) document.getElementById('st-model-sel').value = s.model;
-        if (s.language) document.getElementById('st-lang-sel').value = s.language;
-        if (s.vad_threshold) {
+        if (s.vad_threshold !== undefined) {
           document.getElementById('st-vad-thresh').value = s.vad_threshold;
-          document.getElementById('st-vad-val').textContent = s.vad_threshold + 'dB';
+          document.getElementById('st-vad-val').textContent = parseFloat(s.vad_threshold).toFixed(2);
         }
         if (s.vad_hold) {
           document.getElementById('st-vad-hold').value = s.vad_hold;
@@ -300,6 +259,11 @@ function poll() {
         }
         if (s.forward_mumble !== undefined) document.getElementById('st-mumble').checked = s.forward_mumble;
         if (s.forward_telegram !== undefined) document.getElementById('st-telegram').checked = s.forward_telegram;
+        if (s.denoise !== undefined) document.getElementById('st-denoise').checked = s.denoise;
+        if (s.denoise_mix !== undefined) {
+          document.getElementById('st-denoise-mix').value = s.denoise_mix;
+          document.getElementById('st-denoise-mix-val').textContent = Math.round(s.denoise_mix * 100) + '%';
+        }
         if (s.audio_boost) {
           document.getElementById('st-boost').value = s.audio_boost;
           document.getElementById('st-boost-val').textContent = s.audio_boost + '%';
@@ -358,7 +322,6 @@ function renderList() {
   var html = '';
   for (var i = _entries.length - 1; i >= 0; i--) {
     var e = _entries[i];
-    if (e.partial) continue;  // Skip partials in the list — shown in live bar
     html += '<div class="tx-entry">';
     html += '<span class="tx-time">' + e.time_str + '</span>';
     html += '<span class="tx-duration">';
@@ -413,7 +376,7 @@ function clearTranscripts() {
 
 // Update VAD threshold display
 document.getElementById('st-vad-thresh').addEventListener('input', function() {
-  document.getElementById('st-vad-val').textContent = this.value;
+  document.getElementById('st-vad-val').textContent = parseFloat(this.value).toFixed(2);
 });
 
 setInterval(poll, 2000);

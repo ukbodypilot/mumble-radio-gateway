@@ -570,13 +570,12 @@ Live voice-to-text using OpenAI Whisper (local, no cloud API). Transcriptions ar
 - VAD-gated: only transcribes when signal is present
 - Frequency tagging: output prefixed with `[446.760/462.550]` showing which radio/SDR tuner the audio came from
 - Forward to Mumble chat and/or Telegram
-- Configurable: model size, language, VAD threshold, hold time, audio boost
+- Configurable: model size (tiny/base), VAD threshold, hold time, audio boost
+- Engine: Moonshine (English-only, CPU-efficient ONNX)
 
 ```ini
 ENABLE_TRANSCRIPTION = true
-TRANSCRIBE_MODE = streaming
 TRANSCRIBE_MODEL = base
-TRANSCRIBE_LANGUAGE = en
 ```
 
 ![Transcription](docs/screenshots/transcribe.png)

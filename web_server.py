@@ -533,11 +533,10 @@ class WebConfigServer:
             'TELEGRAM_STATUS_FILE', 'TELEGRAM_PROMPT_SUFFIX',
         ]),
         ('transcription', 'Transcription', [
-            'ENABLE_TRANSCRIPTION', 'TRANSCRIBE_MODE',
-            'TRANSCRIBE_MODEL', 'TRANSCRIBE_LANGUAGE',
+            'ENABLE_TRANSCRIPTION',
+            'TRANSCRIBE_MODEL',
             'TRANSCRIBE_VAD_THRESHOLD', 'TRANSCRIBE_VAD_HOLD',
-            'TRANSCRIBE_MIN_DURATION', 'TRANSCRIBE_STREAM_INTERVAL',
-            'TRANSCRIBE_MAX_BUFFER',
+            'TRANSCRIBE_MIN_DURATION',
             'TRANSCRIBE_FORWARD_MUMBLE', 'TRANSCRIBE_FORWARD_TELEGRAM',
         ]),
         ('advanced', 'Advanced / Diagnostics', [
@@ -1615,7 +1614,7 @@ class WebConfigServer:
         elif cmd == 'toggle_proc':
             bus_id = data.get('bus', '')
             filt = data.get('filter', '')
-            if filt not in ('gate', 'hpf', 'lpf', 'notch', 'pcm', 'mp3', 'vad', 'loop'):
+            if filt not in ('gate', 'hpf', 'lpf', 'notch', 'dfn', 'pcm', 'mp3', 'vad', 'loop'):
                 return {'ok': False, 'error': f'invalid filter: {filt}'}
             for b in busses:
                 if b['id'] == bus_id:
@@ -1637,13 +1636,34 @@ class WebConfigServer:
                         if bus_id in bm._bus_config:
                             bm._bus_config[bus_id][filt] = proc[filt]
                         # Update the live AudioProcessor (create if needed)
-                        if filt in ('gate', 'hpf', 'lpf', 'notch'):
+                        if filt in ('gate', 'hpf', 'lpf', 'notch', 'dfn'):
                             _bp = bm._bus_processors.get(bus_id)
                             if not _bp:
                                 _bp = AudioProcessor(f"bus_{bus_id}", self.gateway.config)
                                 bm._bus_processors[bus_id] = _bp
                             setattr(_bp, 'enable_noise_gate' if filt == 'gate' else f'enable_{filt}', proc[filt])
                     return {'ok': True, 'state': proc[filt]}
+            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+
+        elif cmd == 'set_dfn_mix':
+            bus_id = data.get('bus', '')
+            try:
+                mix = max(0.0, min(1.0, float(data.get('mix', 0.5))))
+            except (ValueError, TypeError):
+                return {'ok': False, 'error': 'invalid mix value'}
+            for b in busses:
+                if b['id'] == bus_id:
+                    proc = b.setdefault('processing', {})
+                    proc['dfn_mix'] = mix
+                    self._save_routing_config(busses, connections)
+                    bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+                    if bm:
+                        if bus_id in bm._bus_config:
+                            bm._bus_config[bus_id]['dfn_mix'] = mix
+                        _bp = bm._bus_processors.get(bus_id)
+                        if _bp is not None:
+                            _bp.dfn_mix = mix
+                    return {'ok': True, 'mix': mix}
             return {'ok': False, 'error': f'bus not found: {bus_id}'}
 
         elif cmd == 'set_loop_hours':

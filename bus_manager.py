@@ -519,14 +519,16 @@ class BusManager:
             proc_cfg = bus_cfg.get('processing', {})
             proc_cfg['muted'] = bus_cfg.get('muted', False)
             self._bus_config[bus_id] = proc_cfg
-            if any(proc_cfg.get(k) for k in ('gate', 'hpf', 'lpf', 'notch')):
+            if any(proc_cfg.get(k) for k in ('gate', 'hpf', 'lpf', 'notch', 'dfn')):
                 proc = AudioProcessor(f"bus_{bus_id}", self.config)
                 proc.enable_noise_gate = proc_cfg.get('gate', False)
                 proc.enable_hpf = proc_cfg.get('hpf', False)
                 proc.enable_lpf = proc_cfg.get('lpf', False)
                 proc.enable_notch = proc_cfg.get('notch', False)
+                proc.enable_dfn = proc_cfg.get('dfn', False)
+                proc.dfn_mix = max(0.0, min(1.0, float(proc_cfg.get('dfn_mix', 0.5))))
                 self._bus_processors[bus_id] = proc
-                print(f"  [BusManager] {bus_name}: processing [{' '.join(k.upper() for k in ('gate','hpf','lpf','notch') if proc_cfg.get(k))}]")
+                print(f"  [BusManager] {bus_name}: processing [{' '.join(k.upper() if k != 'dfn' else 'DFN' for k in ('gate','hpf','lpf','notch','dfn') if proc_cfg.get(k))}]")
 
             print(f"  [BusManager] Created {bus_type} bus: {bus_name}")
 

@@ -1,9 +1,10 @@
 """
-Radio Transcriber — VAD-gated voice-to-text using faster-whisper.
+Radio Transcriber — VAD-gated voice-to-text using Moonshine + Silero VAD.
 
-Taps audio from the gateway's mixer output. When VAD detects a transmission,
-buffers the audio. When VAD closes, transcribes the buffered segment and
-stores the result with timestamp and source info.
+Taps audio from the gateway's mixer output. Silero VAD (speech classifier)
+decides when speech starts/stops. Buffered audio is transcribed with Moonshine
+(CPU-efficient ONNX ASR) when VAD closes, then stored with timestamp and
+source info.
 
 Results are served via HTTP for the web UI and optionally forwarded to
 Mumble/Telegram.
@@ -11,15 +12,69 @@ Mumble/Telegram.
 
 import collections
 import json
+import logging
 import os
 import numpy as np
 import threading
 import time
 
-from audio_util import pcm_db
+from audio_util import pcm_db, _RNNoiseStream
+
+# Silence huggingface_hub's unauthenticated-download warning — it fires on
+# every cache hit and clutters the gateway log. We don't need HF auth for
+# public Moonshine weights.
+logging.getLogger('huggingface_hub').setLevel(logging.ERROR)
 
 _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                '.transcribe_settings.json')
+
+# Moonshine's encoder allocates proportional to input length. Hard-cap
+# utterance buffers at 60s (package asserts max 64s) to prevent OOM on stuck-
+# open VAD (squelched repeater, continuous tone). Between the soft and hard
+# cap, cut on the first probability dip to split at a natural pause rather
+# than mid-word.
+_MAX_UTTERANCE_SECS = 60.0
+_SOFT_CAP_SECS = 50.0
+
+# Silero VAD constants. 16 kHz, 512-sample frames (32 ms/frame), 64-sample
+# context window carried between calls.
+_SILERO_SR = 16000
+_SILERO_FRAME = 512
+_SILERO_CONTEXT = 64
+
+# Hysteresis: exit threshold = enter − 0.15. Prevents rapid toggling on
+# boundary speech.
+_VAD_HYSTERESIS = 0.15
+
+# Drop these exact phrases (case-insensitive, stripped) — common no-speech
+# hallucinations from ASR models trained on YouTube captions.
+_HALLUCINATION_BLOCKLIST = frozenset([
+    '',
+    'you',
+    'thanks for watching',
+    'thanks for watching.',
+    'thanks for watching!',
+    'thank you for watching',
+    'thank you for watching.',
+    'thank you.',
+    'thank you',
+    'please subscribe',
+    'please subscribe.',
+    'subscribe',
+    'bye',
+    'bye.',
+    'bye-bye',
+    '.',
+    'okay.',
+    'okay',
+    'ok.',
+    'ok',
+])
+
+
+def _is_hallucination(text):
+    """True if text matches a known ASR hallucination phrase."""
+    return text.strip().lower() in _HALLUCINATION_BLOCKLIST
 
 
 def _resolve_freq_tag(gateway, source_id):
@@ -44,7 +99,6 @@ def _resolve_freq_tag(gateway, source_id):
             kv = getattr(gateway, 'kv4p_plugin', None)
             if kv:
                 return f'{kv._frequency:.3f}'
-        # Link endpoint frequency lookup by source_id
         for name, _ep_src in getattr(gateway, 'link_endpoints', {}).items():
             if getattr(_ep_src, 'source_id', None) == source_id:
                     status = getattr(gateway, '_link_last_status', {}).get(name, {})
@@ -59,7 +113,7 @@ def _resolve_freq_tag(gateway, source_id):
 
 
 def _load_saved_settings():
-    """Load persisted transcriber settings."""
+    """Load persisted transcriber settings. Unknown keys are silently ignored."""
     try:
         with open(_SETTINGS_FILE) as f:
             return json.load(f)
@@ -76,52 +130,122 @@ def _save_settings(settings):
         pass
 
 
+def _resample_48k_to_16k(audio_48k_f32):
+    """Polyphase resample 48kHz float32 → 16kHz with proper anti-aliasing."""
+    from scipy.signal import resample_poly
+    return resample_poly(audio_48k_f32, 1, 3).astype(np.float32)
+
+
+class _SileroVAD:
+    """Pure-numpy + onnxruntime wrapper around Silero's bundled ONNX model.
+
+    Skips the silero_vad package's torch-dependent loader. Requires the
+    silero-vad pip package installed (for the bundled .onnx file path) but
+    does not import it directly.
+    """
+
+    def __init__(self):
+        import onnxruntime as ort
+        # Locate the bundled ONNX file without importing silero_vad (which
+        # pulls torch). importlib.resources gives us the file path.
+        try:
+            from importlib.resources import files
+            model_path = str(files('silero_vad.data').joinpath('silero_vad.onnx'))
+        except Exception:
+            # Fallback to known site-packages layout.
+            import silero_vad.data as _d
+            model_path = os.path.join(os.path.dirname(_d.__file__), 'silero_vad.onnx')
+
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        self._sess = ort.InferenceSession(
+            model_path, providers=['CPUExecutionProvider'], sess_options=opts)
+        self._sr = np.array(_SILERO_SR, dtype=np.int64)
+        self.reset()
+
+    def reset(self):
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, _SILERO_CONTEXT), dtype=np.float32)
+
+    def probability(self, frame_16k):
+        """Run Silero on one 512-sample float32 frame. Returns speech probability [0,1]."""
+        x = np.concatenate([self._context, frame_16k[None, :]], axis=1)
+        out, new_state = self._sess.run(
+            None, {'input': x, 'state': self._state, 'sr': self._sr})
+        self._state = new_state
+        self._context = x[:, -_SILERO_CONTEXT:]
+        return float(out[0, 0])
+
+
 class RadioTranscriber:
-    """VAD-gated audio transcription engine."""
+    """Silero-gated, Moonshine-powered audio transcription engine."""
 
     def __init__(self, config, gateway=None):
         self._config = config
         self._gateway = gateway
         self._model = None
+        self._tokenizer = None
+        self._vad = None
         self._running = False
         self._thread = None
 
-        # Load saved settings (override config defaults)
         _saved = _load_saved_settings()
         self._enabled = _saved.get('enabled', True)
 
-        # VAD state
-        self._vad_open = False
-        self._vad_envelope = -100.0
-        self._vad_threshold = float(_saved.get('vad_threshold', getattr(config, 'TRANSCRIBE_VAD_THRESHOLD', -35)))
+        # VAD config — threshold is now a probability [0.0–1.0].
+        # Legacy dB values (<0) from pre-A2 saves are silently reset.
+        _raw_thresh = float(_saved.get('vad_threshold',
+                                       getattr(config, 'TRANSCRIBE_VAD_THRESHOLD', 0.5)))
+        if _raw_thresh < 0 or _raw_thresh > 1:
+            _raw_thresh = 0.5
+        self._vad_threshold = _raw_thresh
         self._vad_hold_time = float(_saved.get('vad_hold', getattr(config, 'TRANSCRIBE_VAD_HOLD', 1.0)))
-        self._vad_close_time = 0
         self._min_duration = float(_saved.get('min_duration', getattr(config, 'TRANSCRIBE_MIN_DURATION', 0.5)))
 
-        # Audio buffer (accumulated during open VAD)
-        self._audio_buf = []
+        # VAD state
+        self._vad_open = False
+        self._vad_close_time = 0
+        self._vad_last_prob = 0.0
+        self._vad_prob_env = 0.0  # smoothed prob for display (fast attack, slow decay)
+        self._vad_envelope = -100.0  # dBFS for display only
+
+        # Accumulator for resampled 16 kHz audio before dispatching to Silero
+        # in 512-sample frames.
+        self._frame_acc = np.zeros(0, dtype=np.float32)
+
+        # Utterance audio buffer (16 kHz, float32, normalized [-1, 1])
+        self._audio_buf_16k = []
         self._audio_buf_samples = 0
         self._buf_start_time = 0
 
-        # Results ring buffer
         self._results = collections.deque(maxlen=100)
         self._results_lock = threading.Lock()
 
-        # Performance stats
         self._stats = collections.deque(maxlen=50)
         self._stats_lock = threading.Lock()
 
-        # Pending transcription queue
         self._pending = collections.deque(maxlen=5)
         self._pending_evt = threading.Event()
 
-        # Config (saved settings override config file)
-        self._model_size = str(_saved.get('model', getattr(config, 'TRANSCRIBE_MODEL', 'base')))
-        self._language = str(_saved.get('language', getattr(config, 'TRANSCRIBE_LANGUAGE', 'en')))
+        _raw_model = str(_saved.get('model', getattr(config, 'TRANSCRIBE_MODEL', 'base')))
+        self._model_size = _raw_model if _raw_model in ('tiny', 'base') else 'base'
         self._sample_rate = int(getattr(config, 'AUDIO_RATE', 48000))
         self._forward_mumble = _saved.get('forward_mumble', bool(getattr(config, 'TRANSCRIBE_FORWARD_MUMBLE', True)))
         self._forward_telegram = _saved.get('forward_telegram', bool(getattr(config, 'TRANSCRIBE_FORWARD_TELEGRAM', False)))
         self._audio_boost = float(_saved.get('audio_boost', 100)) / 100.0
+        self._denoise_enabled = bool(_saved.get('denoise',
+                                               getattr(config, 'TRANSCRIBE_DENOISE', False)))
+        # Wet/dry mix — 1.0 = fully denoised, 0.0 = pass-through. RNNoise
+        # over-cuts on radio audio; 0.5 leaves voice audible while knocking
+        # the noise floor down ~6 dB.
+        _raw_mix = float(_saved.get('denoise_mix',
+                                    getattr(config, 'TRANSCRIBE_DENOISE_MIX', 0.5)))
+        self._denoise_mix = max(0.0, min(1.0, _raw_mix))
+        self._denoise_stream = None
+
+        self._max_samples_16k = int(_MAX_UTTERANCE_SECS * _SILERO_SR)
+        self._soft_cap_samples_16k = int(_SOFT_CAP_SECS * _SILERO_SR)
 
     def start(self):
         """Start transcriber — loads model in background thread."""
@@ -132,22 +256,42 @@ class RadioTranscriber:
                                         name="Transcriber")
         self._thread.start()
         self._save()
-        print(f"  [Transcribe] Started (model={self._model_size}, lang={self._language}, boost={int(self._audio_boost*100)}%)")
+        print(f"  [Transcribe] Started (model=moonshine/{self._model_size}, "
+              f"vad_thresh={self._vad_threshold:.2f}, boost={int(self._audio_boost*100)}%)")
 
     def _save(self):
-        """Persist current settings."""
         _save_settings({
             'enabled': self._enabled,
-            'mode': 'chunked',
             'model': self._model_size,
-            'language': self._language,
             'vad_threshold': self._vad_threshold,
             'vad_hold': self._vad_hold_time,
             'min_duration': self._min_duration,
             'forward_mumble': self._forward_mumble,
             'forward_telegram': self._forward_telegram,
             'audio_boost': int(self._audio_boost * 100),
+            'denoise': self._denoise_enabled,
+            'denoise_mix': self._denoise_mix,
         })
+
+    def set_denoise(self, enabled):
+        """Toggle neural denoise on the ASR path. Tears down the stream when
+        disabled so we don't keep an unused RNNoise state in memory."""
+        enabled = bool(enabled)
+        if enabled == self._denoise_enabled:
+            return
+        self._denoise_enabled = enabled
+        if not enabled and self._denoise_stream is not None:
+            try:
+                self._denoise_stream.close()
+            except Exception:
+                pass
+            self._denoise_stream = None
+        self._save()
+
+    def set_denoise_mix(self, mix):
+        """Set denoise wet/dry mix (0.0–1.0)."""
+        self._denoise_mix = max(0.0, min(1.0, float(mix)))
+        self._save()
 
     def stop(self):
         self._running = False
@@ -157,69 +301,149 @@ class RadioTranscriber:
 
     def feed(self, pcm_48k, source_id=None):
         """Feed 48kHz 16-bit mono PCM from the mixer. Called every tick (~50ms)."""
-        if not self._enabled:
+        if not self._enabled or self._vad is None:
             return
         self._current_source = source_id
-        arr = np.frombuffer(pcm_48k, dtype=np.int16).astype(np.float32)
-        db = pcm_db(pcm_48k)
 
-        # Envelope follower
+        # dBFS envelope — display only, not used for gating.
+        db = pcm_db(pcm_48k)
         if db > self._vad_envelope:
             self._vad_envelope += (db - self._vad_envelope) * 0.3
         else:
             self._vad_envelope += (db - self._vad_envelope) * 0.05
 
-        now = time.time()
+        # Optional neural denoise at 48 kHz (RNNoise's native rate) before
+        # resampling. Cleans both VAD input and the utterance buffer in one
+        # pass. Lazy-load the stream on first enable; silently disable on
+        # library failure so a missing dep never kills the audio path.
+        arr_48k_i16 = np.frombuffer(pcm_48k, dtype=np.int16)
+        if self._denoise_enabled:
+            if self._denoise_stream is None:
+                try:
+                    self._denoise_stream = _RNNoiseStream()
+                except Exception as e:
+                    print(f"  [Transcribe] Denoise unavailable: {e}")
+                    self._denoise_enabled = False
+            if self._denoise_stream is not None:
+                try:
+                    denoised = self._denoise_stream.process(arr_48k_i16)
+                    # Align lengths (startup residue → dry-fill the gap),
+                    # then blend wet/dry per _denoise_mix so we don't wipe
+                    # out the signal when RNNoise mis-classifies the band.
+                    if denoised.size == 0:
+                        pass  # nothing processed yet; keep dry input
+                    else:
+                        if denoised.size < arr_48k_i16.size:
+                            denoised = np.concatenate([denoised, arr_48k_i16[denoised.size:]])
+                        elif denoised.size > arr_48k_i16.size:
+                            denoised = denoised[: arr_48k_i16.size]
+                        w = self._denoise_mix
+                        if w >= 0.999:
+                            arr_48k_i16 = denoised
+                        elif w > 0.001:
+                            mixed = (arr_48k_i16.astype(np.int32) * (1.0 - w)
+                                     + denoised.astype(np.int32) * w)
+                            arr_48k_i16 = np.clip(mixed, -32768, 32767).astype(np.int16)
+                        # else w ≈ 0 → keep dry
+                except Exception as e:
+                    print(f"  [Transcribe] Denoise error: {e}")
 
-        if self._vad_envelope > self._vad_threshold:
-            if not self._vad_open:
-                # VAD opens — start buffering
-                self._vad_open = True
-                self._audio_buf = []
-                self._audio_buf_samples = 0
-                self._buf_start_time = now
-            self._vad_close_time = 0
-            self._audio_buf.append(arr)
-            self._audio_buf_samples += len(arr)
+        # Convert to float32 [-1, 1] and resample once.
+        arr_48k = arr_48k_i16.astype(np.float32) / 32768.0
+        arr_16k = _resample_48k_to_16k(arr_48k)
+        if self._audio_boost != 1.0:
+            # Soft-clip via tanh: preserves headroom and avoids the square-wave
+            # harmonics that hard-clipping introduces, which Silero's v5 model
+            # (trained on natural speech) mishandles.
+            arr_16k = np.tanh(arr_16k * self._audio_boost).astype(np.float32)
+
+        # Append to frame accumulator; process 512-sample frames until drained.
+        self._frame_acc = np.concatenate([self._frame_acc, arr_16k])
+        while len(self._frame_acc) >= _SILERO_FRAME:
+            frame = self._frame_acc[:_SILERO_FRAME]
+            self._frame_acc = self._frame_acc[_SILERO_FRAME:]
+            self._process_frame(frame)
+
+    def _process_frame(self, frame_16k):
+        """Run Silero on one 32 ms frame and drive VAD state."""
+        prob = self._vad.probability(frame_16k)
+        self._vad_last_prob = prob
+        # Smoothed envelope for the UI bar: fast attack, slow decay so the
+        # status poll (every ~2s) catches peaks rather than silence gaps.
+        if prob > self._vad_prob_env:
+            self._vad_prob_env += (prob - self._vad_prob_env) * 0.5
         else:
-            if self._vad_open:
-                # Still buffering during hold period
-                self._audio_buf.append(arr)
-                self._audio_buf_samples += len(arr)
+            self._vad_prob_env += (prob - self._vad_prob_env) * 0.05
+        now = time.time()
+        exit_thresh = max(0.0, self._vad_threshold - _VAD_HYSTERESIS)
+
+        if self._vad_open:
+            # Always buffer while VAD is open.
+            self._audio_buf_16k.append(frame_16k.copy())
+            self._audio_buf_samples += _SILERO_FRAME
+
+            # Hard 60s cap — force close to stay under Moonshine's 64s limit.
+            if self._audio_buf_samples >= self._max_samples_16k:
+                self._submit_utterance()
+                return
+
+            # Inside the soft-cap zone, take any probability dip as a cut
+            # point so long utterances split on natural pauses rather than
+            # mid-word at the hard cap. If speech continues, VAD re-opens on
+            # the next above-threshold frame with no audio lost.
+            if (self._audio_buf_samples >= self._soft_cap_samples_16k
+                    and prob < exit_thresh):
+                self._submit_utterance()
+                return
+
+            if prob < exit_thresh:
                 if self._vad_close_time == 0:
                     self._vad_close_time = now
                 elif now - self._vad_close_time > self._vad_hold_time:
-                    # VAD closes — submit for transcription
-                    self._vad_open = False
-                    duration = self._audio_buf_samples / self._sample_rate
-                    if duration >= self._min_duration:
-                        audio = np.concatenate(self._audio_buf)
-                        self._pending.append({
-                            'audio': audio,
-                            'start_time': self._buf_start_time,
-                            'duration': duration,
-                            'source_id': getattr(self, '_current_source', None),
-                        })
-                        self._pending_evt.set()
-                    self._audio_buf = []
-                    self._audio_buf_samples = 0
+                    self._submit_utterance()
+            else:
+                # Speech resumed during hold window — reset close timer.
+                self._vad_close_time = 0
+        else:
+            if prob >= self._vad_threshold:
+                self._vad_open = True
+                self._vad_close_time = 0
+                self._audio_buf_16k = [frame_16k.copy()]
+                self._audio_buf_samples = _SILERO_FRAME
+                self._buf_start_time = now
+
+    def _submit_utterance(self):
+        """Finalize the current utterance and queue it for transcription."""
+        self._vad_open = False
+        self._vad_close_time = 0
+        duration = self._audio_buf_samples / _SILERO_SR
+        if duration >= self._min_duration and self._audio_buf_16k:
+            audio_16k = np.concatenate(self._audio_buf_16k)
+            self._pending.append({
+                'audio_16k': audio_16k,
+                'start_time': self._buf_start_time,
+                'duration': duration,
+                'source_id': getattr(self, '_current_source', None),
+            })
+            self._pending_evt.set()
+        self._audio_buf_16k = []
+        self._audio_buf_samples = 0
 
     def get_results(self, since=0, limit=50):
-        """Return transcription results since timestamp."""
         with self._results_lock:
             results = [r for r in self._results if r['timestamp'] > since]
             return results[-limit:]
 
     def get_status(self):
-        """Return transcriber state."""
         return {
             'running': self._running,
             'enabled': self._enabled,
-            'mode': 'chunked',
+            'engine': 'moonshine',
+            'vad_engine': 'silero',
             'model': self._model_size,
-            'language': self._language,
             'model_loaded': self._model is not None,
             'vad_open': self._vad_open,
+            'vad_prob': round(max(self._vad_last_prob, self._vad_prob_env), 3),
             'vad_db': round(self._vad_envelope, 1),
             'vad_threshold': self._vad_threshold,
             'vad_hold': self._vad_hold_time,
@@ -227,13 +451,14 @@ class RadioTranscriber:
             'forward_mumble': self._forward_mumble,
             'forward_telegram': self._forward_telegram,
             'audio_boost': int(self._audio_boost * 100),
+            'denoise': self._denoise_enabled,
+            'denoise_mix': round(self._denoise_mix, 2),
             'pending': len(self._pending),
             'total_transcriptions': len(self._results),
             'stats': self.get_stats(),
         }
 
     def get_stats(self):
-        """Return processing performance stats."""
         with self._stats_lock:
             if not self._stats:
                 return {'count': 0}
@@ -255,16 +480,23 @@ class RadioTranscriber:
     # -- Internal --
 
     def _run(self):
-        """Background thread: load model, process pending transcriptions."""
-        # Load model
+        """Background thread: load models, process pending transcriptions."""
         try:
-            from faster_whisper import WhisperModel
-            print(f"  [Transcribe] Loading {self._model_size} model...")
-            self._model = WhisperModel(self._model_size, device='cpu',
-                                        compute_type='int8')
+            self._vad = _SileroVAD()
+            print(f"  [Transcribe] Silero VAD loaded")
+        except Exception as e:
+            print(f"  [Transcribe] Failed to load Silero VAD: {e}")
+            self._running = False
+            return
+
+        try:
+            from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
+            print(f"  [Transcribe] Loading moonshine/{self._model_size} model...")
+            self._model = MoonshineOnnxModel(model_name=f'moonshine/{self._model_size}')
+            self._tokenizer = load_tokenizer()
             print(f"  [Transcribe] Model loaded")
         except Exception as e:
-            print(f"  [Transcribe] Failed to load model: {e}")
+            print(f"  [Transcribe] Failed to load Moonshine: {e}")
             self._running = False
             return
 
@@ -276,7 +508,7 @@ class RadioTranscriber:
                 item = self._pending.popleft()
                 try:
                     _t0 = time.monotonic()
-                    text = self._transcribe(item['audio'])
+                    text = self._transcribe(item['audio_16k'])
                     _proc_time = time.monotonic() - _t0
                     _duration = item['duration']
                     _ratio = _proc_time / _duration if _duration > 0 else 0
@@ -286,13 +518,13 @@ class RadioTranscriber:
                         'proc_time': round(_proc_time, 2),
                         'ratio': round(_ratio, 3),
                         'realtime': _ratio < 1.0,
-                        'samples': len(item['audio']),
+                        'samples': len(item['audio_16k']),
                         'text_len': len(text.strip()) if text else 0,
                     }
                     with self._stats_lock:
                         self._stats.append(_stat)
                     print(f"  [Transcribe] {_duration:.1f}s audio → {_proc_time:.1f}s process ({_ratio:.2f}x realtime)")
-                    if text and text.strip():
+                    if text and text.strip() and not _is_hallucination(text):
                         freq_tag = _resolve_freq_tag(self._gateway, item.get('source_id'))
                         result = {
                             'timestamp': item['start_time'],
@@ -311,14 +543,12 @@ class RadioTranscriber:
                         print(f"  [Transcribe] [{result['time_str']}] "
                               f"{_freq_prefix}({result['duration']}s) {result['text']}")
 
-                        # Forward to Mumble chat
                         if self._forward_mumble and self._gateway and self._gateway.mumble:
                             try:
                                 self._gateway.send_text_message(
                                     f"[{result['time_str']}] {_freq_prefix}{result['text']}")
                             except Exception:
                                 pass
-                        # Forward to Telegram
                         if self._forward_telegram and self._gateway:
                             try:
                                 import urllib.request
@@ -335,362 +565,10 @@ class RadioTranscriber:
                 except Exception as e:
                     print(f"  [Transcribe] Error: {e}")
 
-    def _transcribe(self, audio_48k):
-        """Transcribe a numpy float32 audio array (48kHz) → text string."""
-        if self._model is None:
+    def _transcribe(self, audio_16k):
+        """Transcribe a numpy float32 audio array (16kHz, [-1, 1]) → text string."""
+        if self._model is None or self._tokenizer is None:
             return None
-
-        # Downsample 48kHz → 16kHz (Whisper expects 16kHz)
-        # Simple decimation by 3
-        audio_16k = audio_48k[::3].copy()
-
-        # Apply audio boost
-        if self._audio_boost != 1.0:
-            audio_16k = np.clip(audio_16k * self._audio_boost, -32768, 32767)
-
-        # Normalize to [-1, 1] float32
-        audio_16k = audio_16k / 32768.0
-
-        segments, info = self._model.transcribe(
-            audio_16k,
-            language=self._language,
-            beam_size=3,
-            vad_filter=True,
-            vad_parameters=dict(
-                min_silence_duration_ms=300,
-                speech_pad_ms=200,
-            ),
-        )
-
-        text_parts = []
-        for segment in segments:
-            text_parts.append(segment.text)
-
-        return ' '.join(text_parts)
-
-
-class StreamingTranscriber:
-    """Rolling-buffer streaming transcription using faster-whisper.
-
-    Instead of waiting for VAD close, continuously accumulates audio and
-    re-transcribes the buffer every few seconds. Produces partial results
-    that update in real-time, plus final results when silence is detected.
-
-    Uses the same interface as RadioTranscriber (feed/get_results/get_status)
-    so it's a drop-in replacement.
-    """
-
-    def __init__(self, config, gateway=None):
-        self._config = config
-        self._gateway = gateway
-        self._model = None
-        self._running = False
-        self._thread = None
-
-        # Load saved settings
-        _saved = _load_saved_settings()
-        self._enabled = _saved.get('enabled', True)
-
-        # Config (saved settings override config file)
-        self._model_size = str(_saved.get('model', getattr(config, 'TRANSCRIBE_MODEL', 'base')))
-        self._language = str(_saved.get('language', getattr(config, 'TRANSCRIBE_LANGUAGE', 'en')))
-        self._sample_rate = int(getattr(config, 'AUDIO_RATE', 48000))
-        self._forward_mumble = _saved.get('forward_mumble', bool(getattr(config, 'TRANSCRIBE_FORWARD_MUMBLE', True)))
-        self._forward_telegram = _saved.get('forward_telegram', bool(getattr(config, 'TRANSCRIBE_FORWARD_TELEGRAM', False)))
-        self._audio_boost = float(_saved.get('audio_boost', 100)) / 100.0
-
-        # Streaming config
-        self._transcribe_interval = float(getattr(config, 'TRANSCRIBE_STREAM_INTERVAL', 3.0))
-        self._max_buffer_secs = float(getattr(config, 'TRANSCRIBE_MAX_BUFFER', 15.0))
-        self._silence_threshold = float(_saved.get('vad_threshold', getattr(config, 'TRANSCRIBE_VAD_THRESHOLD', -35)))
-        self._silence_duration = float(_saved.get('vad_hold', getattr(config, 'TRANSCRIBE_VAD_HOLD', 1.5)))
-
-        # Audio buffer (rolling)
-        self._audio_lock = threading.Lock()
-        self._audio_buf = np.array([], dtype=np.float32)
-        self._buf_start_time = 0
-        self._last_speech_time = 0
-        self._vad_envelope = -100.0
-        self._vad_open = False
-        self._finalize_pending = False
-
-        # Results
-        self._results = collections.deque(maxlen=100)
-        self._results_lock = threading.Lock()
-        self._partial_text = ''  # current partial (not yet finalized)
-        self._partial_time = 0
-
-        # Stats
-        self._stats = collections.deque(maxlen=50)
-        self._stats_lock = threading.Lock()
-
-        # Transcription event
-        self._new_audio = threading.Event()
-
-    def start(self):
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._run, daemon=True,
-                                        name="StreamTranscribe")
-        self._thread.start()
-        self._save()
-        print(f"  [StreamTranscribe] Started (model={self._model_size}, "
-              f"interval={self._transcribe_interval}s)")
-
-    def _save(self):
-        _save_settings({
-            'enabled': self._enabled,
-            'mode': 'streaming',
-            'model': self._model_size,
-            'language': self._language,
-            'vad_threshold': self._silence_threshold,
-            'vad_hold': self._silence_duration,
-            'forward_mumble': self._forward_mumble,
-            'forward_telegram': self._forward_telegram,
-            'audio_boost': int(self._audio_boost * 100),
-        })
-
-    def stop(self):
-        self._running = False
-        self._new_audio.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def feed(self, pcm_48k, source_id=None):
-        """Feed 48kHz 16-bit mono PCM from the bus sink."""
-        if not self._enabled:
-            return
-        self._current_source = source_id
-        arr = np.frombuffer(pcm_48k, dtype=np.int16).astype(np.float32)
-        db = pcm_db(pcm_48k)
-
-        # Envelope follower
-        if db > self._vad_envelope:
-            self._vad_envelope += (db - self._vad_envelope) * 0.3
-        else:
-            self._vad_envelope += (db - self._vad_envelope) * 0.05
-
-        now = time.time()
-        has_speech = self._vad_envelope > self._silence_threshold
-
-        if has_speech:
-            self._last_speech_time = now
-            if not self._vad_open:
-                self._vad_open = True
-                self._buf_start_time = now
-
-        with self._audio_lock:
-            self._audio_buf = np.concatenate([self._audio_buf, arr])
-            _buf_duration = len(self._audio_buf) / self._sample_rate
-
-        if has_speech:
-            self._new_audio.set()
-
-        # Force finalization when buffer gets too long (long continuous TX)
-        if _buf_duration >= self._max_buffer_secs and self._partial_text.strip():
-            self._finalize_pending = True
-            self._new_audio.set()
-            return
-
-        # Detect end of speech — signal finalization to the transcribe thread
-        if self._vad_open and not has_speech:
-            if now - self._last_speech_time > self._silence_duration:
-                self._vad_open = False
-                self._finalize_pending = True
-                self._new_audio.set()
-
-    def get_results(self, since=0, limit=50):
-        with self._results_lock:
-            results = [r for r in self._results if r['timestamp'] > since]
-            # Include current partial as a special entry
-            if self._partial_text.strip() and self._vad_open:
-                partial = {
-                    'timestamp': self._partial_time or time.time(),
-                    'duration': 0,
-                    'proc_time': 0,
-                    'ratio': 0,
-                    'text': self._partial_text.strip(),
-                    'time_str': time.strftime('%H:%M:%S',
-                                              time.localtime(self._partial_time or time.time())),
-                    'partial': True,
-                }
-                results.append(partial)
-            return results[-limit:]
-
-    def get_status(self):
-        return {
-            'running': self._running,
-            'enabled': self._enabled,
-            'mode': 'streaming',
-            'model': self._model_size,
-            'language': self._language,
-            'model_loaded': self._model is not None,
-            'vad_open': self._vad_open,
-            'vad_db': round(self._vad_envelope, 1),
-            'vad_threshold': self._silence_threshold,
-            'vad_hold': self._silence_duration,
-            'min_duration': 0,
-            'forward_mumble': self._forward_mumble,
-            'forward_telegram': self._forward_telegram,
-            'audio_boost': int(self._audio_boost * 100),
-            'stream_interval': self._transcribe_interval,
-            'buffer_secs': round(len(self._audio_buf) / self._sample_rate, 1),
-            'pending': 0,
-            'total_transcriptions': len(self._results),
-            'partial': self._partial_text[:80] if self._partial_text else '',
-            'stats': self.get_stats(),
-        }
-
-    def get_stats(self):
-        with self._stats_lock:
-            if not self._stats:
-                return {'count': 0}
-            stats = list(self._stats)
-        ratios = [s['ratio'] for s in stats]
-        durations = [s['duration'] for s in stats]
-        proc_times = [s['proc_time'] for s in stats]
-        return {
-            'count': len(stats),
-            'avg_ratio': round(sum(ratios) / len(ratios), 3),
-            'min_ratio': round(min(ratios), 3),
-            'max_ratio': round(max(ratios), 3),
-            'avg_duration': round(sum(durations) / len(durations), 1),
-            'avg_proc_time': round(sum(proc_times) / len(proc_times), 1),
-            'realtime_pct': round(sum(1 for r in ratios if r < 1.0) / len(ratios) * 100),
-            'recent': stats[-5:],
-        }
-
-    # -- Internal --
-
-    def _run(self):
-        try:
-            from faster_whisper import WhisperModel
-            print(f"  [StreamTranscribe] Loading {self._model_size} model...")
-            self._model = WhisperModel(self._model_size, device='cpu',
-                                        compute_type='int8')
-            print(f"  [StreamTranscribe] Model loaded")
-        except Exception as e:
-            print(f"  [StreamTranscribe] Failed to load model: {e}")
-            self._running = False
-            return
-
-        while self._running:
-            self._new_audio.wait(timeout=self._transcribe_interval)
-            self._new_audio.clear()
-
-            # Check for finalization request
-            if self._finalize_pending:
-                self._finalize_pending = False
-                # Do one final transcribe of the complete buffer
-                with self._audio_lock:
-                    audio = self._audio_buf.copy()
-                    self._audio_buf = np.array([], dtype=np.float32)
-                if len(audio) >= self._sample_rate * 0.5:
-                    t0 = time.monotonic()
-                    text = self._transcribe(audio)
-                    proc_time = time.monotonic() - t0
-                    duration = len(audio) / self._sample_rate
-                    ratio = proc_time / duration if duration > 0 else 0
-                    with self._stats_lock:
-                        self._stats.append({
-                            'timestamp': time.time(),
-                            'duration': round(duration, 2),
-                            'proc_time': round(proc_time, 2),
-                            'ratio': round(ratio, 3),
-                            'realtime': ratio < 1.0,
-                            'samples': len(audio),
-                            'text_len': len(text) if text else 0,
-                        })
-                    if text and text.strip():
-                        self._partial_text = text.strip()
-                        self._partial_time = self._buf_start_time or time.time()
-                self._finalize_result()
-                self._buf_start_time = time.time()  # fresh timestamp for next segment
-                continue
-
-            if not self._vad_open and len(self._audio_buf) == 0:
-                continue
-
-            with self._audio_lock:
-                if len(self._audio_buf) < self._sample_rate * 0.5:
-                    continue
-                audio = self._audio_buf.copy()
-
-            duration = len(audio) / self._sample_rate
-            t0 = time.monotonic()
-            text = self._transcribe(audio)
-            proc_time = time.monotonic() - t0
-            ratio = proc_time / duration if duration > 0 else 0
-
-            with self._stats_lock:
-                self._stats.append({
-                    'timestamp': time.time(),
-                    'duration': round(duration, 2),
-                    'proc_time': round(proc_time, 2),
-                    'ratio': round(ratio, 3),
-                    'realtime': ratio < 1.0,
-                    'samples': len(audio),
-                    'text_len': len(text) if text else 0,
-                })
-
-            if text and text.strip():
-                self._partial_text = text.strip()
-                self._partial_time = self._buf_start_time or time.time()
-                print(f"  [StreamTranscribe] partial ({duration:.1f}s→{proc_time:.1f}s "
-                      f"{ratio:.2f}x): {text.strip()[:60]}")
-
-    def _transcribe(self, audio_48k):
-        if self._model is None:
-            return None
-        audio_16k = audio_48k[::3].copy()
-        if self._audio_boost != 1.0:
-            audio_16k = np.clip(audio_16k * self._audio_boost, -32768, 32767)
-        audio_16k = audio_16k / 32768.0
-        segments, info = self._model.transcribe(
-            audio_16k, language=self._language,
-            beam_size=1,  # faster for streaming
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=300, speech_pad_ms=200),
-        )
-        return ' '.join(s.text for s in segments)
-
-    def _finalize_result(self):
-        """Convert partial to completed result."""
-        freq_tag = _resolve_freq_tag(self._gateway, getattr(self, '_current_source', None))
-        result = {
-            'timestamp': self._partial_time or time.time(),
-            'duration': 0,
-            'proc_time': 0,
-            'ratio': 0,
-            'text': self._partial_text.strip(),
-            'freq': freq_tag,
-            'source': getattr(self, '_current_source', ''),
-            'time_str': time.strftime('%H:%M:%S',
-                                      time.localtime(self._partial_time or time.time())),
-        }
-        with self._results_lock:
-            self._results.append(result)
-        _freq_prefix = f'[{freq_tag}] ' if freq_tag else ''
-        print(f"  [StreamTranscribe] FINAL: [{result['time_str']}] {_freq_prefix}{result['text'][:60]}")
-
-        if self._forward_mumble and self._gateway and self._gateway.mumble:
-            try:
-                self._gateway.send_text_message(
-                    f"[{result['time_str']}] {_freq_prefix}{result['text']}")
-            except Exception:
-                pass
-        if self._forward_telegram and self._gateway:
-            try:
-                import urllib.request
-                urllib.request.urlopen(
-                    urllib.request.Request(
-                        'http://127.0.0.1:8080/telegram_send',
-                        data=json.dumps({'text': f"[{result['time_str']}] {_freq_prefix}{result['text']}"}).encode(),
-                        headers={'Content-Type': 'application/json'}),
-                    timeout=5)
-            except Exception:
-                pass
-
-        self._partial_text = ''
-        self._partial_time = 0
+        tokens = self._model.generate(audio_16k.astype(np.float32)[None, :])
+        decoded = self._tokenizer.decode_batch(tokens)
+        return decoded[0] if decoded else ''

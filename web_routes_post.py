@@ -71,9 +71,6 @@ def handle_transcribe_config(handler, parent):
         elif key == 'min_duration':
             tx._min_duration = float(value)
             tx._save(); result = {'ok': True}
-        elif key == 'language':
-            tx._language = str(value)
-            tx._save(); result = {'ok': True}
         elif key == 'forward_mumble':
             tx._forward_mumble = bool(value)
             tx._save(); result = {'ok': True}
@@ -83,41 +80,34 @@ def handle_transcribe_config(handler, parent):
         elif key == 'audio_boost':
             tx._audio_boost = float(value) / 100.0
             tx._save(); result = {'ok': True}
+        elif key == 'denoise':
+            tx.set_denoise(bool(value))
+            result = {'ok': True}
+        elif key == 'denoise_mix':
+            tx.set_denoise_mix(float(value))
+            result = {'ok': True}
         elif key == 'clear':
             with tx._results_lock:
                 tx._results.clear()
             result = {'ok': True}
         elif key == 'model':
-            tx._model_size = str(value)
-            tx._save()
-            result = {'ok': True, 'note': 'model change takes effect on restart'}
-        elif key == 'mode':
-            if parent.gateway:
-                parent.gateway.config.TRANSCRIBE_MODE = str(value)
-                # Save mode to settings file so restart picks it up
-                from transcriber import _load_saved_settings, _save_settings
-                _s = _load_saved_settings()
-                _s['mode'] = str(value)
-                _save_settings(_s)
-            result = {'ok': True, 'note': 'mode change takes effect on restart'}
+            _v = str(value)
+            if _v not in ('tiny', 'base'):
+                result = {'ok': False, 'error': 'model must be tiny or base'}
+            else:
+                tx._model_size = _v
+                tx._save()
+                result = {'ok': True, 'note': 'model change takes effect on restart'}
         elif key == 'restart':
-            # Restart transcriber with current settings
             gw = parent.gateway
             if gw:
                 if gw.transcriber:
                     gw.transcriber.stop()
-                from transcriber import _load_saved_settings
-                _saved = _load_saved_settings()
-                _mode = _saved.get('mode', str(getattr(gw.config, 'TRANSCRIBE_MODE', 'chunked'))).lower()
                 try:
-                    if _mode == 'streaming':
-                        from transcriber import StreamingTranscriber
-                        gw.transcriber = StreamingTranscriber(gw.config, gw)
-                    else:
-                        from transcriber import RadioTranscriber
-                        gw.transcriber = RadioTranscriber(gw.config, gw)
+                    from transcriber import RadioTranscriber
+                    gw.transcriber = RadioTranscriber(gw.config, gw)
                     gw.transcriber.start()
-                    result = {'ok': True, 'mode': _mode}
+                    result = {'ok': True}
                 except Exception as _re:
                     result = {'ok': False, 'error': str(_re)}
             else:

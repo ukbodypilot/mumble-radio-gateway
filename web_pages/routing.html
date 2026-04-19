@@ -123,6 +123,59 @@
     flex-shrink: 0;
   }
 
+  .dfn-mix-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 6px 4px;
+    font-size: 10px;
+    color: var(--t-fg);
+  }
+  .dfn-mix-row.dim { opacity: 0.4; }
+  .dfn-mix-label {
+    color: var(--t-fg-dim);
+    font-size: 9px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+  .dfn-mix-slider {
+    flex: 1 1 auto;
+    min-width: 40px;
+    height: 3px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--t-panel-hi);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-sm);
+    outline: none;
+  }
+  .dfn-mix-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--t-accent);
+    cursor: pointer;
+    border: none;
+  }
+  .dfn-mix-slider::-moz-range-thumb {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--t-accent);
+    cursor: pointer;
+    border: none;
+  }
+  .dfn-mix-val {
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+    color: var(--t-fg);
+    min-width: 30px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
   .gain-slider {
     width: 60px;
     flex-shrink: 0;
@@ -604,6 +657,7 @@ function rebuildEditor() {
       + '<button class="proc-btn' + (proc.hpf ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'hpf\')" id="proc-' + b.id + '-hpf" title="High Pass Filter">H</button>'
       + '<button class="proc-btn' + (proc.lpf ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'lpf\')" id="proc-' + b.id + '-lpf" title="Low Pass Filter">L</button>'
       + '<button class="proc-btn' + (proc.notch ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'notch\')" id="proc-' + b.id + '-notch" title="Notch Filter">N</button>'
+      + '<button class="proc-btn' + (proc.dfn ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'dfn\')" id="proc-' + b.id + '-dfn" title="Neural Denoise (RNNoise)">D</button>'
       + '<span class="proc-sep"></span>'
       + '<button class="proc-btn out-btn' + (proc.pcm === true ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'pcm\')" id="proc-' + b.id + '-pcm" title="Feed PCM stream">P</button>'
       + '<button class="proc-btn out-btn' + (proc.mp3 === true ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'mp3\')" id="proc-' + b.id + '-mp3" title="Feed MP3 stream">M</button>'
@@ -612,6 +666,19 @@ function rebuildEditor() {
       + '<span class="flex-spacer"></span>'
       + '<button class="mute-btn' + busMuted + '" onclick="toggleBusMute(\'' + b.id + '\')" id="bus-mute-' + b.id + '" title="Mute bus">M</button>'
       + '</div>'
+      + (function() {
+          var mix = (proc.dfn_mix !== undefined) ? proc.dfn_mix : 0.5;
+          var pct = Math.round(mix * 100);
+          var cls = 'dfn-mix-row' + (proc.dfn ? '' : ' dim');
+          return '<div class="' + cls + '" id="dfn-mix-row-' + b.id + '">'
+            + '<span class="dfn-mix-label">DFN mix</span>'
+            + '<input type="range" class="dfn-mix-slider" min="0" max="1" step="0.05" value="' + mix + '" '
+            +   'id="dfn-mix-' + b.id + '" '
+            +   'oninput="setDfnMix(\'' + b.id + '\', this.value, true)" '
+            +   'onchange="setDfnMix(\'' + b.id + '\', this.value, false)">'
+            + '<span class="dfn-mix-val" id="dfn-mix-val-' + b.id + '">' + pct + '%</span>'
+            + '</div>';
+        })()
       + '<div class="level-bar" id="level-bus_' + b.id + '"><div class="level-fill"></div></div>'
       + '</div>';
     var pos = savedPositions['bus-' + b.id] || {x: xBus, y: yBus};
@@ -948,9 +1015,42 @@ function toggleProc(busId, filter) {
             if (node) node.classList.toggle('recording', !!d.state);
           }
         }
+        if (filter === 'dfn') {
+          var row = document.getElementById('dfn-mix-row-' + busId);
+          if (row) row.classList.toggle('dim', !d.state);
+        }
         setStatus(busId + ': ' + filter + ' ' + (d.state ? 'ON' : 'OFF'));
       }
     });
+}
+
+// DFN wet/dry mix slider (per-bus)
+var _dfnMixTimers = {};
+function setDfnMix(busId, value, isLive) {
+  var mix = parseFloat(value);
+  if (isNaN(mix)) return;
+  mix = Math.max(0, Math.min(1, mix));
+  var valEl = document.getElementById('dfn-mix-val-' + busId);
+  if (valEl) valEl.textContent = Math.round(mix * 100) + '%';
+  var send = function() {
+    fetch('/routing/cmd', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cmd: 'set_dfn_mix', bus: busId, mix: mix})
+    }).then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok && !isLive) {
+          setStatus(busId + ': DFN mix ' + Math.round(mix * 100) + '%');
+        }
+      });
+  };
+  if (isLive) {
+    if (_dfnMixTimers[busId]) clearTimeout(_dfnMixTimers[busId]);
+    _dfnMixTimers[busId] = setTimeout(send, 80);
+  } else {
+    if (_dfnMixTimers[busId]) { clearTimeout(_dfnMixTimers[busId]); delete _dfnMixTimers[busId]; }
+    send();
+  }
 }
 
 // Speaker mode selector
