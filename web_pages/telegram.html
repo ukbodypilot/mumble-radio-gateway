@@ -44,6 +44,12 @@
   .panel h3 { margin:0 0 var(--s-2); color:var(--t-accent);
               font-size:var(--f-sm); text-transform:uppercase;
               letter-spacing:0.08em; font-weight:600; }
+
+  /* Utility helpers */
+  .tg-spacer { flex: 1; }
+  .tg-log-head { display: flex; align-items: center; gap: var(--s-3);
+                 margin-bottom: var(--s-2); }
+  .tg-log-head h3 { margin: 0; }
 </style>
 </head>
 <body>
@@ -54,7 +60,7 @@
     <span class="tg-label">Bot Service</span>
     <span id="tg-bot-dot" class="tg-dot">&#x25cf;</span>
     <span id="tg-bot-state" class="tg-val">--</span>
-    <span style="flex:1;"></span>
+    <span class="tg-spacer"></span>
     <span id="tg-bot-user" class="tg-val accent"></span>
   </div>
   <div class="tg-row">
@@ -111,8 +117,8 @@
 
 <!-- Logs -->
 <div class="panel">
-  <div style="display:flex; align-items:center; gap:var(--s-3); margin-bottom:var(--s-2);">
-    <h3 style="margin:0;">Service Logs</h3>
+  <div class="tg-log-head">
+    <h3>Service Logs</h3>
     <button class="rb rb-sm" onclick="tgLogs()">Load logs</button>
     <button class="rb rb-sm" onclick="document.getElementById('tg-log-box').style.display='none'">Hide</button>
   </div>

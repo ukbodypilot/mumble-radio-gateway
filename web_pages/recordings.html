@@ -50,6 +50,9 @@
                  text-overflow:ellipsis; white-space:nowrap; }
   .player-vol-label { color:var(--t-text-dim); font-size:var(--f-xs); }
   .player-vol { width:80px; }
+
+  /* Utility helpers */
+  .rb.w-50 { min-width: 50px; }
 </style>
 </head>
 <body>
@@ -99,7 +102,7 @@
 
 <div id="player-bar" class="player-bar">
   <div class="player-row">
-    <button onclick="playerPause()" id="pp-btn" class="rb rb-sm" style="min-width:50px;">Pause</button>
+    <button onclick="playerPause()" id="pp-btn" class="rb rb-sm w-50">Pause</button>
     <button onclick="playerStop()" class="rb rb-sm rb-danger">Stop</button>
     <span id="player-time" class="player-time">0:00 / 0:00</span>
     <input type="range" id="player-seek" class="player-seek" min="0" max="1000" value="0" step="1">

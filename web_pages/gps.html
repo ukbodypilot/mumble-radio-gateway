@@ -62,32 +62,51 @@
                         font-size:var(--f-sm); letter-spacing:0.06em;
                         text-transform:uppercase; }
   .sim-hint { color:var(--t-warn); font-size:var(--f-xs); margin-left:var(--s-2); }
+
+  /* Utility helpers */
+  .panel.no-pad { padding:0; overflow:hidden; }
+  .gps-head { display:flex; justify-content:space-between; align-items:center;
+              margin-bottom:var(--s-2); }
+  .gps-mode-group { display:flex; align-items:center; gap:var(--s-2); }
+  .gps-row.center { justify-content:center; gap:var(--s-5); }
+  .gps-row.mt-1 { margin-top:var(--s-1); }
+  .gps-row.mt-2 { margin-top:var(--s-2); }
+  .panel-title-accent.mb-1 { margin-bottom:var(--s-1); }
+  .panel-title-accent.mb-2 { margin-bottom:var(--s-2); }
+  .sat-scroll { max-height:280px; overflow-y:auto; }
+  .gps-input.w-60 { width:60px; }
+  .gps-input.w-70 { width:70px; }
+  .leaflet-bar .gps-recenter {
+    font-size:18px; line-height:26px; display:block;
+    width:26px; height:26px; text-align:center; text-decoration:none;
+    color:var(--t-bg); background:var(--t-text);
+  }
 </style>
 </head><body>
 
 <div class="gps-grid">
   <div>
-    <div class="panel" style="padding:0; overflow:hidden;">
+    <div class="panel no-pad">
       <div id="gps-map"></div>
     </div>
   </div>
 
   <div>
     <div class="panel">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:var(--s-2);">
+      <div class="gps-head">
         <span class="panel-title-accent">Position</span>
-        <div style="display:flex; align-items:center; gap:var(--s-2);">
+        <div class="gps-mode-group">
           <button class="gps-mode-btn" id="gps-mode-btn" onclick="toggleMode()" title="Switch between simulated and real GPS">SIM</button>
           <span id="gps-fix-badge" class="gps-fix-badge"></span>
         </div>
       </div>
       <div class="gps-big" id="gps-pos">-- / --</div>
-      <div class="gps-row" style="justify-content:center; gap:var(--s-5); margin-top:var(--s-2);">
+      <div class="gps-row center mt-2">
         <div><span class="gps-label">Alt:</span> <span class="gps-val" id="gps-alt">--</span> <span class="gps-label">m</span></div>
         <div><span class="gps-label">Speed:</span> <span class="gps-val" id="gps-speed">--</span> <span class="gps-label">km/h</span></div>
         <div><span class="gps-label">Hdg:</span> <span class="gps-val" id="gps-hdg">--</span><span class="gps-label">&deg;</span></div>
       </div>
-      <div class="gps-row" style="justify-content:center; gap:var(--s-5); margin-top:var(--s-1);">
+      <div class="gps-row center mt-1">
         <div><span class="gps-label">HDOP:</span> <span class="gps-val" id="gps-hdop">--</span></div>
         <div><span class="gps-label">Sats:</span> <span class="gps-val" id="gps-sats">--</span></div>
         <div><span class="gps-label">Fix:</span> <span class="gps-val" id="gps-fix-time">--</span></div>
@@ -95,8 +114,8 @@
     </div>
 
     <div class="panel">
-      <div class="panel-title-accent" style="margin-bottom:var(--s-1);">Satellites in View</div>
-      <div id="gps-sat-chart" style="max-height:280px; overflow-y:auto;">
+      <div class="panel-title-accent mb-1">Satellites in View</div>
+      <div id="gps-sat-chart" class="sat-scroll">
         <span class="gps-label">Waiting for data...</span>
       </div>
     </div>
@@ -104,7 +123,7 @@
 </div>
 
 <div id="gps-sim-panel" class="panel" style="display:none;">
-  <div class="panel-title-accent" style="margin-bottom:var(--s-2);">Simulation Controls
+  <div class="panel-title-accent mb-2">Simulation Controls
     <span class="sim-hint">(click map to set position)</span>
   </div>
   <div class="gps-row">
@@ -113,11 +132,11 @@
     <span class="gps-label">Lon:</span>
     <input id="sim-lon" class="gps-input" type="text" value="-117.8677">
     <span class="gps-label">Alt (m):</span>
-    <input id="sim-alt" class="gps-input" type="text" value="35" style="width:70px;">
+    <input id="sim-alt" class="gps-input w-70" type="text" value="35">
     <span class="gps-label">Speed:</span>
-    <input id="sim-speed" class="gps-input" type="text" value="0" style="width:60px;">
+    <input id="sim-speed" class="gps-input w-60" type="text" value="0">
     <span class="gps-label">Hdg:</span>
-    <input id="sim-hdg" class="gps-input" type="text" value="0" style="width:60px;">
+    <input id="sim-hdg" class="gps-input w-60" type="text" value="0">
     <button class="rb rb-sm" onclick="simSet()">Set</button>
   </div>
 </div>
@@ -251,7 +270,7 @@ updateGps();
 var _recenterBtn = L.control({position: 'topright'});
 _recenterBtn.onAdd = function() {
   var d = L.DomUtil.create('div', 'leaflet-bar');
-  d.innerHTML = '<a href="#" title="Re-center" style="font-size:18px;line-height:26px;display:block;width:26px;height:26px;text-align:center;text-decoration:none;color:var(--t-bg);background:var(--t-text);">&#8982;</a>';
+  d.innerHTML = '<a href="#" class="gps-recenter" title="Re-center">&#8982;</a>';
   d.onclick = function(e) { e.preventDefault(); e.stopPropagation(); _mapFollowing = true; return false; };
   return d;
 };

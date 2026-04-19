@@ -31,6 +31,7 @@
   }
   .kv-meter-fill {
     height: 100%;
+    width: 0%;
     transition: width 0.2s;
     background: var(--t-ok);
   }
@@ -90,27 +91,42 @@
   .kv-ctrl-row { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-top: var(--s-2); }
 
   .kv-feedback { font-size: var(--f-sm); min-width: 120px; font-variant-numeric: tabular-nums; }
+
+  /* Utility helpers */
+  .kv-spacer     { flex: 1; }
+  .kv-inline     { display: flex; gap: var(--s-2); align-items: center; }
+  .kv-cluster    { display: flex; gap: var(--s-1); }
+  .kv-row-center { justify-content: center; }
+  .kv-row.mt-3   { margin-top: var(--s-3); }
+  .kv-val.bold   { font-weight: 600; }
+  .kv-label.w-meter { min-width: 55px; }
+  .kv-label.ml-3 { margin-left: var(--s-3); }
+  .kv-btn-ml-3   { margin-left: var(--s-3); }
+  .kv-slider-120 { width: 120px; }
+  .kv-meter-fill.accent { background: var(--t-accent); }
+  .kv-ctrl-row.ai-end { align-items: flex-end; }
+  .conn-bar { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
 </style>
 </head><body>
 
 <div id="kv-offline" class="panel" style="display:none;">
-  <span class="kv-val err" style="font-weight:600;">KV4P HT Not Connected</span>
-  <span id="kv-status-detail" class="kv-label" style="margin-left:var(--s-3);"></span>
-  <button class="rb rb-sm" onclick="kvCmd('reconnect')" style="margin-left:var(--s-3);">Reconnect</button>
+  <span class="kv-val err bold">KV4P HT Not Connected</span>
+  <span id="kv-status-detail" class="kv-label ml-3"></span>
+  <button class="rb rb-sm kv-btn-ml-3" onclick="kvCmd('reconnect')">Reconnect</button>
 </div>
 
 <div id="kv-panel" style="display:none;">
 
   <!-- Status bar -->
-  <div class="panel" style="display:flex; align-items:center; gap:var(--s-3); flex-wrap:wrap;">
+  <div class="panel conn-bar">
     <span class="kv-label">FW:</span> <span id="kv-fw" class="kv-val">&mdash;</span>
     <span class="kv-sep">|</span>
     <span class="kv-label">Module:</span> <span id="kv-module" class="kv-val">&mdash;</span>
     <span class="kv-sep">|</span>
     <span class="kv-label">Audio:</span> <span id="kv-audio-status" class="kv-val">&mdash;</span>
-    <span style="flex:1;"></span>
+    <span class="kv-spacer"></span>
     <span id="kv-tx-badge" class="kv-tx-badge">TX</span>
-    <span style="flex:1;"></span>
+    <span class="kv-spacer"></span>
     <span id="kv-feedback" class="kv-feedback"></span>
     <button class="rb rb-sm" onclick="kvCmd('ptt')" id="kv-ptt-btn">PTT</button>
     <button class="rb rb-sm" onclick="kvCmd('testtone','400')">Test 400Hz</button>
@@ -121,29 +137,29 @@
 
   <!-- Frequency + meters -->
   <div class="panel" id="kv-freq-box">
-    <div class="kv-row" style="justify-content:center;">
+    <div class="kv-row kv-row-center">
       <span id="kv-rx-label" class="kv-label">RX</span>
       <span id="kv-rx-freq" class="kv-freq">&mdash;</span>
       <span class="kv-label">MHz</span>
     </div>
-    <div id="kv-tx-freq-row" class="kv-row" style="justify-content:center; display:none;">
+    <div id="kv-tx-freq-row" class="kv-row kv-row-center" style="display:none;">
       <span id="kv-tx-label" class="kv-label">TX</span>
       <span id="kv-tx-freq" class="kv-freq tx">&mdash;</span>
       <span class="kv-label">MHz</span>
     </div>
 
-    <div class="kv-row" style="margin-top:var(--s-3);">
-      <span class="kv-label" style="min-width:55px;">S-meter</span>
+    <div class="kv-row mt-3">
+      <span class="kv-label w-meter">S-meter</span>
       <div id="kv-sig-meter" class="kv-meter">
-        <div id="kv-meter-fill" class="kv-meter-fill" style="width:0%;"></div>
+        <div id="kv-meter-fill" class="kv-meter-fill"></div>
         <div id="kv-meter-text" class="kv-meter-text">S0</div>
       </div>
     </div>
 
     <div class="kv-row">
-      <span class="kv-label" style="min-width:55px;">Audio</span>
+      <span class="kv-label w-meter">Audio</span>
       <div class="kv-meter">
-        <div id="kv-audio-fill" class="kv-meter-fill" style="width:0%; background:var(--t-accent);"></div>
+        <div id="kv-audio-fill" class="kv-meter-fill accent"></div>
         <div id="kv-audio-text" class="kv-meter-text">0%</div>
       </div>
     </div>
@@ -154,14 +170,14 @@
     <div class="kv-ctrl-row">
       <div class="kv-ctrl-group">
         <span class="kv-label">Frequency (MHz)</span>
-        <div style="display:flex; gap:var(--s-1);">
+        <div class="kv-cluster">
           <input id="kv-freq-input" class="kv-input" type="text" placeholder="146.520" onfocus="_ctrlEditUntil=Date.now()+5000">
           <button class="rb rb-sm" onclick="kvCmd('freq',document.getElementById('kv-freq-input').value)">Set</button>
         </div>
       </div>
       <div class="kv-ctrl-group">
         <span class="kv-label">TX Freq (0=same)</span>
-        <div style="display:flex; gap:var(--s-1);">
+        <div class="kv-cluster">
           <input id="kv-txfreq-input" class="kv-input" type="text" placeholder="0" onfocus="_ctrlEditUntil=Date.now()+5000">
           <button class="rb rb-sm" onclick="kvCmd('txfreq',document.getElementById('kv-txfreq-input').value)">Set</button>
         </div>
@@ -171,8 +187,8 @@
     <div class="kv-ctrl-row">
       <div class="kv-ctrl-group">
         <span class="kv-label">Squelch (0-8)</span>
-        <div style="display:flex; gap:var(--s-2); align-items:center;">
-          <input id="kv-squelch" type="range" min="0" max="8" value="4" style="width:120px;"
+        <div class="kv-inline">
+          <input id="kv-squelch" type="range" min="0" max="8" value="4" class="kv-slider-120"
             oninput="_ctrlEditUntil=Date.now()+3000;document.getElementById('kv-sq-val').textContent=this.value"
             onchange="_ctrlEditUntil=Date.now()+3000;kvCmd('squelch',this.value)">
           <span id="kv-sq-val" class="kv-val">4</span>
@@ -180,8 +196,8 @@
       </div>
       <div class="kv-ctrl-group">
         <span class="kv-label">Volume (0-500%)</span>
-        <div style="display:flex; gap:var(--s-2); align-items:center;">
-          <input id="kv-vol" type="range" min="0" max="500" value="100" style="width:120px;"
+        <div class="kv-inline">
+          <input id="kv-vol" type="range" min="0" max="500" value="100" class="kv-slider-120"
             oninput="_ctrlEditUntil=Date.now()+3000;document.getElementById('kv-vol-val').textContent=this.value+'%'"
             onchange="_ctrlEditUntil=Date.now()+3000;kvCmd('vol',this.value)">
           <span id="kv-vol-val" class="kv-val">100%</span>
@@ -201,7 +217,7 @@
       </div>
     </div>
 
-    <div class="kv-ctrl-row" style="align-items:flex-end;">
+    <div class="kv-ctrl-row ai-end">
       <div class="kv-ctrl-group">
         <span class="kv-label">CTCSS TX</span>
         <select id="kv-ctcss-tx" class="kv-select" onfocus="_ctrlEditUntil=Date.now()+30000">

@@ -175,6 +175,7 @@
                        font-family:inherit; font-weight:700; white-space:nowrap;
                        margin-left:var(--s-1);
                        text-shadow:0 0 4px var(--t-bg); }
+  .band-marker-sub { font-size:0.8em; opacity:0.8; }
 
   /* Channel list (single mode) */
   .ch-header { display:flex; align-items:center; justify-content:space-between;
@@ -205,6 +206,14 @@
   /* Section headers (SHARED SETTINGS, DEVICE, CHANNELS, BAND OVERVIEW) */
   .sect-head { color:var(--t-text-dim); font-size:var(--f-xs); font-weight:600;
                letter-spacing:0.08em; text-transform:uppercase; margin:0; }
+
+  /* Utility helpers */
+  .f-row.tight { margin-bottom:0; }
+  .si.w-75 { width:75px; }
+  .status-card.mb-3 { margin-bottom:var(--s-3); }
+  .sect-head.mb-2 { margin-bottom:var(--s-2); }
+  .half-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--s-3); }
+  .check-grid.mt-1 { margin-top:var(--s-1); }
 </style>
 </head>
 <body>
@@ -252,7 +261,7 @@
 <div class="shared-panel">
   <h3 class="sect-head">Shared Settings <span class="sub">(apply to both tuners)</span></h3>
   <div class="shared-row">
-    <div class="f-row" style="margin-bottom:0;">
+    <div class="f-row tight">
       <label class="lbl">Sample Rate</label>
       <select id="sdr-sr" class="si" title="Both tuners use the same ADC clock — max 2.0 MHz in Master/Slave mode">
         <option value="0.5">500 kHz</option>
@@ -261,11 +270,11 @@
         <option value="2.0" selected>2.0 MHz (max)</option>
       </select>
     </div>
-    <div class="f-row" style="margin-bottom:0;">
+    <div class="f-row tight">
       <label class="lbl">Correction (ppm)</label>
-      <input type="number" id="sdr-correction" step="0.1" min="-100" max="100" value="0" class="si" style="width:75px;" title="Frequency calibration — applies to Tuner 1 (Master)">
+      <input type="number" id="sdr-correction" step="0.1" min="-100" max="100" value="0" class="si w-75" title="Frequency calibration — applies to Tuner 1 (Master)">
     </div>
-    <div class="f-row" style="margin-bottom:0;">
+    <div class="f-row tight">
       <label class="lbl">Antenna (T1)</label>
       <select id="sdr-ant" class="si">
         <option value="Tuner 1 50 ohm">Tuner 1 50 ohm</option>
@@ -510,7 +519,7 @@
 <div id="single-mode-ui" style="display:none">
 
   <!-- Status bar -->
-  <div class="status-card" style="margin-bottom:var(--s-3);">
+  <div class="status-card mb-3">
     <div class="status-head">
       <span class="sdr-tag primary">Single Tuner</span>
       <span id="single-proc-badge" class="proc-badge stopped">STOPPED</span>
@@ -525,8 +534,8 @@
   </div>
 
   <!-- Bandwidth visualization -->
-  <div class="status-card" style="margin-bottom:var(--s-3);">
-    <h3 class="sect-head" style="margin-bottom:var(--s-2);">Band Overview</h3>
+  <div class="status-card mb-3">
+    <h3 class="sect-head mb-2">Band Overview</h3>
     <div id="band-viz" class="band-viz">
       <span id="band-viz-low" class="band-viz-edge low">---</span>
       <span id="band-viz-high" class="band-viz-edge high">---</span>
@@ -538,7 +547,7 @@
   <!-- Device settings -->
   <div class="shared-panel">
     <h3 class="sect-head">Device Settings</h3>
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--s-3);">
+    <div class="half-grid">
       <div>
         <div class="f-row">
           <label class="lbl lbl-wide">Center Freq</label>
@@ -607,7 +616,7 @@
             <span id="single-ifgr-val" class="val val-narrow">40</span>
           </div>
         </div>
-        <div class="check-grid" style="margin-top:var(--s-1);">
+        <div class="check-grid mt-1">
           <label class="tgl"><input type="checkbox" id="single-biast"> Bias-T</label>
           <label class="tgl"><input type="checkbox" id="single-rfnotch"> RF Notch</label>
           <label class="tgl"><input type="checkbox" id="single-dabnotch"> DAB Notch</label>
@@ -623,7 +632,7 @@
   </div>
 
   <!-- Channel list -->
-  <div class="status-card" style="margin-bottom:var(--s-3);">
+  <div class="status-card mb-3">
     <div class="ch-header">
       <h3 class="sect-head">Channels</h3>
       <button onclick="addChannel()" class="rb rb-sm rb-primary">+ Add Channel</button>
@@ -755,7 +764,7 @@ function updateBandViz(status) {
     if (pct < 0 || pct > 100) continue;
     var color = CH_COLORS[i % CH_COLORS.length];
     html += '<div class="band-marker" style="left:' + pct + '%; background:' + color + ';"></div>';
-    var lbl = freq.toFixed(3) + (ch.label ? '<br><span style="font-size:0.8em;opacity:0.8;">' + ch.label + '</span>' : '');
+    var lbl = freq.toFixed(3) + (ch.label ? '<br><span class="band-marker-sub">' + ch.label + '</span>' : '');
     html += '<div class="band-marker-label" style="left:' + pct + '%; color:' + color + ';">' + lbl + '</div>';
   }
   container.innerHTML = html;

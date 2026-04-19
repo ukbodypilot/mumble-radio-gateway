@@ -235,6 +235,15 @@
     font: inherit;
     font-size: inherit;
   }
+
+  /* Utility helpers */
+  .flex-spacer { flex-grow: 1; }
+  .bus-type-tag {
+    color: var(--t-text-mute);
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+  }
 </style>
 </head>
 <body>
@@ -600,14 +609,14 @@ function rebuildEditor() {
       + '<button class="proc-btn out-btn' + (proc.mp3 === true ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'mp3\')" id="proc-' + b.id + '-mp3" title="Feed MP3 stream">M</button>'
       + '<button class="proc-btn out-btn' + (proc.vad ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'vad\')" id="proc-' + b.id + '-vad" title="VAD gate">V</button>'
       + '<button class="proc-btn out-btn' + (proc.loop ? ' on' : '') + '" onclick="toggleProc(\'' + b.id + '\',\'loop\')" id="proc-' + b.id + '-loop" title="Loop record">R</button>'
-      + '<span style="flex-grow:1;"></span>'
+      + '<span class="flex-spacer"></span>'
       + '<button class="mute-btn' + busMuted + '" onclick="toggleBusMute(\'' + b.id + '\')" id="bus-mute-' + b.id + '" title="Mute bus">M</button>'
       + '</div>'
       + '<div class="level-bar" id="level-bus_' + b.id + '"><div class="level-fill"></div></div>'
       + '</div>';
     var pos = savedPositions['bus-' + b.id] || {x: xBus, y: yBus};
     var busCls = cls + (b.muted ? ' node-muted' : '') + (proc.loop ? ' recording' : '');
-    var nodeId = editor.addNode(b.id, 1, 1, pos.x, pos.y, busCls, {id: b.id, type: b.type}, '<span class="rec-dot" title="Loop recording"></span><span class="bus-name" data-bus="' + b.id + '" ondblclick="renameBus(this,\'' + b.id + '\')">' + b.name + '</span> <span style="color:var(--t-text-mute);font-weight:400;letter-spacing:0;text-transform:none;">(' + b.type + ')</span>\n' + html);
+    var nodeId = editor.addNode(b.id, 1, 1, pos.x, pos.y, busCls, {id: b.id, type: b.type}, '<span class="rec-dot" title="Loop recording"></span><span class="bus-name" data-bus="' + b.id + '" ondblclick="renameBus(this,\'' + b.id + '\')">' + b.name + '</span> <span class="bus-type-tag">(' + b.type + ')</span>\n' + html);
     _nodeMap['bus-' + b.id] = nodeId;
     yBus += spacing + 20;
   }

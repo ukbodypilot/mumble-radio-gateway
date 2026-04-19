@@ -4,177 +4,162 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Voice Relay</title>
+<link rel="stylesheet" href="/pages/common.css">
 <style>
-  :root {
-    --bg: #1a1a2e;
-    --surface: #16213e;
-    --accent: #00d4ff;
-    --primary: #e94560;
-    --text: #eee;
-    --muted: #888;
-    --success: #4ade80;
-    --error: #f87171;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
     min-height: 100vh;
     display: flex;
     flex-direction: column;
-    padding: 1rem;
   }
 
   .main-layout {
     display: flex;
-    gap: 1rem;
+    gap: var(--s-3);
     flex: 1;
     min-height: 0;
   }
-  .voice-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  .tmux-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .voice-panel, .tmux-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
 
   #transcript {
     flex: 1;
     min-height: 120px;
     width: 100%;
-    padding: 0.75rem;
-    border-radius: 8px;
-    border: 1px solid var(--accent);
-    background: var(--surface);
-    color: var(--text);
-    font-size: 1rem;
+    padding: var(--s-3);
+    border-radius: var(--r-md);
+    border: 1px solid var(--t-border-hi);
+    background: var(--t-panel);
+    color: var(--t-text);
+    font: inherit;
+    font-size: var(--f-md);
     resize: vertical;
-    font-family: inherit;
     line-height: 1.5;
   }
-  #transcript::placeholder { color: var(--muted); }
+  #transcript::placeholder { color: var(--t-text-mute); }
+  #transcript:focus { border-color: var(--t-accent); outline: none; }
 
   #tmuxView {
     flex: 1;
     min-height: 200px;
-    padding: 0.5rem;
-    border-radius: 8px;
-    border: 1px solid var(--accent);
-    background: #0c0c0c;
-    color: #c0c0c0;
-    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-    font-size: 0.75rem;
+    padding: var(--s-2);
+    border-radius: var(--r-md);
+    border: 1px solid var(--t-border-hi);
+    background: var(--t-bg);
+    color: var(--t-text-dim);
+    font-family: inherit;
+    font-size: var(--f-xs);
     line-height: 1.3;
     overflow: auto;
     white-space: pre;
     word-wrap: normal;
   }
+
   .tmux-header {
-    font-size: 0.8rem;
-    color: var(--muted);
-    margin-bottom: 0.4rem;
+    font-size: var(--f-xs);
+    color: var(--t-text-dim);
+    margin-bottom: var(--s-1);
     display: flex;
     justify-content: space-between;
     align-items: center;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
-  .tmux-header label { cursor: pointer; display: flex; align-items: center; gap: 0.3rem; }
-  .tmux-header input[type="checkbox"] { accent-color: var(--primary); }
 
   .session-controls {
     display: flex;
-    gap: 0.4rem;
-    margin-top: 0.5rem;
+    gap: var(--s-1);
+    margin-top: var(--s-2);
   }
-  .session-controls button {
-    flex: 1;
-    padding: 0.4rem;
-    border-radius: 6px;
-    border: 1px solid var(--accent);
-    background: var(--surface);
-    color: var(--text);
-    font-size: 0.8rem;
-    cursor: pointer;
-  }
-  .session-controls button:hover { background: var(--accent); }
-  .session-controls button:disabled { opacity: 0.5; cursor: default; }
-  #stopBtn { border-color: #e94560; color: #e94560; }
-  #stopBtn:hover { background: #e94560; color: #fff; }
-  #restartBtn { border-color: #f59e0b; color: #f59e0b; }
-  #restartBtn:hover { background: #f59e0b; color: #000; }
+  .session-controls .rb { flex: 1; }
 
   .controls {
     display: flex;
-    gap: 0.5rem;
-    margin-bottom: 0.75rem;
+    gap: var(--s-2);
+    margin-bottom: var(--s-3);
     flex-wrap: wrap;
   }
-  .controls button {
+  .controls .rb {
     flex: 1;
     min-width: 80px;
-    padding: 0.75rem;
-    border-radius: 8px;
-    border: none;
-    font-size: 1rem;
-    cursor: pointer;
-    font-weight: 600;
-    transition: opacity 0.15s;
+    padding: var(--s-2) var(--s-3);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
-  .controls button:active { opacity: 0.7; }
 
-  #micBtn {
-    background: var(--accent);
-    color: var(--text);
-    position: relative;
-  }
   #micBtn.recording {
-    background: var(--primary);
-    animation: pulse 1.5s infinite;
+    color: var(--t-err);
+    border-color: var(--t-err);
+    animation: mic-pulse 1.5s infinite;
   }
-  @keyframes pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(233,69,96,0.5); }
-    50% { box-shadow: 0 0 0 12px rgba(233,69,96,0); }
+  @keyframes mic-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--t-err) 40%, transparent); }
+    50%      { box-shadow: 0 0 0 10px color-mix(in srgb, var(--t-err) 0%,  transparent); }
   }
-
-  #sendBtn { background: var(--success); color: #000; }
-  #clearBtn { background: var(--accent); color: var(--text); }
 
   .mode-toggle {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
-    margin-top: 0.75rem;
-    font-size: 0.85rem;
-    color: var(--muted);
+    gap: var(--s-3);
+    margin-top: var(--s-3);
+    font-size: var(--f-sm);
+    color: var(--t-text-dim);
+    flex-wrap: wrap;
   }
-  .mode-toggle label { cursor: pointer; display: flex; align-items: center; gap: 0.4rem; }
-  .mode-toggle input[type="checkbox"] { accent-color: var(--primary); }
+  .mode-toggle label {
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1);
+  }
+  .mode-toggle select {
+    background: var(--t-btn);
+    color: var(--t-text);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-sm);
+    padding: 2px var(--s-1);
+    font: inherit;
+    font-size: var(--f-xs);
+  }
 
   .status-bar {
-    margin-top: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: 6px;
-    background: var(--surface);
-    font-size: 0.8rem;
-    color: var(--muted);
+    margin-top: var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    border-radius: var(--r-sm);
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    font-size: var(--f-sm);
+    color: var(--t-text-dim);
     text-align: center;
     min-height: 2rem;
     display: flex;
     align-items: center;
     justify-content: center;
+    letter-spacing: 0.03em;
   }
-  .status-bar.ok { color: var(--success); }
-  .status-bar.err { color: var(--error); }
+  .status-bar.ok  { color: var(--t-ok);  border-left: 3px solid var(--t-ok); }
+  .status-bar.err { color: var(--t-err); border-left: 3px solid var(--t-err); }
 
   .shortcuts {
-    margin-top: 0.75rem;
-    font-size: 0.75rem;
-    color: var(--muted);
+    margin-top: var(--s-3);
+    font-size: var(--f-xs);
+    color: var(--t-text-mute);
     text-align: center;
-    line-height: 1.6;
+    line-height: 1.8;
+    letter-spacing: 0.04em;
   }
   .shortcuts kbd {
-    background: var(--accent);
-    padding: 1px 5px;
-    border-radius: 3px;
+    background: var(--t-btn);
+    border: 1px solid var(--t-border-hi);
+    color: var(--t-accent);
+    padding: 1px var(--s-1);
+    border-radius: var(--r-sm);
     font-family: inherit;
+    font-size: var(--f-xs);
   }
 
   @media (max-width: 700px) {
@@ -188,9 +173,9 @@
 <div class="main-layout">
   <div class="voice-panel">
     <div class="controls">
-      <button id="micBtn">Mic</button>
-      <button id="sendBtn">Send</button>
-      <button id="clearBtn">Clear</button>
+      <button id="micBtn" class="rb rb-primary"><span class="icon icon-mic"></span> Mic</button>
+      <button id="sendBtn" class="rb rb-primary">Send</button>
+      <button id="clearBtn" class="rb">Clear</button>
     </div>
 
     <div class="mode-toggle">
@@ -224,16 +209,16 @@
   <div class="tmux-panel">
     <div class="tmux-header">
       <span>tmux session</span>
-      <label>
+      <label class="tgl">
         <input type="checkbox" id="autoScrollToggle" checked>
         Auto-scroll
       </label>
     </div>
     <div id="tmuxView">Connecting...</div>
     <div class="session-controls">
-      <button id="startBtn" onclick="sessionAction('start')">Start tmux</button>
-      <button id="restartBtn" onclick="sessionAction('restart')">New Claude</button>
-      <button id="stopBtn" onclick="sessionAction('stop')">Stop</button>
+      <button id="startBtn" class="rb rb-sm" onclick="sessionAction('start')">Start tmux</button>
+      <button id="restartBtn" class="rb rb-sm rb-danger" onclick="sessionAction('restart')">New Claude</button>
+      <button id="stopBtn" class="rb rb-sm rb-danger" onclick="sessionAction('stop')">Stop</button>
     </div>
   </div>
 </div>
@@ -255,7 +240,6 @@ function setStatus(msg, type) {
   statusBar.className = 'status-bar' + (type ? ' ' + type : '');
 }
 
-// Check connection on load
 (async () => {
   try {
     const res = await fetch('/voice/status');
@@ -270,7 +254,6 @@ function setStatus(msg, type) {
   }
 })();
 
-// Send text
 async function sendText() {
   const text = transcript.value.trim();
   if (!text) return;
@@ -300,7 +283,6 @@ clearBtn.addEventListener('click', () => {
   setStatus('Cleared', '');
 });
 
-// Speech Recognition
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
 let isRecording = false;
@@ -359,13 +341,13 @@ function toggleMic() {
   if (!SpeechRecognition) return;
   isRecording = !isRecording;
   if (isRecording) {
-    micBtn.textContent = 'Mic';
+    micBtn.innerHTML = '<span class="icon icon-mic"></span> Mic';
     micBtn.classList.add('recording');
     finalTranscript = transcript.value;
     startRecognition();
     setStatus('Listening...', '');
   } else {
-    micBtn.textContent = 'Mic';
+    micBtn.innerHTML = '<span class="icon icon-mic"></span> Mic';
     micBtn.classList.remove('recording');
     if (recognition) recognition.stop();
     clearTimeout(autoSendTimer);
@@ -375,7 +357,6 @@ function toggleMic() {
 
 micBtn.addEventListener('click', toggleMic);
 
-// tmux pane viewer
 async function pollTmuxView() {
   try {
     const res = await fetch('/voice/view');
@@ -396,7 +377,6 @@ async function pollTmuxView() {
 pollTmuxView();
 setInterval(pollTmuxView, 500);
 
-// Session controls
 async function sessionAction(action) {
   const btns = document.querySelectorAll('.session-controls button');
   btns.forEach(b => b.disabled = true);
@@ -415,7 +395,6 @@ async function sessionAction(action) {
   setTimeout(() => btns.forEach(b => b.disabled = false), 2000);
 }
 
-// Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key === 'Enter') {
     e.preventDefault();

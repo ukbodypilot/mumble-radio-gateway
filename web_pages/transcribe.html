@@ -6,68 +6,149 @@
 <title>Live Transcription</title>
 <link rel="stylesheet" href="/pages/common.css">
 <style>
-  body { padding: 10px; }
   .status-bar {
-    display: flex; gap: 12px; align-items: center;
-    padding: 6px 10px; background: var(--t-panel); border-radius: 6px;
-    margin-bottom: 10px; font-size: 0.8em;
+    display: flex; gap: var(--s-3); align-items: center; flex-wrap: wrap;
+    padding: var(--s-1) var(--s-3); background: var(--t-panel);
+    border: 1px solid var(--t-border); border-radius: var(--r-md);
+    margin-bottom: var(--s-2); font-size: var(--f-sm);
   }
   .status-bar .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-  .status-bar .dot.on { background: #2ecc71; }
-  .status-bar .dot.off { background: #e74c3c; }
-  .vad-bar { width: 60px; height: 12px; background: #333; border-radius: 4px; overflow: hidden; position: relative; }
-  .vad-fill { height: 100%; background: #f39c12; transition: width 0.2s; }
+  .status-bar .dot.on  { background: var(--t-ok); }
+  .status-bar .dot.off { background: var(--t-err); }
+  .st-label { color: var(--t-text-dim); }
+
+  .vad-bar {
+    width: 120px; height: 12px; background: var(--t-bg);
+    border: 1px solid var(--t-border); border-radius: var(--r-sm);
+    overflow: hidden; position: relative;
+  }
+  .vad-fill { height: 100%; background: var(--t-warn); transition: width 0.2s, background 0.2s; }
+  .vad-fill.speech  { background: var(--t-ok); }
+  .vad-fill.edge    { background: var(--t-warn); }
+  .vad-fill.gated   { background: var(--t-err); }
+  .vad-mark {
+    position: absolute; top: 0; bottom: 0; width: 2px;
+    background: var(--t-text); opacity: 0.7;
+  }
+  .vad-db { color: var(--t-text-dim); font-size: var(--f-xs); }
+
   #transcript-list {
-    display: flex; flex-direction: column; gap: 4px;
+    display: flex; flex-direction: column; gap: var(--s-1);
     max-height: calc(100vh - 100px); overflow-y: auto;
   }
   .tx-entry {
-    padding: 6px 10px; background: var(--t-panel); border-radius: 6px;
+    padding: var(--s-1) var(--s-3); background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
     border-left: 3px solid var(--t-accent);
   }
-  .tx-time { color: var(--t-accent); font-weight: bold; font-size: 0.85em; }
-  .tx-duration { color: #888; font-size: 0.75em; margin-left: 8px; }
-  .tx-text { color: #e0e0e0; margin-top: 2px; font-size: 0.95em; line-height: 1.4; }
-  .tx-pending { color: #f39c12; font-style: italic; }
-  .empty-msg { color: #666; text-align: center; padding: 40px; }
-  .ctrl-sel { background:#222; color:#e0e0e0; border:1px solid #555; border-radius:3px; padding:2px 4px; font-size:1em; }
+  .tx-time     { color: var(--t-accent); font-weight: 600; font-size: var(--f-sm); font-variant-numeric: tabular-nums; }
+  .tx-duration { color: var(--t-text-dim); font-size: var(--f-xs); margin-left: var(--s-2); }
+  .tx-text     { color: var(--t-text); margin-top: 2px; font-size: var(--f-md); line-height: 1.4; }
+  .tx-pending  { color: var(--t-warn); font-style: italic; }
+
+  .empty-msg { color: var(--t-text-mute); text-align: center; padding: var(--s-6); }
+
+  .ctrl-sel {
+    background: var(--t-btn); color: var(--t-text);
+    border: 1px solid var(--t-border); border-radius: var(--r-sm);
+    padding: 2px var(--s-1); font: inherit; font-size: var(--f-sm);
+  }
   details summary::-webkit-details-marker { color: var(--t-accent); }
+
+  .ctrl-panel {
+    display: flex; flex-wrap: wrap; gap: var(--s-3);
+    padding: var(--s-2); background: var(--t-panel);
+    border: 1px solid var(--t-border); border-radius: var(--r-md);
+    margin-top: var(--s-1); font-size: var(--f-sm);
+  }
+  .ctrl-summary {
+    cursor: pointer; color: var(--t-accent);
+    font-size: var(--f-sm); padding: var(--s-1) 0;
+    letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .ctrl-field       { display: flex; flex-direction: column; gap: 2px; }
+  .ctrl-field label { color: var(--t-text-dim); font-size: var(--f-xs); }
+  .ctrl-hint        { color: var(--t-text-mute); font-size: var(--f-xs); margin-top: 2px; }
+  .ctrl-val         { color: var(--t-text-dim); font-size: var(--f-xs); }
+  .ctrl-group       { display: flex; flex-direction: column; gap: var(--s-1); }
+  .ctrl-group label { color: var(--t-text); font-size: var(--f-sm); }
+  .ctrl-actions     { display: flex; flex-direction: column; gap: var(--s-1); align-items: flex-start; }
+
+  #stats-panel {
+    margin-bottom: var(--s-2); padding: var(--s-1) var(--s-3);
+    background: var(--t-panel); border: 1px solid var(--t-border);
+    border-radius: var(--r-md); font-size: var(--f-sm);
+  }
+  .ps-row { display: flex; gap: var(--s-4); flex-wrap: wrap; align-items: center; }
+  .ps-title { color: var(--t-accent); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+  .ps-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ps-val.ok  { color: var(--t-ok); }
+  .ps-val.err { color: var(--t-err); }
+  .ps-val.warn{ color: var(--t-warn); }
+  #ps-chart { margin-top: var(--s-1); height: 40px; display: flex; align-items: flex-end; gap: 1px; }
+  .ps-chart-wrap { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 40px; }
+  .ps-chart-ref {
+    position: absolute; bottom: 30px; left: 0; right: 0;
+    border-top: 1px dashed var(--t-text-mute);
+  }
+  .ps-chart-label {
+    position: absolute; bottom: 30px; right: 0;
+    color: var(--t-text-mute); font-size: var(--f-xs);
+  }
+  .ps-bar { width: 12px; border-radius: 1px; }
+  .ps-bar.ok  { background: var(--t-ok); }
+  .ps-bar.err { background: var(--t-err); }
+
+  #partial-bar {
+    display: none; padding: var(--s-1) var(--s-3);
+    background: color-mix(in srgb, var(--t-ok) 10%, var(--t-panel));
+    border: 1px solid var(--t-ok); border-left: 3px solid var(--t-ok);
+    border-radius: var(--r-md); margin-bottom: var(--s-1);
+    font-size: var(--f-md);
+  }
+  .partial-tag { color: var(--t-ok); font-weight: 700; letter-spacing: 0.08em; }
+  #partial-text { color: var(--t-text); margin-left: var(--s-2); }
+
+  .tx-state.warn { color: var(--t-warn); }
+  .tx-state.ok   { color: var(--t-ok); }
+  .tx-state.dim  { color: var(--t-text-dim); }
 </style>
 </head>
 <body>
 
-<div class="status-bar" style="flex-wrap: wrap;">
-  <span><label style="cursor:pointer;"><input type="checkbox" id="st-enabled" onchange="setConfig('enabled', this.checked)" checked> <span class="dot" id="st-dot"></span> <span id="st-state">—</span></label></span>
-  <span>Mode: <span id="st-mode" style="color:var(--t-accent);">—</span></span>
-  <span>Model: <span id="st-model-disp" style="color:var(--t-accent);">—</span></span>
-  <span><div class="vad-bar" style="width:120px;"><div class="vad-fill" id="st-vad"></div><div id="st-vad-mark" style="position:absolute;top:0;bottom:0;width:2px;background:#fff;opacity:0.7;"></div></div> <span id="st-vad-db" style="color:#888;font-size:0.75em;">—</span></span>
-  <span>Pending: <span id="st-pending">0</span></span>
-  <span>Total: <span id="st-total">0</span></span>
+<div class="status-bar">
+  <span><label class="tgl"><input type="checkbox" id="st-enabled" onchange="setConfig('enabled', this.checked)" checked> <span class="dot" id="st-dot"></span> <span id="st-state">—</span></label></span>
+  <span><span class="st-label">Mode:</span> <span id="st-mode" class="cyan">—</span></span>
+  <span><span class="st-label">Model:</span> <span id="st-model-disp" class="cyan">—</span></span>
+  <span><div class="vad-bar"><div class="vad-fill" id="st-vad"></div><div id="st-vad-mark" class="vad-mark"></div></div> <span id="st-vad-db" class="vad-db">—</span></span>
+  <span><span class="st-label">Pending:</span> <span id="st-pending">0</span></span>
+  <span><span class="st-label">Total:</span> <span id="st-total">0</span></span>
 </div>
 
-<details style="margin-bottom:10px;" id="ctrl-panel">
-  <summary style="cursor:pointer;color:var(--t-accent);font-size:0.85em;padding:4px 0;">Controls</summary>
-  <div style="display:flex;flex-wrap:wrap;gap:12px;padding:8px;background:var(--t-panel);border-radius:6px;margin-top:4px;font-size:0.8em;">
-    <div>
-      <label style="color:#888;">Mode</label><br>
+<details id="ctrl-panel-wrap">
+  <summary class="ctrl-summary">Controls</summary>
+  <div class="ctrl-panel">
+    <div class="ctrl-field">
+      <label>Mode</label>
       <select id="st-mode-sel" onchange="setConfig('mode', this.value)" class="ctrl-sel">
         <option value="chunked">Chunked (per TX)</option>
         <option value="streaming">Streaming (live)</option>
       </select>
-      <div style="color:#666;font-size:0.85em;margin-top:2px;">Change requires restart</div>
+      <div class="ctrl-hint">Change requires restart</div>
     </div>
-    <div>
-      <label style="color:#888;">Model</label><br>
+    <div class="ctrl-field">
+      <label>Model</label>
       <select id="st-model-sel" onchange="setConfig('model', this.value)" class="ctrl-sel">
         <option value="tiny">tiny (fastest)</option>
         <option value="base" selected>base (balanced)</option>
         <option value="small">small (better)</option>
         <option value="medium">medium (best, slow)</option>
       </select>
-      <div style="color:#666;font-size:0.85em;margin-top:2px;">Change requires restart</div>
+      <div class="ctrl-hint">Change requires restart</div>
     </div>
-    <div>
-      <label style="color:#888;">Language</label><br>
+    <div class="ctrl-field">
+      <label>Language</label>
       <select id="st-lang-sel" onchange="setConfig('language', this.value)" class="ctrl-sel">
         <option value="en">English</option>
         <option value="es">Spanish</option>
@@ -77,35 +158,35 @@
         <option value="auto">Auto-detect</option>
       </select>
     </div>
-    <div>
-      <label style="color:#888;">VAD Threshold</label><br>
-      <input type="range" id="st-vad-thresh" min="-60" max="-10" value="-35" style="width:100px;" oninput="document.getElementById('st-vad-val').textContent=this.value+'dB'" onchange="setConfig('vad_threshold', this.value)">
-      <span id="st-vad-val" style="color:#aaa;">-35dB</span>
+    <div class="ctrl-field">
+      <label>VAD Threshold</label>
+      <input type="range" id="st-vad-thresh" min="-60" max="-10" value="-35" oninput="document.getElementById('st-vad-val').textContent=this.value+'dB'" onchange="setConfig('vad_threshold', this.value)">
+      <span id="st-vad-val" class="ctrl-val">-35dB</span>
     </div>
-    <div>
-      <label style="color:#888;">VAD Hold</label><br>
-      <input type="range" id="st-vad-hold" min="0.3" max="5.0" step="0.1" value="1.0" style="width:80px;" oninput="document.getElementById('st-hold-val').textContent=this.value+'s'" onchange="setConfig('vad_hold', this.value)">
-      <span id="st-hold-val" style="color:#aaa;">1.0s</span>
+    <div class="ctrl-field">
+      <label>VAD Hold</label>
+      <input type="range" id="st-vad-hold" min="0.3" max="5.0" step="0.1" value="1.0" oninput="document.getElementById('st-hold-val').textContent=this.value+'s'" onchange="setConfig('vad_hold', this.value)">
+      <span id="st-hold-val" class="ctrl-val">1.0s</span>
     </div>
-    <div>
-      <label style="color:#888;">Min Duration</label><br>
-      <input type="range" id="st-min-dur" min="0.1" max="3.0" step="0.1" value="0.5" style="width:80px;" oninput="document.getElementById('st-dur-val').textContent=this.value+'s'" onchange="setConfig('min_duration', this.value)">
-      <span id="st-dur-val" style="color:#aaa;">0.5s</span>
+    <div class="ctrl-field">
+      <label>Min Duration</label>
+      <input type="range" id="st-min-dur" min="0.1" max="3.0" step="0.1" value="0.5" oninput="document.getElementById('st-dur-val').textContent=this.value+'s'" onchange="setConfig('min_duration', this.value)">
+      <span id="st-dur-val" class="ctrl-val">0.5s</span>
     </div>
-    <div>
-      <label style="color:#888;">Audio Boost</label><br>
-      <input type="range" id="st-boost" min="100" max="1000" step="50" value="100" style="width:100px;" oninput="document.getElementById('st-boost-val').textContent=this.value+'%'" onchange="setConfig('audio_boost', this.value)">
-      <span id="st-boost-val" style="color:#aaa;">100%</span>
-      <div style="color:#666;font-size:0.85em;">Amplify before transcription</div>
+    <div class="ctrl-field">
+      <label>Audio Boost</label>
+      <input type="range" id="st-boost" min="100" max="1000" step="50" value="100" oninput="document.getElementById('st-boost-val').textContent=this.value+'%'" onchange="setConfig('audio_boost', this.value)">
+      <span id="st-boost-val" class="ctrl-val">100%</span>
+      <div class="ctrl-hint">Amplify before transcription</div>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;">
-      <label style="color:#888;">Forward to</label>
-      <label style="color:#ccc;"><input type="checkbox" id="st-mumble" onchange="setConfig('forward_mumble', this.checked)" checked> Mumble</label>
-      <label style="color:#ccc;"><input type="checkbox" id="st-telegram" onchange="setConfig('forward_telegram', this.checked)"> Telegram</label>
+    <div class="ctrl-group">
+      <label class="st-label">Forward to</label>
+      <label class="tgl"><input type="checkbox" id="st-mumble" onchange="setConfig('forward_mumble', this.checked)" checked> Mumble</label>
+      <label class="tgl"><input type="checkbox" id="st-telegram" onchange="setConfig('forward_telegram', this.checked)"> Telegram</label>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;">
-      <label style="color:#888;">Display</label>
-      <label style="color:#ccc;"><input type="checkbox" id="st-autoscroll" checked onchange="_autoScroll=this.checked"> Auto-scroll</label>
+    <div class="ctrl-group">
+      <label class="st-label">Display</label>
+      <label class="tgl"><input type="checkbox" id="st-autoscroll" checked onchange="_autoScroll=this.checked"> Auto-scroll</label>
       <select id="st-fontsize" onchange="document.getElementById('transcript-list').style.fontSize=this.value" class="ctrl-sel">
         <option value="0.85em">Small</option>
         <option value="1em" selected>Normal</option>
@@ -113,28 +194,28 @@
         <option value="1.5em">XL</option>
       </select>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start;">
-      <button onclick="restartTranscriber()" style="background:#333;color:#f39c12;border:1px solid #555;border-radius:4px;padding:4px 12px;cursor:pointer;">Restart</button>
-      <button onclick="clearTranscripts()" style="background:#333;color:#e74c3c;border:1px solid #555;border-radius:4px;padding:4px 12px;cursor:pointer;">Clear All</button>
+    <div class="ctrl-actions">
+      <button class="rb rb-sm rb-warn" onclick="restartTranscriber()">Restart</button>
+      <button class="rb rb-sm rb-danger" onclick="clearTranscripts()">Clear All</button>
     </div>
   </div>
 </details>
 
-<div id="stats-panel" style="margin-bottom:8px;padding:6px 10px;background:var(--t-panel);border-radius:6px;font-size:0.8em;display:none;">
-  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
-    <span style="color:var(--t-accent);font-weight:bold;">Performance</span>
-    <span>Avg: <span id="ps-ratio" style="font-weight:bold;">—</span>x realtime</span>
-    <span>Realtime: <span id="ps-rt-pct" style="font-weight:bold;">—</span>%</span>
+<div id="stats-panel" style="display:none;">
+  <div class="ps-row">
+    <span class="ps-title">Performance</span>
+    <span>Avg: <span id="ps-ratio" class="ps-val">—</span>x realtime</span>
+    <span>Realtime: <span id="ps-rt-pct" class="ps-val">—</span>%</span>
     <span>Avg audio: <span id="ps-dur">—</span>s</span>
     <span>Avg process: <span id="ps-proc">—</span>s</span>
     <span>Samples: <span id="ps-count">0</span></span>
   </div>
-  <div id="ps-chart" style="margin-top:6px;height:40px;display:flex;align-items:flex-end;gap:1px;"></div>
+  <div id="ps-chart"></div>
 </div>
 
-<div id="partial-bar" style="display:none;padding:6px 10px;background:#1a2a1a;border:1px solid #2ecc71;border-radius:6px;margin-bottom:6px;font-size:0.9em;">
-  <span style="color:#2ecc71;font-weight:bold;">LIVE</span>
-  <span id="partial-text" style="color:#e0e0e0;margin-left:8px;"></span>
+<div id="partial-bar">
+  <span class="partial-tag">LIVE</span>
+  <span id="partial-text"></span>
 </div>
 
 <div id="transcript-list">
@@ -159,15 +240,15 @@ function poll() {
       if (!s.enabled) {
         dot.className = 'dot off';
         state.textContent = 'Disabled';
-        state.style.color = '#888';
+        state.className = 'tx-state dim';
       } else if (s.model_loaded) {
         dot.className = 'dot on';
         state.textContent = s.vad_open ? 'Listening...' : 'Ready';
-        state.style.color = s.vad_open ? '#f39c12' : '#2ecc71';
+        state.className = 'tx-state ' + (s.vad_open ? 'warn' : 'ok');
       } else {
         dot.className = 'dot off';
         state.textContent = 'Loading model...';
-        state.style.color = '#f39c12';
+        state.className = 'tx-state warn';
       }
       var _vdb = s.vad_db || -100;
       var _vth = s.vad_threshold || -35;
@@ -175,13 +256,7 @@ function poll() {
       var vadFill = document.getElementById('st-vad');
       vadFill.style.width = vad_pct + '%';
       // Green = above threshold (speech), Orange = within 6dB of threshold, Red = below (gating)
-      if (_vdb > _vth) {
-        vadFill.style.background = '#2ecc71';
-      } else if (_vdb > _vth - 6) {
-        vadFill.style.background = '#f39c12';
-      } else {
-        vadFill.style.background = '#e74c3c';
-      }
+      vadFill.className = 'vad-fill ' + (_vdb > _vth ? 'speech' : (_vdb > _vth - 6 ? 'edge' : 'gated'));
       // Position threshold marker on the bar
       var _thPct = Math.max(0, Math.min(100, (_vth + 60) * (100/60)));
       document.getElementById('st-vad-mark').style.left = _thPct + '%';
@@ -236,10 +311,12 @@ function poll() {
       var statsPanel = document.getElementById('stats-panel');
       if (ps.count > 0) {
         statsPanel.style.display = '';
-        document.getElementById('ps-ratio').textContent = ps.avg_ratio || '—';
-        document.getElementById('ps-ratio').style.color = (ps.avg_ratio||1) < 1 ? '#2ecc71' : '#e74c3c';
-        document.getElementById('ps-rt-pct').textContent = ps.realtime_pct || 0;
-        document.getElementById('ps-rt-pct').style.color = (ps.realtime_pct||0) >= 80 ? '#2ecc71' : (ps.realtime_pct||0) >= 50 ? '#f39c12' : '#e74c3c';
+        var ratioEl = document.getElementById('ps-ratio');
+        ratioEl.textContent = ps.avg_ratio || '—';
+        ratioEl.className = 'ps-val ' + ((ps.avg_ratio||1) < 1 ? 'ok' : 'err');
+        var rtEl = document.getElementById('ps-rt-pct');
+        rtEl.textContent = ps.realtime_pct || 0;
+        rtEl.className = 'ps-val ' + ((ps.realtime_pct||0) >= 80 ? 'ok' : (ps.realtime_pct||0) >= 50 ? 'warn' : 'err');
         document.getElementById('ps-dur').textContent = ps.avg_duration || '—';
         document.getElementById('ps-proc').textContent = ps.avg_proc_time || '—';
         document.getElementById('ps-count').textContent = ps.count;
@@ -249,11 +326,10 @@ function poll() {
         for (var ri = 0; ri < recent.length; ri++) {
           var r = recent[ri];
           var h = Math.min(40, Math.max(2, r.ratio * 30));
-          var c = r.ratio < 1 ? '#2ecc71' : '#e74c3c';
-          chartHtml += '<div title="' + r.duration + 's→' + r.proc_time + 's (' + r.ratio + 'x)" style="width:12px;height:' + h + 'px;background:' + c + ';border-radius:1px;"></div>';
+          var cls = r.ratio < 1 ? 'ok' : 'err';
+          chartHtml += '<div class="ps-bar ' + cls + '" title="' + r.duration + 's→' + r.proc_time + 's (' + r.ratio + 'x)" style="height:' + h + 'px;"></div>';
         }
-        // Add 1.0x reference line
-        document.getElementById('ps-chart').innerHTML = '<div style="position:relative;display:flex;align-items:flex-end;gap:2px;height:40px;">' + chartHtml + '<div style="position:absolute;bottom:30px;left:0;right:0;border-top:1px dashed #555;"></div><span style="position:absolute;bottom:30px;right:0;color:#555;font-size:0.7em;">1.0x</span></div>';
+        document.getElementById('ps-chart').innerHTML = '<div class="ps-chart-wrap">' + chartHtml + '<div class="ps-chart-ref"></div><span class="ps-chart-label">1.0x</span></div>';
       }
 
       // Add new results
@@ -288,7 +364,7 @@ function renderList() {
     html += '<span class="tx-duration">';
     if (e.duration) html += e.duration + 's';
     if (e.proc_time) html += ' &rarr; ' + e.proc_time + 's';
-    if (e.ratio) html += ' <span style="color:' + (e.ratio < 1 ? '#2ecc71' : '#e74c3c') + ';">(' + e.ratio + 'x)</span>';
+    if (e.ratio) html += ' <span class="' + (e.ratio < 1 ? 'green' : 'red') + '">(' + e.ratio + 'x)</span>';
     html += '</span>';
     html += '<div class="tx-text">' + _escHtml(e.text) + '</div>';
     html += '</div>';
@@ -319,8 +395,9 @@ function restartTranscriber() {
   _lastTimestamp = 0;
   _configSynced = false;
   renderList();
-  document.getElementById('st-state').textContent = 'Restarting...';
-  document.getElementById('st-state').style.color = '#f39c12';
+  var st = document.getElementById('st-state');
+  st.textContent = 'Restarting...';
+  st.className = 'tx-state warn';
 }
 
 function clearTranscripts() {

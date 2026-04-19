@@ -52,15 +52,24 @@
     <h2 class="panel-title">ADS-B Aircraft Tracking</h2>
     <a href="/aircraft" target="content" onclick="setActive(document.querySelector('.shell-nav a[href=\\'/aircraft\\']'))" class="panel-meta">&rarr; Open Map</a>
   </div>
+  <div class="metric-strip">
+    <div class="metric metric-lg">
+      <span class="metric-label">Aircraft</span>
+      <span id="adsb-aircraft" class="metric-value">--</span>
+    </div>
+    <div class="metric metric-lg">
+      <span class="metric-label">Msg/s</span>
+      <span id="adsb-rate" class="metric-value">--</span>
+    </div>
+    <div class="metric metric-lg">
+      <span class="metric-label">Total</span>
+      <span id="adsb-messages" class="metric-value">--</span>
+    </div>
+  </div>
   <div class="st-row">
     <div class="st-item"><span class="st-label">dump1090-fa:</span><span id="adsb-svc-d1090" class="st-val dot">&#x25cf;</span></div>
     <div class="st-item"><span class="st-label">Web:</span><span id="adsb-svc-web" class="st-val dot">&#x25cf;</span></div>
     <div class="st-item"><span class="st-label">fr24feed:</span><span id="adsb-svc-fr24" class="st-val dot">&#x25cf;</span></div>
-  </div>
-  <div class="st-row">
-    <div class="st-item"><span class="st-label">Aircraft:</span><span id="adsb-aircraft" class="st-val cyan">--</span></div>
-    <div class="st-item"><span class="st-label">Messages:</span><span id="adsb-messages" class="st-val white">--</span></div>
-    <div class="st-item"><span class="st-label">Rate:</span><span id="adsb-rate" class="st-val green">--</span><span class="st-label"> msg/s</span></div>
   </div>
 </div>
 
@@ -189,6 +198,15 @@
   .bar.warn   { background: var(--t-warn); }
   .bar.err    { background: var(--t-err); }
   .bar.accent { background: var(--t-accent); }
+
+  /* Hero metric cluster — shared pattern for any panel with 2-3 headline numbers.
+     Sits above the dense .st-row readouts to give vertical hierarchy. */
+  .metric-strip {
+    display: flex; gap: var(--s-5); flex-wrap: wrap;
+    padding: var(--s-1) 0 var(--s-3);
+    border-bottom: 1px solid var(--t-border);
+    margin-bottom: var(--s-3);
+  }
 
   /* USBIP device list row */
   .usbip-list { margin-top: var(--s-2); font-size: var(--f-sm); color: var(--t-text); }

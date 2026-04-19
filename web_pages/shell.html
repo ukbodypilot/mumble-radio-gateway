@@ -39,8 +39,8 @@
   #shell-bar a.active { color: var(--t-accent); position: relative; }
   #shell-bar a.active::after {
     content: ''; position: absolute;
-    left: var(--s-3); right: var(--s-3); bottom: -5px;
-    height: 1px; background: var(--t-accent);
+    left: var(--s-3); right: var(--s-3); bottom: -1px;
+    height: 2px; background: var(--t-accent);
   }
   #shell-bar a.nav-disabled {
     color: var(--t-text-mute); cursor: default; pointer-events: none;
@@ -161,6 +161,13 @@
     #shell-bars { flex-shrink: 1; }
     #shell-frame { flex: none; height: calc(100vh - 34px); }
   }
+
+  /* Header identity cluster — pushed to the right with a divider */
+  .id-cluster.shell-id {
+    margin-left: auto;
+    padding-left: var(--s-3);
+    border-left: 1px solid var(--t-border);
+  }
 </style>
 </head><body>
 <div id="shell-bar">
@@ -197,7 +204,7 @@
       <button id="mic-btn" class="rb" onclick="toggleMic()"><span class="icon icon-mic"></span> MIC</button>
     </span>
   </div>
-  <div class="id-cluster" style="margin-left:auto; padding-left:var(--s-3); border-left:1px solid var(--t-border);">
+  <div class="id-cluster shell-id">
     <span class="id-site" id="id-site">--</span>
     <span class="id-sep">&middot;</span>
     <span class="id-clock" id="id-clock">--:--:--Z</span>

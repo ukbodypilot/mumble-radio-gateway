@@ -1,6 +1,17 @@
 /* Radio Gateway — shared theme and base styles.
    --t-* variables are referenced across every page; change values here
-   to restyle the whole UI. Do not rename without a sweep across all pages. */
+   to restyle the whole UI. Do not rename without a sweep across all pages.
+
+   ─── Live-signal vocabulary (pick exactly one per element) ───────────────
+   Loudest → quietest; never stack two levels on the same element.
+     1. .pulse + --t-err        TX, recording, critical-live (heartbeat red)
+     2. .pulse + --t-accent     RX, listening, active-live (heartbeat cyan)
+     3. .rb-active / cyan border  selected, focused, current tab
+     4. .flash (cell-flash)     value just changed (one-shot 600ms)
+     5. .cyan text              clickable / interactive / link
+   Panel-level status strips should use the .toast accent-edge pattern:
+     border-left: 3px solid var(--t-accent|--t-ok|--t-warn|--t-err).
+   ──────────────────────────────────────────────────────────────────────── */
 
 @font-face {
   font-family: 'JetBrains Mono';
@@ -184,6 +195,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--t-accent); }
 .icon-play    { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 3l9 5-9 5z'/></svg>"); }
 .icon-stop    { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M3 3h10v10H3z'/></svg>"); }
 .icon-refresh { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M8 2.5V1L4.5 4 8 7V5.5a2.5 2.5 0 1 1-2.5 2.5H4a4 4 0 1 0 4-5.5z'/></svg>"); }
+.icon-dot     { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='4'/></svg>"); }
+.icon-record  { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='5'/></svg>"); }
+.icon-chev-r  { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M6 3l5 5-5 5V3z'/></svg>"); }
+.icon-chev-d  { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M3 6l5 5 5-5H3z'/></svg>"); }
+.icon-arrow-r { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M3 7h8.5l-3-3L9.5 3 14 7.5 9.5 12 8.5 11l3-3H3z'/></svg>"); }
+.icon-warn    { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M8 1L0.5 14h15L8 1zm0 4.5l.5 5h-1l-.5-5h1zm-.5 6.5h1v1h-1v-1z'/></svg>"); }
+.icon-signal  { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1 13h2v2H1v-2zm4-3h2v5H5v-5zm4-3h2v8H9V7zm4-4h2v12h-2V3z'/></svg>"); }
+.icon-close   { --icon-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M3.5 2.5l10 10-1 1-10-10 1-1zm10 0l-10 10-1-1 10-10 1 1z'/></svg>"); }
 
 /* Tags — short all-caps labels (CF, LAN, Band A, encoder mode).
    Not a button, not a dot — a category marker. */

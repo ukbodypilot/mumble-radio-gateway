@@ -65,6 +65,10 @@
   .mon-setting-label span { color:var(--t-text); }
   .mon-setting-row input[type="range"] { width:100%; }
   .mon-link-row { text-align:center; margin-top:var(--s-5); }
+
+  /* Utility helpers */
+  .mon-level-box { margin-bottom: var(--s-2); }
+  .mon-settings-body { padding: var(--s-3) 0 0; }
 </style>
 </head>
 <body>
@@ -77,7 +81,7 @@
     <span id="mon-dot" class="mon-dot"></span>
     <span id="mon-state" class="mon-state">Disconnected</span>
   </div>
-  <div style="margin-bottom:var(--s-2);">
+  <div class="mon-level-box">
     <span class="mon-level-label">Level</span>
     <div class="mon-level-track"><div id="mon-level-bar" class="mon-level-fill"></div></div>
     <div class="mon-db-line"><span id="mon-db">—</span> dB</div>
@@ -92,7 +96,7 @@
 
 <details class="mon-settings panel">
   <summary>Settings</summary>
-  <div style="padding:var(--s-3) 0 0;">
+  <div class="mon-settings-body">
     <div class="mon-setting-row">
       <label class="mon-setting-label">Gain: <span id="mon-gain-val">25x</span></label>
       <input id="mon-gain" type="range" min="1" max="50" step="1" value="25"

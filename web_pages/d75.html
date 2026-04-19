@@ -243,6 +243,25 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
+
+  /* Utility helpers — tight, reused patterns for this page. */
+  .d75-spacer  { flex: 1; }
+  .d75-inline  { display: flex; align-items: center; gap: var(--s-2); }
+  .d75-cluster { display: flex; gap: var(--s-1); align-items: center; }
+  .d75-reconn-btn { margin-left: var(--s-2); }
+  .d75-row.mt-2 { margin-top: var(--s-2); }
+  .d75-row.mt-1 { margin-top: var(--s-1); }
+  .d75-label.w-sq   { min-width: 30px; }
+  .d75-label.w-vol  { min-width: 50px; }
+  .d75-label.ml-2   { margin-left: var(--s-2); }
+  .d75-val.w-sq     { min-width: 2em; }
+  .d75-val.w-vol    { min-width: 3.5em; }
+  .d75-input.w-ch   { width: 60px; }
+  .d75-input.w-off  { width: 80px; }
+  .d75-slider-fill  { flex: 1; }
+  .d75-cell-center  { text-align: center; }
+  .d75-cell-nowrap  { white-space: nowrap; }
+  .d75-freq-cell    { font-weight: 600; }
 </style>
 </head><body>
 
@@ -255,17 +274,17 @@
     <div>
       <span id="d75-chk-tcp" class="dot pending">&#x25cf;</span>
       Gateway TCP Link: <span id="d75-chk-tcp-text" class="d75-val dim">checking...</span>
-      <button id="d75-reconnect-btn" class="rb rb-sm" onclick="d75svcAction('reconnect')" style="display:none; margin-left:var(--s-2);">Reconnect</button>
+      <button id="d75-reconnect-btn" class="rb rb-sm d75-reconn-btn" onclick="d75svcAction('reconnect')" style="display:none;">Reconnect</button>
     </div>
     <div>
       <span id="d75-chk-serial" class="dot pending">&#x25cf;</span>
       Radio BT Serial: <span id="d75-chk-serial-text" class="d75-val dim">checking...</span>
-      <button id="d75-offline-btstart-btn" class="rb rb-sm" onclick="d75svcAction('btstart_via_reconnect')" style="display:none; margin-left:var(--s-2);">BT Start</button>
+      <button id="d75-offline-btstart-btn" class="rb rb-sm d75-reconn-btn" onclick="d75svcAction('btstart_via_reconnect')" style="display:none;">BT Start</button>
     </div>
     <div>
       <span id="d75-chk-svc" class="dot pending">&#x25cf;</span>
       Local CAT Service: <span id="d75-chk-svc-text" class="d75-val dim">checking...</span>
-      <button id="d75-start-svc-btn" class="rb rb-sm" onclick="d75svcAction('start_service')" style="display:none; margin-left:var(--s-2);">Start Service</button>
+      <button id="d75-start-svc-btn" class="rb rb-sm d75-reconn-btn" onclick="d75svcAction('start_service')" style="display:none;">Start Service</button>
     </div>
   </div>
 </div>
@@ -283,9 +302,9 @@
     <span class="d75-label">Mode:</span> <span id="d75-mode" class="d75-val">&mdash;</span>
     <span id="d75-audio-row"><span class="sep">|</span>
     <span class="d75-label">Audio:</span> <span id="d75-audio-status" class="d75-val">&mdash;</span></span>
-    <span style="flex:1;"></span>
+    <span class="d75-spacer"></span>
     <span id="d75-tx-badge" class="tx-badge">TX</span>
-    <span style="flex:1;"></span>
+    <span class="d75-spacer"></span>
     <span id="d75-feedback" class="feedback"></span>
     <button id="d75-btstart-btn" class="rb rb-sm" onclick="d75cmd('btstart')" style="display:none;">BT Start</button>
     <button id="d75-btstop-btn" class="rb rb-sm" onclick="d75cmd('btstop')" style="display:none;">BT Stop</button>
@@ -329,7 +348,7 @@
   <div class="mem-panel">
     <div class="mem-head">
       <span class="mem-title">Memory Channels</span>
-      <div style="display:flex; gap:var(--s-1); align-items:center;">
+      <div class="d75-cluster">
         <span id="d75-mem-count" class="d75-label"></span>
         <button class="rb rb-sm" onclick="d75LoadMemories()" id="d75-mem-scan-btn">Scan</button>
       </div>
@@ -342,10 +361,10 @@
   <!-- Volume -->
   <div class="vol-panel">
     <div class="d75-row">
-      <span class="d75-label" style="min-width:50px;">Volume</span>
-      <input id="d75-vol" type="range" min="0" max="500" value="100" step="10" style="flex:1;"
+      <span class="d75-label w-vol">Volume</span>
+      <input id="d75-vol" type="range" min="0" max="500" value="100" step="10" class="d75-slider-fill"
         oninput="d75VolDebounce(this.value)">
-      <span id="d75-vol-val" class="d75-val" style="min-width:3.5em;">100%</span>
+      <span id="d75-vol-val" class="d75-val w-vol">100%</span>
     </div>
   </div>
 
@@ -354,7 +373,7 @@
 
     <div class="band-card" id="d75-band-a">
       <div class="band-head">
-        <span style="display:flex; align-items:center; gap:var(--s-2);">
+        <span class="d75-inline">
           <span class="band-title">Band A</span>
           <span id="d75-a-main" class="main-badge">MAIN</span>
         </span>
@@ -375,7 +394,7 @@
           <option value="0">VFO</option><option value="1">Memory</option><option value="2">Call</option><option value="3">DV</option>
         </select>
         <span class="d75-label">CH:</span>
-        <input id="d75-a-ch" class="d75-input" style="width:60px;" placeholder="001"
+        <input id="d75-a-ch" class="d75-input w-ch" placeholder="001"
           onkeydown="if(event.key==='Enter')d75cmd('cat','MC 0,'+this.value)">
         <button class="rb rb-sm" onclick="d75cmd('cat','MC 0,'+document.getElementById('d75-a-ch').value)">Go</button>
       </div>
@@ -389,31 +408,31 @@
       </div>
 
       <div class="d75-row">
-        <span class="d75-label" style="min-width:30px;">SQ</span>
-        <input id="d75-a-sq" class="sq-slider" type="range" min="0" max="5" value="2" style="flex:1;"
+        <span class="d75-label w-sq">SQ</span>
+        <input id="d75-a-sq" class="sq-slider d75-slider-fill" type="range" min="0" max="5" value="2"
           oninput="d75sq(0,this.value)">
-        <span id="d75-a-sq-val" class="d75-val" style="min-width:2em;">2</span>
+        <span id="d75-a-sq-val" class="d75-val w-sq">2</span>
       </div>
 
-      <div class="d75-row" style="margin-top:var(--s-2);">
+      <div class="d75-row mt-2">
         <span class="d75-label">Freq:</span>
         <input id="d75-a-freq-input" class="d75-input" placeholder="145.500" onkeydown="if(event.key==='Enter')d75setFreq(0,this.value)">
         <span class="d75-label">MHz</span>
         <button class="rb rb-sm" onclick="d75setFreq(0,document.getElementById('d75-a-freq-input').value)">Set</button>
       </div>
 
-      <div class="d75-row" style="margin-top:var(--s-1);">
+      <div class="d75-row mt-1">
         <span class="d75-label">Mode:</span>
         <select id="d75-a-mode-sel" class="d75-select" onfocus="_toneEditUntil[0]=Date.now()+5000" onchange="_toneEditUntil[0]=Date.now()+3000;d75setMode(0,this.value)">
           <option value="0">FM</option><option value="1">DV</option><option value="2">AM</option><option value="3">LSB</option><option value="4">USB</option><option value="5">CW</option><option value="6">NFM</option><option value="7">DR</option><option value="8">WFM</option><option value="9">R-CW</option>
         </select>
-        <span class="d75-label" style="margin-left:var(--s-2);">Power:</span>
+        <span class="d75-label ml-2">Power:</span>
         <select id="d75-a-pwr-sel" class="d75-select" onfocus="_toneEditUntil[0]=Date.now()+5000" onchange="_toneEditUntil[0]=Date.now()+3000;d75setPower(0,this.value)">
           <option value="0">High</option><option value="1">Med</option><option value="2">Low</option><option value="3">EL</option>
         </select>
       </div>
 
-      <div class="d75-row" style="margin-top:var(--s-1);">
+      <div class="d75-row mt-1">
         <span class="d75-label">Tone:</span>
         <select id="d75-a-tone-type" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setTone(0)">
           <option value="off">Off</option><option value="tone">Tone</option>
@@ -427,13 +446,13 @@
         </select>
       </div>
 
-      <div class="d75-row" style="margin-top:var(--s-1);">
+      <div class="d75-row mt-1">
         <span class="d75-label">Shift:</span>
         <select id="d75-a-shift" class="d75-select" onfocus="_toneTouched(0)" onchange="d75setShift(0,this.value)">
           <option value="0">Off</option><option value="1">+</option><option value="2">-</option>
         </select>
-        <span class="d75-label" style="margin-left:var(--s-2);">Offset:</span>
-        <input id="d75-a-offset" class="d75-input" style="width:80px;" placeholder="0.600"
+        <span class="d75-label ml-2">Offset:</span>
+        <input id="d75-a-offset" class="d75-input w-off" placeholder="0.600"
           onfocus="_toneTouched(0)" onkeydown="if(event.key==='Enter')d75setOffset(0,this.value)">
         <button class="rb rb-sm" onclick="d75setOffset(0,document.getElementById('d75-a-offset').value)">Set</button>
       </div>
@@ -441,7 +460,7 @@
 
     <div class="band-card" id="d75-band-b">
       <div class="band-head">
-        <span style="display:flex; align-items:center; gap:var(--s-2);">
+        <span class="d75-inline">
           <span class="band-title">Band B</span>
           <span id="d75-b-main" class="main-badge">MAIN</span>
         </span>
@@ -462,7 +481,7 @@
           <option value="0">VFO</option><option value="1">Memory</option><option value="2">Call</option><option value="3">DV</option>
         </select>
         <span class="d75-label">CH:</span>
-        <input id="d75-b-ch" class="d75-input" style="width:60px;" placeholder="001"
+        <input id="d75-b-ch" class="d75-input w-ch" placeholder="001"
           onkeydown="if(event.key==='Enter')d75cmd('cat','MC 1,'+this.value)">
         <button class="rb rb-sm" onclick="d75cmd('cat','MC 1,'+document.getElementById('d75-b-ch').value)">Go</button>
       </div>
@@ -476,31 +495,31 @@
       </div>
 
       <div class="d75-row">
-        <span class="d75-label" style="min-width:30px;">SQ</span>
-        <input id="d75-b-sq" class="sq-slider" type="range" min="0" max="5" value="2" style="flex:1;"
+        <span class="d75-label w-sq">SQ</span>
+        <input id="d75-b-sq" class="sq-slider d75-slider-fill" type="range" min="0" max="5" value="2"
           oninput="d75sq(1,this.value)">
-        <span id="d75-b-sq-val" class="d75-val" style="min-width:2em;">2</span>
+        <span id="d75-b-sq-val" class="d75-val w-sq">2</span>
       </div>
 
-      <div class="d75-row" style="margin-top:var(--s-2);">
+      <div class="d75-row mt-2">
         <span class="d75-label">Freq:</span>
         <input id="d75-b-freq-input" class="d75-input" placeholder="446.000" onkeydown="if(event.key==='Enter')d75setFreq(1,this.value)">
         <span class="d75-label">MHz</span>
         <button class="rb rb-sm" onclick="d75setFreq(1,document.getElementById('d75-b-freq-input').value)">Set</button>
       </div>
 
-      <div class="d75-row" style="margin-top:var(--s-1);">
+      <div class="d75-row mt-1">
         <span class="d75-label">Mode:</span>
         <select id="d75-b-mode-sel" class="d75-select" onfocus="_toneEditUntil[1]=Date.now()+5000" onchange="_toneEditUntil[1]=Date.now()+3000;d75setMode(1,this.value)">
           <option value="0">FM</option><option value="1">DV</option><option value="2">AM</option><option value="3">LSB</option><option value="4">USB</option><option value="5">CW</option><option value="6">NFM</option><option value="7">DR</option><option value="8">WFM</option><option value="9">R-CW</option>
         </select>
-        <span class="d75-label" style="margin-left:var(--s-2);">Power:</span>
+        <span class="d75-label ml-2">Power:</span>
         <select id="d75-b-pwr-sel" class="d75-select" onfocus="_toneEditUntil[1]=Date.now()+5000" onchange="_toneEditUntil[1]=Date.now()+3000;d75setPower(1,this.value)">
           <option value="0">High</option><option value="1">Med</option><option value="2">Low</option><option value="3">EL</option>
         </select>
       </div>
 
-      <div class="d75-row" style="margin-top:var(--s-1);">
+      <div class="d75-row mt-1">
         <span class="d75-label">Tone:</span>
         <select id="d75-b-tone-type" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setTone(1)">
           <option value="off">Off</option><option value="tone">Tone</option>
@@ -514,13 +533,13 @@
         </select>
       </div>
 
-      <div class="d75-row" style="margin-top:var(--s-1);">
+      <div class="d75-row mt-1">
         <span class="d75-label">Shift:</span>
         <select id="d75-b-shift" class="d75-select" onfocus="_toneTouched(1)" onchange="d75setShift(1,this.value)">
           <option value="0">Off</option><option value="1">+</option><option value="2">-</option>
         </select>
-        <span class="d75-label" style="margin-left:var(--s-2);">Offset:</span>
-        <input id="d75-b-offset" class="d75-input" style="width:80px;" placeholder="0.600"
+        <span class="d75-label ml-2">Offset:</span>
+        <input id="d75-b-offset" class="d75-input w-off" placeholder="0.600"
           onfocus="_toneTouched(1)" onkeydown="if(event.key==='Enter')d75setOffset(1,this.value)">
         <button class="rb rb-sm" onclick="d75setOffset(1,document.getElementById('d75-b-offset').value)">Set</button>
       </div>
@@ -754,21 +773,21 @@ function _d75RenderMemList() {
   var aOk = (dual === 0 || ab === 0);
   var bOk = (dual === 0 || ab === 1);
   var h = '<table class="mem-tbl">';
-  h += '<tr><th>CH</th><th>Freq</th><th>Name</th><th>Mode</th><th>Tone</th><th>Shift</th><th>Offset</th><th>Pwr</th><th style="text-align:center;">Load</th></tr>';
+  h += '<tr><th>CH</th><th>Freq</th><th>Name</th><th>Mode</th><th>Tone</th><th>Shift</th><th>Offset</th><th>Pwr</th><th class="d75-cell-center">Load</th></tr>';
   var _pn = {0:'H',1:'L',2:'EL',3:'EL2'};
   _d75Channels.forEach(function(c) {
     var toneCls = c.tone ? 'green' : 'dim';
     var shiftCls = c.shift==='X' ? 'red' : c.shift==='S' ? 'dim' : 'yellow';
     h += '<tr class="mem-row">';
     h += '<td class="cyan">' + c.ch + '</td>';
-    h += '<td class="white" style="font-weight:600;">' + c.freq.toFixed(4) + '</td>';
+    h += '<td class="white d75-freq-cell">' + c.freq.toFixed(4) + '</td>';
     h += '<td>' + (c.name || '') + '</td>';
     h += '<td class="yellow">' + c.mode + '</td>';
     h += '<td class="' + toneCls + '">' + (c.tone || '\u2014') + '</td>';
     h += '<td class="' + shiftCls + '">' + (c.shift==='X'?'Xband':c.shift) + '</td>';
     h += '<td>' + (c.offset || '') + '</td>';
     h += '<td class="yellow">' + (_pn[c.power] || '') + '</td>';
-    h += '<td style="white-space:nowrap;">';
+    h += '<td class="d75-cell-nowrap">';
     h += '<button class="rb rb-sm' + (aOk?'':' dim') + '"' + (aOk?'':' disabled') + ' onclick="' + (aOk?"d75GoChannel(0,'"+c.ch+"')":'') + '">A</button> ';
     h += '<button class="rb rb-sm' + (bOk?'':' dim') + '"' + (bOk?'':' disabled') + ' onclick="' + (bOk?"d75GoChannel(1,'"+c.ch+"')":'') + '">B</button>';
     h += '</td></tr>';

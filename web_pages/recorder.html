@@ -6,69 +6,80 @@
 <title>Loop Recorder</title>
 <link rel="stylesheet" href="/pages/common.css">
 <style>
-  .toolbar { display:flex; align-items:center; gap:10px; padding:8px 0; font-size:0.85em; color:#aaa; }
-  .toolbar button { padding:4px 10px; background:var(--t-btn); color:#ccc; border:1px solid var(--t-btn-border);
-    border-radius:3px; cursor:pointer; font-family:monospace; }
-  .toolbar button:hover { background:var(--t-btn-hover); }
+  .toolbar {
+    display:flex; align-items:center; gap:var(--s-2);
+    padding:var(--s-2) 0; font-size:var(--f-sm); color:var(--t-text-dim);
+    flex-wrap:wrap;
+  }
 
-  .bus-section { background:var(--t-panel); border:1px solid var(--t-btn-border); border-radius:6px;
-    padding:10px; margin-bottom:10px; }
-  .bus-header { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
-  .bus-name { font-family:monospace; font-size:1.05em; color:#e0e0e0; font-weight:bold; }
+  .bus-section {
+    background:var(--t-panel); border:1px solid var(--t-border);
+    border-radius:var(--r-md);
+    padding:var(--s-3); margin-bottom:var(--s-3);
+  }
+  .bus-header { display:flex; align-items:center; gap:var(--s-2); margin-bottom:var(--s-2); }
+  .bus-name { font-size:var(--f-md); color:var(--t-text); font-weight:700; letter-spacing:0.02em; }
   .bus-dot { display:inline-block; width:8px; height:8px; border-radius:50%; }
-  .bus-dot.rec { background:#c0392b; animation: pulse-dot 1.5s infinite; }
-  .bus-dot.off { background:#555; }
-  @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
-  .bus-meta { font-size:0.8em; color:#666; margin-left:auto; }
+  .bus-dot.rec { background:var(--t-err); animation: heartbeat 1.4s ease-in-out infinite; }
+  .bus-dot.off { background:var(--t-text-mute); }
+  .bus-meta { font-size:var(--f-xs); color:var(--t-text-dim); margin-left:auto; letter-spacing:0.04em; }
 
-  .bus-canvas { position:relative; background:#0d1117; border:1px solid #1a2332; border-radius:3px;
-    overflow:hidden; cursor:crosshair; margin-bottom:6px; }
+  .bus-canvas {
+    position:relative; background:var(--t-bg);
+    border:1px solid var(--t-border);
+    border-radius:var(--r-sm);
+    overflow:hidden; cursor:crosshair; margin-bottom:var(--s-2);
+  }
   .bus-canvas canvas { width:100%; display:block; }
 
-  .bus-controls { display:flex; align-items:center; gap:8px; font-size:0.85em; flex-wrap:wrap; }
-  .bus-controls button { padding:3px 10px; background:var(--t-btn); color:#ccc; border:1px solid var(--t-btn-border);
-    border-radius:3px; cursor:pointer; font-family:monospace; }
-  .bus-controls button:hover { background:var(--t-btn-hover); }
+  .bus-controls { display:flex; align-items:center; gap:var(--s-2); font-size:var(--f-sm); flex-wrap:wrap; }
   .bus-controls input[type=range] { width:50px; }
-  .time-display { font-family:monospace; color:#aaa; font-size:0.85em; min-width:60px; }
-  .play-clock { font-family:monospace; color:#e74c3c; font-size:0.95em; font-weight:bold; min-width:70px; }
+  .vol-label { color:var(--t-text-mute); font-size:var(--f-xs); letter-spacing:0.04em; text-transform:uppercase; }
 
-  .export-row { display:flex; align-items:center; gap:8px; margin-top:6px; font-size:0.85em; flex-wrap:wrap; }
-  .export-row label { color:#888; }
-  .export-row input, .export-row select { background:var(--t-btn); color:#e0e0e0; border:1px solid var(--t-btn-border);
-    border-radius:3px; padding:3px 6px; font-family:monospace; font-size:0.85em; }
-  .export-row button { padding:3px 10px; background:#27ae60; color:#fff; border:none;
-    border-radius:3px; cursor:pointer; font-family:monospace; }
-  .export-row button:hover { background:#2ecc71; }
-  .export-row button:disabled { background:#555; cursor:default; }
-  .export-status { color:#888; font-size:0.8em; }
+  .time-display { color:var(--t-text-dim); font-size:var(--f-sm); min-width:60px; font-variant-numeric:tabular-nums; }
+  .play-clock   { color:var(--t-err);  font-size:var(--f-md); font-weight:700; min-width:70px; font-variant-numeric:tabular-nums; }
 
-  .no-data { color:#666; text-align:center; padding:60px 0; font-size:1.1em; }
+  .export-row { display:flex; align-items:center; gap:var(--s-2); margin-top:var(--s-2); font-size:var(--f-sm); flex-wrap:wrap; }
+  .export-row label { color:var(--t-text-dim); }
+  .export-row input, .export-row select {
+    background:var(--t-btn); color:var(--t-text);
+    border:1px solid var(--t-border);
+    border-radius:var(--r-sm);
+    padding:2px var(--s-1); font:inherit; font-size:var(--f-sm);
+  }
+  .export-status { color:var(--t-text-dim); font-size:var(--f-xs); }
 
-  .toolbar button.danger { border-color:#c0392b; color:#e74c3c; }
-  .toolbar button.danger:hover { background:#c0392b; color:#fff; }
-  .toolbar button.pb-active { border-color:#2ecc71; color:#2ecc71; }
-  .toolbar .mgmt-status { color:#888; font-size:0.85em; }
-  .toolbar .disk-total { color:#666; font-family:monospace; }
-  .toolbar .sep { border-left:1px solid #333; height:18px; }
+  .no-data {
+    color:var(--t-text-mute); text-align:center;
+    padding:var(--s-6) 0; font-size:var(--f-md);
+  }
+
+  .rb.pb-active { border-color:var(--t-ok); color:var(--t-ok); }
+
+  .mgmt-status { color:var(--t-text-dim); font-size:var(--f-sm); }
+  .disk-total  { color:var(--t-text-mute); font-variant-numeric:tabular-nums; }
+  .range-meta  { color:var(--t-text-dim); }
+  .pb-time     { color:var(--t-ok); font-weight:700; min-width:60px; font-variant-numeric:tabular-nums; }
+  .tb-spacer   { margin-left:auto; }
+  .sep { border-left:1px solid var(--t-border); height:18px; }
 </style>
 </head>
 <body>
 
 <div class="toolbar" id="toolbar" style="display:none;">
-  <button onclick="zoomIn()">+</button>
-  <button onclick="zoomOut()">&minus;</button>
-  <button onclick="fitAll()">Fit All</button>
-  <button id="pb-btn" onclick="togglePlaybackMode()">Playback</button>
-  <span id="pb-time" style="color:#2ecc71;font-family:monospace;font-weight:bold;min-width:60px;"></span>
+  <button class="rb rb-sm" onclick="zoomIn()">+</button>
+  <button class="rb rb-sm" onclick="zoomOut()">&minus;</button>
+  <button class="rb rb-sm" onclick="fitAll()">Fit All</button>
+  <button id="pb-btn" class="rb rb-sm" onclick="togglePlaybackMode()">Playback</button>
+  <span id="pb-time" class="pb-time"></span>
   <span class="sep"></span>
-  <button onclick="mgmtDownloadAll()">Download ZIP</button>
-  <button onclick="mgmtArchiveAll()">Archive</button>
-  <button class="danger" onclick="mgmtDeleteAll()">Delete All</button>
+  <button class="rb rb-sm" onclick="mgmtDownloadAll()">Download ZIP</button>
+  <button class="rb rb-sm" onclick="mgmtArchiveAll()">Archive</button>
+  <button class="rb rb-sm rb-danger" onclick="mgmtDeleteAll()">Delete All</button>
   <span class="mgmt-status" id="mgmt-status"></span>
-  <span style="margin-left:auto;"></span>
+  <span class="tb-spacer"></span>
   <span class="disk-total" id="disk-total"></span>
-  <span id="time-range" style="color:#888;"></span>
+  <span id="time-range" class="range-meta"></span>
 </div>
 
 <div id="buses-container"></div>
@@ -136,13 +147,13 @@ function buildUI() {
       + '</div>'
       + '<div class="bus-canvas"><canvas id="cv-'+b.id+'" height="120" data-bus="'+b.id+'"></canvas></div>'
       + '<div class="bus-controls">'
-      + '<button onclick="busPlay(\''+b.id+'\')">&#9654;</button>'
-      + '<button onclick="busStop(\''+b.id+'\')">&#9632;</button>'
+      + '<button class="rb rb-sm" onclick="busPlay(\''+b.id+'\')"><span class="icon icon-play"></span></button>'
+      + '<button class="rb rb-sm" onclick="busStop(\''+b.id+'\')"><span class="icon icon-stop"></span></button>'
       + '<span class="time-display" id="td-'+b.id+'">--:--:--</span>'
       + '<span class="play-clock" id="pc-'+b.id+'"></span>'
       + '<input type="range" min="0" max="1000" value="0" id="seek-'+b.id+'" oninput="busSeek(\''+b.id+'\',this.value)">'
-      + '<span style="color:#666;font-size:0.8em;">Vol</span>'
-      + '<input type="range" min="0" max="100" value="50" style="width:40px;" id="vol-'+b.id+'" oninput="busVol(\''+b.id+'\',this.value)">'
+      + '<span class="vol-label">Vol</span>'
+      + '<input type="range" min="0" max="100" value="50" id="vol-'+b.id+'" oninput="busVol(\''+b.id+'\',this.value)">'
       + '</div>'
       + '<div class="export-row">'
       + '<label>Export:</label>'
@@ -150,7 +161,7 @@ function buildUI() {
       + '<label>to</label>'
       + '<input type="text" id="ee-'+b.id+'" size="8" placeholder="HH:MM:SS">'
       + '<select id="ef-'+b.id+'"><option value="mp3">MP3</option><option value="wav">WAV</option></select>'
-      + '<button onclick="busExport(\''+b.id+'\')">Download</button>'
+      + '<button class="rb rb-sm rb-primary" onclick="busExport(\''+b.id+'\')">Download</button>'
       + '<span class="export-status" id="ex-'+b.id+'"></span>'
       + '</div>'
       + '</div>';
@@ -283,6 +294,18 @@ function renderAll() {
   for (var i=0;i<buses.length;i++) renderBus(buses[i].id);
 }
 
+var _cssRoot = getComputedStyle(document.documentElement);
+function _cssc(name, fallback) {
+  return (_cssRoot.getPropertyValue(name).trim() || fallback);
+}
+var C_BG      = _cssc('--t-bg', '#0b1014');
+var C_ACCENT  = _cssc('--t-accent', '#4fd6e6');
+var C_OK      = _cssc('--t-ok', '#5dc47a');
+var C_ERR     = _cssc('--t-err', '#e04848');
+var C_MUTE    = _cssc('--t-text-mute', '#4d5a68');
+var C_DIM     = _cssc('--t-text-dim', '#7a8a99');
+var C_BORDER  = _cssc('--t-border', '#1e2a38');
+
 function renderBus(busId) {
   var st = busState[busId];
   if (!st || !st.canvas) return;
@@ -292,12 +315,12 @@ function renderBus(busId) {
   var waveH = (h - axisH) / 2;
   var centerY = waveH;
 
-  ctx.fillStyle = '#0d1117';
+  ctx.fillStyle = C_BG;
   ctx.fillRect(0,0,w,h);
 
   if (!wfm || !wfm.peaks || !wfm.peaks.length) {
     if (buses.find(function(b){return b.id===busId && b.segments===0;})) {
-      ctx.fillStyle = '#444';
+      ctx.fillStyle = C_MUTE;
       ctx.font = '12px monospace';
       ctx.textAlign = 'center';
       ctx.fillText('Waiting for audio...', w/2, h/2 - 10);
@@ -315,7 +338,7 @@ function renderBus(busId) {
   }
 
   // Peak envelope
-  ctx.fillStyle = 'rgba(52,152,219,0.25)';
+  ctx.fillStyle = C_ACCENT; ctx.globalAlpha = 0.25;
   for (var px=0;px<w;px++) {
     var s0 = pxToSample(px);
     var s1 = pxToSample(px+1);
@@ -325,7 +348,7 @@ function renderBus(busId) {
     if (ph>0) ctx.fillRect(px, centerY-ph, 1, ph*2);
   }
   // RMS envelope
-  ctx.fillStyle = 'rgba(52,152,219,0.8)';
+  ctx.globalAlpha = 0.8;
   for (var px=0;px<w;px++) {
     var s0 = pxToSample(px);
     var s1 = pxToSample(px+1);
@@ -335,15 +358,19 @@ function renderBus(busId) {
     if (rh>0) ctx.fillRect(px, centerY-rh, 1, rh*2);
   }
 
+  ctx.globalAlpha = 1;
+
   // Selection
   if (st.selStart !== null && st.selEnd !== null) {
     var sx = timeToPx(Math.min(st.selStart,st.selEnd), w);
     var ex = timeToPx(Math.max(st.selStart,st.selEnd), w);
-    ctx.fillStyle = 'rgba(46,204,113,0.25)';
+    ctx.fillStyle = C_OK; ctx.globalAlpha = 0.2;
     ctx.fillRect(sx, 0, ex-sx, h-axisH);
-    ctx.strokeStyle = 'rgba(46,204,113,0.7)';
+    ctx.globalAlpha = 0.7;
+    ctx.strokeStyle = C_OK;
     ctx.lineWidth = 1;
     ctx.strokeRect(sx, 0, ex-sx, h-axisH);
+    ctx.globalAlpha = 1;
   }
 
   // Browser playback cursor (red)
@@ -351,7 +378,7 @@ function renderBus(busId) {
     var cur = st.playStart + st.player.currentTime;
     if (cur >= viewStart && cur <= viewEnd) {
       var cx = timeToPx(cur, w);
-      ctx.strokeStyle = '#e74c3c';
+      ctx.strokeStyle = C_ERR;
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx, h-axisH); ctx.stroke();
     }
@@ -362,7 +389,7 @@ function renderBus(busId) {
     var sp = serverPlayback.position;
     if (sp >= viewStart && sp <= viewEnd) {
       var spx = timeToPx(sp, w);
-      ctx.strokeStyle = '#2ecc71';
+      ctx.strokeStyle = C_OK;
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(spx,0); ctx.lineTo(spx, h-axisH); ctx.stroke();
     }
@@ -372,20 +399,21 @@ function renderBus(busId) {
 }
 
 function drawTimeAxis(ctx, x, y, w, h) {
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillStyle = C_BG; ctx.globalAlpha = 0.5;
   ctx.fillRect(x, y, w, h);
+  ctx.globalAlpha = 1;
   var duration = viewEnd - viewStart;
   var intervals = [5,10,15,30,60,120,300,600,900,1800,3600,7200,14400,28800];
   var target = w / 100;
   var interval = 3600;
   for (var i=0;i<intervals.length;i++) { if (duration/intervals[i] <= target) { interval=intervals[i]; break; } }
-  ctx.font = '10px monospace';
+  ctx.font = '10px "JetBrains Mono", monospace';
   ctx.textAlign = 'center';
   var first = Math.ceil(viewStart / interval) * interval;
   for (var t=first; t<=viewEnd; t+=interval) {
     var px = timeToPx(t, w);
-    ctx.fillStyle = '#333'; ctx.fillRect(px, y, 1, 3);
-    ctx.fillStyle = '#666';
+    ctx.fillStyle = C_BORDER; ctx.fillRect(px, y, 1, 3);
+    ctx.fillStyle = C_DIM;
     var d = new Date(t*1000);
     var lbl = pad2(d.getHours())+':'+pad2(d.getMinutes());
     if (interval < 60) lbl += ':'+pad2(d.getSeconds());
@@ -438,9 +466,8 @@ function _highlightPlayBtn(busId, playing) {
   if (!sec) return;
   var btns = sec.querySelectorAll('.bus-controls button');
   if (btns.length > 0) {
-    btns[0].style.color = playing ? '#e74c3c' : '';
-    btns[0].style.borderColor = playing ? '#e74c3c' : '';
-    btns[0].innerHTML = playing ? '&#10074;&#10074;' : '&#9654;';
+    btns[0].classList.toggle('rb-danger', !!playing);
+    btns[0].innerHTML = playing ? '&#10074;&#10074;' : '<span class="icon icon-play"></span>';
   }
 }
 

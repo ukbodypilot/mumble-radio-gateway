@@ -291,12 +291,19 @@
     text-transform: uppercase;
     margin-bottom: var(--s-2);
   }
+
+  /* Utility helpers */
+  .rb.ml-3 { margin-left: var(--s-3); }
+  .rts-state { font-weight: 600; }
+  .slider-stack { margin-bottom: var(--s-2); }
+  .icon-row.mt-3 { margin-top: var(--s-3); }
+  .ptt-spacer { height: 10px; }
 </style>
 </head><body>
 
 <div id="cat-offline" class="offline" style="display:none;">
   <span id="cat-offline-msg" class="msg">CAT not connected</span>
-  <button id="cat-connect-btn" onclick="catConnect()" class="rb" style="margin-left:var(--s-3);">Connect</button>
+  <button id="cat-connect-btn" onclick="catConnect()" class="rb ml-3">Connect</button>
   <span id="cat-connect-status" class="status"></span>
 </div>
 
@@ -317,7 +324,7 @@
     <button onclick="chargerToggle()" class="rb rb-sm">Charger</button>
     <span class="sep">|</span>
     <span class="lbl">RTS TX:</span>
-    <span id="rts-state" style="font-weight:600;">&mdash;</span>
+    <span id="rts-state" class="rts-state">&mdash;</span>
     <button onclick="catCmd('TOGGLE_RTS')" class="rb rb-sm">Toggle RTS</button>
   </div>
 
@@ -363,7 +370,7 @@
         <button class="rb" onclick="catCmd('L_DIAL_PRESS')">SEL</button>
         <button class="rb" onclick="catCmd('L_DIAL_RIGHT')">Up &#9654;</button>
       </div>
-      <div style="margin-bottom:var(--s-2);">
+      <div class="slider-stack">
         <div class="slider-row">
           <span class="lbl">VOL</span>
           <input id="l-vol" type="range" min="0" max="100" value="25" oninput="catVol('LEFT',this.value)">
@@ -428,7 +435,7 @@
         <button class="rb" onclick="catCmd('R_DIAL_PRESS')">SEL</button>
         <button class="rb" onclick="catCmd('R_DIAL_RIGHT')">Up &#9654;</button>
       </div>
-      <div style="margin-bottom:var(--s-2);">
+      <div class="slider-stack">
         <div class="slider-row">
           <span class="lbl">VOL</span>
           <input id="r-vol" type="range" min="0" max="100" value="25" oninput="catVol('RIGHT',this.value)">
@@ -467,7 +474,7 @@
         <button class="rb" onclick="catCmd('R_SET_VFO')">VFO&#8594;R</button>
         <button class="rb" onclick="catCmd('L_VOLUME_HOLD')">Single VFO</button>
       </div>
-      <div class="icon-row" style="margin-top:var(--s-3);">
+      <div class="icon-row mt-3">
         <span id="c-apo"  class="icon-off">APO</span>
         <span id="c-lock" class="icon-off">LOCK</span>
         <span id="c-set"  class="icon-off">SET</span>
@@ -479,7 +486,7 @@
       <div class="sec-head">PTT</div>
       <div class="ptt-wrap">
         <div class="ptt-col">
-          <div style="height:10px;"></div>
+          <div class="ptt-spacer"></div>
           <button id="ptt-btn" class="ptt-pad" onclick="togglePTT()">PTT</button>
           <span class="ptt-hint">Toggle TX</span>
         </div>

@@ -7,61 +7,83 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
-  .rpt-panel { background:var(--t-panel); border:1px solid var(--t-border); border-radius:6px; padding:14px; font-family:monospace; font-size:0.9em; }
-  .rpt-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
-  .rpt-select { background:var(--t-btn,#0d1b2a); border:1px solid var(--t-btn-border,#1b3a5c); color:#e0e0e0; padding:4px 8px; border-radius:3px; font-family:monospace; }
-  .rpt-btn { padding:4px 12px; border:1px solid var(--t-btn-border,#1b3a5c); border-radius:4px; background:var(--t-btn,#0d1b2a); color:#e0e0e0; cursor:pointer; font-family:monospace; font-size:0.85em; }
-  .rpt-btn:hover { background:var(--t-btn-hover,#1a2744); border-color:var(--t-accent,#00d4ff); }
-  .rpt-btn.active-master { background:#2980b9; color:#fff; border-color:#3498db; }
-  .rpt-btn.active-slave { background:#8e44ad; color:#fff; border-color:#9b59b6; }
-  #rpt-map { height:300px; border-radius:6px; border:1px solid var(--t-border); margin-bottom:10px; }
-  table { width:100%; border-collapse:collapse; }
-  th { text-align:left; color:var(--t-accent); border-bottom:1px solid var(--t-border); padding:4px 8px; font-size:0.85em; position:sticky; top:0; background:var(--t-panel); }
-  td { padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.05); white-space:nowrap; }
-  tr:hover { background:rgba(0,212,255,0.05); }
-  tr.selected { background:rgba(0,212,255,0.15); }
-  tr.sdr-master { background:rgba(41,128,185,0.15); }
-  tr.sdr-slave { background:rgba(142,68,173,0.15); }
-  .rpt-open { color:#2ecc71; } .rpt-closed { color:#e74c3c; }
-  .rpt-status { font-size:0.8em; margin-left:8px; color:#888; }
-  #rpt-count { color:var(--t-accent); font-weight:bold; }
-  .sdr-bar { display:flex; gap:12px; align-items:center; padding:10px 14px; flex-wrap:wrap; }
-  .sdr-slot { display:flex; align-items:center; gap:6px; }
-  .sdr-label { font-weight:bold; font-size:0.9em; }
-  .sdr-freq { color:var(--t-accent); min-width:100px; }
-  .sdr-call { color:#888; min-width:80px; }
-  .sdr-clear { cursor:pointer; color:#e74c3c; font-size:0.8em; }
-  .sdr-clear:hover { color:#fff; }
-  .set-btn { padding:6px 20px; font-size:1em; font-weight:bold; }
+  .rpt-controls { display:flex; gap:var(--s-2); align-items:center; flex-wrap:wrap; margin-bottom:var(--s-2); }
+  .rpt-select {
+    background:var(--t-btn); border:1px solid var(--t-border);
+    color:var(--t-text); padding:var(--s-1) var(--s-2);
+    border-radius:var(--r-sm); font:inherit; font-size:var(--f-sm);
+  }
+  .rpt-ctl-label { color:var(--t-text-dim); font-size:var(--f-sm); }
+
+  #rpt-map { height:300px; border-radius:var(--r-md); border:1px solid var(--t-border); margin-bottom:var(--s-3); }
+
+  .rpt-panel-tight { margin-bottom:var(--s-2); }
+  .rpt-panel-scroll { max-height:400px; overflow-y:auto; }
+
+  table { width:100%; border-collapse:collapse; font-size:var(--f-sm); }
+  th {
+    text-align:left; color:var(--t-accent);
+    border-bottom:1px solid var(--t-border);
+    padding:var(--s-1) var(--s-2);
+    font-size:var(--f-xs); font-weight:600;
+    letter-spacing:0.06em; text-transform:uppercase;
+    position:sticky; top:0; background:var(--t-panel);
+  }
+  td { padding:var(--s-1) var(--s-2); border-bottom:1px solid var(--t-border); white-space:nowrap; }
+  tr { cursor:pointer; }
+  tr:hover     { background:color-mix(in srgb, var(--t-accent) 6%, transparent); }
+  tr.selected  { background:color-mix(in srgb, var(--t-accent) 14%, transparent); }
+  tr.sdr-master{ background:color-mix(in srgb, var(--t-accent) 10%, transparent); }
+  tr.sdr-slave { background:color-mix(in srgb, var(--t-warn) 10%, transparent); }
+
+  .rpt-open   { color:var(--t-ok); }
+  .rpt-closed { color:var(--t-err); }
+  .rpt-status { font-size:var(--f-xs); margin-left:var(--s-2); color:var(--t-text-dim); }
+  #rpt-count  { color:var(--t-accent); font-weight:600; }
+
+  .sdr-bar { display:flex; gap:var(--s-3); align-items:center; flex-wrap:wrap; }
+  .sdr-slot { display:flex; align-items:center; gap:var(--s-2); }
+  .sdr-label { font-weight:600; font-size:var(--f-sm); letter-spacing:0.04em; }
+  .sdr-label.master { color:var(--t-accent); }
+  .sdr-label.slave  { color:var(--t-warn); }
+  .sdr-freq { color:var(--t-accent); min-width:100px; font-variant-numeric:tabular-nums; }
+  .sdr-call { color:var(--t-text-dim); min-width:80px; }
+  .sdr-clear { cursor:pointer; color:var(--t-err); font-size:var(--f-md); line-height:1; padding:0 var(--s-1); }
+  .sdr-clear:hover { color:var(--t-text); }
+  .set-btn { font-size:var(--f-sm); font-weight:700; letter-spacing:0.08em; }
   .set-btn:disabled { opacity:0.3; cursor:default; }
+
+  .rpt-row-btn { padding:1px var(--s-1); font-size:var(--f-xs); }
+  .rb.active-master { background:var(--t-accent); color:var(--t-bg); border-color:var(--t-accent); }
+  .rb.active-slave  { background:var(--t-warn);   color:var(--t-bg); border-color:var(--t-warn); }
 </style>
 </head><body>
 
 <div id="rpt-map"></div>
 
 <!-- SDR assignment bar -->
-<div class="rpt-panel" style="margin-bottom:10px;">
+<div class="panel rpt-panel-tight">
   <div class="sdr-bar">
     <div class="sdr-slot">
-      <span class="sdr-label" style="color:#3498db;">SDR1 (Master):</span>
+      <span class="sdr-label master">SDR1 (Master):</span>
       <span class="sdr-freq" id="sdr1-freq">--</span>
       <span class="sdr-call" id="sdr1-call"></span>
       <span class="sdr-clear" id="sdr1-clear" onclick="clearSdr(1)" style="display:none;">&times;</span>
     </div>
     <div class="sdr-slot">
-      <span class="sdr-label" style="color:#9b59b6;">SDR2 (Slave):</span>
+      <span class="sdr-label slave">SDR2 (Slave):</span>
       <span class="sdr-freq" id="sdr2-freq">--</span>
       <span class="sdr-call" id="sdr2-call"></span>
       <span class="sdr-clear" id="sdr2-clear" onclick="clearSdr(2)" style="display:none;">&times;</span>
     </div>
-    <button class="rpt-btn set-btn" id="sdr-set-btn" onclick="sdrSet()" disabled>SET</button>
+    <button class="rb rb-primary set-btn" id="sdr-set-btn" onclick="sdrSet()" disabled>SET</button>
     <span class="rpt-status" id="sdr-status"></span>
   </div>
 </div>
 
-<div class="rpt-panel" style="margin-bottom:10px;">
+<div class="panel rpt-panel-tight">
   <div class="rpt-controls">
-    <label style="color:#888;">Band:</label>
+    <label class="rpt-ctl-label">Band:</label>
     <select id="filt-band" class="rpt-select" onchange="loadRepeaters()">
       <option value="">All</option>
       <option value="6m">6m</option>
@@ -71,7 +93,7 @@
       <option value="33cm">33cm</option>
       <option value="23cm">23cm</option>
     </select>
-    <label style="color:#888;">Radius:</label>
+    <label class="rpt-ctl-label">Radius:</label>
     <select id="filt-radius" class="rpt-select" onchange="loadRepeaters()">
       <option value="10">10 km</option>
       <option value="25">25 km</option>
@@ -79,14 +101,14 @@
       <option value="100">100 km</option>
       <option value="200">200 km</option>
     </select>
-    <label style="color:#888;"><input type="checkbox" id="filt-operational" checked onchange="loadRepeaters()" style="accent-color:var(--t-accent);"> Operational only</label>
-    <button class="rpt-btn" onclick="loadRepeaters()">Refresh</button>
+    <label class="tgl"><input type="checkbox" id="filt-operational" checked onchange="loadRepeaters()"> Operational only</label>
+    <button class="rb rb-sm" onclick="loadRepeaters()">Refresh</button>
     <span id="rpt-count">--</span>
     <span class="rpt-status" id="rpt-status"></span>
   </div>
 </div>
 
-<div class="rpt-panel" style="max-height:400px; overflow-y:auto;">
+<div class="panel rpt-panel-scroll">
   <table>
     <thead>
       <tr>
@@ -95,7 +117,7 @@
       </tr>
     </thead>
     <tbody id="rpt-body">
-      <tr><td colspan="10" style="color:#888;">Loading...</td></tr>
+      <tr><td colspan="10" class="rpt-status">Loading...</td></tr>
     </tbody>
   </table>
 </div>
@@ -106,7 +128,13 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap', maxZoom: 19
 }).addTo(_map);
 
-var _gpsMarker = L.circleMarker([33.7455, -117.8677], {radius:8, color:'#00d4ff', fillColor:'#00d4ff', fillOpacity:0.8, weight:2}).addTo(_map);
+var _css = getComputedStyle(document.documentElement);
+var _cAccent = _css.getPropertyValue('--t-accent').trim() || '#4fd6e6';
+var _cOk     = _css.getPropertyValue('--t-ok').trim()     || '#5dc47a';
+var _cErr    = _css.getPropertyValue('--t-err').trim()    || '#e04848';
+var _cWarn   = _css.getPropertyValue('--t-warn').trim()   || '#e89d3c';
+
+var _gpsMarker = L.circleMarker([33.7455, -117.8677], {radius:8, color:_cAccent, fillColor:_cAccent, fillOpacity:0.8, weight:2}).addTo(_map);
 var _markers = L.layerGroup().addTo(_map);
 var _repeaters = [];
 var _sdr1 = null;  // {idx, freq, callsign}
@@ -183,21 +211,24 @@ function sdrSet() {
     .then(function(d){
       btn.textContent = 'SET';
       btn.disabled = false;
+      var ss = document.getElementById('sdr-status');
+      ss.className = 'rpt-status';
       if (d.ok) {
         var parts = [];
         if (_sdr1) parts.push('SDR1→' + _sdr1.freq.toFixed(3));
         if (_sdr2) parts.push('SDR2→' + _sdr2.freq.toFixed(3));
-        document.getElementById('sdr-status').style.color = '#2ecc71';
-        document.getElementById('sdr-status').textContent = parts.join(', ') + ' — restarting (~12s)';
+        ss.classList.add('green');
+        ss.textContent = parts.join(', ') + ' — restarting (~12s)';
       } else {
-        document.getElementById('sdr-status').style.color = '#e74c3c';
-        document.getElementById('sdr-status').textContent = 'Error: ' + (d.error || 'unknown');
+        ss.classList.add('red');
+        ss.textContent = 'Error: ' + (d.error || 'unknown');
       }
     }).catch(function(e){
       btn.textContent = 'SET';
       btn.disabled = false;
-      document.getElementById('sdr-status').style.color = '#e74c3c';
-      document.getElementById('sdr-status').textContent = 'Error: ' + e.message;
+      var ss = document.getElementById('sdr-status');
+      ss.className = 'rpt-status red';
+      ss.textContent = 'Error: ' + e.message;
     });
 }
 
@@ -246,14 +277,14 @@ function loadRepeaters() {
       html += '<td>' + (r.band || '') + '</td>';
       html += '<td>' + (r.nearestCity || '') + '</td>';
       html += '<td class="' + openCls + '">' + openTxt + '</td>';
-      html += '<td style="white-space:nowrap;">';
-      html += '<button class="rpt-btn master-btn" id="master-' + i + '" onclick="event.stopPropagation();assignSdr(1,' + i + ')" title="Assign to SDR1 (Master)" style="padding:2px 6px;font-size:0.8em;">M</button> ';
-      html += '<button class="rpt-btn slave-btn" id="slave-' + i + '" onclick="event.stopPropagation();assignSdr(2,' + i + ')" title="Assign to SDR2 (Slave)" style="padding:2px 6px;font-size:0.8em;">S</button>';
+      html += '<td>';
+      html += '<button class="rb rb-sm rpt-row-btn master-btn" id="master-' + i + '" onclick="event.stopPropagation();assignSdr(1,' + i + ')" title="Assign to SDR1 (Master)">M</button> ';
+      html += '<button class="rb rb-sm rpt-row-btn slave-btn" id="slave-' + i + '" onclick="event.stopPropagation();assignSdr(2,' + i + ')" title="Assign to SDR2 (Slave)">S</button>';
       html += '</td>';
-      html += '<td><button class="rpt-btn" onclick="event.stopPropagation();tuneRepeater(' + i + ')" style="padding:2px 6px;font-size:0.8em;">Tune</button></td>';
+      html += '<td><button class="rb rb-sm rpt-row-btn" onclick="event.stopPropagation();tuneRepeater(' + i + ')">Tune</button></td>';
       html += '</tr>';
     }
-    if (!html) html = '<tr><td colspan="10" style="color:#888;">No repeaters found</td></tr>';
+    if (!html) html = '<tr><td colspan="10" class="rpt-status">No repeaters found</td></tr>';
     tbody.innerHTML = html;
     highlightRows();
 
@@ -261,7 +292,7 @@ function loadRepeaters() {
     _markers.clearLayers();
     for (var i = 0; i < _repeaters.length; i++) {
       var r = _repeaters[i];
-      var color = r.band === '2m' ? '#2ecc71' : r.band === '70cm' ? '#e74c3c' : '#f1c40f';
+      var color = r.band === '2m' ? _cOk : r.band === '70cm' ? _cErr : _cWarn;
       var m = L.circleMarker([r.latitude, r.longitude], {
         radius: 5, color: color, fillColor: color, fillOpacity: 0.7, weight: 1
       });
