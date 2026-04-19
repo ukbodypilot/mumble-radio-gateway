@@ -92,9 +92,17 @@ def _resolve_freq_tag(gateway, source_id):
         if source_id in ('th9800', 'aioc'):
             cat = getattr(gateway, 'cat_client', None)
             if cat:
-                freq = getattr(cat, '_frequency', 0) or getattr(cat, 'frequency', 0)
-                if freq:
-                    return f'{freq:.3f}' if isinstance(freq, float) else str(freq)
+                # TH-9800 always receives on the LEFT VFO. _vfo_text is the
+                # 6-char display, usually kHz (e.g. "147435" → 147.435 MHz)
+                # but can also be dotted MHz. Normalise both.
+                text = (getattr(cat, '_vfo_text', {}) or {}).get('LEFT', '').strip()
+                if text:
+                    digits = text.replace('.', '').lstrip('0') or '0'
+                    try:
+                        khz = int(digits)
+                        return f'{khz / 1000:.3f}'
+                    except ValueError:
+                        return text
         if source_id == 'kv4p':
             kv = getattr(gateway, 'kv4p_plugin', None)
             if kv:

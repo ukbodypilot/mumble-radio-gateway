@@ -43,6 +43,8 @@
     border-left: 3px solid var(--t-accent);
   }
   .tx-time     { color: var(--t-accent); font-weight: 600; font-size: var(--f-sm); font-variant-numeric: tabular-nums; }
+  .tx-source   { color: var(--t-text-dim); font-size: var(--f-xs); margin-left: var(--s-2); text-transform: uppercase; letter-spacing: 0.5px; }
+  .tx-freq     { color: var(--t-text-dim); font-size: var(--f-xs); margin-left: var(--s-1); font-variant-numeric: tabular-nums; }
   .tx-duration { color: var(--t-text-dim); font-size: var(--f-xs); margin-left: var(--s-2); }
   .tx-text     { color: var(--t-text); margin-top: 2px; font-size: var(--f-md); line-height: 1.4; }
   .tx-pending  { color: var(--t-warn); font-style: italic; }
@@ -324,6 +326,8 @@ function renderList() {
     var e = _entries[i];
     html += '<div class="tx-entry">';
     html += '<span class="tx-time">' + e.time_str + '</span>';
+    if (e.source) html += '<span class="tx-source">' + _escHtml(e.source) + '</span>';
+    if (e.freq) html += '<span class="tx-freq">' + _escHtml(e.freq) + ' MHz</span>';
     html += '<span class="tx-duration">';
     if (e.duration) html += e.duration + 's';
     if (e.proc_time) html += ' &rarr; ' + e.proc_time + 's';
