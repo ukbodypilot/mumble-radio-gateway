@@ -269,7 +269,7 @@ class WebConfigServer:
         'RELAY_CHARGER_CONTROL': ['gpio', 'serial'],
         'TTS_ENGINE': [('edge', 'edge — Microsoft Neural (natural)'), ('gtts', 'gtts — Google Translate (robotic)')],
         'WEB_CONFIG_HTTPS': ['false', 'self-signed', 'letsencrypt'],
-        'WEB_THEME': ['blue', 'red', 'green', 'purple', 'amber', 'teal', 'pink'],
+        'WEB_THEME': ['grey', 'blue', 'red', 'green', 'purple', 'amber', 'teal', 'pink'],
         'STREAM_FORMAT': ['mp3'],
         'CAT_LEFT_POWER': ['', 'L', 'M', 'H'],
         'CAT_RIGHT_POWER': ['', 'L', 'M', 'H'],
@@ -573,6 +573,10 @@ class WebConfigServer:
     # and ok/warn/err fall back to common.css defaults so status colors remain
     # legible and the neutral greys stay neutral across themes.
     THEMES = {
+        'grey':   {'bg': '#0b1014', 'panel': '#121820', 'border': '#1e2a38', 'accent': '#4fd6e6',
+                   'btn': '#0e131a', 'btn_border': '#1e2a38', 'btn_hover': '#1a2230',
+                   'btn_active_bg': '#2c3e52', 'checkbox': '#4fd6e6',
+                   'panel_hi': '#1a2230', 'border_hi': '#2c3e52'},
         'blue':   {'bg': '#0b1014', 'panel': '#121820', 'border': '#1e2a38', 'accent': '#4fd6e6',
                    'btn': '#0e131a', 'btn_border': '#1e2a38', 'btn_hover': '#1a2230',
                    'btn_active_bg': '#2c3e52', 'checkbox': '#4fd6e6',
