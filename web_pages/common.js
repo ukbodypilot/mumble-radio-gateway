@@ -21,6 +21,15 @@ function loadTheme() {
       root.style.setProperty('--t-btn-hover', t.btn_hover);
       root.style.setProperty('--t-btn-active', t.btn_active_bg);
       root.style.setProperty('--t-checkbox', t.checkbox);
+      // Semantic tokens — each key optional; common.css defaults apply if absent.
+      if (t.panel_hi)  root.style.setProperty('--t-panel-hi',  t.panel_hi);
+      if (t.border_hi) root.style.setProperty('--t-border-hi', t.border_hi);
+      if (t.text)      root.style.setProperty('--t-text',      t.text);
+      if (t.text_dim)  root.style.setProperty('--t-text-dim',  t.text_dim);
+      if (t.text_mute) root.style.setProperty('--t-text-mute', t.text_mute);
+      if (t.ok)        root.style.setProperty('--t-ok',        t.ok);
+      if (t.warn)      root.style.setProperty('--t-warn',      t.warn);
+      if (t.err)       root.style.setProperty('--t-err',       t.err);
       if (t.gateway_name) {
         document.title = t.gateway_name + ' - ' + document.title;
       }

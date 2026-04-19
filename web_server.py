@@ -569,29 +569,51 @@ class WebConfigServer:
 
     # Color themes — values here override common.css defaults via /theme endpoint.
     # Default 'blue' is now the phosphor palette (matches common.css).
-    # Other themes are legacy — to be retuned in a later pass.
+    # Semantic tokens (ok/warn/err/text*/panel_hi/border_hi) are tuned per theme
+    # so status colors stay legible against each hue family.
     THEMES = {
         'blue':   {'bg': '#0b1014', 'panel': '#121820', 'border': '#1e2a38', 'accent': '#4fd6e6',
                    'btn': '#0e131a', 'btn_border': '#1e2a38', 'btn_hover': '#1a2230',
-                   'btn_active_bg': '#2c3e52', 'checkbox': '#4fd6e6'},
+                   'btn_active_bg': '#2c3e52', 'checkbox': '#4fd6e6',
+                   'panel_hi': '#1a2230', 'border_hi': '#2c3e52',
+                   'text': '#d6dee6', 'text_dim': '#7a8a99', 'text_mute': '#4d5a68',
+                   'ok': '#5dc47a', 'warn': '#e89d3c', 'err': '#e04848'},
         'red':    {'bg': '#1a1212', 'panel': '#2e1616', 'border': '#601010', 'accent': '#ff4444',
                    'btn': '#1e0d0d', 'btn_border': '#5c1b1b', 'btn_hover': '#3a1a1a',
-                   'btn_active_bg': '#601010', 'checkbox': '#ff4444'},
+                   'btn_active_bg': '#601010', 'checkbox': '#ff4444',
+                   'panel_hi': '#3a1a1a', 'border_hi': '#7a1818',
+                   'text': '#e6d6d6', 'text_dim': '#998080', 'text_mute': '#6a5050',
+                   'ok': '#5dc47a', 'warn': '#e89d3c', 'err': '#ff6b6b'},
         'green':  {'bg': '#121a14', 'panel': '#162e1a', 'border': '#0f6020', 'accent': '#2ecc71',
                    'btn': '#0d1e10', 'btn_border': '#1b5c2a', 'btn_hover': '#1a3a20',
-                   'btn_active_bg': '#0f6020', 'checkbox': '#2ecc71'},
+                   'btn_active_bg': '#0f6020', 'checkbox': '#2ecc71',
+                   'panel_hi': '#1a3a20', 'border_hi': '#18781f',
+                   'text': '#d6e6d8', 'text_dim': '#809988', 'text_mute': '#506a56',
+                   'ok': '#7ee096', 'warn': '#e89d3c', 'err': '#e04848'},
         'purple': {'bg': '#1a1226', 'panel': '#261638', 'border': '#3d0f60', 'accent': '#b56eff',
                    'btn': '#160d24', 'btn_border': '#3d1b5c', 'btn_hover': '#2a1a44',
-                   'btn_active_bg': '#3d0f60', 'checkbox': '#b56eff'},
+                   'btn_active_bg': '#3d0f60', 'checkbox': '#b56eff',
+                   'panel_hi': '#2a1a44', 'border_hi': '#4e1878',
+                   'text': '#ddd6e6', 'text_dim': '#8f8099', 'text_mute': '#5a506a',
+                   'ok': '#5dc47a', 'warn': '#e89d3c', 'err': '#e04848'},
         'amber':  {'bg': '#1a1710', 'panel': '#2e2616', 'border': '#60480f', 'accent': '#ffb830',
                    'btn': '#1e1a0d', 'btn_border': '#5c481b', 'btn_hover': '#3a301a',
-                   'btn_active_bg': '#60480f', 'checkbox': '#ffb830'},
+                   'btn_active_bg': '#60480f', 'checkbox': '#ffb830',
+                   'panel_hi': '#3a301a', 'border_hi': '#78591c',
+                   'text': '#e6ddd0', 'text_dim': '#998a78', 'text_mute': '#6a5d48',
+                   'ok': '#5dc47a', 'warn': '#ffd166', 'err': '#e04848'},
         'teal':   {'bg': '#101a1a', 'panel': '#162e2e', 'border': '#0f6060', 'accent': '#2ed8d8',
                    'btn': '#0d1e1e', 'btn_border': '#1b5c5c', 'btn_hover': '#1a3a3a',
-                   'btn_active_bg': '#0f6060', 'checkbox': '#2ed8d8'},
+                   'btn_active_bg': '#0f6060', 'checkbox': '#2ed8d8',
+                   'panel_hi': '#1a3a3a', 'border_hi': '#187878',
+                   'text': '#d6e6e6', 'text_dim': '#809999', 'text_mute': '#506a6a',
+                   'ok': '#5dc47a', 'warn': '#e89d3c', 'err': '#e04848'},
         'pink':   {'bg': '#1a1018', 'panel': '#2e1628', 'border': '#600f50', 'accent': '#ff69b4',
                    'btn': '#1e0d1a', 'btn_border': '#5c1b4a', 'btn_hover': '#3a1a32',
-                   'btn_active_bg': '#600f50', 'checkbox': '#ff69b4'},
+                   'btn_active_bg': '#600f50', 'checkbox': '#ff69b4',
+                   'panel_hi': '#3a1a32', 'border_hi': '#78186a',
+                   'text': '#e6d6df', 'text_dim': '#99808e', 'text_mute': '#6a505f',
+                   'ok': '#5dc47a', 'warn': '#e89d3c', 'err': '#e04848'},
     }
 
     def _get_theme(self):
@@ -1309,6 +1331,14 @@ class WebConfigServer:
     --t-accent: {t['accent']}; --t-btn: {t['btn']}; --t-btn-border: {t['btn_border']};
     --t-btn-hover: {t['btn_hover']}; --t-btn-active: {t['btn_active_bg']};
     --t-checkbox: {t['checkbox']};
+    --t-panel-hi: {t.get('panel_hi', t['btn_hover'])};
+    --t-border-hi: {t.get('border_hi', t['btn_active_bg'])};
+    --t-text: {t.get('text', '#d6dee6')};
+    --t-text-dim: {t.get('text_dim', '#7a8a99')};
+    --t-text-mute: {t.get('text_mute', '#4d5a68')};
+    --t-ok: {t.get('ok', '#5dc47a')};
+    --t-warn: {t.get('warn', '#e89d3c')};
+    --t-err: {t.get('err', '#e04848')};
   }}
   * {{ box-sizing: border-box; }}
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
