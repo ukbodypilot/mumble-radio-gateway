@@ -424,17 +424,16 @@ class GatewayLinkServer:
                     pass
                 return
 
-            # Check for duplicate name
+            # Check for duplicate name — evict the stale entry and accept the new one
             with self._endpoints_lock:
                 if ep_name in self._endpoints:
-                    print(f"  [Link] Duplicate endpoint name '{ep_name}' from "
-                          f"{addr[0]}:{addr[1]}, rejecting")
+                    old = self._endpoints[ep_name]
+                    print(f"  [Link] Endpoint '{ep_name}' reconnected from "
+                          f"{addr[0]}:{addr[1]}, replacing stale connection")
                     try:
-                        P.send_frame(sock, P.COMMAND,
-                                     json.dumps({"error": f"name '{ep_name}' already connected"}).encode('utf-8'))
-                    except (OSError, ConnectionError):
+                        old.sock.close()
+                    except OSError:
                         pass
-                    return
 
                 # Build endpoint and store
                 ep = _EndpointConn(ep_name, sock, addr)
