@@ -323,22 +323,23 @@
     pointer-events: none;
     z-index: 2;
   }
-  .level-bar::before { left: 70%; background: var(--t-warn); opacity: 0.35; }
-  .level-bar::after  { left: 95%; background: var(--t-err);  opacity: 0.45; }
+  .level-bar::before { left: 70%; background: var(--t-warn); opacity: 0.6; }
+  .level-bar::after  { left: 95%; background: var(--t-err);  opacity: 0.7; }
   .level-fill {
     display: block;
     height: calc(100% - 4px);
     margin: 2px 0;
-    width: 0%;
-    background: var(--node-color, var(--t-accent));
-    box-shadow: 0 0 4px currentColor;
-    color: var(--node-color, var(--t-accent));
+    width: 100%;
+    transform: scaleX(0);
+    transform-origin: left;
+    background: linear-gradient(to right,
+      var(--t-ok)   0%,  var(--t-ok)   70%,
+      var(--t-warn) 70%, var(--t-warn) 95%,
+      var(--t-err)  95%
+    );
+    box-shadow: 0 0 4px var(--t-ok);
     position: relative; z-index: 1;
-    transition: width 0.08s linear;
-  }
-  .drawflow-node.node-muted .level-fill,
-  .drawflow-node.ptt-active {
-    --node-color: var(--t-err);
+    transition: transform 0.08s linear;
   }
   .drawflow-node.ptt-active {
     border-color: var(--t-err);
@@ -1290,8 +1291,8 @@ function _setLevel(fillEl, raw, key) {
   var a = rising ? 1.0 : 0.15;
   var s = prev + (v - prev) * a;
   _lvlSmooth[key] = s;
-  fillEl.style.transition = 'width ' + (rising ? '0.08s' : '0.2s') + ' linear';
-  fillEl.style.width = s + '%';
+  fillEl.style.transition = 'transform ' + (rising ? '0.08s' : '0.2s') + ' linear';
+  fillEl.style.transform = 'scaleX(' + (s / 100) + ')';
 }
 function pollLevels() {
   fetch('/routing/levels')
