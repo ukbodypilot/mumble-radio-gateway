@@ -338,7 +338,6 @@
     );
     box-shadow: 0 0 4px var(--t-ok);
     position: relative; z-index: 1;
-    transition: clip-path 0.08s linear;
   }
   .drawflow-node.ptt-active {
     border-color: var(--t-err);
@@ -1299,7 +1298,6 @@ function _setLevel(fillEl, raw, key) {
   var lastClip = _lvlLastClip[key];
   if (lastClip === undefined || Math.abs(s - lastClip) > 1) {
     _lvlLastClip[key] = s;
-    fillEl.style.transition = 'clip-path ' + (rising ? '0.08s' : '0.2s') + ' linear';
     fillEl.style.clipPath = 'inset(0 ' + (100 - s) + '% 0 0)';
   }
 }
