@@ -3002,6 +3002,21 @@ class RadioGateway:
                     print(f"  [Broadcastify] Stream dropped! (reconnect attempts: {rc})")
                     self.notify("Broadcastify stream dropped", level='error')
                     self._send_stream_alert("Broadcastify stream dropped and is reconnecting.")
+                elif not so.connected and not so._was_connected and not getattr(so, '_reconnecting', False):
+                    # Initial connection failed at startup (e.g. DNS was down) — keep retrying
+                    print("  [Broadcastify] Retrying initial connection...")
+                    so._reconnecting = True
+                    def _retry_initial():
+                        try:
+                            so._connect()
+                            if so.connected:
+                                print("  [Broadcastify] Initial connection succeeded on retry")
+                        except Exception as e:
+                            print(f"  [Broadcastify] Retry failed: {e}")
+                        finally:
+                            so._reconnecting = False
+                    threading.Thread(target=_retry_initial, daemon=True,
+                                     name="Broadcastify-init-retry").start()
 
             # Charger relay schedule check
             # When manually overridden, wait until the schedule's *next* transition
