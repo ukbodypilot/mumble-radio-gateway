@@ -166,14 +166,16 @@
   #shell-bars .sb-bar.sb-ducked-bar { background: var(--t-warn);   top: 2px; }
   /* Dual-lane bars: RX (green) top half, TX (red) bottom half — no pct label. */
   .sb-bar-rx, .sb-bar-tx {
-    position: absolute; left: 0; width: 0%;
+    position: absolute; left: 0;
     height: calc(50% - 3px);
     box-shadow: 0 0 5px currentColor;
     z-index: 1;
-    transition: width 0.08s linear;
   }
-  .sb-bar-rx { top: 2px;    background: var(--t-ok);  color: var(--t-ok); }
-  .sb-bar-tx { bottom: 2px; background: var(--t-err); color: var(--t-err); }
+  .sb-bar-rx { top: 2px;    width: 100%; clip-path: inset(0 100% 0 0); transition: clip-path 0.08s linear;
+               background: linear-gradient(to right, var(--t-ok) 70%, var(--t-warn) 70%, var(--t-warn) 95%, var(--t-err) 95%);
+               color: var(--t-ok); }
+  .sb-bar-tx { bottom: 2px; width: 0%;   transition: width 0.08s linear;
+               background: var(--t-err); color: var(--t-err); }
 
   #shell-bars .mute-ind {
     color: var(--t-err);
@@ -668,9 +670,9 @@ function _sbUpdateDual(key, label, rxRaw, txRaw, muted) {
   sm.rx = sm.rx + (rx - sm.rx) * (rx > sm.rx ? 1.0 : 0.15);
   sm.tx = sm.tx + (tx - sm.tx) * (tx > sm.tx ? 1.0 : 0.15);
   _sbDualSmooth[key] = sm;
-  r.rxBar.style.transition = 'width '+(rx > sm.rx ? '0.08s' : '0.25s')+' linear';
+  r.rxBar.style.transition = 'clip-path '+(rx > sm.rx ? '0.08s' : '0.25s')+' linear';
   r.txBar.style.transition = 'width '+(tx > sm.tx ? '0.08s' : '0.25s')+' linear';
-  r.rxBar.style.width = Math.round(sm.rx)+'%';
+  r.rxBar.style.clipPath = 'inset(0 '+(100 - Math.round(sm.rx))+'% 0 0)';
   r.txBar.style.width = Math.round(sm.tx)+'%';
   r.mute.style.display = muted ? '' : 'none';
   _sbOrder.push(key);
