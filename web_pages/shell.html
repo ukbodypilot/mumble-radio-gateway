@@ -148,24 +148,22 @@
     pointer-events: none;
     z-index: 2;
   }
-  #shell-bars .sb-track::before { left: 70%; background: var(--t-warn); opacity: 0.35; }
-  #shell-bars .sb-track::after  { left: 95%; background: var(--t-err);  opacity: 0.45; }
+  #shell-bars .sb-track::before { left: 70%; background: var(--t-warn); opacity: 0.6; }
+  #shell-bars .sb-track::after  { left: 95%; background: var(--t-err);  opacity: 0.7; }
   #shell-bars .sb-bar {
     display: block;
     position: absolute;
-    left: 0; width: 0%;
+    left: 0; width: 100%;
+    clip-path: inset(0 100% 0 0);
     height: calc(50% - 3px);
-    transition: width 0.08s linear;
-    box-shadow: 0 0 6px currentColor;
+    transition: clip-path 0.08s linear;
+    box-shadow: 0 0 6px var(--t-ok);
     z-index: 1;
   }
-  /* Semantic bar colors: in=receive, out=transmit, loc=local output.
-     color = background so the currentColor glow matches the fill hue.
-     Position mirrors dual-lane layout: RX types sit in top half, TX/output in bottom half. */
-  .sb-in         { background: var(--t-ok);     color: var(--t-ok);     top: 2px; }
-  .sb-out        { background: var(--t-err);    color: var(--t-err);    bottom: 2px; }
-  .sb-loc        { background: var(--t-accent); color: var(--t-accent); bottom: 2px; }
-  .sb-ducked-bar { background: var(--t-warn);   color: var(--t-warn);   top: 2px; }
+  .sb-in         { background: linear-gradient(to right, var(--t-ok) 70%, var(--t-warn) 70%, var(--t-warn) 95%, var(--t-err) 95%); top: 2px; }
+  .sb-out        { background: var(--t-err);    bottom: 2px; }
+  .sb-loc        { background: var(--t-accent); bottom: 2px; }
+  .sb-ducked-bar { background: var(--t-warn);   top: 2px; }
   /* Dual-lane bars: RX (green) top half, TX (red) bottom half — no pct label. */
   .sb-bar-rx, .sb-bar-tx {
     position: absolute; left: 0; width: 0%;
@@ -641,8 +639,8 @@ function _sbUpdate(key, label, raw, cls, ducked, muted) {
   r.bar.className = 'sb-bar ' + (ducked ? 'sb-ducked-bar' : cls);
   // Asymmetric CSS transition: snappy rise (80ms), smooth fall (250ms) so
   // the bar slides continuously between polls rather than stepping.
-  r.bar.style.transition = 'width ' + (rising ? '0.08s' : '0.25s') + ' linear';
-  r.bar.style.width = w + '%';
+  r.bar.style.transition = 'clip-path ' + (rising ? '0.08s' : '0.25s') + ' linear';
+  r.bar.style.clipPath = 'inset(0 ' + (100 - w) + '% 0 0)';
   r.mute.style.display = muted ? '' : 'none';
   _sbOrder.push(key);
 }
