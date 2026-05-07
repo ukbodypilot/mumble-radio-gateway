@@ -160,13 +160,19 @@ class _EndpointConn:
             pass
 
 
-def _set_keepalive(sock, idle=10, interval=5, count=3):
-    """Enable TCP keepalives so dead connections are detected in ~idle+interval*count seconds."""
+def _set_keepalive(sock, idle=8, interval=4, count=3):
+    """Enable TCP keepalives + user timeout so dead connections are detected in ~idle+interval*count seconds."""
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle)
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval)
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, count)
+        # TCP_USER_TIMEOUT: kill connection after this many ms of unacked data.
+        # Prevents retransmit storm (minutes) when source interface disappears.
+        # 30s is long enough to survive brief WiFi congestion but short enough to
+        # avoid spinning for minutes when an interface is pulled.
+        _TCP_USER_TIMEOUT = 18  # Linux socket option number
+        sock.setsockopt(socket.IPPROTO_TCP, _TCP_USER_TIMEOUT, 30000)
     except (AttributeError, OSError):
         pass  # not supported on all platforms
 
@@ -413,6 +419,9 @@ class GatewayLinkServer:
             sock.settimeout(120.0)  # must exceed DEAD_PEER_TIMEOUT (90s) so dead-peer check fires first
             _set_keepalive(sock)
 
+            import datetime as _dt
+            _conn_ts = _dt.datetime.now().strftime('%H:%M:%S')
+
             info = json.loads(payload)
             ep_name = info.get('name', '')
             if not ep_name:
@@ -444,9 +453,9 @@ class GatewayLinkServer:
                 self._endpoints[ep_name] = ep
 
             enabled = [k for k, v in ep.capabilities.items() if v]
-            print(f"  [Link] Endpoint registered: {ep_name} "
+            print(f"  [{_conn_ts}] [Link] Endpoint registered: {ep_name} "
+                  f"from={addr[0]}:{addr[1]} "
                   f"plugin={info.get('plugin', '?')} "
-                  f"v={info.get('version', '?')} "
                   f"caps={enabled}")
 
             # Call on_register — return value is the audio sink for this endpoint
@@ -462,13 +471,15 @@ class GatewayLinkServer:
                     result = P.recv_frame(sock)
                 except socket.timeout:
                     _silence = time.monotonic() - _last_frame_time
-                    print(f"  [Link] {ep_name}: socket timeout after {_frame_count} frames "
-                          f"({_silence:.1f}s since last frame)")
+                    _now = _dt.datetime.now().strftime('%H:%M:%S')
+                    print(f"  [{_now}] [Link] {ep_name}: DISCONNECT reason=socket_timeout "
+                          f"frames={_frame_count} silence={_silence:.1f}s peer={addr[0]}")
                     result = None
                 if result is None:
                     _silence = time.monotonic() - _last_frame_time
-                    print(f"  [Link] {ep_name}: recv_frame returned None after "
-                          f"{_frame_count} frames ({_silence:.1f}s since last frame)")
+                    _now = _dt.datetime.now().strftime('%H:%M:%S')
+                    print(f"  [{_now}] [Link] {ep_name}: DISCONNECT reason=recv_none "
+                          f"frames={_frame_count} silence={_silence:.1f}s peer={addr[0]}")
                     break
                 _frame_count += 1
                 _last_frame_time = time.monotonic()
@@ -512,11 +523,13 @@ class GatewayLinkServer:
                     print(f"  [Link] Callback error for {ep_name}: {e}")
 
         except socket.timeout:
-            print(f"  [Link] {addr[0]}:{addr[1]} REGISTER timeout, closing")
+            import datetime as _dt
+            print(f"  [{_dt.datetime.now().strftime('%H:%M:%S')}] [Link] {addr[0]}:{addr[1]} REGISTER timeout, closing")
         except Exception as e:
             if not self._stop.is_set():
                 import traceback
-                print(f"  [Link] Reader error for {ep_name or addr}: {e}")
+                import datetime as _dt
+                print(f"  [{_dt.datetime.now().strftime('%H:%M:%S')}] [Link] Reader error for {ep_name or addr}: {e}")
                 traceback.print_exc()
         finally:
             # Remove from endpoints dict (only if this reader owns the entry)
@@ -532,7 +545,8 @@ class GatewayLinkServer:
             except OSError:
                 pass
             if ep_name and _reader_removed:
-                print(f"  [Link] Endpoint disconnected: {ep_name}")
+                import datetime as _dt
+                print(f"  [{_dt.datetime.now().strftime('%H:%M:%S')}] [Link] Endpoint disconnected: {ep_name} peer={addr[0]}")
                 if self._on_disconnect:
                     try:
                         self._on_disconnect(ep_name)
@@ -949,7 +963,7 @@ class GatewayLinkClient:
         def _ts():
             return datetime.datetime.now().strftime('%H:%M:%S')
 
-        _backoff = 5.0
+        _backoff = 2.0
         _MAX_BACKOFF = 60.0
         _ws_failures = 0
         _connect_count = 0
@@ -967,12 +981,14 @@ class GatewayLinkClient:
                     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     sock.settimeout(120.0)  # generous timeout for lossy WiFi
                     _set_keepalive(sock)
-                    print(f"  [{_ts()}] [Link] Connected to {self._host}:{self._port} (TCP) [#{_connect_count}]")
+                    _local_addr = sock.getsockname()
+                    print(f"  [{_ts()}] [Link] Connected to {self._host}:{self._port} (TCP) "
+                          f"local={_local_addr[0]}:{_local_addr[1]} [#{_connect_count}]")
                     with self._send_lock:
                         self._sock = sock
                         self._ws_transport = None
                     connected_via = 'tcp'
-                    _backoff = 5.0
+                    _backoff = 2.0
                 except (OSError, ConnectionError) as e:
                     print(f"  [{_ts()}] [Link] TCP {self._host}:{self._port} failed: {e}")
                     try:
@@ -1061,16 +1077,21 @@ class GatewayLinkClient:
                     hb_stop.wait(5.0)
                     if hb_stop.is_set():
                         break
-                    if _hb_count % 6 == 0:
-                        # Every 30s send a full status update (net_iface, cpu, etc.)
-                        try:
-                            _full = self.get_status()
-                            _full['type'] = 'heartbeat'
-                            self.send_status(_full)
-                        except Exception:
+                    try:
+                        if _hb_count % 6 == 0:
+                            # Every 30s send a full status update (net_iface, cpu, etc.)
+                            try:
+                                _full = self.get_status()
+                                _full['type'] = 'heartbeat'
+                                self.send_status(_full)
+                            except Exception:
+                                self.send_status({"type": "heartbeat"})
+                        else:
                             self.send_status({"type": "heartbeat"})
-                    else:
-                        self.send_status({"type": "heartbeat"})
+                    except (OSError, ConnectionError, BrokenPipeError) as _hb_err:
+                        print(f"  [{_ts()}] [Link] Heartbeat send failed ({_hb_err}), closing connection")
+                        self._close()
+                        break
                     _hb_count += 1
                     # If on WS tunnel, periodically check if LAN is available
                     if (connected_via == 'ws' and self._host and self._port
@@ -1108,8 +1129,8 @@ class GatewayLinkClient:
                     print(f"  [{_ts()}] [Link] on_disconnect callback error: {e}")
 
             if not self._stop.is_set():
-                print(f"  [{_ts()}] [Link] Reconnecting in 5s...")
-                if self._stop.wait(5.0):
+                print(f"  [{_ts()}] [Link] Reconnecting in 2s...")
+                if self._stop.wait(2.0):
                     break
 
     def _reader_loop(self, sock):
@@ -1162,9 +1183,11 @@ class GatewayLinkClient:
                     print(f"  [Link] Client callback error: {e}")
         except Exception as e:
             if not self._stop.is_set():
-                print(f"  [Link] Client reader error: {e}")
+                import datetime as _dt
+                print(f"  [{_dt.datetime.now().strftime('%H:%M:%S')}] [Link] Client reader error: {type(e).__name__}: {e}")
         finally:
-            print("  [Link] Disconnected from server")
+            import datetime as _dt
+            print(f"  [{_dt.datetime.now().strftime('%H:%M:%S')}] [Link] Client reader exiting")
             self._close()
 
     def _reader_loop_ws(self, ws):
