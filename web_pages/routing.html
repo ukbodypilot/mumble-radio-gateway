@@ -330,8 +330,7 @@
     height: calc(100% - 4px);
     margin: 2px 0;
     width: 100%;
-    transform: scaleX(0);
-    transform-origin: left;
+    clip-path: inset(0 100% 0 0);
     background: linear-gradient(to right,
       var(--t-ok)   0%,  var(--t-ok)   70%,
       var(--t-warn) 70%, var(--t-warn) 95%,
@@ -339,7 +338,7 @@
     );
     box-shadow: 0 0 4px var(--t-ok);
     position: relative; z-index: 1;
-    transition: transform 0.08s linear;
+    transition: clip-path 0.08s linear;
   }
   .drawflow-node.ptt-active {
     border-color: var(--t-err);
@@ -1291,8 +1290,8 @@ function _setLevel(fillEl, raw, key) {
   var a = rising ? 1.0 : 0.15;
   var s = prev + (v - prev) * a;
   _lvlSmooth[key] = s;
-  fillEl.style.transition = 'transform ' + (rising ? '0.08s' : '0.2s') + ' linear';
-  fillEl.style.transform = 'scaleX(' + (s / 100) + ')';
+  fillEl.style.transition = 'clip-path ' + (rising ? '0.08s' : '0.2s') + ' linear';
+  fillEl.style.clipPath = 'inset(0 ' + (100 - s) + '% 0 0)';
 }
 function pollLevels() {
   fetch('/routing/levels')
