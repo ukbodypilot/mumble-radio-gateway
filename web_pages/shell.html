@@ -160,10 +160,10 @@
     box-shadow: 0 0 6px var(--t-ok);
     z-index: 1;
   }
-  .sb-in         { background: linear-gradient(to right, var(--t-ok) 70%, var(--t-warn) 70%, var(--t-warn) 95%, var(--t-err) 95%); top: 2px; }
-  .sb-out        { background: var(--t-err);    bottom: 2px; }
-  .sb-loc        { background: var(--t-accent); bottom: 2px; }
-  .sb-ducked-bar { background: var(--t-warn);   top: 2px; }
+  #shell-bars .sb-bar.sb-in         { background: linear-gradient(to right, var(--t-ok) 70%, var(--t-warn) 70%, var(--t-warn) 95%, var(--t-err) 95%); top: 2px; }
+  #shell-bars .sb-bar.sb-out        { background: var(--t-err);    bottom: 2px; }
+  #shell-bars .sb-bar.sb-loc        { background: var(--t-accent); bottom: 2px; }
+  #shell-bars .sb-bar.sb-ducked-bar { background: var(--t-warn);   top: 2px; }
   /* Dual-lane bars: RX (green) top half, TX (red) bottom half — no pct label. */
   .sb-bar-rx, .sb-bar-tx {
     position: absolute; left: 0; width: 0%;
