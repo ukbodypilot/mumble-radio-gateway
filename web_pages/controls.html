@@ -482,6 +482,7 @@ function refreshSounds() {
 }
 
 // ── Status polling ──
+var _lastLinkHTML = new Map();
 createPoller('/status', 1000, function(s) {
   // Smart announce activity
   var smSt = document.getElementById('smart-status');
@@ -494,7 +495,7 @@ createPoller('/status', 1000, function(s) {
       parts.push('<span class="' + sClr + '">#' + sk + ': ' + sv + '</span>');
     }
     smSt.className = 'st-line';
-    smSt.innerHTML = parts.length ? parts.join(' ') : '';
+    setHTML(smSt, parts.length ? parts.join(' ') : '');
   }
   // Smart announce countdowns
   if (s.smart_countdowns) {
@@ -506,7 +507,7 @@ createPoller('/status', 1000, function(s) {
         var scClr = sc.mode === 'manual' ? 'cyan' : 'yellow';
         cdh += '<span class="' + scClr + '">#' + sc.id + ': ' + sc.remaining + '</span> ';
       }
-      cdDiv.innerHTML = cdh || '';
+      setHTML(cdDiv, cdh || '');
     }
   }
   // Playback button states + name fragments
@@ -521,7 +522,7 @@ createPoller('/status', 1000, function(s) {
         if (fi.name) fb.title = fi.name;
       }
       if (fn) {
-        fn.textContent = fi.loaded && fi.name ? fi.name.replace(/\.[^.]+$/, '').substring(0, 11) : '';
+        setText(fn, fi.loaded && fi.name ? fi.name.replace(/\.[^.]+$/, '').substring(0, 11) : '');
       }
     }
   }
@@ -576,7 +577,7 @@ createPoller('/status', 1000, function(s) {
       h += '<span class="link-gain-val">' + txGain + ' dB</span>';
       h += '</div>';
       h += '</div></div>';
-      panel.innerHTML = h;
+      if (_lastLinkHTML.get(eid) !== h) { _lastLinkHTML.set(eid, h); panel.innerHTML = h; }
     }
   }
 });

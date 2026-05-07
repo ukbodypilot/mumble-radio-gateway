@@ -551,6 +551,8 @@
 <script>
 var _volTimer = {};
 var _pttActive = false;
+var _lastIconState = {};
+var _sliderActive = {};
 
 function showError(msg) {
   var el = document.getElementById('cmd-error');
@@ -628,61 +630,86 @@ function fmtFreq(s) {
   return s;
 }
 
+var _radioEls = {};
+window.addEventListener('load', function() {
+  ['cat-offline','radio-panel','serial-state','rts-state',
+   'l-freq','l-ch','l-power','l-sig-bar','l-sig-text','l-main','l-freq-box',
+   'l-enc','l-dec','l-pos','l-neg','l-tx','l-pref','l-skip','l-dcs','l-mute','l-mt','l-busy','l-am',
+   'r-freq','r-ch','r-power','r-sig-bar','r-sig-text','r-main','r-freq-box',
+   'r-enc','r-dec','r-pos','r-neg','r-tx','r-pref','r-skip','r-dcs','r-mute','r-mt','r-busy','r-am',
+   'c-apo','c-lock','c-set','c-key2','l-vol','l-vol-val','r-vol','r-vol-val'
+  ].forEach(function(id) { _radioEls[id] = document.getElementById(id); });
+  ['l-vol','l-sq','r-vol','r-sq'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('pointerdown',   function() { _sliderActive[id] = true; });
+    el.addEventListener('pointerup',     function() { _sliderActive[id] = false; });
+    el.addEventListener('pointercancel', function() { _sliderActive[id] = false; });
+  });
+});
+
 function setIcon(id, on) {
-  var el = document.getElementById(id);
-  if (el) el.className = on ? 'icon-on' : 'icon-off';
+  var newCls = on ? 'icon-on' : 'icon-off';
+  if (_lastIconState[id] === newCls) return;
+  _lastIconState[id] = newCls;
+  var el = _radioEls[id] || document.getElementById(id);
+  if (el) el.className = newCls;
 }
 
 createPoller('/catstatus', 1000, function(d) {
+    var _e = _radioEls;
     if (!d.connected) {
-      document.getElementById('cat-offline').style.display = 'block';
-      document.getElementById('radio-panel').style.display = 'none';
+      if (_e['cat-offline']) _e['cat-offline'].style.display = 'block';
+      if (_e['radio-panel']) _e['radio-panel'].style.display = 'none';
       return;
     }
-    document.getElementById('cat-offline').style.display = 'none';
-    document.getElementById('radio-panel').style.display = 'block';
+    if (_e['cat-offline']) _e['cat-offline'].style.display = 'none';
+    if (_e['radio-panel']) _e['radio-panel'].style.display = 'block';
 
     // Serial state — class-based, not inline style
-    var sel = document.getElementById('serial-state');
-    if (d.serial_connected) { sel.className = 'state ok';  sel.textContent = 'connected'; }
-    else                    { sel.className = 'state err'; sel.textContent = 'disconnected'; }
+    var sel = _e['serial-state'];
+    if (sel) {
+      if (d.serial_connected) { setClass(sel, 'state ok');  setText(sel, 'connected'); }
+      else                    { setClass(sel, 'state err'); setText(sel, 'disconnected'); }
+    }
 
     // RTS
-    var rts = document.getElementById('rts-state');
-    rts.classList.remove('green', 'red');
-    if (d.rts_usb === true)       { rts.className = 'green'; rts.textContent = 'USB Controlled'; }
-    else if (d.rts_usb === false) { rts.className = 'red';   rts.textContent = 'Radio Controlled'; }
-    else                          { rts.className = '';      rts.textContent = 'Unknown'; }
+    var rts = _e['rts-state'];
+    if (rts) {
+      if (d.rts_usb === true)       { setClass(rts, 'green'); setText(rts, 'USB Controlled'); }
+      else if (d.rts_usb === false) { setClass(rts, 'red');   setText(rts, 'Radio Controlled'); }
+      else                          { setClass(rts, '');      setText(rts, 'Unknown'); }
+    }
 
     // LEFT VFO
     var L = d.left;
-    document.getElementById('l-freq').textContent = fmtFreq(L.display) || '\u2014\u2014\u2014';
-    document.getElementById('l-ch').textContent = L.channel || '\u2014';
-    document.getElementById('l-power').textContent = L.power ? 'PWR: ' + L.power : '';
-    document.getElementById('l-sig-bar').style.width = (L.signal / 9 * 100) + '%';
-    document.getElementById('l-sig-text').textContent = 'S' + L.signal;
-    document.getElementById('l-main').classList.toggle('on', !!(L.icons && L.icons.MAIN));
+    setText(_e['l-freq'], fmtFreq(L.display) || '\u2014\u2014\u2014');
+    setText(_e['l-ch'], L.channel || '\u2014');
+    setText(_e['l-power'], L.power ? 'PWR: ' + L.power : '');
+    if (_e['l-sig-bar']) _e['l-sig-bar'].style.width = (L.signal / 9 * 100) + '%';
+    setText(_e['l-sig-text'], 'S' + L.signal);
+    if (_e['l-main']) _e['l-main'].classList.toggle('on', !!(L.icons && L.icons.MAIN));
     var li = L.icons || {};
     setIcon('l-enc', li.ENC); setIcon('l-dec', li.DEC); setIcon('l-pos', li.POS);
     setIcon('l-neg', li.NEG); setIcon('l-tx', li.TX); setIcon('l-pref', li.PREF);
     setIcon('l-skip', li.SKIP); setIcon('l-dcs', li.DCS); setIcon('l-mute', li.MUTE);
     setIcon('l-mt', li.MT); setIcon('l-busy', li.BUSY); setIcon('l-am', li.AM);
-    document.getElementById('l-freq-box').classList.toggle('tx', !!li.TX);
+    if (_e['l-freq-box']) _e['l-freq-box'].classList.toggle('tx', !!li.TX);
 
     // RIGHT VFO
     var R = d.right;
-    document.getElementById('r-freq').textContent = fmtFreq(R.display) || '\u2014\u2014\u2014';
-    document.getElementById('r-ch').textContent = R.channel || '\u2014';
-    document.getElementById('r-power').textContent = R.power ? 'PWR: ' + R.power : '';
-    document.getElementById('r-sig-bar').style.width = (R.signal / 9 * 100) + '%';
-    document.getElementById('r-sig-text').textContent = 'S' + R.signal;
-    document.getElementById('r-main').classList.toggle('on', !!(R.icons && R.icons.MAIN));
+    setText(_e['r-freq'], fmtFreq(R.display) || '\u2014\u2014\u2014');
+    setText(_e['r-ch'], R.channel || '\u2014');
+    setText(_e['r-power'], R.power ? 'PWR: ' + R.power : '');
+    if (_e['r-sig-bar']) _e['r-sig-bar'].style.width = (R.signal / 9 * 100) + '%';
+    setText(_e['r-sig-text'], 'S' + R.signal);
+    if (_e['r-main']) _e['r-main'].classList.toggle('on', !!(R.icons && R.icons.MAIN));
     var ri = R.icons || {};
     setIcon('r-enc', ri.ENC); setIcon('r-dec', ri.DEC); setIcon('r-pos', ri.POS);
     setIcon('r-neg', ri.NEG); setIcon('r-tx', ri.TX); setIcon('r-pref', ri.PREF);
     setIcon('r-skip', ri.SKIP); setIcon('r-dcs', ri.DCS); setIcon('r-mute', ri.MUTE);
     setIcon('r-mt', ri.MT); setIcon('r-busy', ri.BUSY); setIcon('r-am', ri.AM);
-    document.getElementById('r-freq-box').classList.toggle('tx', !!ri.TX);
+    if (_e['r-freq-box']) _e['r-freq-box'].classList.toggle('tx', !!ri.TX);
 
     // Common icons
     var ci = d.common || {};
@@ -691,10 +718,10 @@ createPoller('/catstatus', 1000, function(d) {
 
     // Sync volume sliders from actual radio state
     if (d.volume) {
-      var lv=document.getElementById('l-vol'), rv=document.getElementById('r-vol');
-      var lvt=document.getElementById('l-vol-val'), rvt=document.getElementById('r-vol-val');
-      if (lv && d.volume.left  >= 0 && !lv.matches(':active')) { lv.value=d.volume.left;  if(lvt) lvt.textContent=d.volume.left; }
-      if (rv && d.volume.right >= 0 && !rv.matches(':active')) { rv.value=d.volume.right; if(rvt) rvt.textContent=d.volume.right; }
+      var lv=_e['l-vol'], rv=_e['r-vol'];
+      var lvt=_e['l-vol-val'], rvt=_e['r-vol-val'];
+      if (lv && d.volume.left  >= 0 && !_sliderActive['l-vol']) { lv.value=d.volume.left;  if(lvt) setText(lvt, d.volume.left); }
+      if (rv && d.volume.right >= 0 && !_sliderActive['r-vol']) { rv.value=d.volume.right; if(rvt) setText(rvt, d.volume.right); }
     }
 });
 </script>

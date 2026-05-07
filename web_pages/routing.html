@@ -733,6 +733,9 @@ function loadRouting() {
 function rebuildEditor() {
   editor.clear();
   _nodeMap = {};
+  _lvlFillCache.clear();
+  _lvlSmooth = {};
+  _lvlLastClip = {};
 
   // Extract saved node positions from layout (if available)
   // Keys are prefixed (src-/bus-/sink-) to avoid collisions when a source
@@ -1283,6 +1286,9 @@ function setSpeakerMode(mode) {
 // 0.15-per-sample decay, 80ms rise / 200ms fall so the bar glides between
 // polls instead of stepping. Matches the shell/dashboard meters.
 var _lvlSmooth = {};
+var _lvlLastClip = {}; // last written clip value per key (1% change threshold)
+var _lvlFillCache = new Map(); // id -> .level-fill element
+
 function _setLevel(fillEl, raw, key) {
   var prev = _lvlSmooth[key] || 0;
   var v = Math.min(Math.max(raw || 0, 0), 100);
@@ -1290,26 +1296,36 @@ function _setLevel(fillEl, raw, key) {
   var a = rising ? 1.0 : 0.15;
   var s = prev + (v - prev) * a;
   _lvlSmooth[key] = s;
-  fillEl.style.transition = 'clip-path ' + (rising ? '0.08s' : '0.2s') + ' linear';
-  fillEl.style.clipPath = 'inset(0 ' + (100 - s) + '% 0 0)';
+  var lastClip = _lvlLastClip[key];
+  if (lastClip === undefined || Math.abs(s - lastClip) > 1) {
+    _lvlLastClip[key] = s;
+    fillEl.style.transition = 'clip-path ' + (rising ? '0.08s' : '0.2s') + ' linear';
+    fillEl.style.clipPath = 'inset(0 ' + (100 - s) + '% 0 0)';
+  }
 }
-function pollLevels() {
+
+var _lvlPollBusy = false;
+var _lvlLastRaf = 0;
+var _LVL_INTERVAL = 67; // ~15fps
+
+function _lvlRafLoop(ts) {
+  requestAnimationFrame(_lvlRafLoop);
+  if (ts - _lvlLastRaf < _LVL_INTERVAL) return;
+  _lvlLastRaf = ts;
+  if (_lvlPollBusy) return;
+  _lvlPollBusy = true;
   fetch('/routing/levels')
     .then(function(r) { return r.json(); })
     .then(function(d) {
       var ptt = d._ptt || {};
       for (var id in d) {
         if (id === '_ptt') continue;
-        var el = document.getElementById('level-' + id);
-        if (el) {
-          var fill = el.querySelector('.level-fill');
-          if (fill) _setLevel(fill, d[id], id);
+        var fill = _lvlFillCache.get(id);
+        if (!fill) {
+          var barEl = document.getElementById('level-' + id);
+          if (barEl) { fill = barEl.querySelector('.level-fill'); if (fill) _lvlFillCache.set(id, fill); }
         }
-        // TX sink bars (kv4p_tx, aioc_tx, speaker, broadcastify, mumble, …)
-        // are their own keys in `d` — handled by the branch above. Do NOT
-        // mirror RX source level onto <source>_tx; that's only correct in
-        // hardwired loopback, and the v2 bus model breaks that assumption
-        // (a TX sink can be fed from any bus, independent of its RX source).
+        if (fill) _setLevel(fill, d[id], id);
       }
       for (var txId in ptt) {
         var lvl = document.getElementById('level-' + txId);
@@ -1342,9 +1358,10 @@ function pollLevels() {
         }
       }
     })
-    .catch(function() {});
+    .catch(function() {})
+    .finally(function() { _lvlPollBusy = false; });
 }
-setInterval(pollLevels, 200);
+requestAnimationFrame(_lvlRafLoop);
 </script>
 </body>
 </html>

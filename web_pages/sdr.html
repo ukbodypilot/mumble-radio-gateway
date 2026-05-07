@@ -740,6 +740,10 @@ function singleStop() {
 
 /* ── Band visualization ─────────────────────────────────────────────── */
 
+var _lastBandVizHTML = '';
+var _chLevelEls = new Map();  // index -> DOM element
+var _chLevelWidths = new Map(); // index -> last written width (px, rounded)
+
 function updateBandViz(status) {
   var low = status.single_band_low;
   var high = status.single_band_high;
@@ -748,13 +752,13 @@ function updateBandViz(status) {
   var lowLabel = document.getElementById('band-viz-low');
   var highLabel = document.getElementById('band-viz-high');
   if (!low || !high || low >= high) {
-    lowLabel.textContent = '---';
-    highLabel.textContent = '---';
-    container.innerHTML = '';
+    setText(lowLabel, '---');
+    setText(highLabel, '---');
+    if (_lastBandVizHTML !== '') { _lastBandVizHTML = ''; container.innerHTML = ''; }
     return;
   }
-  lowLabel.textContent = low.toFixed(3);
-  highLabel.textContent = high.toFixed(3);
+  setText(lowLabel, low.toFixed(3));
+  setText(highLabel, high.toFixed(3));
   var span = high - low;
   var html = '';
   for (var i = 0; i < channels.length; i++) {
@@ -767,13 +771,15 @@ function updateBandViz(status) {
     var lbl = freq.toFixed(3) + (ch.label ? '<br><span class="band-marker-sub">' + ch.label + '</span>' : '');
     html += '<div class="band-marker-label" style="left:' + pct + '%; color:' + color + ';">' + lbl + '</div>';
   }
-  container.innerHTML = html;
+  if (html !== _lastBandVizHTML) { _lastBandVizHTML = html; container.innerHTML = html; }
 }
 
 /* ── Channel list ───────────────────────────────────────────────────── */
 
 function renderChannelList(channels) {
   singleChannels = channels || [];
+  _chLevelEls.clear();
+  _chLevelWidths.clear();
   var container = document.getElementById('single-channel-list');
   if (singleChannels.length === 0) {
     container.innerHTML = '<div class="ch-empty">No channels configured. Click "+ Add Channel" to add one.</div>';
@@ -1121,12 +1127,17 @@ createPoller('/sdrstatus', 1000, function(d) {
     document.getElementById('single-audio-val').textContent = sPct + '%';
     var chLevels = [d.audio_level || 0, d.audio_level2 || 0];
     for (var ci = 0; ci < chLevels.length; ci++) {
-      var bar = document.getElementById('ch-level-' + ci);
+      var bar = _chLevelEls.get(ci);
+      if (!bar) { bar = document.getElementById('ch-level-' + ci); if (bar) _chLevelEls.set(ci, bar); }
       if (bar) {
         var p = d.process_alive ? Math.min(100, Math.max(0, Math.round(chLevels[ci]))) : 0;
-        bar.style.width = p + '%';
-        bar.classList.toggle('warn', p >= 70 && p < 90);
-        bar.classList.toggle('err',  p >= 90);
+        var lastW = _chLevelWidths.get(ci);
+        if (lastW === undefined || Math.abs(p - lastW) > 1) {
+          _chLevelWidths.set(ci, p);
+          bar.style.width = p + '%';
+          bar.classList.toggle('warn', p >= 70 && p < 90);
+          bar.classList.toggle('err',  p >= 90);
+        }
       }
     }
     document.getElementById('single-stop-btn').disabled = !d.process_alive;

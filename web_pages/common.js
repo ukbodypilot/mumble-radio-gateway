@@ -147,3 +147,8 @@ function setFlash(el, text) {
   el.textContent = v;
   flashValue(el);
 }
+
+// Change-detection DOM helpers — skip the write if value is already current.
+function setText(el, val) { if (el && el.textContent !== String(val)) el.textContent = String(val); }
+function setClass(el, cls) { if (el && el.className !== cls) el.className = cls; }
+function setHTML(el, html) { if (el && el.innerHTML !== html) el.innerHTML = html; }

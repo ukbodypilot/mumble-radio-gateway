@@ -510,15 +510,18 @@ function showToast(msg, level) {
   d.onclick=dismiss; c.appendChild(d); setTimeout(dismiss,8000);
 }
 
-var _statusBusy=false, _statusPollCount=9;
+var _statusBusy=false;
+function _pollLinkEndpoints() {
+  if(!window._lastLinkEndpoints||!window._lastLinkEndpoints.length) return;
+  for(var _ei=0;_ei<window._lastLinkEndpoints.length;_ei++) postJson('/linkcmd',{endpoint:window._lastLinkEndpoints[_ei].name,cmd:'status'}).catch(function(){});
+}
+setInterval(_pollLinkEndpoints, 10000);
+
 function updateStatus() {
   if(_statusBusy) return;
-  _statusBusy=true; _statusPollCount++;
+  _statusBusy=true;
   var _ac=new AbortController(); setTimeout(function(){_ac.abort();},10000);
   fetch('/status',{signal:_ac.signal}).then(r=>r.json()).then(function(s) {
-    if(s.link_enabled&&s.link_endpoints&&_statusPollCount%10===0) {
-      for(var _ei=0;_ei<s.link_endpoints.length;_ei++) postJson('/linkcmd',{endpoint:s.link_endpoints[_ei].name,cmd:'status'}).catch(function(){});
-    }
     _lostCount=0;
 
     // ── Status pane ──
@@ -675,6 +678,7 @@ updateStatus();
 
 // ── Sysinfo ──
 function sysBar(pct,tone){var cls=pct>80?'err':pct>60?'warn':(tone||'');var w=Math.round(Math.min(Math.max(pct,0),100));var p=pct<10?'  '+pct:pct<100?' '+pct:''+pct;return '<span class="bar-pct">'+p+'%</span><span class="bar bar-rx '+cls+'" style="width:'+w+'px"></span>';}
+var _lastSysinfoHTML='';
 createPoller('/sysinfo',2000,function(s){
   var h='<div class="st-row">';
   var crit=(s.cpu_critical_pct!==undefined)?s.cpu_critical_pct:s.cpu_pct;
@@ -691,11 +695,12 @@ createPoller('/sysinfo',2000,function(s){
   if(s.ips&&s.ips.length){if(s.hostname)h+='<div class="st-item"><span class="st-label">Host:</span><span class="st-val white">'+s.hostname+'</span></div>';for(var i=0;i<s.ips.length;i++){var ifaceLabel=s.ips[i].iface==='tailscale0'?'TailScl':s.ips[i].iface;h+='<div class="st-item"><span class="st-label">'+ifaceLabel+':</span><span class="st-val white">'+s.ips[i].addr+'</span></div>';}if(s.ddns)h+='<div class="st-item"><span class="st-label">DDNS:</span><span class="st-val green">'+s.ddns+'</span></div>';if(s.tunnel_url)h+='<div class="st-item st-item-wide"><span class="st-label">CF:</span><span class="st-val green"><a href="'+s.tunnel_url+'" target="_blank" class="green">'+s.tunnel_url.replace('https://','').replace('.trycloudflare.com','')+'</a></span></div>';}
   if(s.uptime)h+='<div class="st-item"><span class="st-label">Uptime:</span><span class="st-val white">'+s.uptime+'</span></div>';
   h+='</div>';
-  document.getElementById('sysinfo').innerHTML=h;
+  if(h!==_lastSysinfoHTML){_lastSysinfoHTML=h;document.getElementById('sysinfo').innerHTML=h;}
 });
 
 // ── Automation ──
-var _autoBusy=false,_autoHistBusy=false;
+var _autoBusy=false,_autoHistBusy=false,_autoHistTick=0;
+var _lastAutoTasksHTML='',_lastAutoHistHTML='';
 function updateAutomation(){
   if(_autoBusy)return; _autoBusy=true;
   var _ac=new AbortController();setTimeout(function(){_ac.abort();},5000);
@@ -711,21 +716,25 @@ function updateAutomation(){
     if(a.current_task){curDiv.style.display='';var ct=null;for(var i=0;i<a.tasks.length;i++){if(a.tasks[i].name===a.current_task){ct=a.tasks[i];break;}}var d='<span class="white'+flashCls('auto_current',a.current_task)+'">'+a.current_task+'</span>';if(ct)d+=' &mdash; <span class="yellow">'+ct.action+'</span> on <span class="cyan">'+ct.radio+'</span>';if(a.recording)d+=' <span class="red">[RECORDING]</span>';document.getElementById('auto-current-detail').innerHTML=d;}else{curDiv.style.display='none';}
     var t='<table class="dash-tbl"><tr><th>Task</th><th>Action</th><th>Radio</th><th>Next</th><th>Last</th></tr>';
     for(var i=0;i<a.tasks.length;i++){var tk=a.tasks[i];var active=(tk.name===a.current_task);var next=tk.schedule_type==='interval'?fmtSecs(tk.next_run_secs):('at '+tk.at+(tk.last_run_date?' (done)':''));var last=tk.last_run_ago!==null?fmtSecs(tk.last_run_ago)+' ago':'--';t+='<tr'+(active?' class="active"':'')+'><td class="white">'+(active?'&#9654; ':'')+tk.name+'</td><td class="yellow">'+tk.action+'</td><td class="cyan">'+tk.radio+'</td><td>'+next+'</td><td class="dim">'+last+'</td></tr>';}
-    t+='</table>'; document.getElementById('auto-tasks').innerHTML=t;
+    t+='</table>';
+    if(t!==_lastAutoTasksHTML){_lastAutoTasksHTML=t;document.getElementById('auto-tasks').innerHTML=t;}
+    _autoHistTick++;
+    if(_autoHistTick%3===0) _fetchAutoHistory();
   }).catch(function(){}).finally(function(){_autoBusy=false;});
 }
-function updateAutoHistory(){
+function _fetchAutoHistory(){
   if(_autoHistBusy)return; _autoHistBusy=true;
   var _ac=new AbortController();setTimeout(function(){_ac.abort();},5000);
   fetch('/automationhistory',{signal:_ac.signal}).then(r=>r.json()).then(function(hist){
-    if(!hist.length){document.getElementById('auto-history').innerHTML='<div class="empty"><span class="empty-glyph">&#9675;</span>No completed tasks yet</div>';return;}
+    if(!hist.length){var e='<div class="empty"><span class="empty-glyph">&#9675;</span>No completed tasks yet</div>';if(e!==_lastAutoHistHTML){_lastAutoHistHTML=e;document.getElementById('auto-history').innerHTML=e;}return;}
     var h='<table class="dash-tbl"><tr><th>Time</th><th>Task</th><th>Radio</th><th>Duration</th><th>Result</th></tr>';
     for(var i=0;i<Math.min(hist.length,20);i++){var e=hist[i];var res='';if(e.result){if(e.result.error)res='<span class="red">ERR: '+e.result.error+'</span>';else if(e.result.frequency){res=e.result.frequency+' MHz';if(e.result.recording)res+=' <span class="green">recorded</span>';if(e.result.signal&&e.result.signal.has_signal)res+=' <span class="green">signal</span>';}else if(e.result.scanned)res=e.result.scanned+' scanned, '+e.result.active+' active';else if(e.result.text)res='TTS: '+e.result.text.substring(0,30)+'...';}h+='<tr><td class="dim">'+e.time+'</td><td class="white">'+e.task+'</td><td class="cyan">'+e.radio+'</td><td>'+e.elapsed+'s</td><td>'+res+'</td></tr>';}
-    h+='</table>'; document.getElementById('auto-history').innerHTML=h;
+    h+='</table>';
+    if(h!==_lastAutoHistHTML){_lastAutoHistHTML=h;document.getElementById('auto-history').innerHTML=h;}
   }).catch(function(){}).finally(function(){_autoHistBusy=false;});
 }
-setInterval(updateAutomation,2000); setInterval(updateAutoHistory,5000);
-updateAutomation(); updateAutoHistory();
+setInterval(updateAutomation,2000);
+updateAutomation();
 
 // ── ADS-B ──
 createPoller('/adsbstatus',3000,function(d){
@@ -770,6 +779,7 @@ createPoller('/telegramstatus',5000,function(d){
 });
 
 // ── GPS ──
+var _lastGpsSatHTML='';
 function updateGps(){
   fetch('/gpsstatus').then(function(r){return r.json()}).then(function(d){
     setTabDim('tab-gps',!d.enabled);
@@ -780,26 +790,27 @@ function updateGps(){
     else if(d.fix===0)fixBadge.innerHTML='<span class="yellow'+fixFlash+'">No Fix</span>';
     else if(d.fix===1)fixBadge.innerHTML='<span class="green'+fixFlash+'">GPS Fix</span>';
     else fixBadge.innerHTML='<span class="green'+fixFlash+'">DGPS Fix</span>';
-    document.getElementById('gps-lat').textContent=d.fix>0?d.lat.toFixed(6):'--';
-    document.getElementById('gps-lon').textContent=d.fix>0?d.lon.toFixed(6):'--';
-    document.getElementById('gps-alt').textContent=d.fix>0?d.alt.toFixed(1):'--';
-    document.getElementById('gps-speed').textContent=d.fix>0?d.speed.toFixed(1):'--';
-    document.getElementById('gps-heading').textContent=d.fix>0?d.heading.toFixed(0):'--';
-    document.getElementById('gps-hdop').textContent=d.fix>0?d.hdop.toFixed(1):'--';
+    setText(document.getElementById('gps-lat'),d.fix>0?d.lat.toFixed(6):'--');
+    setText(document.getElementById('gps-lon'),d.fix>0?d.lon.toFixed(6):'--');
+    setText(document.getElementById('gps-alt'),d.fix>0?d.alt.toFixed(1):'--');
+    setText(document.getElementById('gps-speed'),d.fix>0?d.speed.toFixed(1):'--');
+    setText(document.getElementById('gps-heading'),d.fix>0?d.heading.toFixed(0):'--');
+    setText(document.getElementById('gps-hdop'),d.fix>0?d.hdop.toFixed(1):'--');
     setFlash(document.getElementById('gps-sats-used'),d.satellites_used||0);
-    document.getElementById('gps-fix-time').textContent=d.last_fix_time||'--';
-    document.getElementById('gps-port').textContent=d.port||'--';
+    setText(document.getElementById('gps-fix-time'),d.last_fix_time||'--');
+    setText(document.getElementById('gps-port'),d.port||'--');
     var mapLink=document.getElementById('gps-map-link');
     if(d.fix>0){mapLink.href='https://www.openstreetmap.org/?mlat='+d.lat+'&mlon='+d.lon+'#map=15/'+d.lat+'/'+d.lon;mapLink.style.display='';}else{mapLink.style.display='none';}
     var sats=d.satellites||[]; var ch='';
     for(var i=0;i<sats.length;i++){var s=sats[i];var pct=Math.min(100,Math.round(s.snr*100/50));var fillCls=s.snr===0?'none':s.snr>=35?'':s.snr>=20?'mid':'low';ch+='<div class="sat-row"><span class="sat-prn">PRN '+s.prn+'</span><div class="sat-track"><div class="sat-fill '+fillCls+'" style="width:'+pct+'%"></div></div><span class="sat-snr">'+s.snr+'</span></div>';}
     if(!ch)ch='<div class="empty"><span class="empty-glyph">&#9675;</span>No satellites in view</div>';
-    document.getElementById('gps-sat-chart').innerHTML=ch;
+    if(ch!==_lastGpsSatHTML){_lastGpsSatHTML=ch;document.getElementById('gps-sat-chart').innerHTML=ch;}
   }).catch(function(){});
 }
 setInterval(updateGps,3000); updateGps();
 
 // ── Loop Recorder ──
+var _lastLoopHTML='',_lastLoopSummary='';
 function updateLoopRecorder(){
   fetch('/loop/buses').then(function(r){return r.json();}).then(function(buses){
     setTabDim('tab-loop',!buses||buses.length===0);
@@ -814,9 +825,10 @@ function updateLoopRecorder(){
       var rateStr=(b.segments>0&&b.latest>b.earliest)?((b.disk_mb||0)/((b.latest-b.earliest)/3600)).toFixed(0)+' MB/h':'';
       html+='<div class="loop-bus">'+dot+' <span class="lb-name">'+(b.name||b.id)+'</span><span class="lb-meta">'+b.segments+' segs</span><span class="lb-meta">'+durStr+'</span><span class="lb-disk">'+diskStr+'</span>'+(rateStr?'<span class="lb-rate">'+rateStr+'</span>':'')+'<span class="lb-ret">ret '+(b.retention_hours||24)+'h</span></div>';
     }
-    document.getElementById('loop-buses').innerHTML=html;
+    if(html!==_lastLoopHTML){_lastLoopHTML=html;document.getElementById('loop-buses').innerHTML=html;}
     var totalStr=totalMB>=1024?(totalMB/1024).toFixed(1)+' GB':totalMB.toFixed(0)+' MB';
-    document.getElementById('loop-summary').textContent=buses.length+' bus'+(buses.length>1?'es':'')+' recording, '+totalSegs+' segments, '+totalStr+' total';
+    var summary=buses.length+' bus'+(buses.length>1?'es':'')+' recording, '+totalSegs+' segments, '+totalStr+' total';
+    if(summary!==_lastLoopSummary){_lastLoopSummary=summary;document.getElementById('loop-summary').textContent=summary;}
   }).catch(function(){});
 }
 setInterval(updateLoopRecorder,5000); updateLoopRecorder();

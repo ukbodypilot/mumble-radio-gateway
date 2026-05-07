@@ -121,6 +121,7 @@
 var _monWs=null, _monStream=null, _monCtx=null, _monProc=null, _monActive=false;
 var _monStart=0, _monBytes=0, _monTimer=null, _monReconnTimer=null;
 var _monWakeLock=null, _monSilentAudio=null;
+var _monFrameCount=0;
 
 function monToggle() {
   if (_monActive) monStop(); else monStart();
@@ -178,12 +179,15 @@ function monStartAudio() {
     var rms = Math.sqrt(sum / f32.length);
     var db = rms > 0 ? 20 * Math.log10(rms) : -100;
 
-    var pct = Math.min(100, Math.max(0, Math.round((db + 60) * (100 / 60))));
-    var bar = document.getElementById('mon-level-bar');
-    bar.style.width = pct + '%';
-    bar.classList.toggle('warn', pct >= 70 && pct < 90);
-    bar.classList.toggle('err',  pct >= 90);
-    document.getElementById('mon-db').textContent = db > -100 ? db.toFixed(1) : '—';
+    _monFrameCount++;
+    if (_monFrameCount % 4 === 0) {
+      var pct = Math.min(100, Math.max(0, Math.round((db + 60) * (100 / 60))));
+      var bar = document.getElementById('mon-level-bar');
+      bar.style.width = pct + '%';
+      bar.classList.toggle('warn', pct >= 70 && pct < 90);
+      bar.classList.toggle('err',  pct >= 90);
+      document.getElementById('mon-db').textContent = db > -100 ? db.toFixed(1) : '—';
+    }
 
     var vadEn = document.getElementById('mon-vad-en').checked;
     var vadThr = parseFloat(document.getElementById('mon-vad-thr').value) || -45;
