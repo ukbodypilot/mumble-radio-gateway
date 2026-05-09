@@ -185,6 +185,8 @@ function poll() {
 
 poll();
 setInterval(poll, 8000);
+// Clear unread alert dot when page is visited
+fetch('/manager/ack', {method:'POST'}).catch(function(){});
 </script>
 </body>
 </html>
