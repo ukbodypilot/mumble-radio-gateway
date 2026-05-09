@@ -1236,3 +1236,234 @@ def handle_gdrive_files(handler, parent):
     handler.end_headers()
     handler.wfile.write(body)
 
+
+
+def handle_manager_status(handler, parent):
+    """GET /manager/status"""
+    import json as json_mod
+    gw = parent.gateway if parent else None
+    eng = getattr(gw, 'manager_engine', None) if gw else None
+    if eng:
+        data = eng.get_status()
+    else:
+        data = {'enabled': False, 'daily_time': '06:00', 'unread_alerts': False,
+                'running': False, 'last_run_type': None, 'last_run_ts': None,
+                'last_hourly': None, 'last_daily': None}
+    body = json_mod.dumps(data).encode()
+    try:
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Cache-Control', 'no-cache')
+        handler.send_header('Content-Length', str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except BrokenPipeError:
+        pass
+
+
+def handle_manager_reports(handler, parent):
+    """GET /manager/reports"""
+    import json as json_mod
+    gw = parent.gateway if parent else None
+    eng = getattr(gw, 'manager_engine', None) if gw else None
+    reports = eng.get_reports(100) if eng else []
+    body = json_mod.dumps(reports).encode()
+    try:
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Cache-Control', 'no-cache')
+        handler.send_header('Content-Length', str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except BrokenPipeError:
+        pass
+
+
+def handle_manager_doc(handler, parent):
+    """GET /manager/doc?name=constitution|hourly|daily  — raw text"""
+    import json as json_mod
+    from urllib.parse import urlparse, parse_qs
+    qs = parse_qs(urlparse(handler.path).query)
+    name = (qs.get('name') or [''])[0]
+    gw = parent.gateway if parent else None
+    eng = getattr(gw, 'manager_engine', None) if gw else None
+    content = eng.read_doc(name) if eng else None
+    if content is None:
+        handler.send_response(404)
+        handler.end_headers()
+        return
+    body = content.encode()
+    try:
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'text/plain; charset=utf-8')
+        handler.send_header('Cache-Control', 'no-cache')
+        handler.send_header('Content-Length', str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except BrokenPipeError:
+        pass
+
+
+def handle_manager_view(handler, parent):
+    """GET /manager/view?doc=constitution|hourly|daily  — read-only rendered page"""
+    import json as json_mod
+    from urllib.parse import urlparse, parse_qs
+    qs = parse_qs(urlparse(handler.path).query)
+    doc = (qs.get('doc') or [''])[0]
+    titles = {'constitution': 'System Manifest', 'hourly': 'Hourly Tasks', 'daily': 'Daily Tasks'}
+    title = titles.get(doc, doc)
+    gw = parent.gateway if parent else None
+    eng = getattr(gw, 'manager_engine', None) if gw else None
+    content = eng.read_doc(doc) if eng else None
+    if content is None:
+        handler.send_response(404)
+        handler.end_headers()
+        return
+    import html as html_mod
+    # Very light markdown → HTML: headings, bold, code, lists, horizontal rules
+    def md_to_html(text):
+        import re
+        lines = text.split('\n')
+        out = []
+        in_code = False
+        for line in lines:
+            if line.startswith('```'):
+                if in_code:
+                    out.append('</code></pre>')
+                    in_code = False
+                else:
+                    out.append('<pre><code>')
+                    in_code = True
+                continue
+            if in_code:
+                out.append(html_mod.escape(line))
+                continue
+            esc = html_mod.escape(line)
+            if re.match(r'^### ', line):
+                out.append(f'<h3>{html_mod.escape(line[4:])}</h3>')
+            elif re.match(r'^## ', line):
+                out.append(f'<h2>{html_mod.escape(line[3:])}</h2>')
+            elif re.match(r'^# ', line):
+                out.append(f'<h1>{html_mod.escape(line[2:])}</h1>')
+            elif re.match(r'^---+$', line):
+                out.append('<hr>')
+            elif re.match(r'^\d+\.', line) or line.startswith('- ') or line.startswith('* '):
+                inner = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', esc)
+                inner = re.sub(r'`(.+?)`', r'<code>\1</code>', inner)
+                out.append(f'<li>{inner}</li>')
+            elif line.strip() == '':
+                out.append('<br>')
+            else:
+                inner = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', esc)
+                inner = re.sub(r'`(.+?)`', r'<code>\1</code>', inner)
+                out.append(f'<p>{inner}</p>')
+        if in_code:
+            out.append('</code></pre>')
+        return '\n'.join(out)
+    body_html = md_to_html(content)
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<link rel="stylesheet" href="/pages/common.css">
+<style>
+  body {{ padding: var(--s-4); max-width: 860px; margin: 0 auto; line-height: 1.6; }}
+  h1,h2,h3 {{ color: var(--t-accent); margin: var(--s-4) 0 var(--s-2); }}
+  h1 {{ font-size: 1.4em; }} h2 {{ font-size: 1.15em; }} h3 {{ font-size: 1em; }}
+  p {{ color: var(--t-text); margin: var(--s-1) 0; font-size: var(--f-sm); }}
+  li {{ color: var(--t-text); font-size: var(--f-sm); margin: 2px 0; }}
+  ul,ol {{ padding-left: 1.4em; margin: var(--s-1) 0; }}
+  pre {{ background: var(--t-bg); border: 1px solid var(--t-border); border-radius: var(--r-sm);
+        padding: var(--s-2); overflow-x: auto; margin: var(--s-2) 0; }}
+  code {{ font-family: monospace; font-size: 0.9em; color: var(--t-accent); }}
+  pre code {{ color: var(--t-text); }}
+  hr {{ border: none; border-top: 1px solid var(--t-border); margin: var(--s-3) 0; }}
+  .toolbar {{ display: flex; gap: var(--s-2); margin-bottom: var(--s-3); }}
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <a href="/manager/edit?doc={doc}" target="_blank" class="rb rb-sm">Edit</a>
+</div>
+{body_html}
+</body>
+</html>"""
+    body = html.encode()
+    try:
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'text/html; charset=utf-8')
+        handler.send_header('Content-Length', str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except BrokenPipeError:
+        pass
+
+
+def handle_manager_edit(handler, parent):
+    """GET /manager/edit?doc=constitution|hourly|daily  — editor page"""
+    import json as json_mod
+    from urllib.parse import urlparse, parse_qs
+    qs = parse_qs(urlparse(handler.path).query)
+    doc = (qs.get('doc') or [''])[0]
+    titles = {'constitution': 'System Manifest', 'hourly': 'Hourly Tasks', 'daily': 'Daily Tasks'}
+    title = titles.get(doc, doc)
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Manager — {title}</title>
+<link rel="stylesheet" href="/pages/common.css">
+<style>
+  body {{ padding: var(--s-4); max-width: 900px; margin: 0 auto; }}
+  h2 {{ color: var(--t-accent); margin-bottom: var(--s-3); }}
+  textarea {{ width: 100%; height: calc(100vh - 160px); box-sizing: border-box;
+              font-family: monospace; font-size: 13px; resize: vertical;
+              background: var(--t-panel); color: var(--t-text);
+              border: 1px solid var(--t-border); border-radius: var(--r-sm);
+              padding: var(--s-2); }}
+  .toolbar {{ display: flex; gap: var(--s-2); align-items: center; margin-bottom: var(--s-2); }}
+  .st-line {{ font-size: var(--f-xs); color: var(--t-text-dim); }}
+  .st-line.ok {{ color: var(--t-ok); }}
+  .st-line.err {{ color: var(--t-err); }}
+</style>
+</head>
+<body>
+<h2>{title}</h2>
+<div class="toolbar">
+  <button class="rb" onclick="save()">Save</button>
+  <span id="status" class="st-line"></span>
+</div>
+<textarea id="editor" spellcheck="false"></textarea>
+<script>
+fetch('/manager/doc?name={doc}').then(r=>r.text()).then(t=>{{
+  document.getElementById('editor').value = t;
+}});
+function save() {{
+  var st = document.getElementById('status');
+  st.textContent = 'Saving...'; st.className = 'st-line';
+  fetch('/manager/save', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{doc: '{doc}', content: document.getElementById('editor').value}})
+  }}).then(r=>r.json()).then(d=>{{
+    if (d.ok) {{ st.textContent = 'Saved'; st.className = 'st-line ok'; }}
+    else       {{ st.textContent = 'Error: ' + (d.error||'unknown'); st.className = 'st-line err'; }}
+    setTimeout(()=>{{ st.textContent=''; st.className='st-line'; }}, 3000);
+  }}).catch(e=>{{ st.textContent='Error: '+e; st.className='st-line err'; }});
+}}
+document.addEventListener('keydown', function(e) {{
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {{ e.preventDefault(); save(); }}
+}});
+</script>
+</body>
+</html>"""
+    body = html.encode()
+    try:
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'text/html; charset=utf-8')
+        handler.send_header('Content-Length', str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except BrokenPipeError:
+        pass

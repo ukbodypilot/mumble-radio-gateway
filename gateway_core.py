@@ -348,6 +348,9 @@ class RadioGateway:
         # Smart Announcements (AI-powered, Claude or Gemini)
         self.smart_announce = None  # SmartAnnouncementManager instance
 
+        # Fleet Manager Engine
+        self.manager_engine = None  # ManagerEngine instance
+
         # Automation Engine
         self.automation_engine = None  # AutomationEngine instance
 
@@ -1671,6 +1674,15 @@ class RadioGateway:
                     self.web_config_server.start()
                 except Exception as e:
                     print(f"  [WebConfig] Init error: {e}")
+
+            # Initialize Fleet Manager Engine (always on — manages its own enabled state)
+            try:
+                from manager_engine import ManagerEngine
+                self.manager_engine = ManagerEngine(self.config, gateway=self)
+                self.manager_engine.start()
+                print(f"  [Manager] Fleet Manager Engine started")
+            except Exception as e:
+                print(f"  [Manager] Init error: {e}")
 
             # Initialize DDNS updater
             if getattr(self.config, 'ENABLE_DDNS', False):
@@ -3445,6 +3457,12 @@ class RadioGateway:
         if self.smart_announce:
             try:
                 self.smart_announce.stop()
+            except Exception:
+                pass
+
+        if self.manager_engine:
+            try:
+                self.manager_engine.stop()
             except Exception:
                 pass
 

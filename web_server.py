@@ -699,6 +699,7 @@ class WebConfigServer:
                 '/routing': 'routing.html',
                 '/packet': 'packet.html',
                 '/gdrive': 'gdrive.html',
+                '/manager': 'manager.html',
             }
 
             def do_GET(self):
@@ -830,6 +831,16 @@ class WebConfigServer:
                     _rg.handle_gdrive_files(self, parent)
                 elif self.path.startswith('/packet/winlink/'):
                     _rg.handle_winlink_api(self, parent)
+                elif self.path == '/manager/status':
+                    _rg.handle_manager_status(self, parent)
+                elif self.path == '/manager/reports':
+                    _rg.handle_manager_reports(self, parent)
+                elif self.path.startswith('/manager/doc'):
+                    _rg.handle_manager_doc(self, parent)
+                elif self.path.startswith('/manager/view'):
+                    _rg.handle_manager_view(self, parent)
+                elif self.path.startswith('/manager/edit'):
+                    _rg.handle_manager_edit(self, parent)
 
             def do_POST(self):
                 if not self._check_auth():
@@ -919,6 +930,16 @@ class WebConfigServer:
                     _rg.handle_pat_proxy(self, parent)
                 elif self.path.startswith('/packet/'):
                     _rp.handle_packet_cmd(self, parent)
+                elif self.path == '/manager/toggle':
+                    _rp.handle_manager_toggle(self, parent)
+                elif self.path == '/manager/config':
+                    _rp.handle_manager_config(self, parent)
+                elif self.path == '/manager/save':
+                    _rp.handle_manager_save(self, parent)
+                elif self.path == '/manager/run':
+                    _rp.handle_manager_run(self, parent)
+                elif self.path == '/manager/ack':
+                    _rp.handle_manager_ack(self, parent)
                 else:
                     # Config form submission (fallback for /config POST)
                     _rp.handle_config_form(self, parent)

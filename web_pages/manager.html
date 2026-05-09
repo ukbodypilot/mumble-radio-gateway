@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Manager</title>
+<link rel="stylesheet" href="/pages/common.css">
+<style>
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; padding: var(--s-3); gap: var(--s-3); }
+
+  .mgr-toolbar { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; flex-shrink: 0; }
+  .mgr-title   { font-size: var(--f-base); font-weight: 600; color: var(--t-accent); }
+
+  .mgr-section { background: var(--t-panel); border: 1px solid var(--t-border);
+                 border-radius: var(--r-md); padding: var(--s-3); flex-shrink: 0; }
+  .mgr-section-title { font-size: var(--f-xs); font-weight: 600; letter-spacing: 0.06em;
+                       color: var(--t-text-dim); text-transform: uppercase; margin-bottom: var(--s-2); }
+
+  .doc-row  { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-2); }
+  .doc-row:last-child { margin-bottom: 0; }
+  .doc-name { min-width: 140px; font-size: var(--f-sm); color: var(--t-text); }
+
+  .ctrl-row { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; margin-bottom: var(--s-2); }
+  .ctrl-row:last-child { margin-bottom: 0; }
+  .ctrl-label { min-width: 90px; font-size: var(--f-sm); color: var(--t-text-dim); }
+
+  .report-box { flex: 1 1 auto; min-height: 0; overflow-y: auto;
+                background: var(--t-bg); border: 1px solid var(--t-border);
+                border-radius: var(--r-md); padding: var(--s-2); }
+
+  .rpt-entry  { border-bottom: 1px solid var(--t-border); padding: var(--s-1) 0; }
+  .rpt-entry:last-child { border-bottom: none; }
+  .rpt-header { display: flex; align-items: center; gap: var(--s-2); cursor: pointer;
+                user-select: none; }
+  .rpt-body   { margin: var(--s-1) 0 0 var(--s-4); display: none; }
+  .rpt-body.open { display: block; }
+  .rpt-body ul { margin: 0; padding-left: 1.2em; }
+  .rpt-body li { font-size: var(--f-xs); color: var(--t-text-dim); margin: 2px 0; }
+
+  .dot.ok   { color: var(--t-ok); }
+  .dot.warn { color: var(--t-warn); }
+  .dot.err  { color: var(--t-err); }
+
+  .badge-running { color: var(--t-warn); }
+
+  input[type="time"].ctrl-input { width: 96px; }
+</style>
+</head>
+<body>
+
+<div class="mgr-toolbar">
+  <span class="mgr-title">Fleet Manager</span>
+  <div style="display:flex;align-items:center;gap:var(--s-1)">
+    <span class="st-label" style="font-size:var(--f-sm)">Manager:</span>
+    <button id="mgr-toggle" class="rb rb-sm" onclick="toggleManager()">OFF</button>
+    <span id="mgr-running" style="font-size:var(--f-xs)"></span>
+  </div>
+  <div style="display:flex;align-items:center;gap:var(--s-1)">
+    <span class="st-label" style="font-size:var(--f-sm)">Daily at:</span>
+    <input id="mgr-daily-time" type="time" class="ctrl-input" value="06:00">
+    <button class="rb rb-sm" onclick="saveMgrConfig()">Save</button>
+  </div>
+  <button class="rb rb-sm" onclick="runMgr('hourly')">Run Hourly Now</button>
+  <button class="rb rb-sm" onclick="runMgr('daily')">Run Daily Now</button>
+  <span id="mgr-last" style="margin-left:auto;font-size:var(--f-xs);color:var(--t-text-dim)"></span>
+</div>
+
+<!-- Documents -->
+<div class="mgr-section">
+  <div class="mgr-section-title">Documents</div>
+  <div class="doc-row">
+    <span class="doc-name">System Manifest</span>
+    <a href="/manager/view?doc=constitution" target="_blank" class="rb rb-sm">View</a>
+    <a href="/manager/edit?doc=constitution" target="_blank" class="rb rb-sm">Edit</a>
+  </div>
+  <div class="doc-row">
+    <span class="doc-name">Hourly Tasks</span>
+    <a href="/manager/view?doc=hourly" target="_blank" class="rb rb-sm">View</a>
+    <a href="/manager/edit?doc=hourly" target="_blank" class="rb rb-sm">Edit</a>
+  </div>
+  <div class="doc-row">
+    <span class="doc-name">Daily Tasks</span>
+    <a href="/manager/view?doc=daily" target="_blank" class="rb rb-sm">View</a>
+    <a href="/manager/edit?doc=daily" target="_blank" class="rb rb-sm">Edit</a>
+  </div>
+</div>
+
+<!-- Reports -->
+<div style="font-size:var(--f-xs);color:var(--t-text-dim);flex-shrink:0">Reports — newest first</div>
+<div id="report-box" class="report-box">
+  <span class="dim">Loading…</span>
+</div>
+
+<script src="/pages/common.js"></script>
+<script>
+function toggleManager() {
+  var btn = document.getElementById('mgr-toggle');
+  var enable = btn.textContent.trim() === 'OFF';
+  fetch('/manager/toggle', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({enabled: enable})})
+  .then(function(r){return r.json();}).then(function(d){
+    if (d.ok) applyStatus({enabled: d.enabled});
+  });
+}
+
+function saveMgrConfig() {
+  var t = document.getElementById('mgr-daily-time').value;
+  fetch('/manager/config', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({daily_time: t})});
+}
+
+function runMgr(task) {
+  fetch('/manager/run', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({task: task})})
+  .then(function(r){return r.json();}).then(function(d){
+    if (d.ok) showToast('Manager ' + task + ' run started', 'info');
+  });
+}
+
+function applyStatus(d) {
+  var btn = document.getElementById('mgr-toggle');
+  btn.textContent = d.enabled ? 'ON' : 'OFF';
+  btn.classList.toggle('rb-active', !!d.enabled);
+  var ti = document.getElementById('mgr-daily-time');
+  if (d.daily_time) ti.value = d.daily_time;
+  var run = document.getElementById('mgr-running');
+  run.textContent = d.running ? '⏳ Running…' : '';
+  run.className = d.running ? 'badge-running' : '';
+  var last = document.getElementById('mgr-last');
+  if (d.last_run_ts) last.textContent = (d.last_run_type || '') + ' · ' + d.last_run_ts;
+}
+
+function loadReports() {
+  fetch('/manager/reports').then(function(r){return r.json();}).then(function(reports){
+    var box = document.getElementById('report-box');
+    if (!reports.length) { box.innerHTML = '<span class="dim">No reports yet.</span>'; return; }
+    var html = '';
+    for (var i = reports.length - 1; i >= 0; i--) {
+      var r = reports[i];
+      var sev = r.severity || 'ok';
+      var cls = sev === 'elevated' ? 'err' : sev === 'warning' ? 'warn' : 'ok';
+      var findings = (r.findings || []).map(function(f){
+        return '<li>' + f.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</li>';
+      }).join('');
+      html += '<div class="rpt-entry">'
+            + '<div class="rpt-header" onclick="toggleRpt(this)">'
+            + '<span class="dot ' + cls + '">&#x25cf;</span>'
+            + '<b>' + (r.task || '') + '</b>'
+            + '<span style="color:var(--t-text-dim);font-size:var(--f-xs)">' + (r.ts || '') + '</span>'
+            + '<span class="' + cls + '" style="font-size:var(--f-xs)">' + (r.summary || '').replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>'
+            + '</div>'
+            + (findings ? '<div class="rpt-body"><ul>' + findings + '</ul></div>' : '')
+            + '</div>';
+    }
+    box.innerHTML = html;
+  }).catch(function(){});
+}
+
+function toggleRpt(hdr) {
+  var body = hdr.nextElementSibling;
+  if (body && body.classList.contains('rpt-body')) body.classList.toggle('open');
+}
+
+function poll() {
+  fetch('/manager/status').then(function(r){return r.json();}).then(applyStatus).catch(function(){});
+  loadReports();
+}
+
+poll();
+setInterval(poll, 8000);
+</script>
+</body>
+</html>

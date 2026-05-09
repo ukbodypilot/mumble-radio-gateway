@@ -83,6 +83,7 @@ Current-state summary. For how each subsystem works in detail, jump to the secti
 
 See [CHANGELOG.md](CHANGELOG.md) for the detailed release history. Latest releases:
 
+- **v3.6** (2026-05-08) — Fleet Manager: document-driven autonomous monitoring. Plain-English task lists (`hourly.md`, `daily.md`) handed to a Claude session on a schedule; structured JSON reports read back. Hourly service/stream/disk health. Daily fleet ping sweep with subnet-wide node discovery, SSH fingerprint identification, and automatic manifest updates when nodes change IP. System Manifest (`SYSTEM_MANIFEST.md`) as living fleet reference. Web UI at System → Manager with in-browser View/Edit for all documents, report feed, Telegram escalation, and red-dot alert indicator on the nav.
 - **v3.5** (2026-05-03) — persistent transcription log with FTS5 + plain-English search via Claude CLI (`transcription_log_query` / `transcription_log_recent` MCP tools); per-transcript Mumble + Telegram forwarding toggles; transcription alert keywords. Bus tick refactor: sinks off-tick on per-sink drain threads, numba-jit noise gate, `TickContext` per-tick read snapshot, tick-owned level meters, per-sink + per-source instrumentation (`/sinkstats`, `/sourcestats` + matching MCP tools). UI: tabbed dashboard, shell redesign, routing scroll-wheel gain. Installer overhaul + clean-VM smoke test. Fixes: loop-recorder 820ms stall, stream auto-reconnect during quiet periods, broadcastify encoder stdin race, sink drain reload bug.
 - **v3.4** (2026-04-22) — deployability release: INSTALL.md, `requirements.txt`, AUR fail-fast, post-install health check, annotated example config, path de-mandate, loop playback owned by gateway, routing UI polish, TX/RX mute independence, Broadcastify reconnect fix.
 - **v3.3** (2026-04-19) — DeepFilterNet 3 denoise, phase-aligned wet/dry, per-stream transcription workers, design pass.
@@ -648,6 +649,81 @@ TRANSCRIBE_MODEL = base
 ## Gateway Link
 
 See the [Gateway Link documentation](docs/gateway_link.md) for the full protocol spec, plugin development guide, and roadmap.
+
+## Fleet Manager
+
+The Fleet Manager is a **document-driven autonomous monitoring and maintenance system**. Instead of hard-coded checks, thresholds, and alert rules, it works by handing a set of plain-English task documents to a Claude Code session already running on the gateway, asking it to perform the tasks, and reading back a structured report. The entire behaviour of the monitoring system is plain text you can read and edit in a browser.
+
+### Why not hard-coded checks?
+
+Traditional monitoring platforms — Nagios, Zabbix, custom cron scripts — are rigid. You define checks in code or YAML. Adding a new check means editing a config file, redeploying, and hoping the schema supports what you need. Thresholds are constants. Remediation steps are `if/else` branches. Edge cases need code.
+
+The Fleet Manager inverts this. The "check" is a sentence:
+
+> "Ping each known node. If one doesn't respond, scan the subnet, try to identify it by SSH fingerprint, and update the manifest with its new address."
+
+That instruction took two minutes to write. A traditional monitoring system would take hours to implement the same logic, and it would break the moment a fingerprint changed.
+
+Because the agent is Claude, it can:
+- **Reason about ambiguous output** — a partial SSH response, an unexpected hostname, a service in a degraded-but-running state
+- **Take corrective action** — restart a non-critical service, update a config file, amend a document
+- **Escalate intelligently** — decide whether something is worth waking you up for, not just whether a threshold was crossed
+- **Self-update its own task files** — if a node moves to a new IP, the daily task list is updated in place for next time
+
+### How it works
+
+The gateway runs a background scheduler (`manager_engine.py`) that fires on two schedules:
+
+- **Hourly** — reads `hourly.md`, sends it as a prompt to the `claude-gateway` tmux session, waits for Claude to append a structured JSON report to `manager_reports.jsonl`
+- **Daily** — same, using `daily.md`, at a configurable time (default 06:00)
+
+Each run embeds a `run_id`. Claude is instructed to include that id in its report line so the engine can match the response even if other activity occurred in the session between the send and the read.
+
+If the report has `severity: elevated`, the engine fires a Telegram alert to the user. An unread-alert indicator (`●`) appears on the System menu in the web UI.
+
+### The System Manifest
+
+`SYSTEM_MANIFEST.md` is the authoritative reference document for the entire fleet — hardware, roles, IPs, service contracts, known failure modes, and run history. The agent reads it before each daily run so it has full context without needing it baked into code.
+
+The manifest is a living document. When the agent discovers a node has moved to a new IP, it edits the manifest directly. When you add a machine to the fleet, you add a section to the manifest and the agent knows about it on the next run. No redeployment, no schema migration.
+
+The manifest is gitignored because it contains LAN IPs, credentials, and internal topology. It lives only on the gateway. The same applies to `hourly.md`, `daily.md`, `manager_state.json`, and `manager_reports.jsonl`.
+
+### Configuring behaviour
+
+Everything is plain text, edited directly in the browser at **System → Manager**:
+
+| Document | Purpose |
+|---|---|
+| `SYSTEM_MANIFEST.md` | Fleet topology, service contracts, known quirks |
+| `hourly.md` | What Claude checks and reports every hour |
+| `daily.md` | What Claude checks, repairs, and reports once a day |
+
+Each document has a **View** button (rendered markdown, read-only) and an **Edit** button (in-browser textarea, Ctrl+S to save). Changes take effect on the next scheduled run — no restart needed.
+
+To add a new check, open `hourly.md` and write it in plain English. To change what constitutes an elevated alert, edit the reporting instructions at the bottom of the file. To add a new fleet node, add a section to `SYSTEM_MANIFEST.md`.
+
+### Use cases
+
+**Fleet health at a glance** — every hour, Claude checks that all radio services are alive, the SDR is receiving, the stream is connected, and disk and memory are healthy. You get a one-line summary in the report list; click to expand findings. If anything is wrong you get a Telegram message.
+
+**Automatic node discovery** — if a DHCP node moves to a new address, the daily run detects the miss, sweeps the subnet, identifies the node by SSH fingerprint, and updates the manifest. Next time you SSH in, the address in the manifest is correct.
+
+**Self-healing services** — the daily task list instructs the agent to restart non-critical services (Mumble, CAT, SDRplay) if they are found down. The gateway doesn't need a watchdog for every individual service; the agent handles it.
+
+**Docker stack monitoring** — the daily run SSHes to the Mac Mini media server, lists container states, and flags anything stopped. No Portainer webhook configuration needed.
+
+**Extensible without code** — want to monitor a new node? Add it to the manifest and add a check to `daily.md`. Want to start checking log error rates? Add a line. Want Claude to attempt a repair before alerting you? Change "report only" to "restart if safe, then report". None of this requires a gateway restart.
+
+### Web UI
+
+The Manager page lives at **System → Manager** in the web UI. It shows:
+
+- ON/OFF toggle and daily run time (configurable)
+- Run Hourly Now / Run Daily Now buttons
+- View and Edit links for all three documents
+- A persistent scrollable report list, newest first, with expandable findings per entry
+- A red `●` on the System menu label when there are unacknowledged elevated reports
 
 ## Other Features
 

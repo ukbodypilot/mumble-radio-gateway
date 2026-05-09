@@ -4,6 +4,24 @@ All notable changes to Radio Gateway.
 
 ## [Unreleased]
 
+## [3.6.0] -- 2026-05-08
+
+### Added — Fleet Manager
+
+A **document-driven autonomous monitoring and maintenance system**. Instead of hard-coded checks and alert rules, the Fleet Manager works by sending plain-English task documents to the `claude-gateway` tmux session on a schedule, then reading back a structured JSON report. The entire monitoring behaviour is plain text editable in a browser — no code changes, no restarts.
+
+- **`manager_engine.py`** — background scheduler thread. Fires hourly tasks at the top of each hour and daily tasks at a configurable time (default 06:00). Embeds a `run_id` in each prompt and polls `manager_reports.jsonl` for a matching response (10-minute timeout). Thread-safe state in `manager_state.json`.
+- **`SYSTEM_MANIFEST.md`** — authoritative fleet reference document. Hardware, roles, LAN/Tailscale IPs, service contracts, known failure modes for every node. Read by the agent before each daily run. Written by the agent when a node relocates to a new IP. Gitignored — never committed.
+- **`hourly.md`** / **`daily.md`** — plain-English task lists. Hourly covers services, SDR, stream, disk, memory. Daily adds fleet-wide ping sweep, subnet node-discovery when a known IP is unreachable (SSH fingerprint identification + automatic manifest update), Docker stack check on Mac Mini, log error counts, housekeeping. Both fully editable in the browser.
+- **Web UI** at **System → Manager**: ON/OFF toggle, daily run time, Run Now buttons, View (rendered markdown) and Edit (in-browser textarea, Ctrl+S saves) for all three documents, persistent scrollable report list with expandable findings.
+- **Red alert dot** on the System menu label. Lights on unacknowledged elevated reports; clears when Manager page is opened.
+- **Telegram escalation** on `severity: elevated` reports.
+- All manager runtime files added to `.gitignore`.
+
+### Changed
+
+- Shell nav System dropdown: Manager added as first item.
+
 ## [3.5.0] -- 2026-05-03
 
 Two big things this release: a **persistent transcription log with natural-language search**, and a **bus tick refactor** that pushes every sink off the audio hot path. Plus an installer overhaul, several UI redesigns, and a handful of fixes for bugs that surfaced along the way.

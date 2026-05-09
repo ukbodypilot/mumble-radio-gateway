@@ -44,6 +44,13 @@ logs/
 *.bak
 *~
 
+# Fleet documentation — sensitive (node IPs, credentials, service internals) — never commit
+SYSTEM_MANIFEST.md
+hourly.md
+daily.md
+manager_state.json
+manager_reports.jsonl
+
 # User configurations — never commit (contains secrets: stream keys, passwords)
 gateway_config.txt
 sdr_channels.json
