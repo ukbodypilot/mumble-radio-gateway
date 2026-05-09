@@ -92,6 +92,12 @@ class ManagerEngine:
     def set_enabled(self, enabled: bool):
         with self._lock:
             self._state['enabled'] = bool(enabled)
+            if enabled:
+                # Seed last-run keys so the first fire is at the next scheduled
+                # time, not immediately on the current (already-passed) hour/day.
+                now = datetime.now()
+                self._state['last_hourly'] = now.strftime('%Y-%m-%d-%H')
+                self._state['last_daily']  = now.strftime('%Y-%m-%d')
             self._save_state()
 
     def set_daily_time(self, t: str):
@@ -203,7 +209,7 @@ class ManagerEngine:
                 with self._lock:
                     self._state['unread_alerts'] = True
                     self._save_state()
-            if severity == 'elevated':
+            if severity in ('elevated', 'warning'):
                 self._send_telegram_alert(task_type, entry)
 
         finally:
