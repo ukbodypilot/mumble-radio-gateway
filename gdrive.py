@@ -35,20 +35,29 @@ class GDriveClient:
         try:
             r = subprocess.run(['rclone', 'version'], capture_output=True,
                                text=True, timeout=5)
-            ver = r.stdout.split('\n')[0] if r.returncode == 0 else '?'
+            if r.returncode != 0:
+                raise RuntimeError("rclone not available")
+            self._rclone_ver = r.stdout.split('\n')[0]
         except FileNotFoundError:
             raise RuntimeError("rclone not installed")
 
-        # Verify remote exists
-        try:
-            r = subprocess.run(self._cmd('lsd', self._rpath('')),
-                               capture_output=True, text=True, timeout=15)
-            if r.returncode != 0:
-                raise RuntimeError(f"rclone remote '{remote}' failed: {r.stderr.strip()}")
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"rclone timeout accessing remote '{remote}'")
+        # Probe remote in background — slow Google API responses won't block startup
+        self._connected = False
+        threading.Thread(target=self._probe, daemon=True, name="gdrive-probe").start()
+        print(f"  [GDrive] Client ready ({self._rclone_ver}) → {remote}:{folder_path} (probing...)")
 
-        print(f"  [GDrive] Connected via rclone ({ver}) → {remote}:{folder_path}")
+    def _probe(self):
+        """Background probe — sets self._connected after testing remote access."""
+        try:
+            stdout, stderr, rc = self._run('lsd', self._rpath(), timeout=20)
+            with self._lock:
+                self._connected = rc == 0
+            status = "OK" if rc == 0 else f"failed (rc={rc})"
+            print(f"  [GDrive] Probe {status}")
+        except Exception as e:
+            with self._lock:
+                self._connected = False
+            print(f"  [GDrive] Probe error: {e}")
 
     def _rpath(self, path=''):
         """Build rclone remote path."""
@@ -173,22 +182,25 @@ class GDriveClient:
 
     def get_status(self):
         """Return status dict for web UI / MCP."""
+        with self._lock:
+            connected = self._connected
         result = {
             'configured': True,
             'remote': self._remote,
             'folder_path': self._folder_path,
+            'authenticated': connected,
+            'folder_accessible': connected,
         }
-        # Test access
+        if not connected:
+            result['folder_error'] = 'Not yet connected (probe in progress or failed)'
+            return result
         try:
-            stdout, stderr, rc = self._run('about', f'{self._remote}:',
-                                           '--json')
+            stdout, stderr, rc = self._run('about', f'{self._remote}:', '--json')
             if rc == 0:
                 about = json.loads(stdout)
-                result['authenticated'] = True
                 result['total_bytes'] = about.get('total', 0)
                 result['used_bytes'] = about.get('used', 0)
                 result['free_bytes'] = about.get('free', 0)
-                result['folder_accessible'] = True
             else:
                 result['authenticated'] = False
                 result['folder_accessible'] = False
