@@ -109,6 +109,9 @@ class ManagerEngine:
         hours = hours if hours in valid else 1
         with self._lock:
             self._state['check_interval_hours'] = hours
+            # Recompute last_check under the new interval so the loop doesn't
+            # immediately fire due to a slot-key mismatch after the change.
+            self._state['last_check'] = self._check_slot_key(datetime.now())
             self._save_state()
 
     def acknowledge(self):
