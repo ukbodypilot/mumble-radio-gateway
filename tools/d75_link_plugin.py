@@ -87,6 +87,8 @@ class D75Plugin(RadioPlugin):
         "status": True,
     }
 
+    _RECONNECT_DELAY = 10  # seconds between BT reconnect attempts
+
     def __init__(self):
         self._serial = None
         self._audio = None
@@ -94,6 +96,8 @@ class D75Plugin(RadioPlugin):
         self._rx_queue = _queue_mod.Queue(maxsize=32)
         self._rx_buf = b''
         self._running = False
+        self._rx_thread = None
+        self._watchdog_thread = None
         self._chunk_size = 4800  # 50ms at 48kHz 16-bit mono
         self._status_dirty = False  # set by execute() to trigger immediate status report
         self.status_interval = 2.0  # D75 has live telemetry (S-meter, freq push)
@@ -113,30 +117,72 @@ class D75Plugin(RadioPlugin):
             self._tx_gain_db = max(-20, min(20, float(saved.get('tx_gain_db', 0))))
             print(f"[D75] Restored gains RX={self._rx_gain_db:+.1f} dB TX={self._tx_gain_db:+.1f} dB")
 
+        self._running = True
+        self._bt_connect()
+
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog, daemon=True, name="D75-Watchdog")
+        self._watchdog_thread.start()
+
+    def _bt_connect(self):
+        """Establish BT serial + audio connections and start RX reader. Returns True on success."""
         print(f"[D75] Connecting to {self._mac}...")
 
         if not ensure_paired(self._mac):
             print(f"[D75] WARNING: {self._mac} may not be paired")
 
-        # Connect CAT serial (RFCOMM ch2)
-        self._serial = SerialManager(self._mac)
-        if not self._serial.connect():
-            raise RuntimeError(f"D75 serial connect failed ({self._mac})")
+        try:
+            serial = SerialManager(self._mac)
+            if not serial.connect():
+                print(f"[D75] Serial connect failed")
+                return False
 
-        # Connect audio (RFCOMM ch1 + SCO)
-        self._audio = AudioManager(self._mac)
-        # Don't send CKPD — serial is already open (cross-channel issue)
-        if not self._audio.connect(send_ckpd=False):
-            self._serial.disconnect()
-            raise RuntimeError(f"D75 audio connect failed ({self._mac})")
+            audio = AudioManager(self._mac)
+            if not audio.connect(send_ckpd=False):
+                serial.disconnect()
+                print(f"[D75] Audio connect failed")
+                return False
 
-        # Start RX reader that collects SCO frames and resamples to 48kHz
-        self._running = True
-        self._rx_thread = threading.Thread(
-            target=self._rx_reader, daemon=True, name="D75-RX")
-        self._rx_thread.start()
+            self._serial = serial
+            self._audio = audio
+            self._rx_buf = b''
 
-        print(f"[D75] Connected — CAT + Audio ready")
+            self._rx_thread = threading.Thread(
+                target=self._rx_reader, daemon=True, name="D75-RX")
+            self._rx_thread.start()
+
+            print(f"[D75] Connected — CAT + Audio ready")
+            return True
+        except Exception as e:
+            print(f"[D75] BT connect error: {e}")
+            return False
+
+    def _watchdog(self):
+        """Monitor BT connection; reconnect when serial or audio drops."""
+        while self._running:
+            time.sleep(self._RECONNECT_DELAY)
+            if not self._running:
+                break
+            serial_ok = self._serial and self._serial.connected
+            rx_alive = self._rx_thread and self._rx_thread.is_alive()
+            if not serial_ok or not rx_alive:
+                print(f"[D75] Watchdog: connection lost (serial={serial_ok} rx={rx_alive}) — reconnecting")
+                try:
+                    if self._audio:
+                        self._audio.disconnect()
+                except Exception:
+                    pass
+                try:
+                    if self._serial:
+                        self._serial.disconnect()
+                except Exception:
+                    pass
+                self._serial = None
+                self._audio = None
+                time.sleep(2)
+                while self._running and not self._bt_connect():
+                    print(f"[D75] Watchdog: retry in {self._RECONNECT_DELAY}s")
+                    time.sleep(self._RECONNECT_DELAY)
 
     def teardown(self):
         """Disconnect Bluetooth."""
