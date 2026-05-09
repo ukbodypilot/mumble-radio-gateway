@@ -235,6 +235,9 @@ class ManagerEngine:
                     self._save_state()
             if severity in ('elevated', 'warning'):
                 self._send_telegram_alert(task_type, entry)
+            fix = entry.get('fix', '').strip()
+            if fix:
+                self._apply_fix(fix, entry)
 
         finally:
             with self._lock:
@@ -308,6 +311,48 @@ class ManagerEngine:
         with self._lock:
             self._state['unread_alerts'] = True
             self._save_state()
+
+    _FIX_ACTIONS = {
+        'restart-darkice': ['systemctl', 'restart', 'darkice'],
+        'restart-mumble':  ['systemctl', 'restart', 'mumble-server-gw1'],
+        'restart-sdrplay': ['systemctl', 'restart', 'sdrplay'],
+        'restart-gateway': ['systemctl', 'restart', 'radio-gateway'],
+    }
+
+    def _apply_fix(self, fix: str, entry: dict):
+        cmd = self._FIX_ACTIONS.get(fix)
+        if not cmd:
+            print(f"  [Manager] Unknown fix '{fix}' — ignored")
+            return
+        print(f"  [Manager] Applying fix: {fix}")
+        self._send_fix_telegram(fix, entry)  # send before restart-gateway kills us
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=30)
+            result = 'ok' if r.returncode == 0 else f'exit {r.returncode}'
+            print(f"  [Manager] Fix '{fix}': {result}")
+        except Exception as e:
+            print(f"  [Manager] Fix '{fix}' error: {e}")
+
+    def _send_fix_telegram(self, fix: str, entry: dict):
+        bot_token = str(getattr(self.config, 'TELEGRAM_BOT_TOKEN', '') or '').strip()
+        chat_id   = str(getattr(self.config, 'TELEGRAM_CHAT_ID',   '') or '').strip()
+        if not bot_token or not chat_id:
+            return
+        text = (
+            f"[Manager — auto-fix] {entry.get('ts','')}\n"
+            f"Action: {fix}\n"
+            f"{entry.get('summary','')}"
+        )
+        try:
+            import urllib.request
+            url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            data = json.dumps({'chat_id': chat_id, 'text': text}).encode()
+            req  = urllib.request.Request(url, data=data,
+                                          headers={'Content-Type': 'application/json'})
+            urllib.request.urlopen(req, timeout=10)
+            print(f"  [Manager] Fix Telegram sent: {fix}")
+        except Exception as e:
+            print(f"  [Manager] Fix Telegram failed: {e}")
 
     def _send_telegram_alert(self, task_type: str, entry: dict):
         bot_token = str(getattr(self.config, 'TELEGRAM_BOT_TOKEN', '') or '').strip()
