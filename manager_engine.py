@@ -105,7 +105,7 @@ class ManagerEngine:
             self._save_state()
 
     def set_check_interval(self, hours: int):
-        valid = (1, 2, 4, 8, 12)
+        valid = (1, 2, 4, 6, 8, 12)
         hours = hours if hours in valid else 1
         with self._lock:
             self._state['check_interval_hours'] = hours
