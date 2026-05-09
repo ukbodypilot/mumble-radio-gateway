@@ -501,6 +501,10 @@ function restartEndpoint(name) {
   if(!confirm('Restart endpoint "'+name+'"?')) return;
   postJson('/linkcmd',{endpoint:name,cmd:'restart'}).then(function(){ showToast(name+' restarting...','info'); }).catch(function(e){ showToast('Restart failed: '+e,'error'); });
 }
+function rebootEndpointHost(name) {
+  if(!confirm('Reboot host for endpoint "'+name+'"?\n\nThis will reboot the remote machine.')) return;
+  postJson('/linkcmd',{endpoint:name,cmd:'reboot_host'}).then(function(){ showToast(name+' host rebooting...','info'); }).catch(function(e){ showToast('Reboot failed: '+e,'error'); });
+}
 function showToast(msg, level) {
   var c=document.getElementById('toast-container'); if(!c) return;
   var d=document.createElement('div');
@@ -572,7 +576,7 @@ function updateStatus() {
           var le=eps[i]; if(i>0) lh+='<div class="ep-sep"></div>';
           var est=le.endpoint_status||{};
           var _model=est.model||le.plugin||'';
-          lh+='<div class="ep-head"><span class="st-val white">'+le.name+'</span><span class="ep-tool"><button class="rb rb-sm" onclick="restartEndpoint(\''+le.name+'\')"><span class="icon icon-refresh"></span></button></span></div>';
+          lh+='<div class="ep-head"><span class="st-val white">'+le.name+'</span><span class="ep-tool"><button class="rb rb-sm" title="Restart endpoint script" onclick="restartEndpoint(\''+le.name+'\')"><span class="icon icon-refresh"></span></button><button class="rb rb-sm" title="Reboot host" onclick="rebootEndpointHost(\''+le.name+'\')" style="margin-left:2px">&#x23FB;</button></span></div>';
           var eh='';
           if(_model) eh+='<div class="st-item"><span class="st-label">Type:</span><span class="st-val white">'+_model+'</span></div>';
           eh+='<div class="st-item"><span class="st-label">Link:</span><span class="st-val '+(le.via_tunnel?'yellow':'green')+'">'+(le.via_tunnel?'CF':'LAN')+'</span></div>';

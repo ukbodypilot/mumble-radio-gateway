@@ -470,6 +470,18 @@ def main():
             time.sleep(0.5)
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
+        # Reboot host command — ACK then sudo reboot
+        if cmd_str == 'reboot_host':
+            print(f"[Endpoint] Host reboot requested by gateway")
+            try:
+                client.send_ack('reboot_host', {"ok": True})
+            except Exception:
+                pass
+            time.sleep(0.5)
+            import subprocess as _sp
+            _sp.Popen(['sudo', 'reboot'])
+            return
+
         result = plugin.execute(cmd)
         ok = result.get('ok', False) if isinstance(result, dict) else False
         print(f"[Endpoint] Command: {cmd_str} -> {'OK' if ok else result}")
