@@ -57,11 +57,21 @@
     <span id="mgr-running" style="font-size:var(--f-xs)"></span>
   </div>
   <div style="display:flex;align-items:center;gap:var(--s-1)">
+    <span class="st-label" style="font-size:var(--f-sm)">Check every:</span>
+    <select id="mgr-interval" class="ctrl-input" style="width:auto">
+      <option value="1">1 hour</option>
+      <option value="2">2 hours</option>
+      <option value="4">4 hours</option>
+      <option value="8">8 hours</option>
+      <option value="12">12 hours</option>
+    </select>
+  </div>
+  <div style="display:flex;align-items:center;gap:var(--s-1)">
     <span class="st-label" style="font-size:var(--f-sm)">Daily at:</span>
     <input id="mgr-daily-time" type="time" class="ctrl-input" value="06:00">
     <button class="rb rb-sm" onclick="saveMgrConfig()">Save</button>
   </div>
-  <button class="rb rb-sm" onclick="runMgr('hourly')">Run Hourly Now</button>
+  <button class="rb rb-sm" onclick="runMgr('hourly')">Run Check Now</button>
   <button class="rb rb-sm" onclick="runMgr('daily')">Run Daily Now</button>
   <span id="mgr-last" style="margin-left:auto;font-size:var(--f-xs);color:var(--t-text-dim)"></span>
 </div>
@@ -75,7 +85,7 @@
     <a href="/manager/edit?doc=constitution" target="_blank" class="rb rb-sm">Edit</a>
   </div>
   <div class="doc-row">
-    <span class="doc-name">Hourly Tasks</span>
+    <span class="doc-name">Check Tasks</span>
     <a href="/manager/view?doc=hourly" target="_blank" class="rb rb-sm">View</a>
     <a href="/manager/edit?doc=hourly" target="_blank" class="rb rb-sm">Edit</a>
   </div>
@@ -106,8 +116,9 @@ function toggleManager() {
 
 function saveMgrConfig() {
   var t = document.getElementById('mgr-daily-time').value;
+  var iv = parseInt(document.getElementById('mgr-interval').value, 10);
   fetch('/manager/config', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({daily_time: t})});
+    body: JSON.stringify({daily_time: t, check_interval_hours: iv})});
 }
 
 function runMgr(task) {
@@ -124,6 +135,10 @@ function applyStatus(d) {
   btn.classList.toggle('rb-active', !!d.enabled);
   var ti = document.getElementById('mgr-daily-time');
   if (d.daily_time) ti.value = d.daily_time;
+  if (d.check_interval_hours) {
+    var sel = document.getElementById('mgr-interval');
+    sel.value = String(d.check_interval_hours);
+  }
   var run = document.getElementById('mgr-running');
   run.textContent = d.running ? '⏳ Running…' : '';
   run.className = d.running ? 'badge-running' : '';

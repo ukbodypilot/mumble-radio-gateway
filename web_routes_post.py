@@ -1676,6 +1676,8 @@ def handle_manager_config(handler, parent):
         body = json_mod.loads(handler.rfile.read(length))
         if eng and 'daily_time' in body:
             eng.set_daily_time(body['daily_time'])
+        if eng and 'check_interval_hours' in body:
+            eng.set_check_interval(int(body['check_interval_hours']))
         resp = json_mod.dumps({'ok': True}).encode()
     except Exception as e:
         resp = json_mod.dumps({'ok': False, 'error': str(e)}).encode()

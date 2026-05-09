@@ -1246,9 +1246,9 @@ def handle_manager_status(handler, parent):
     if eng:
         data = eng.get_status()
     else:
-        data = {'enabled': False, 'daily_time': '06:00', 'unread_alerts': False,
-                'running': False, 'last_run_type': None, 'last_run_ts': None,
-                'last_hourly': None, 'last_daily': None}
+        data = {'enabled': False, 'daily_time': '06:00', 'check_interval_hours': 1,
+                'unread_alerts': False, 'running': False, 'last_run_type': None,
+                'last_run_ts': None, 'last_check': None, 'last_daily': None}
     body = json_mod.dumps(data).encode()
     try:
         handler.send_response(200)

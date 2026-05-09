@@ -16,14 +16,15 @@ _DAILY_FILE   = os.path.join(_BASE, 'daily.md')
 _CONST_FILE   = os.path.join(_BASE, 'SYSTEM_MANIFEST.md')
 
 _DEFAULT_STATE = {
-    'enabled':       False,
-    'daily_time':    '06:00',
-    'last_hourly':   None,   # "YYYY-MM-DD-HH"
-    'last_daily':    None,   # "YYYY-MM-DD"
-    'unread_alerts': False,
-    'running':       False,
-    'last_run_type': None,
-    'last_run_ts':   None,
+    'enabled':              False,
+    'daily_time':           '06:00',
+    'check_interval_hours': 1,      # 1, 2, 4, 8, or 12
+    'last_check':           None,   # "YYYY-MM-DD-HH" (slot-aligned)
+    'last_daily':           None,   # "YYYY-MM-DD"
+    'unread_alerts':        False,
+    'running':              False,
+    'last_run_type':        None,
+    'last_run_ts':          None,
 }
 
 _MAX_WAIT_SECS   = 600   # 10 min timeout waiting for Claude's report
@@ -93,16 +94,21 @@ class ManagerEngine:
         with self._lock:
             self._state['enabled'] = bool(enabled)
             if enabled:
-                # Seed last-run keys so the first fire is at the next scheduled
-                # time, not immediately on the current (already-passed) hour/day.
                 now = datetime.now()
-                self._state['last_hourly'] = now.strftime('%Y-%m-%d-%H')
-                self._state['last_daily']  = now.strftime('%Y-%m-%d')
+                self._state['last_check'] = self._check_slot_key(now)
+                self._state['last_daily'] = now.strftime('%Y-%m-%d')
             self._save_state()
 
     def set_daily_time(self, t: str):
         with self._lock:
             self._state['daily_time'] = t
+            self._save_state()
+
+    def set_check_interval(self, hours: int):
+        valid = (1, 2, 4, 8, 12)
+        hours = hours if hours in valid else 1
+        with self._lock:
+            self._state['check_interval_hours'] = hours
             self._save_state()
 
     def acknowledge(self):
@@ -112,8 +118,17 @@ class ManagerEngine:
 
     def run_now(self, task_type: str):
         """Trigger an immediate run (non-blocking — runs in background thread)."""
-        t = threading.Thread(target=self._run_task, args=(task_type,), daemon=True)
-        t.start()
+        def _run_and_mark():
+            self._run_task(task_type)
+            now = datetime.now()
+            with self._lock:
+                if task_type == 'daily':
+                    self._state['last_daily'] = now.strftime('%Y-%m-%d')
+                    self._state['last_check'] = self._check_slot_key(now)
+                else:
+                    self._state['last_check'] = self._check_slot_key(now)
+                self._save_state()
+        threading.Thread(target=_run_and_mark, daemon=True).start()
 
     def read_doc(self, name: str):
         path = self._doc_path(name)
@@ -132,6 +147,12 @@ class ManagerEngine:
 
     # ── Scheduler loop ────────────────────────────────────────────────────
 
+    def _check_slot_key(self, now):
+        """Return a slot key aligned to the check interval (e.g. '2026-05-09-04' for a 4h window)."""
+        interval = self._state.get('check_interval_hours', 1)
+        slot_hour = (now.hour // interval) * interval
+        return now.strftime('%Y-%m-%d-') + f'{slot_hour:02d}'
+
     def _loop(self):
         while not self._stop.wait(_LOOP_INTERVAL):
             with self._lock:
@@ -139,23 +160,26 @@ class ManagerEngine:
                 running = self._state.get('running')
             if not enabled or running:
                 continue
-            now = datetime.now()
-            hour_key = now.strftime('%Y-%m-%d-%H')
-            day_key  = now.strftime('%Y-%m-%d')
+            now        = datetime.now()
+            day_key    = now.strftime('%Y-%m-%d')
+            check_slot = self._check_slot_key(now)
             daily_time = self._state.get('daily_time', '06:00')
             with self._lock:
-                last_hourly = self._state.get('last_hourly')
-                last_daily  = self._state.get('last_daily')
-            # Daily fires first (once per day at configured time)
+                last_check = self._state.get('last_check')
+                last_daily = self._state.get('last_daily')
+
+            # Daily fires first; if it fires, also mark the check slot so the
+            # smaller check is skipped when both would coincide.
             if now.strftime('%H:%M') >= daily_time and last_daily != day_key:
                 self._run_task('daily')
                 with self._lock:
                     self._state['last_daily'] = day_key
+                    self._state['last_check'] = check_slot  # suppress coinciding check
                     self._save_state()
-            elif last_hourly != hour_key:
+            elif last_check != check_slot:
                 self._run_task('hourly')
                 with self._lock:
-                    self._state['last_hourly'] = hour_key
+                    self._state['last_check'] = check_slot
                     self._save_state()
 
     # ── Task execution ────────────────────────────────────────────────────
