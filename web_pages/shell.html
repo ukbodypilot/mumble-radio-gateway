@@ -154,10 +154,10 @@
     display: block;
     position: absolute;
     left: 0; width: 100%;
-    clip-path: inset(0 100% 0 0);
+    transform: scaleX(0);
+    transform-origin: left center;
     height: calc(50% - 3px);
-    transition: clip-path 0.08s linear;
-    box-shadow: 0 0 6px var(--t-ok);
+    transition: transform 0.08s linear;
     z-index: 1;
   }
   #shell-bars .sb-bar.sb-in         { background: linear-gradient(to right, var(--t-ok) 70%, var(--t-warn) 70%, var(--t-warn) 95%, var(--t-err) 95%); top: 2px; }
@@ -168,13 +168,12 @@
   .sb-bar-rx, .sb-bar-tx {
     position: absolute; left: 0;
     height: calc(50% - 3px);
-    box-shadow: 0 0 5px currentColor;
     z-index: 1;
   }
-  .sb-bar-rx { top: 2px;    width: 100%; clip-path: inset(0 100% 0 0); transition: clip-path 0.08s linear;
+  .sb-bar-rx { top: 2px;    width: 100%; transform: scaleX(0); transform-origin: left center; transition: transform 0.08s linear;
                background: linear-gradient(to right, var(--t-ok) 70%, var(--t-warn) 70%, var(--t-warn) 95%, var(--t-err) 95%);
                color: var(--t-ok); }
-  .sb-bar-tx { bottom: 2px; width: 0%;   transition: width 0.08s linear;
+  .sb-bar-tx { bottom: 2px; width: 100%; transform: scaleX(0); transform-origin: left center; transition: transform 0.08s linear;
                background: var(--t-err); color: var(--t-err); }
 
   #shell-bars .mute-ind {
@@ -209,12 +208,11 @@
   .id-led {
     width: 7px; height: 7px; border-radius: 50%;
     background: var(--t-ok);
-    box-shadow: 0 0 6px var(--t-ok);
     flex-shrink: 0;
     animation: id-beacon 2.4s ease-in-out infinite;
   }
-  .id-led.stale { background: var(--t-warn); box-shadow: 0 0 6px var(--t-warn); }
-  .id-led.dead  { background: var(--t-err);  box-shadow: 0 0 6px var(--t-err); animation: none; }
+  .id-led.stale { background: var(--t-warn); }
+  .id-led.dead  { background: var(--t-err);  animation: none; }
   @keyframes id-beacon {
     0%, 100% { opacity: 1; }
     50%      { opacity: 0.3; }
@@ -635,15 +633,15 @@ function _sbUpdate(key, label, raw, cls, ducked, muted) {
   var prev = _sbSmooth[key] || 0;
   var v = Math.min(Math.max(raw || 0, 0), 100);
   var rising = v > prev;
-  var a = rising ? 1.0 : 0.15;
+  var a = rising ? 1.0 : 0.9;
   var s = prev + (v - prev) * a;
   _sbSmooth[key] = s;
   var w = Math.round(s);
   r.bar.className = 'sb-bar ' + (ducked ? 'sb-ducked-bar' : cls);
   // Asymmetric CSS transition: snappy rise (80ms), smooth fall (250ms) so
   // the bar slides continuously between polls rather than stepping.
-  r.bar.style.transition = 'clip-path ' + (rising ? '0.08s' : '0.25s') + ' linear';
-  r.bar.style.clipPath = 'inset(0 ' + (100 - w) + '% 0 0)';
+  r.bar.style.transition = rising ? 'transform 0.08s linear' : 'none';
+  r.bar.style.transform = 'scaleX(' + (w / 100) + ')';
   r.mute.style.display = muted ? '' : 'none';
   _sbOrder.push(key);
 }
@@ -668,17 +666,17 @@ function _sbUpdateDual(key, label, rxRaw, txRaw, muted) {
   var sm = _sbDualSmooth[key] || {rx:0, tx:0};
   var rx = Math.min(Math.max(rxRaw||0,0),100);
   var tx = Math.min(Math.max(txRaw||0,0),100);
-  sm.rx = sm.rx + (rx - sm.rx) * (rx > sm.rx ? 1.0 : 0.15);
-  sm.tx = sm.tx + (tx - sm.tx) * (tx > sm.tx ? 1.0 : 0.15);
+  sm.rx = sm.rx + (rx - sm.rx) * (rx > sm.rx ? 1.0 : 0.9);
+  sm.tx = sm.tx + (tx - sm.tx) * (tx > sm.tx ? 1.0 : 0.9);
   _sbDualSmooth[key] = sm;
-  r.rxBar.style.transition = 'clip-path '+(rx > sm.rx ? '0.08s' : '0.25s')+' linear';
-  r.txBar.style.transition = 'width '+(tx > sm.tx ? '0.08s' : '0.25s')+' linear';
-  r.rxBar.style.clipPath = 'inset(0 '+(100 - Math.round(sm.rx))+'% 0 0)';
-  r.txBar.style.width = Math.round(sm.tx)+'%';
+  r.rxBar.style.transition = rx > sm.rx ? 'transform 0.08s linear' : 'none';
+  r.txBar.style.transition = tx > sm.tx ? 'transform 0.08s linear' : 'none';
+  r.rxBar.style.transform = 'scaleX(' + (Math.round(sm.rx) / 100) + ')';
+  r.txBar.style.transform = 'scaleX(' + (Math.round(sm.tx) / 100) + ')';
   r.mute.style.display = muted ? '' : 'none';
   _sbOrder.push(key);
 }
-createPoller('/status', 250, function(s) {
+createPoller('/status', 1000, function(s) {
     _sbOrder = [];
     // Dual-lane bars: each full-duplex radio gets its own RX+TX compound bar.
     _sbUpdateDual('aioc', 'AIOC', s.radio_rx, s.radio_tx, false);

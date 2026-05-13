@@ -157,6 +157,26 @@ class D75Plugin(RadioPlugin):
             print(f"[D75] BT connect error: {e}")
             return False
 
+    def _reconnect_serial_only(self):
+        """Reconnect just RFCOMM ch2 CAT serial — SCO audio is still alive."""
+        print("[D75] Watchdog: serial-only reconnect (audio alive)...")
+        try:
+            if self._serial:
+                self._serial.disconnect()
+        except Exception:
+            pass
+        self._serial = None
+        try:
+            serial = SerialManager(self._mac)
+            if serial.connect():
+                self._serial = serial
+                print("[D75] Serial reconnected")
+                return True
+            print("[D75] Serial reconnect failed")
+        except Exception as e:
+            print(f"[D75] Serial reconnect error: {e}")
+        return False
+
     def _watchdog(self):
         """Monitor BT connection; reconnect when serial or audio drops."""
         while self._running:
@@ -165,8 +185,16 @@ class D75Plugin(RadioPlugin):
                 break
             serial_ok = self._serial and self._serial.connected
             rx_alive = self._rx_thread and self._rx_thread.is_alive()
-            if not serial_ok or not rx_alive:
-                print(f"[D75] Watchdog: connection lost (serial={serial_ok} rx={rx_alive}) — reconnecting")
+            if not serial_ok and rx_alive:
+                # Serial (RFCOMM ch2) died but SCO audio is still alive.
+                # Do a serial-only reconnect — don't touch audio or the rx thread.
+                print(f"[D75] Watchdog: serial lost, audio alive — serial-only reconnect")
+                while self._running and not self._reconnect_serial_only():
+                    print(f"[D75] Watchdog: serial retry in {self._RECONNECT_DELAY}s")
+                    time.sleep(self._RECONNECT_DELAY)
+            elif not serial_ok or not rx_alive:
+                # Full reconnect — both serial and audio need to come back up.
+                print(f"[D75] Watchdog: connection lost (serial={serial_ok} rx={rx_alive}) — full reconnect")
                 try:
                     if self._audio:
                         self._audio.disconnect()

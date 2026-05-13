@@ -770,6 +770,16 @@ class AudioManager:
                 break
         self._connected = False
         print("[Audio] SCO read loop ended")
+        # Unblock any _rx_reader threads waiting on a socketpair fed by this loop.
+        # Without this, _rx_reader blocks on recv() forever and the plugin watchdog
+        # never sees rx_alive=False, so full reconnect never fires.
+        with self._clients_lock:
+            for _s in list(self._clients):
+                try:
+                    _s.close()
+                except Exception:
+                    pass
+            self._clients.clear()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
