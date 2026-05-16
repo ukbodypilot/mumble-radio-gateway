@@ -33,11 +33,9 @@ _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # open VAD (squelched repeater, continuous tone). Between the soft and hard
 # cap, cut on the first probability dip to split at a natural pause rather
 # than mid-word.
-# Supported model keys — format is engine/size
-_VALID_MODELS = frozenset({
-    'moonshine/tiny', 'moonshine/base',
-    'whisper/small.en', 'whisper/medium.en', 'whisper/large-v3-turbo',
-})
+from transcribe_engine import (
+    _VALID_MODELS, LocalInferenceEngine, RemoteEngine,
+)  # re-exported so web_routes_post.py can still `from transcriber import _VALID_MODELS`
 
 _MAX_UTTERANCE_SECS = 60.0
 _SOFT_CAP_SECS = 50.0
@@ -309,8 +307,6 @@ class RadioTranscriber:
     def __init__(self, config, gateway=None):
         self._config = config
         self._gateway = gateway
-        self._model = None
-        self._tokenizer = None
         self._vad_ready = False
         self._running = False
         self._thread = None
@@ -371,10 +367,15 @@ class RadioTranscriber:
         if _raw_model in ('tiny', 'base'):
             _raw_model = f'moonshine/{_raw_model}'
         self._model_key = _raw_model if _raw_model in _VALID_MODELS else 'moonshine/base'
-        # Convenience splits used by loader and status
-        _parts = self._model_key.split('/', 1)
-        self._engine = _parts[0]           # 'moonshine' or 'whisper'
-        self._model_size = _parts[1]       # e.g. 'base', 'medium.en'
+
+        # Choose local or remote inference engine.
+        _remote_url = str(getattr(config, 'TRANSCRIBE_REMOTE_URL', '') or '').strip()
+        if _remote_url:
+            self._inf_engine: LocalInferenceEngine | RemoteEngine = RemoteEngine(_remote_url)
+            self._engine = 'remote'
+        else:
+            self._inf_engine = LocalInferenceEngine(self._model_key)
+            self._engine = self._inf_engine.engine  # 'moonshine' | 'whisper'
         self._sample_rate = int(getattr(config, 'AUDIO_RATE', 48000))
         self._forward_mumble = _saved.get('forward_mumble', bool(getattr(config, 'TRANSCRIBE_FORWARD_MUMBLE', True)))
         self._forward_telegram = _saved.get('forward_telegram', bool(getattr(config, 'TRANSCRIBE_FORWARD_TELEGRAM', False)))
@@ -401,7 +402,10 @@ class RadioTranscriber:
                                         name="Transcriber")
         self._thread.start()
         self._save()
-        print(f"  [Transcribe] Started (model={self._model_key}, "
+        _engine_desc = (f"remote={self._inf_engine._url}"
+                        if isinstance(self._inf_engine, RemoteEngine)
+                        else f"model={self._model_key}")
+        print(f"  [Transcribe] Started ({_engine_desc}, "
               f"vad_thresh={self._vad_threshold:.2f}, boost={int(self._audio_boost*100)}%)")
 
     def _save(self):
@@ -421,6 +425,7 @@ class RadioTranscriber:
     def stop(self):
         self._running = False
         self._pending_evt.set()
+        self._inf_engine.stop()
         # Wake every per-stream worker so they can notice _running=False.
         with self._streams_lock:
             streams = list(self._streams.values())
@@ -717,7 +722,7 @@ class RadioTranscriber:
             'engine': self._engine,
             'vad_engine': 'silero',
             'model': self._model_key,
-            'model_loaded': self._model is not None,
+            'model_loaded': self._inf_engine.is_ready(),
             'vad_open': any_open,
             'vad_prob': round(max(max_prob, max_env, max_peak), 3),
             'vad_db': round(max_db, 1),
@@ -736,6 +741,8 @@ class RadioTranscriber:
             'streams': streams_payload,
             'stats': self.get_stats(),
             'feed': self._get_feed_health(),
+            'remote_worker': (self._inf_engine.get_status()
+                              if isinstance(self._inf_engine, RemoteEngine) else None),
         }
 
     def _get_feed_health(self):
@@ -826,25 +833,18 @@ class RadioTranscriber:
             self._running = False
             return
 
-        try:
-            print(f"  [Transcribe] Loading {self._model_key}...")
-            if self._engine == 'moonshine':
-                from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
-                self._model = MoonshineOnnxModel(
-                    model_name=f'moonshine/{self._model_size}')
-                self._tokenizer = load_tokenizer()
-            elif self._engine == 'whisper':
-                from faster_whisper import WhisperModel
-                self._model = WhisperModel(
-                    self._model_size, device='cpu', compute_type='int8')
-                self._tokenizer = None
-            else:
-                raise ValueError(f"Unknown engine: {self._engine}")
-            print(f"  [Transcribe] Model loaded")
-        except Exception as e:
-            print(f"  [Transcribe] Failed to load model {self._model_key}: {e}")
-            self._running = False
-            return
+        if isinstance(self._inf_engine, LocalInferenceEngine):
+            try:
+                print(f"  [Transcribe] Loading {self._model_key}...")
+                self._inf_engine.load()
+                print(f"  [Transcribe] Model loaded")
+            except Exception as e:
+                print(f"  [Transcribe] Failed to load model {self._model_key}: {e}")
+                self._running = False
+                return
+        else:
+            print(f"  [Transcribe] Remote engine: {self._inf_engine._url}")
+            self._inf_engine.start()
 
         while self._running:
             self._pending_evt.wait(timeout=1.0)
@@ -854,7 +854,7 @@ class RadioTranscriber:
                 item = self._pending.popleft()
                 try:
                     _t0 = time.monotonic()
-                    text = self._transcribe(item['audio_16k'])
+                    text = self._inf_engine.transcribe(item['audio_16k'])
                     _proc_time = time.monotonic() - _t0
                     _duration = item['duration']
                     _ratio = _proc_time / _duration if _duration > 0 else 0
@@ -928,99 +928,3 @@ class RadioTranscriber:
                 except Exception as e:
                     print(f"  [Transcribe] Error: {e}")
 
-    def _transcribe(self, audio_16k):
-        """Transcribe a numpy float32 audio array (16kHz, [-1, 1]) → text string."""
-        if self._model is None:
-            return None
-        if self._engine == 'moonshine':
-            # Custom greedy decoder with repetition suppression — suppresses the
-            # runaway loops ("Anno, Anno, …") that Moonshine produces on ambiguous
-            # audio when using its default argmax generate().
-            tokens = self._moonshine_generate_no_repeat(
-                audio_16k.astype(np.float32)[None, :])
-            decoded = self._tokenizer.decode_batch([tokens])
-            return decoded[0] if decoded else ''
-        elif self._engine == 'whisper':
-            segments, _ = self._model.transcribe(
-                audio_16k.astype(np.float32),
-                beam_size=5,
-                language='en',
-                condition_on_previous_text=False,
-            )
-            return ' '.join(seg.text.strip() for seg in segments)
-        return None
-
-    def _moonshine_generate_no_repeat(self, audio, max_len=192,
-                                      no_repeat_ngram_size=3):
-        """Greedy decode with logit masking that forbids completing any
-        recent n-gram, plus low-diversity / repeating-bigram early-exit.
-
-        Mirrors MoonshineOnnxModel.generate() — same encoder pass, same
-        KV-cache plumbing, same EOS check — but adds repetition guards
-        between the decoder.run() and the argmax. Keeps ~0 extra CPU
-        (two small set ops per token).
-        """
-        m = self._model
-        encoder_inputs = dict(input_values=audio)
-        audio_attention_mask = np.ones_like(audio, dtype=np.int64)
-        if 'attention_mask' in m.encoder_input_names:
-            encoder_inputs = dict(attention_mask=audio_attention_mask, **encoder_inputs)
-        last_hidden_state = m.encoder.run(None, encoder_inputs)[0]
-
-        past_key_values = {
-            f'past_key_values.{i}.{a}.{b}': np.zeros(
-                (0, m.num_key_value_heads, 1, m.head_dim), dtype=np.float32)
-            for i in range(m.num_layers)
-            for a in ('decoder', 'encoder')
-            for b in ('key', 'value')
-        }
-        tokens = [m.decoder_start_token_id]
-        input_ids = [tokens]
-        for i in range(max_len):
-            use_cache_branch = i > 0
-            decoder_inputs = dict(
-                input_ids=input_ids,
-                encoder_hidden_states=last_hidden_state,
-                use_cache_branch=[use_cache_branch],
-                **past_key_values,
-            )
-            if 'encoder_attention_mask' in m.decoder_input_names:
-                decoder_inputs = dict(
-                    encoder_attention_mask=audio_attention_mask, **decoder_inputs)
-
-            logits, *present_key_values = m.decoder.run(None, decoder_inputs)
-            step_logits = logits[0, -1]
-
-            # 1) No-repeat n-gram masking. Forbid any token that would
-            #    complete an n-gram already present earlier in the output.
-            if no_repeat_ngram_size > 1 and len(tokens) >= no_repeat_ngram_size - 1:
-                prefix = tuple(tokens[-(no_repeat_ngram_size - 1):])
-                for j in range(len(tokens) - no_repeat_ngram_size + 1):
-                    if tuple(tokens[j:j + no_repeat_ngram_size - 1]) == prefix:
-                        banned = int(tokens[j + no_repeat_ngram_size - 1])
-                        step_logits[banned] = -np.inf
-
-            next_token = int(step_logits.argmax())
-            tokens.append(next_token)
-
-            if next_token == m.eos_token_id:
-                break
-
-            # 2) Loop-detection early exit. If we're stuck repeating a
-            #    bigram, abort rather than burning max_len tokens on it.
-            if len(tokens) >= 10:
-                tail = tokens[-10:]
-                # Same token >=6/10 times, or same bigram >=3/5 occurrences.
-                if len(set(tail)) <= 2:
-                    break
-                bg = (tokens[-2], tokens[-1])
-                if sum(1 for k in range(len(tail) - 1)
-                       if (tail[k], tail[k + 1]) == bg) >= 3:
-                    break
-
-            input_ids = [[next_token]]
-            for k, v in zip(past_key_values.keys(), present_key_values):
-                if not use_cache_branch or 'decoder' in k:
-                    past_key_values[k] = v
-
-        return tokens

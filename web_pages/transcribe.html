@@ -233,6 +233,18 @@
     <span>RAM: <span id="ps-ram" class="ps-val">—</span> MB</span>
     <div class="ps-chart-wrap" id="ps-chart"></div>
   </div>
+
+  <!-- Remote worker row (hidden when local mode) -->
+  <div class="perf-row" id="rw-row" style="display:none">
+    <span class="ps-title">Remote Worker</span>
+    <span id="rw-url" style="font-size:var(--f-xs);color:var(--t-dim)"></span>
+    <span><span id="rw-dot" class="dot off"></span> <span id="rw-state" class="tx-state dim">—</span></span>
+    <span>Model: <span id="rw-model" class="ps-val">—</span></span>
+    <span>Avg: <span id="rw-ratio" class="ps-val">—</span>x</span>
+    <span>Jobs: <span id="rw-total" class="ps-val">0</span></span>
+    <span>RAM: <span id="rw-ram" class="ps-val">—</span> MB</span>
+    <span>Uptime: <span id="rw-uptime" class="ps-val">—</span></span>
+  </div>
 </div>
 
 <!-- Latest result -->
@@ -380,6 +392,31 @@ function poll() {
             ' style="height:' + Math.min(28, Math.max(2, r.ratio * 22)) + 'px"></div>';
         }
         document.getElementById('ps-chart').innerHTML = chartHtml;
+      }
+
+      // Remote worker row
+      var rw = s.remote_worker;
+      if (rw) {
+        document.getElementById('rw-row').style.display = '';
+        document.getElementById('rw-url').textContent = rw.url || '';
+        var rwDot = document.getElementById('rw-dot');
+        var rwState = document.getElementById('rw-state');
+        if (!rw.reachable) {
+          rwDot.className = 'dot off'; rwState.textContent = 'Unreachable'; rwState.className = 'tx-state err';
+        } else if (!rw.model_loaded) {
+          rwDot.className = 'dot off'; rwState.textContent = 'Loading…'; rwState.className = 'tx-state warn';
+        } else {
+          rwDot.className = 'dot on'; rwState.textContent = 'Ready'; rwState.className = 'tx-state ok';
+        }
+        document.getElementById('rw-model').textContent = rw.model_key || '—';
+        var rwRatioEl = document.getElementById('rw-ratio');
+        rwRatioEl.textContent = rw.avg_ratio != null ? rw.avg_ratio : '—';
+        if (rw.avg_ratio != null) rwRatioEl.className = 'ps-val ' + (rw.avg_ratio < 1 ? 'ok' : 'err');
+        document.getElementById('rw-total').textContent = rw.total_transcriptions || 0;
+        document.getElementById('rw-ram').textContent = rw.ram_mb != null ? rw.ram_mb : '—';
+        var up = rw.uptime_secs;
+        document.getElementById('rw-uptime').textContent = up != null
+          ? (up < 3600 ? Math.floor(up/60) + 'm' : Math.floor(up/3600) + 'h' + Math.floor((up%3600)/60) + 'm') : '—';
       }
 
       // Latest result
