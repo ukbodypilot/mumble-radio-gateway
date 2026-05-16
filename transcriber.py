@@ -330,7 +330,7 @@ class RadioTranscriber:
         self._stats = collections.deque(maxlen=50)
         self._stats_lock = threading.Lock()
 
-        self._pending = collections.deque(maxlen=5)
+        self._pending = collections.deque(maxlen=500)
         self._pending_evt = threading.Event()
 
         # Per-stream queues live on each _StreamState. RadioTranscriber
