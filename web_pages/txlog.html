@@ -193,8 +193,9 @@
 </div>
 
 <script>
-var _offset = 0;
-var _limit  = 100;
+var _offset   = 0;
+var _limit    = 100;
+var _newestTs = 0;   // ts of most recent row seen; used to skip no-op reloads
 
 function _esc(s) {
   var d = document.createElement('div');
@@ -230,6 +231,7 @@ function loadPage(offset) {
             '</tr>';
         }).join('');
       }
+      if (rows.length && offset === 0) _newestTs = rows[0].ts || 0;
       var showing = rows.length
         ? (_offset + 1) + '–' + (_offset + rows.length)
         : 'no records';
@@ -280,6 +282,18 @@ function submitQuery() {
 }
 
 loadPage(0);
+
+// Auto-refresh: only when on page 0 and there are actually new entries
+setInterval(function() {
+  if (_offset !== 0) return;
+  fetch('/transcription/log?limit=1&offset=0')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var rows = d.rows || [];
+      if (rows.length && rows[0].ts > _newestTs) loadPage(0);
+    })
+    .catch(function() {});
+}, 5000);
 
 // ── Keyword search + replay ───────────────────────────────────────────────
 var _currentHitRow = null;
