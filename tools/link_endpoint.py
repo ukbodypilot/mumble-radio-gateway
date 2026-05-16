@@ -49,8 +49,13 @@ def _load_d75():
     from d75_link_plugin import D75Plugin
     return D75Plugin
 
+def _load_ic7100():
+    from ic7100_link_plugin import IC7100Plugin
+    return IC7100Plugin
+
 _LAZY_PLUGINS = {
-    'd75': _load_d75,
+    'd75':    _load_d75,
+    'ic7100': _load_ic7100,
 }
 
 
