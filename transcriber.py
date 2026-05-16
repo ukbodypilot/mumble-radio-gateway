@@ -78,6 +78,18 @@ def _is_hallucination(text):
     return text.strip(_HALLUCINATION_STRIP).lower() in _HALLUCINATION_BLOCKLIST
 
 
+def _get_rss_mb():
+    """Return process RSS in MB via /proc/self/status (Linux, no psutil needed)."""
+    try:
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except Exception:
+        pass
+    return 0.0
+
+
 def _bus_sdr_sources(gateway, bus_id):
     """Return the set of SDR source ids ('sdr1'/'sdr2') wired to this bus."""
     try:
@@ -718,6 +730,8 @@ class RadioTranscriber:
             'log_results': self._log_results,
             'alert_keywords': self._alert_keywords,
             'pending': len(self._pending),
+            'pending_audio_secs': round(sum(item['duration'] for item in self._pending), 1),
+            'ram_mb': _get_rss_mb(),
             'total_transcriptions': len(self._results),
             'streams': streams_payload,
             'stats': self.get_stats(),
