@@ -33,6 +33,12 @@ _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # open VAD (squelched repeater, continuous tone). Between the soft and hard
 # cap, cut on the first probability dip to split at a natural pause rather
 # than mid-word.
+# Supported model keys — format is engine/size
+_VALID_MODELS = frozenset({
+    'moonshine/tiny', 'moonshine/base',
+    'whisper/small.en', 'whisper/medium.en', 'whisper/large-v3-turbo',
+})
+
 _MAX_UTTERANCE_SECS = 60.0
 _SOFT_CAP_SECS = 50.0
 
@@ -348,8 +354,15 @@ class RadioTranscriber:
             'per_stream_ms': {},      # {source_id: cumulative ms in _process_feed}
         }
 
-        _raw_model = str(_saved.get('model', getattr(config, 'TRANSCRIBE_MODEL', 'base')))
-        self._model_size = _raw_model if _raw_model in ('tiny', 'base') else 'base'
+        _raw_model = str(_saved.get('model', getattr(config, 'TRANSCRIBE_MODEL', 'moonshine/base')))
+        # Backward compat: bare 'tiny'/'base' from old settings → moonshine/
+        if _raw_model in ('tiny', 'base'):
+            _raw_model = f'moonshine/{_raw_model}'
+        self._model_key = _raw_model if _raw_model in _VALID_MODELS else 'moonshine/base'
+        # Convenience splits used by loader and status
+        _parts = self._model_key.split('/', 1)
+        self._engine = _parts[0]           # 'moonshine' or 'whisper'
+        self._model_size = _parts[1]       # e.g. 'base', 'medium.en'
         self._sample_rate = int(getattr(config, 'AUDIO_RATE', 48000))
         self._forward_mumble = _saved.get('forward_mumble', bool(getattr(config, 'TRANSCRIBE_FORWARD_MUMBLE', True)))
         self._forward_telegram = _saved.get('forward_telegram', bool(getattr(config, 'TRANSCRIBE_FORWARD_TELEGRAM', False)))
@@ -376,13 +389,13 @@ class RadioTranscriber:
                                         name="Transcriber")
         self._thread.start()
         self._save()
-        print(f"  [Transcribe] Started (model=moonshine/{self._model_size}, "
+        print(f"  [Transcribe] Started (model={self._model_key}, "
               f"vad_thresh={self._vad_threshold:.2f}, boost={int(self._audio_boost*100)}%)")
 
     def _save(self):
         _save_settings({
             'enabled': self._enabled,
-            'model': self._model_size,
+            'model': self._model_key,
             'vad_threshold': self._vad_threshold,
             'vad_hold': self._vad_hold_time,
             'min_duration': self._min_duration,
@@ -689,9 +702,9 @@ class RadioTranscriber:
         return {
             'running': self._running,
             'enabled': self._enabled,
-            'engine': 'moonshine',
+            'engine': self._engine,
             'vad_engine': 'silero',
-            'model': self._model_size,
+            'model': self._model_key,
             'model_loaded': self._model is not None,
             'vad_open': any_open,
             'vad_prob': round(max(max_prob, max_env, max_peak), 3),
@@ -800,13 +813,22 @@ class RadioTranscriber:
             return
 
         try:
-            from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
-            print(f"  [Transcribe] Loading moonshine/{self._model_size} model...")
-            self._model = MoonshineOnnxModel(model_name=f'moonshine/{self._model_size}')
-            self._tokenizer = load_tokenizer()
+            print(f"  [Transcribe] Loading {self._model_key}...")
+            if self._engine == 'moonshine':
+                from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
+                self._model = MoonshineOnnxModel(
+                    model_name=f'moonshine/{self._model_size}')
+                self._tokenizer = load_tokenizer()
+            elif self._engine == 'whisper':
+                from faster_whisper import WhisperModel
+                self._model = WhisperModel(
+                    self._model_size, device='cpu', compute_type='int8')
+                self._tokenizer = None
+            else:
+                raise ValueError(f"Unknown engine: {self._engine}")
             print(f"  [Transcribe] Model loaded")
         except Exception as e:
-            print(f"  [Transcribe] Failed to load Moonshine: {e}")
+            print(f"  [Transcribe] Failed to load model {self._model_key}: {e}")
             self._running = False
             return
 
@@ -893,21 +915,26 @@ class RadioTranscriber:
                     print(f"  [Transcribe] Error: {e}")
 
     def _transcribe(self, audio_16k):
-        """Transcribe a numpy float32 audio array (16kHz, [-1, 1]) → text string.
-
-        Uses a custom greedy decoder with repetition suppression (no-repeat
-        3-gram logit masking + loop-detection early exit) to kill the
-        runaway repetition hallucinations Moonshine produces on ambiguous
-        audio. Upstream's model.generate() is pure argmax with no repeat
-        penalty, so marginal-confidence audio regularly triggers loops
-        like "Anno, Anno, Anno, Anno, …".
-        """
-        if self._model is None or self._tokenizer is None:
+        """Transcribe a numpy float32 audio array (16kHz, [-1, 1]) → text string."""
+        if self._model is None:
             return None
-        tokens = self._moonshine_generate_no_repeat(
-            audio_16k.astype(np.float32)[None, :])
-        decoded = self._tokenizer.decode_batch([tokens])
-        return decoded[0] if decoded else ''
+        if self._engine == 'moonshine':
+            # Custom greedy decoder with repetition suppression — suppresses the
+            # runaway loops ("Anno, Anno, …") that Moonshine produces on ambiguous
+            # audio when using its default argmax generate().
+            tokens = self._moonshine_generate_no_repeat(
+                audio_16k.astype(np.float32)[None, :])
+            decoded = self._tokenizer.decode_batch([tokens])
+            return decoded[0] if decoded else ''
+        elif self._engine == 'whisper':
+            segments, _ = self._model.transcribe(
+                audio_16k.astype(np.float32),
+                beam_size=5,
+                language='en',
+                condition_on_previous_text=False,
+            )
+            return ' '.join(seg.text.strip() for seg in segments)
+        return None
 
     def _moonshine_generate_no_repeat(self, audio, max_len=192,
                                       no_repeat_ngram_size=3):

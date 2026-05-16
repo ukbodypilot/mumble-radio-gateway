@@ -128,10 +128,17 @@ def handle_transcribe_config(handler, parent):
             result = {'ok': True}
         elif key == 'model':
             _v = str(value)
-            if _v not in ('tiny', 'base'):
-                result = {'ok': False, 'error': 'model must be tiny or base'}
+            # Accept bare legacy keys and normalise them
+            if _v in ('tiny', 'base'):
+                _v = f'moonshine/{_v}'
+            from transcriber import _VALID_MODELS
+            if _v not in _VALID_MODELS:
+                result = {'ok': False, 'error': f'unknown model: {_v}'}
             else:
-                tx._model_size = _v
+                _parts = _v.split('/', 1)
+                tx._model_key = _v
+                tx._engine = _parts[0]
+                tx._model_size = _parts[1]
                 tx._save()
                 result = {'ok': True, 'note': 'model change takes effect on restart'}
         elif key == 'restart':

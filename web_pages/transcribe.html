@@ -149,10 +149,17 @@
     <div class="ctrl-field">
       <label>Model</label>
       <select id="st-model-sel" onchange="setConfig('model', this.value)" class="ctrl-sel">
-        <option value="tiny">tiny (fastest)</option>
-        <option value="base" selected>base (balanced)</option>
+        <optgroup label="Moonshine">
+          <option value="moonshine/tiny">tiny (fastest)</option>
+          <option value="moonshine/base" selected>base (balanced)</option>
+        </optgroup>
+        <optgroup label="Whisper (accurate, slower)">
+          <option value="whisper/small.en">small.en</option>
+          <option value="whisper/medium.en">medium.en ★</option>
+          <option value="whisper/large-v3-turbo">large-v3-turbo</option>
+        </optgroup>
       </select>
-      <div class="ctrl-hint">English only. Change requires restart.</div>
+      <div class="ctrl-hint">Change requires restart. Whisper requires: pip install faster-whisper</div>
     </div>
 
     <div class="ctrl-field">
