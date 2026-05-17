@@ -57,7 +57,16 @@ class LocalInferenceEngine:
             self._tokenizer = load_tokenizer()
         elif self.engine == 'whisper':
             from faster_whisper import WhisperModel
-            self._model = WhisperModel(self.model_size, device='cpu', compute_type='int8')
+            # cpu_threads via env so it's tunable per-host. Defaults to half
+            # the CPU count — saturating every thread on a passively-cooled
+            # box (e.g. the 2013 Mac Mini) triggers thermal throttling that
+            # actually slows inference compared to running on fewer threads.
+            import os as _os
+            _default_threads = max(1, (_os.cpu_count() or 4) // 2)
+            _threads = int(_os.environ.get('WHISPER_CPU_THREADS', _default_threads))
+            self._model = WhisperModel(
+                self.model_size, device='cpu', compute_type='int8',
+                cpu_threads=_threads)
             self._tokenizer = None
         else:
             raise ValueError(f'Unknown engine: {self.engine}')
