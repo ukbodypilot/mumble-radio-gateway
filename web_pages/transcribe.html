@@ -370,6 +370,16 @@ function poll() {
 
       // Performance
       var ps = s.stats || {};
+      if (!ps.count) {
+        // Stats reset (restart, fresh start) — clear displayed values so
+        // stale numbers don't linger until the next transcription arrives.
+        ['ps-ratio','ps-rt-pct','ps-dur','ps-proc'].forEach(function(id){
+          var el = document.getElementById(id);
+          el.textContent = '—'; el.className = 'ps-val';
+        });
+        document.getElementById('ps-count').textContent = '0';
+        document.getElementById('ps-chart').innerHTML = '';
+      }
       if (ps.count > 0) {
         document.getElementById('perf-row').style.display = '';
         var ratioEl = document.getElementById('ps-ratio');
@@ -511,6 +521,13 @@ function restartTranscriber() {
   document.getElementById('latest-meta').style.display = 'none';
   document.getElementById('latest-text').style.display = 'none';
   document.getElementById('latest-empty').textContent = 'Restarting…';
+  // Clear PERF row immediately — don't wait for next poll
+  ['ps-ratio','ps-rt-pct','ps-dur','ps-proc'].forEach(function(id){
+    var el = document.getElementById(id);
+    el.textContent = '—'; el.className = 'ps-val';
+  });
+  document.getElementById('ps-count').textContent = '0';
+  document.getElementById('ps-chart').innerHTML = '';
 }
 
 setInterval(poll, 500);
