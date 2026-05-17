@@ -886,19 +886,39 @@ class RadioTranscriber:
             self._running = False
             return
 
-        # Load / start each engine in pool
+        # Load / start each engine in pool. Local engines get retries with
+        # backoff because gateway startup can race against HF cache mounts,
+        # network availability, or transient ONNX init issues. flush=True
+        # everywhere so logs actually appear in journal during init (Python
+        # block-buffers stdout when it's a pipe/socket).
         _active = []
         for _eng in list(self._pool):
             if isinstance(_eng, LocalInferenceEngine):
-                try:
-                    print(f"  [Transcribe] Loading {_eng.model_key}...")
-                    _eng.load()
-                    print(f"  [Transcribe] Model loaded ({_eng.model_key})")
-                    _active.append(_eng)
-                except Exception as e:
-                    print(f"  [Transcribe] Failed to load {_eng.model_key}: {e}")
+                _loaded = False
+                for _attempt in (1, 2, 3):
+                    try:
+                        print(f"  [Transcribe] Loading {_eng.model_key}... "
+                              f"(attempt {_attempt}/3)", flush=True)
+                        _eng.load()
+                        print(f"  [Transcribe] Model loaded ({_eng.model_key})", flush=True)
+                        _active.append(_eng)
+                        _loaded = True
+                        break
+                    except Exception as e:
+                        import traceback
+                        print(f"  [Transcribe] Failed to load {_eng.model_key} "
+                              f"(attempt {_attempt}/3): {type(e).__name__}: {e}",
+                              flush=True)
+                        traceback.print_exc()
+                        if _attempt < 3:
+                            _backoff = 2 * _attempt  # 2s, 4s
+                            print(f"  [Transcribe] Retrying in {_backoff}s...", flush=True)
+                            time.sleep(_backoff)
+                if not _loaded:
+                    print(f"  [Transcribe] GAVE UP loading {_eng.model_key} — "
+                          f"engine NOT in pool", flush=True)
             else:
-                print(f"  [Transcribe] Remote: {_eng._url}")
+                print(f"  [Transcribe] Remote: {_eng._url}", flush=True)
                 _eng.start()
                 _active.append(_eng)
 
