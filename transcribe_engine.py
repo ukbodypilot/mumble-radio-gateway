@@ -62,6 +62,7 @@ class LocalInferenceEngine:
         self._model = None
         self._tokenizer = None
         self._inflight = 0           # in-flight requests (for pool dispatch)
+        self._dispatched = 0         # gateway-side completed call count
 
     def load(self):
         """Load the model. Raises on failure."""
@@ -119,6 +120,7 @@ class LocalInferenceEngine:
             'engine': self.engine,
             'model_loaded': self.is_loaded,
             'inflight': self._inflight,
+            'dispatched': self._dispatched,
         }
 
     def stop(self):
@@ -143,6 +145,7 @@ class RemoteEngine:
         self._poll_thread: threading.Thread | None = None
         self._running = False
         self._inflight = 0           # in-flight requests (for pool dispatch)
+        self._dispatched = 0         # gateway-side completed call count
         # Engine/model key come from remote worker's /status after first poll
         self.engine = 'remote'
         self.model_key = 'remote'
@@ -188,6 +191,7 @@ class RemoteEngine:
                 url=self._url,
                 reachable=self._poll_ok,
                 inflight=self._inflight,
+                dispatched=self._dispatched,
                 last_poll_age=round(time.monotonic() - self._last_poll, 1)
                              if self._last_poll else None,
             )

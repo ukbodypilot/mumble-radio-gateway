@@ -995,6 +995,7 @@ class RadioTranscriber:
             return stat, result
         finally:
             engine._inflight = max(0, engine._inflight - 1)
+            engine._dispatched += 1
 
     def _handle_result(self, stat, result):
         """Store stat, log, forward result. Called from dispatcher thread."""
