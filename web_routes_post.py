@@ -141,6 +141,17 @@ def handle_transcribe_config(handler, parent):
                 tx._model_size = _parts[1]
                 tx._save()
                 result = {'ok': True, 'note': 'model change takes effect on restart'}
+        elif key == 'split_threshold_secs':
+            try:
+                _v = float(value)
+                if _v < 0 or _v > 60:
+                    result = {'ok': False, 'error': 'must be 0-60 seconds'}
+                else:
+                    tx._split_threshold = _v
+                    tx._save()
+                    result = {'ok': True}
+            except (TypeError, ValueError) as e:
+                result = {'ok': False, 'error': str(e)}
         elif key == 'mode':
             _v = str(value).lower()
             if _v not in ('off', 'local', 'remote', 'pool'):

@@ -28,11 +28,25 @@ _STATUS_POLL_INTERVAL = 10  # seconds between /status polls on remote worker
 # Local engine
 # ---------------------------------------------------------------------------
 
-def _pick_worker(pool: list):
-    """Return the engine in pool with the fewest in-flight requests."""
+def _pick_worker(pool: list, duration: float = 0.0, split_threshold: float = 0.0):
+    """Return the engine for this utterance.
+
+    With split_threshold=0 (disabled): least-busy worker.
+    With split_threshold>0: route by clip length.  Short clips (< threshold)
+    prefer Moonshine engines (no fixed-window cost); long clips prefer Whisper
+    engines (30s encoder cost amortises better).  Within the chosen tier, pick
+    least-busy.  Soft fallback to the other tier if the preferred is empty.
+    """
     if not pool:
         return None
-    return min(pool, key=lambda e: e._inflight)
+    if split_threshold <= 0:
+        return min(pool, key=lambda e: e._inflight)
+    short_tier = [e for e in pool if e.engine == 'moonshine']
+    long_tier = [e for e in pool if e.engine == 'whisper']
+    preferred = short_tier if duration < split_threshold else long_tier
+    fallback = long_tier if duration < split_threshold else short_tier
+    candidates = preferred or fallback or pool
+    return min(candidates, key=lambda e: e._inflight)
 
 
 class LocalInferenceEngine:

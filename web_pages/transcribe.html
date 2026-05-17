@@ -224,6 +224,15 @@
       <div class="ctrl-hint">Change requires restart.</div>
     </div>
 
+    <div class="ctrl-field">
+      <label>Split Threshold</label>
+      <input type="range" id="st-split" min="0" max="30" step="0.5" value="0"
+             oninput="document.getElementById('st-split-val').textContent=parseFloat(this.value).toFixed(1)+'s'"
+             onchange="setConfig('split_threshold_secs', this.value)">
+      <span id="st-split-val" class="ctrl-val">0.0s</span>
+      <div class="ctrl-hint">Pool mode only: clips under N seconds → Moonshine; longer → Whisper. 0 = least-busy (no length routing). No restart needed.</div>
+    </div>
+
     <div class="ctrl-actions">
       <button class="rb rb-sm rb-warn" onclick="restartTranscriber()">Restart</button>
       <button class="rb rb-sm" onclick="window.location='/txlog'">Open Tx Log</button>
@@ -357,6 +366,10 @@ function poll() {
         if (s.min_duration) {
           document.getElementById('st-min-dur').value = s.min_duration;
           document.getElementById('st-dur-val').textContent = s.min_duration + 's';
+        }
+        if (s.split_threshold_secs !== undefined) {
+          document.getElementById('st-split').value = s.split_threshold_secs;
+          document.getElementById('st-split-val').textContent = parseFloat(s.split_threshold_secs).toFixed(1) + 's';
         }
         if (s.audio_boost) {
           document.getElementById('st-boost').value = s.audio_boost;

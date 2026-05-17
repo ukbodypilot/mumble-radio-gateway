@@ -398,6 +398,12 @@ class RadioTranscriber:
         self._engine = (self._pool[0].engine
                         if self._pool and isinstance(self._pool[0], LocalInferenceEngine)
                         else 'remote')
+
+        # Length-based routing in pool mode.  0 = disabled (least-busy only).
+        # >0: clips under N seconds prefer Moonshine engines, >= N prefer Whisper.
+        self._split_threshold = float(_saved.get(
+            'split_threshold_secs',
+            getattr(config, 'TRANSCRIBE_SPLIT_THRESHOLD_SECS', 0.0) or 0.0))
         self._sample_rate = int(getattr(config, 'AUDIO_RATE', 48000))
         self._forward_mumble = _saved.get('forward_mumble', bool(getattr(config, 'TRANSCRIBE_FORWARD_MUMBLE', True)))
         self._forward_telegram = _saved.get('forward_telegram', bool(getattr(config, 'TRANSCRIBE_FORWARD_TELEGRAM', False)))
@@ -434,6 +440,7 @@ class RadioTranscriber:
             'model': self._model_key,
             'mode': self._mode,
             'remote_urls': ','.join(self._remote_urls),
+            'split_threshold_secs': self._split_threshold,
             'vad_threshold': self._vad_threshold,
             'vad_hold': self._vad_hold_time,
             'min_duration': self._min_duration,
@@ -780,6 +787,7 @@ class RadioTranscriber:
             'pending': len(self._pending),
             'pending_audio_secs': round(sum(item['duration'] for item in self._pending), 1),
             'inflight': sum(getattr(e, '_inflight', 0) for e in self._pool),
+            'split_threshold_secs': self._split_threshold,
             'ram_mb': _get_rss_mb(),
             'total_transcriptions': len(self._results),
             'streams': streams_payload,
@@ -911,7 +919,8 @@ class RadioTranscriber:
                 # Submit pending items to least-busy worker
                 while self._pending and self._running:
                     _item = self._pending.popleft()
-                    _eng = _pick_worker(self._pool)
+                    _eng = _pick_worker(self._pool, _item.get('duration', 0.0),
+                                        self._split_threshold)
                     _eng._inflight += 1
                     _fut = _executor.submit(self._run_inference, _eng, _item)
                     _in_flight[_fut] = None
