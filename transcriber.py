@@ -71,6 +71,15 @@ _HALLUCINATION_BLOCKLIST = frozenset([
 _HALLUCINATION_STRIP = ' \t\n\r.,!?'
 
 
+def _inference_worker_init():
+    """Nice down each ThreadPoolExecutor inference thread to 15."""
+    try:
+        import os as _os
+        _os.nice(15)
+    except Exception:
+        pass
+
+
 def _is_hallucination(text):
     """True if text matches a known ASR hallucination phrase."""
     return text.strip(_HALLUCINATION_STRIP).lower() in _HALLUCINATION_BLOCKLIST
@@ -835,7 +844,7 @@ class RadioTranscriber:
             # thread when called from a multithreaded process.
             import ctypes, ctypes.util as _cu
             _libc = ctypes.CDLL(_cu.find_library('c'), use_errno=True)
-            _libc.setpriority(0, 0, 10)
+            _libc.setpriority(0, 0, 15)
         except Exception:
             pass
         try:
@@ -873,7 +882,8 @@ class RadioTranscriber:
 
         from concurrent.futures import ThreadPoolExecutor
         _executor = ThreadPoolExecutor(max_workers=len(self._pool),
-                                       thread_name_prefix='TxWorker')
+                                       thread_name_prefix='TxWorker',
+                                       initializer=_inference_worker_init)
         _in_flight: dict = {}  # future -> None
 
         try:
