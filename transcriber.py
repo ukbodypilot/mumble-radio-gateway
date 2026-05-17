@@ -462,6 +462,12 @@ class RadioTranscriber:
         self._pool = []
         import gc
         gc.collect()
+        # Return freed heap to OS — glibc's arena will hold it otherwise.
+        try:
+            import ctypes
+            ctypes.CDLL('libc.so.6').malloc_trim(0)
+        except Exception:
+            pass
         # Wake every per-stream worker so they can notice _running=False.
         with self._streams_lock:
             streams = list(self._streams.values())
