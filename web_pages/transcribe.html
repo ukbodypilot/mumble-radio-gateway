@@ -250,7 +250,7 @@
     <span class="ps-title">Workers</span>
     <span id="rw-workers"></span>
     <span style="margin-left:auto">
-      <select id="rw-model-sel" class="rb rb-sm" style="padding:2px 6px;height:28px">
+      <select id="rw-model-sel" class="rb rb-sm" style="padding:2px 6px;height:28px" onchange="_rwModelDirty=true">
         <optgroup label="Whisper">
           <option value="whisper/small.en">small.en</option>
           <option value="whisper/medium.en">medium.en</option>
@@ -281,6 +281,7 @@
 <script>
 var _lastTimestamp = 0;
 var _configSynced = false;
+var _rwModelDirty = false;  // true once user touches the remote model selector
 
 function poll() {
   fetch('/transcriptions?since=' + _lastTimestamp)
@@ -430,10 +431,12 @@ function poll() {
           wHtml += '<span style="margin-right:var(--s-4)"><span class="' + wDotCls + '"></span> <b>' + wLabel + '</b> ' + wModel + wFlight + wRatio + wReach + '</span>';
         }
         document.getElementById('rw-workers').innerHTML = wHtml;
-        var firstRemote = workers.find(function(w) { return w.type === 'remote' && w.model_key; });
-        if (firstRemote) {
-          var sel = document.getElementById('rw-model-sel');
-          if (sel.value !== firstRemote.model_key) sel.value = firstRemote.model_key;
+        if (!_rwModelDirty) {
+          var firstRemote = workers.find(function(w) { return w.type === 'remote' && w.model_key; });
+          if (firstRemote) {
+            var sel = document.getElementById('rw-model-sel');
+            if (sel.value !== firstRemote.model_key) sel.value = firstRemote.model_key;
+          }
         }
       } else {
         document.getElementById('rw-row').style.display = 'none';
@@ -490,7 +493,8 @@ function switchRemoteModel() {
     .then(function(d) {
       btn.disabled = false;
       btn.textContent = 'Switch';
-      if (!d.ok) alert('Switch failed: ' + (d.error || 'unknown error'));
+      if (d.ok) { _rwModelDirty = false; }
+      else alert('Switch failed: ' + (d.error || 'unknown error'));
     })
     .catch(function(e) {
       btn.disabled = false;
