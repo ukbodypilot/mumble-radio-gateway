@@ -208,7 +208,17 @@ def _switch_model(model_key):
         print(f'[worker] Failed to switch model: {e}', flush=True)
         return
     with _engine_lock:
+        old = _engine
         _engine = eng
+    # Wait for any in-flight transcribes on the old model to finish, then
+    # explicitly release its native allocations (faster-whisper's CTranslate2
+    # backend holds GB-scale heap that doesn't free on Python GC alone).
+    import gc
+    if old is not None:
+        old._model = None
+        old._tokenizer = None
+        del old
+        gc.collect()
     with _stats_lock:
         _stats['total'] = 0
         _stats['errors'] = 0

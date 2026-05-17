@@ -447,8 +447,21 @@ class RadioTranscriber:
     def stop(self):
         self._running = False
         self._pending_evt.set()
+        # Wait briefly for _run() to exit so its ThreadPoolExecutor shuts down
+        # cleanly. Otherwise on restart we leak the old executor + its workers.
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+        # Explicitly release local model memory — CTranslate2/ONNX hold native
+        # allocations that survive Python GC unless the wrapper attrs are
+        # cleared. Stops repeated restarts from accumulating GBs of RAM.
         for _eng in self._pool:
             _eng.stop()
+            if isinstance(_eng, LocalInferenceEngine):
+                _eng._model = None
+                _eng._tokenizer = None
+        self._pool = []
+        import gc
+        gc.collect()
         # Wake every per-stream worker so they can notice _running=False.
         with self._streams_lock:
             streams = list(self._streams.values())
