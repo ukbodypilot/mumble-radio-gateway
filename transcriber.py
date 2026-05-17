@@ -779,6 +779,7 @@ class RadioTranscriber:
             'alert_keywords': self._alert_keywords,
             'pending': len(self._pending),
             'pending_audio_secs': round(sum(item['duration'] for item in self._pending), 1),
+            'inflight': sum(getattr(e, '_inflight', 0) for e in self._pool),
             'ram_mb': _get_rss_mb(),
             'total_transcriptions': len(self._results),
             'streams': streams_payload,

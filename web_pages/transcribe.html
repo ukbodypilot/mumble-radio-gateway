@@ -392,19 +392,24 @@ function poll() {
         document.getElementById('ps-proc').textContent = ps.avg_proc_time || '—';
         document.getElementById('ps-count').textContent = ps.count;
 
-        // Queue depth + audio seconds pending
-        var qDepth = s.pending || 0;
+        // Queue depth + in-flight (both contribute to backlog)
+        var qPending = s.pending || 0;
+        var qInflight = s.inflight || 0;
+        var qDepth = qPending + qInflight;
         var qSecs = s.pending_audio_secs || 0;
         var qEl = document.getElementById('ps-queue-depth');
-        qEl.textContent = qDepth;
+        qEl.textContent = qDepth + (qInflight > 0 ? ' (' + qInflight + ' in-flight)' : '');
         qEl.className = 'ps-val ' + (qDepth === 0 ? 'ok' : qDepth < 10 ? 'warn' : 'err');
         var qsEl = document.getElementById('ps-queue-secs');
         qsEl.textContent = qSecs;
         qsEl.className = 'ps-val ' + (qSecs < 5 ? 'ok' : qSecs < 20 ? 'warn' : 'err');
 
-        // Estimated lag = pending audio secs × avg processing ratio
+        // Estimated lag — pending audio + assume in-flight items average
+        // ~avg_duration seconds each, all multiplied by avg processing ratio.
         var lagEl = document.getElementById('ps-lag');
-        var lag = qSecs > 0 ? Math.round(qSecs * (ps.avg_ratio || 1) * 10) / 10 : 0;
+        var avgDur = ps.avg_duration || 0;
+        var lagSecs = qSecs + (qInflight * avgDur);
+        var lag = lagSecs > 0 ? Math.round(lagSecs * (ps.avg_ratio || 1) * 10) / 10 : 0;
         lagEl.textContent = lag > 0 ? lag : '0';
         lagEl.className = 'ps-val ' + (lag < 5 ? 'ok' : lag < 30 ? 'warn' : 'err');
 
