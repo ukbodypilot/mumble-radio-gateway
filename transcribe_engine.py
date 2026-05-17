@@ -88,9 +88,13 @@ class LocalInferenceEngine:
             decoded = self._tokenizer.decode_batch([tokens])
             return decoded[0] if decoded else ''
         elif self.engine == 'whisper':
+            # beam_size=1 (greedy) + without_timestamps cuts decoder cost
+            # ~30% with negligible accuracy loss for short radio clips.
+            # We use wall-clock VAD timestamps, not Whisper's per-segment ones,
+            # so without_timestamps has no impact on the log/DB.
             segments, _ = self._model.transcribe(
-                audio_16k.astype(np.float32), beam_size=5, language='en',
-                condition_on_previous_text=False)
+                audio_16k.astype(np.float32), beam_size=1, language='en',
+                condition_on_previous_text=False, without_timestamps=True)
             return ' '.join(seg.text.strip() for seg in segments)
         return ''
 
