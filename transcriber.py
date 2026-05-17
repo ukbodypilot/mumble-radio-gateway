@@ -403,7 +403,7 @@ class RadioTranscriber:
         # >0: clips under N seconds prefer Moonshine engines, >= N prefer Whisper.
         self._split_threshold = float(_saved.get(
             'split_threshold_secs',
-            getattr(config, 'TRANSCRIBE_SPLIT_THRESHOLD_SECS', 0.0) or 0.0))
+            getattr(config, 'TRANSCRIBE_SPLIT_THRESHOLD_SECS', 10.0) or 10.0))
         self._sample_rate = int(getattr(config, 'AUDIO_RATE', 48000))
         self._forward_mumble = _saved.get('forward_mumble', bool(getattr(config, 'TRANSCRIBE_FORWARD_MUMBLE', True)))
         self._forward_telegram = _saved.get('forward_telegram', bool(getattr(config, 'TRANSCRIBE_FORWARD_TELEGRAM', False)))

@@ -226,10 +226,10 @@
 
     <div class="ctrl-field">
       <label>Split Threshold</label>
-      <input type="range" id="st-split" min="0" max="30" step="0.5" value="0"
+      <input type="range" id="st-split" min="0" max="30" step="0.5" value="10"
              oninput="document.getElementById('st-split-val').textContent=parseFloat(this.value).toFixed(1)+'s'"
              onchange="setConfig('split_threshold_secs', this.value)">
-      <span id="st-split-val" class="ctrl-val">0.0s</span>
+      <span id="st-split-val" class="ctrl-val">10.0s</span>
       <div class="ctrl-hint">Pool mode only: clips under N seconds → Moonshine; longer → Whisper. 0 = least-busy (no length routing). No restart needed.</div>
     </div>
 
