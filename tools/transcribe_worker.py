@@ -175,6 +175,14 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 # Model loader thread
 # ---------------------------------------------------------------------------
 
+def _nice_down():
+    try:
+        import os as _os
+        _os.nice(15)
+    except Exception:
+        pass
+
+
 def _load_model(model_key):
     global _engine
     eng = LocalInferenceEngine(model_key)
@@ -228,6 +236,8 @@ def main():
         print(f'[worker] Unknown model {model_key!r}. '
               f'Valid: {", ".join(sorted(_VALID_MODELS))}', flush=True)
         sys.exit(1)
+
+    _nice_down()
 
     loader = threading.Thread(target=_load_model, args=(model_key,), daemon=True)
     loader.start()
