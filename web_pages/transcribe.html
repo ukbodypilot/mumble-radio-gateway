@@ -244,6 +244,20 @@
     <span>Jobs: <span id="rw-total" class="ps-val">0</span></span>
     <span>RAM: <span id="rw-ram" class="ps-val">—</span> MB</span>
     <span>Uptime: <span id="rw-uptime" class="ps-val">—</span></span>
+    <span style="margin-left:var(--s-2)">
+      <select id="rw-model-sel" class="rb rb-sm" style="padding:2px 6px;height:28px">
+        <optgroup label="Whisper">
+          <option value="whisper/small.en">small.en</option>
+          <option value="whisper/medium.en">medium.en</option>
+          <option value="whisper/large-v3-turbo">large-v3-turbo ★</option>
+        </optgroup>
+        <optgroup label="Moonshine">
+          <option value="moonshine/tiny">tiny</option>
+          <option value="moonshine/base">base</option>
+        </optgroup>
+      </select>
+      <button class="rb rb-sm" onclick="switchRemoteModel()" style="margin-left:4px">Switch</button>
+    </span>
   </div>
 </div>
 
@@ -409,6 +423,8 @@ function poll() {
           rwDot.className = 'dot on'; rwState.textContent = 'Ready'; rwState.className = 'tx-state ok';
         }
         document.getElementById('rw-model').textContent = rw.model_key || '—';
+        var sel = document.getElementById('rw-model-sel');
+        if (rw.model_key && sel.value !== rw.model_key) sel.value = rw.model_key;
         var rwRatioEl = document.getElementById('rw-ratio');
         rwRatioEl.textContent = rw.avg_ratio != null ? rw.avg_ratio : '—';
         if (rw.avg_ratio != null) rwRatioEl.className = 'ps-val ' + (rw.avg_ratio < 1 ? 'ok' : 'err');
@@ -451,6 +467,30 @@ function setConfig(key, value) {
   }).then(function(r) { return r.json(); }).then(function(d) {
     if (!d.ok) alert(d.error || 'Failed to set ' + key);
   });
+}
+
+function switchRemoteModel() {
+  var model = document.getElementById('rw-model-sel').value;
+  var btn = document.querySelector('#rw-row button');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  document.getElementById('rw-state').textContent = 'Switching…';
+  document.getElementById('rw-state').className = 'tx-state warn';
+  fetch('/transcribe_config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({key: 'remote_model', value: model})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      btn.disabled = false;
+      btn.textContent = 'Switch';
+      if (!d.ok) alert('Switch failed: ' + (d.error || 'unknown error'));
+    })
+    .catch(function(e) {
+      btn.disabled = false;
+      btn.textContent = 'Switch';
+      alert('Switch failed: ' + e);
+    });
 }
 
 function restartTranscriber() {

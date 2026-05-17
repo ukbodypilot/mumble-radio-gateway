@@ -141,6 +141,25 @@ def handle_transcribe_config(handler, parent):
                 tx._model_size = _parts[1]
                 tx._save()
                 result = {'ok': True, 'note': 'model change takes effect on restart'}
+        elif key == 'remote_model':
+            from transcribe_engine import RemoteEngine
+            if not isinstance(tx._inf_engine, RemoteEngine):
+                result = {'ok': False, 'error': 'not using remote engine'}
+            else:
+                _v = str(value)
+                from transcriber import _VALID_MODELS
+                if _v not in _VALID_MODELS:
+                    result = {'ok': False, 'error': f'unknown model: {_v}'}
+                else:
+                    import urllib.request as _ur
+                    _body = json_mod.dumps({'model': _v}).encode()
+                    _req = _ur.Request(
+                        f'{tx._inf_engine._url}/model', data=_body,
+                        headers={'Content-Type': 'application/json'}, method='POST')
+                    _ur.urlopen(_req, timeout=10)
+                    with tx._stats_lock:
+                        tx._stats.clear()
+                    result = {'ok': True}
         elif key == 'restart':
             gw = parent.gateway
             if gw:

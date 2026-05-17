@@ -101,9 +101,30 @@ class Handler(BaseHTTPRequestHandler):
         }
         self._send(200, payload)
 
+    # -- POST /model  (switch model at runtime) --
+
+    def _handle_model_switch(self):
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length)
+        try:
+            data = json.loads(body.decode())
+        except Exception:
+            self._send(400, {'error': 'invalid JSON'})
+            return
+        model_key = data.get('model', '')
+        if model_key not in _VALID_MODELS:
+            self._send(400, {'error': f'unknown model: {model_key}'})
+            return
+        t = threading.Thread(target=_switch_model, args=(model_key,), daemon=True)
+        t.start()
+        self._send(202, {'ok': True, 'model': model_key, 'status': 'loading'})
+
     # -- POST /transcribe --
 
     def do_POST(self):
+        if self.path.rstrip('/') == '/model':
+            self._handle_model_switch()
+            return
         if self.path.rstrip('/') != '/transcribe':
             self._send(404, {'error': 'not found'})
             return
@@ -166,6 +187,26 @@ def _load_model(model_key):
         return
     with _engine_lock:
         _engine = eng
+
+
+def _switch_model(model_key):
+    """Load a new model then atomically swap it in, keeping old model serving meanwhile."""
+    global _engine
+    eng = LocalInferenceEngine(model_key)
+    print(f'[worker] Switching to {eng.model_key}...', flush=True)
+    try:
+        eng.load()
+    except Exception as e:
+        print(f'[worker] Failed to switch model: {e}', flush=True)
+        return
+    with _engine_lock:
+        _engine = eng
+    with _stats_lock:
+        _stats['total'] = 0
+        _stats['errors'] = 0
+        _stats['total_proc_secs'] = 0.0
+        _stats['total_audio_secs'] = 0.0
+    print(f'[worker] Switched to {eng.model_key}', flush=True)
 
 
 # ---------------------------------------------------------------------------
