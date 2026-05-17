@@ -42,6 +42,7 @@ from transcribe_engine import LocalInferenceEngine, _VALID_MODELS  # noqa: E402
 
 _engine: LocalInferenceEngine | None = None
 _engine_lock = threading.Lock()   # guards _engine during load
+_last_switch_error: str | None = None  # surfaces switch failures via /status
 _stats_lock = threading.Lock()
 _stats = {
     'total': 0,
@@ -98,6 +99,7 @@ class Handler(BaseHTTPRequestHandler):
             'avg_ratio': avg_ratio,
             'uptime_secs': round(time.time() - st['start_time']),
             'ram_mb': _get_rss_mb(),
+            'last_switch_error': _last_switch_error,
         }
         self._send(200, payload)
 
@@ -199,14 +201,17 @@ def _load_model(model_key):
 
 def _switch_model(model_key):
     """Load a new model then atomically swap it in, keeping old model serving meanwhile."""
-    global _engine
+    global _engine, _last_switch_error
     eng = LocalInferenceEngine(model_key)
     print(f'[worker] Switching to {eng.model_key}...', flush=True)
     try:
         eng.load()
     except Exception as e:
-        print(f'[worker] Failed to switch model: {e}', flush=True)
+        msg = f'switch to {model_key} failed: {e}'
+        print(f'[worker] {msg}', flush=True)
+        _last_switch_error = msg
         return
+    _last_switch_error = None
     with _engine_lock:
         old = _engine
         _engine = eng
