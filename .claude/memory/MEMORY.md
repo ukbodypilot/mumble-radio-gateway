@@ -67,8 +67,9 @@ Code at `/home/user/link/`, deployed via scp from gateway.
 | Name | Host | IP | Plugin | Notes |
 |------|------|----|--------|-------|
 | celeron-ftm150 | Intel Celeron | .134 | aioc | FTM-150 radio, packet/Winlink TNC |
-| d75-pi | Pi Zero 2W | .121 | d75 | D75 via BT, DietPi read-only root, tmpfs code |
-| cm5-aioc | Pi CM5 | .131 (eth) / .144 (wifi) | aioc | Non-WiFi CM5 variant, USB WiFi (MT7610U), Debian Trixie |
+| d75-pi | Pi Zero 2W | .123 | d75 | D75 via BT, DietPi read-only root, tmpfs code (updated 2026-05-11) |
+| cm5-aioc | Pi CM5 | .144 (wifi, DHCP) | aioc | Non-WiFi CM5 variant, USB WiFi (MT7610U), Debian Trixie (IP updated 2026-05-17) |
+| cm5-ic7100 | Pi CM5 | .144 (same host) | ic7100 | IC-7100 plugin; serial_connected:false, audio not active as of 2026-05-18 — in-progress setup |
 
 - Pi-hole DNS on gateway (.140:53) + dnscrypt-proxy DoH (127.0.0.1:5053)
 - Gateway static IP .140 (manual NM config)
@@ -191,11 +192,9 @@ Code at `/home/user/link/`, deployed via scp from gateway.
 - [reference_gdrive_backup.md](reference_gdrive_backup.md) — rclone backup to Google Drive
 - [project_ftm150_endpoint.md](project_ftm150_endpoint.md) — FTM-150 AIOC endpoint
 - [project_packet_radio.md](project_packet_radio.md) — Packet Radio + Winlink email
-- [project_ftm150_reverse_eng.md](project_ftm150_reverse_eng.md) — FTM-150 control head RE (shelved)
 - [project_listen_bus_unify.md](project_listen_bus_unify.md) — listen bus unification (COMPLETED)
 - [project_rust_audio_core.md](project_rust_audio_core.md) — Rust audio core (future, deferred)
 - [project_loop_recorder.md](project_loop_recorder.md) — loop recorder details + bugs fixed
 - [project_sdr_single_mode.md](project_sdr_single_mode.md) — SDR single-tuner mode details
 - [project_internet_endpoints.md](project_internet_endpoints.md) — internet endpoint connectivity (WIP)
 - [bugs_2026_04_13.md](bugs_2026_04_13.md) — DietPi rebuild: BT firmware, SCO-over-HCI, rfcomm
-- [project_ui_redesign.md](project_ui_redesign.md) — UI redesign stages (branch ui-redesign), theme picker as stage 7
