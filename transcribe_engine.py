@@ -28,6 +28,13 @@ _STATUS_POLL_INTERVAL = 10  # seconds between /status polls on remote worker
 # Local engine
 # ---------------------------------------------------------------------------
 
+def _pick_worker(pool: list):
+    """Return the engine in pool with the fewest in-flight requests."""
+    if not pool:
+        return None
+    return min(pool, key=lambda e: e._inflight)
+
+
 class LocalInferenceEngine:
     """Loads and runs Moonshine or Whisper inference in-process."""
 
@@ -40,6 +47,7 @@ class LocalInferenceEngine:
         self.model_size = _parts[1]  # e.g. 'base', 'medium.en'
         self._model = None
         self._tokenizer = None
+        self._inflight = 0           # in-flight requests (for pool dispatch)
 
     def load(self):
         """Load the model. Raises on failure."""
@@ -83,6 +91,7 @@ class LocalInferenceEngine:
             'model_key': self.model_key,
             'engine': self.engine,
             'model_loaded': self.is_loaded,
+            'inflight': self._inflight,
         }
 
     def stop(self):
@@ -106,6 +115,7 @@ class RemoteEngine:
         self._last_poll: float = 0.0
         self._poll_thread: threading.Thread | None = None
         self._running = False
+        self._inflight = 0           # in-flight requests (for pool dispatch)
         # Engine/model key come from remote worker's /status after first poll
         self.engine = 'remote'
         self.model_key = 'remote'
@@ -150,6 +160,7 @@ class RemoteEngine:
                 type='remote',
                 url=self._url,
                 reachable=self._poll_ok,
+                inflight=self._inflight,
                 last_poll_age=round(time.monotonic() - self._last_poll, 1)
                              if self._last_poll else None,
             )

@@ -34,7 +34,7 @@ _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # cap, cut on the first probability dip to split at a natural pause rather
 # than mid-word.
 from transcribe_engine import (
-    _VALID_MODELS, LocalInferenceEngine, RemoteEngine,
+    _VALID_MODELS, LocalInferenceEngine, RemoteEngine, _pick_worker,
 )  # re-exported so web_routes_post.py can still `from transcriber import _VALID_MODELS`
 
 _MAX_UTTERANCE_SECS = 60.0
@@ -363,19 +363,32 @@ class RadioTranscriber:
         }
 
         _raw_model = str(_saved.get('model', getattr(config, 'TRANSCRIBE_MODEL', 'moonshine/base')))
-        # Backward compat: bare 'tiny'/'base' from old settings → moonshine/
         if _raw_model in ('tiny', 'base'):
             _raw_model = f'moonshine/{_raw_model}'
         self._model_key = _raw_model if _raw_model in _VALID_MODELS else 'moonshine/base'
 
-        # Choose local or remote inference engine.
-        _remote_url = str(getattr(config, 'TRANSCRIBE_REMOTE_URL', '') or '').strip()
-        if _remote_url:
-            self._inf_engine: LocalInferenceEngine | RemoteEngine = RemoteEngine(_remote_url)
-            self._engine = 'remote'
-        else:
-            self._inf_engine = LocalInferenceEngine(self._model_key)
-            self._engine = self._inf_engine.engine  # 'moonshine' | 'whisper'
+        # Mode: off / local / remote / pool
+        _saved_mode = _saved.get('mode', str(getattr(config, 'TRANSCRIBE_MODE', 'local') or 'local').lower())
+        self._mode = _saved_mode if _saved_mode in ('off', 'local', 'remote', 'pool') else 'local'
+
+        # Remote worker URLs — comma-separated; TRANSCRIBE_REMOTE_URL for compat
+        _saved_urls = _saved.get('remote_urls', '')
+        _cfg_urls = str(getattr(config, 'TRANSCRIBE_REMOTE_URLS', '') or
+                        getattr(config, 'TRANSCRIBE_REMOTE_URL', '') or '').strip()
+        self._remote_urls = [u.strip() for u in (_saved_urls or _cfg_urls).split(',') if u.strip()]
+
+        # Build worker pool
+        self._pool: list = []
+        if self._mode in ('local', 'pool'):
+            self._pool.append(LocalInferenceEngine(self._model_key))
+        if self._mode in ('remote', 'pool'):
+            for _url in self._remote_urls:
+                self._pool.append(RemoteEngine(_url))
+
+        # Convenience for status/logging
+        self._engine = (self._pool[0].engine
+                        if self._pool and isinstance(self._pool[0], LocalInferenceEngine)
+                        else 'remote')
         self._sample_rate = int(getattr(config, 'AUDIO_RATE', 48000))
         self._forward_mumble = _saved.get('forward_mumble', bool(getattr(config, 'TRANSCRIBE_FORWARD_MUMBLE', True)))
         self._forward_telegram = _saved.get('forward_telegram', bool(getattr(config, 'TRANSCRIBE_FORWARD_TELEGRAM', False)))
@@ -402,16 +415,16 @@ class RadioTranscriber:
                                         name="Transcriber")
         self._thread.start()
         self._save()
-        _engine_desc = (f"remote={self._inf_engine._url}"
-                        if isinstance(self._inf_engine, RemoteEngine)
-                        else f"model={self._model_key}")
-        print(f"  [Transcribe] Started ({_engine_desc}, "
+        print(f"  [Transcribe] Started (mode={self._mode}, "
+              f"workers={len(self._pool)}, "
               f"vad_thresh={self._vad_threshold:.2f}, boost={int(self._audio_boost*100)}%)")
 
     def _save(self):
         _save_settings({
             'enabled': self._enabled,
             'model': self._model_key,
+            'mode': self._mode,
+            'remote_urls': ','.join(self._remote_urls),
             'vad_threshold': self._vad_threshold,
             'vad_hold': self._vad_hold_time,
             'min_duration': self._min_duration,
@@ -425,7 +438,8 @@ class RadioTranscriber:
     def stop(self):
         self._running = False
         self._pending_evt.set()
-        self._inf_engine.stop()
+        for _eng in self._pool:
+            _eng.stop()
         # Wake every per-stream worker so they can notice _running=False.
         with self._streams_lock:
             streams = list(self._streams.values())
@@ -719,10 +733,11 @@ class RadioTranscriber:
         return {
             'running': self._running,
             'enabled': self._enabled,
+            'mode': self._mode,
             'engine': self._engine,
             'vad_engine': 'silero',
             'model': self._model_key,
-            'model_loaded': self._inf_engine.is_ready(),
+            'model_loaded': any(e.is_ready() for e in self._pool) if self._pool else False,
             'vad_open': any_open,
             'vad_prob': round(max(max_prob, max_env, max_peak), 3),
             'vad_db': round(max_db, 1),
@@ -741,8 +756,9 @@ class RadioTranscriber:
             'streams': streams_payload,
             'stats': self.get_stats(),
             'feed': self._get_feed_health(),
-            'remote_worker': (self._inf_engine.get_status()
-                              if isinstance(self._inf_engine, RemoteEngine) else None),
+            'workers': [e.get_status() for e in self._pool],
+            'remote_worker': next(
+                (e.get_status() for e in self._pool if isinstance(e, RemoteEngine)), None),
         }
 
     def _get_feed_health(self):
@@ -833,98 +849,145 @@ class RadioTranscriber:
             self._running = False
             return
 
-        if isinstance(self._inf_engine, LocalInferenceEngine):
-            try:
-                print(f"  [Transcribe] Loading {self._model_key}...")
-                self._inf_engine.load()
-                print(f"  [Transcribe] Model loaded")
-            except Exception as e:
-                print(f"  [Transcribe] Failed to load model {self._model_key}: {e}")
-                self._running = False
-                return
-        else:
-            print(f"  [Transcribe] Remote engine: {self._inf_engine._url}")
-            self._inf_engine.start()
-
-        while self._running:
-            self._pending_evt.wait(timeout=1.0)
-            self._pending_evt.clear()
-
-            while self._pending and self._running:
-                item = self._pending.popleft()
+        # Load / start each engine in pool
+        _active = []
+        for _eng in list(self._pool):
+            if isinstance(_eng, LocalInferenceEngine):
                 try:
-                    _t0 = time.monotonic()
-                    text = self._inf_engine.transcribe(item['audio_16k'])
-                    _proc_time = time.monotonic() - _t0
-                    _duration = item['duration']
-                    _ratio = _proc_time / _duration if _duration > 0 else 0
-                    _stat = {
-                        'timestamp': item['start_time'],
-                        'duration': round(_duration, 2),
-                        'proc_time': round(_proc_time, 2),
-                        'ratio': round(_ratio, 3),
-                        'realtime': _ratio < 1.0,
-                        'samples': len(item['audio_16k']),
-                        'text_len': len(text.strip()) if text else 0,
-                    }
-                    with self._stats_lock:
-                        self._stats.append(_stat)
-                    if getattr(getattr(self._gateway, 'config', None), 'VERBOSE_LOGGING', False):
-                        print(f"  [Transcribe] {_duration:.1f}s audio → {_proc_time:.1f}s process ({_ratio:.2f}x realtime)")
-                    if text and text.strip() and not _is_hallucination(text):
-                        # Prefer the upstream source (sdr1/sdr2/aioc) for
-                        # tagging — gives per-tuner freqs. Fall back to the
-                        # bus id if attribution didn't land.
-                        _tag_id = item.get('upstream_source') or item.get('source_id')
-                        freq_tag = _resolve_freq_tag(self._gateway, _tag_id)
-                        result = {
-                            'timestamp': item['start_time'],
-                            'duration': round(item['duration'], 1),
-                            'proc_time': round(_proc_time, 1),
-                            'ratio': round(_ratio, 2),
-                            'text': text.strip(),
-                            'freq': freq_tag,
-                            'source': _tag_id or item.get('source_id', ''),
-                            'bus': item.get('source_id', ''),
-                            'time_str': time.strftime('%H:%M:%S',
-                                                      time.localtime(item['start_time'])),
-                        }
-                        with self._results_lock:
-                            self._results.append(result)
-                        _tl = getattr(self._gateway, 'transcription_log', None) if self._gateway else None
-                        if _tl:
-                            try:
-                                _tl.insert(result)
-                            except Exception:
-                                pass
-                            try:
-                                _tl.check_keywords(result, self._alert_keywords)
-                            except Exception:
-                                pass
-                        _freq_prefix = f'[{freq_tag}] ' if freq_tag else ''
-                        if self._log_results:
-                            print(f"  [Transcribe] [{result['time_str']}] "
-                                  f"{_freq_prefix}({result['duration']}s) {result['text']}")
-
-                        if self._forward_mumble and self._gateway and self._gateway.mumble:
-                            try:
-                                self._gateway.send_text_message(
-                                    f"[{result['time_str']}] {_freq_prefix}{result['text']}")
-                            except Exception:
-                                pass
-                        if self._forward_telegram and self._gateway:
-                            try:
-                                import urllib.request
-                                _tg_url = f"http://127.0.0.1:8080/telegram_send"
-                                _tg_data = json.dumps({
-                                    'text': f"[{result['time_str']}] {result['text']}"
-                                }).encode()
-                                urllib.request.urlopen(
-                                    urllib.request.Request(_tg_url, data=_tg_data,
-                                        headers={'Content-Type': 'application/json'}),
-                                    timeout=5)
-                            except Exception:
-                                pass
+                    print(f"  [Transcribe] Loading {_eng.model_key}...")
+                    _eng.load()
+                    print(f"  [Transcribe] Model loaded ({_eng.model_key})")
+                    _active.append(_eng)
                 except Exception as e:
-                    print(f"  [Transcribe] Error: {e}")
+                    print(f"  [Transcribe] Failed to load {_eng.model_key}: {e}")
+            else:
+                print(f"  [Transcribe] Remote: {_eng._url}")
+                _eng.start()
+                _active.append(_eng)
+
+        self._pool[:] = _active
+        if not _active:
+            print(f"  [Transcribe] No engines available, stopping")
+            self._running = False
+            return
+
+        from concurrent.futures import ThreadPoolExecutor
+        _executor = ThreadPoolExecutor(max_workers=len(self._pool),
+                                       thread_name_prefix='TxWorker')
+        _in_flight: dict = {}  # future -> None
+
+        try:
+            while self._running:
+                # Submit pending items to least-busy worker
+                while self._pending and self._running:
+                    _item = self._pending.popleft()
+                    _eng = _pick_worker(self._pool)
+                    _eng._inflight += 1
+                    _fut = _executor.submit(self._run_inference, _eng, _item)
+                    _in_flight[_fut] = None
+
+                # Collect completed futures
+                _done = [f for f in list(_in_flight) if f.done()]
+                for _f in _done:
+                    del _in_flight[_f]
+                    try:
+                        _stat, _result = _f.result()
+                        self._handle_result(_stat, _result)
+                    except Exception as e:
+                        print(f"  [Transcribe] Error: {e}")
+
+                self._pending_evt.wait(timeout=0.1)
+                self._pending_evt.clear()
+        finally:
+            _executor.shutdown(wait=False)
+
+    def _run_inference(self, engine, item):
+        """Run ASR inference on one utterance. Called in ThreadPoolExecutor."""
+        try:
+            _t0 = time.monotonic()
+            text = engine.transcribe(item['audio_16k'])
+            _proc_time = time.monotonic() - _t0
+            _duration = item['duration']
+            _ratio = _proc_time / _duration if _duration > 0 else 0
+            stat = {
+                'timestamp': item['start_time'],
+                'duration': round(_duration, 2),
+                'proc_time': round(_proc_time, 2),
+                'ratio': round(_ratio, 3),
+                'realtime': _ratio < 1.0,
+                'samples': len(item['audio_16k']),
+                'text_len': len(text.strip()) if text else 0,
+            }
+            result = None
+            if text and text.strip() and not _is_hallucination(text):
+                _tag_id = item.get('upstream_source') or item.get('source_id')
+                freq_tag = _resolve_freq_tag(self._gateway, _tag_id)
+                result = {
+                    'timestamp': item['start_time'],
+                    'duration': round(_duration, 1),
+                    'proc_time': round(_proc_time, 1),
+                    'ratio': round(_ratio, 2),
+                    'text': text.strip(),
+                    'freq': freq_tag,
+                    'source': _tag_id or item.get('source_id', ''),
+                    'bus': item.get('source_id', ''),
+                    'time_str': time.strftime('%H:%M:%S', time.localtime(item['start_time'])),
+                }
+            return stat, result
+        finally:
+            engine._inflight = max(0, engine._inflight - 1)
+
+    def _handle_result(self, stat, result):
+        """Store stat, log, forward result. Called from dispatcher thread."""
+        with self._stats_lock:
+            self._stats.append(stat)
+        if getattr(getattr(self._gateway, 'config', None), 'VERBOSE_LOGGING', False):
+            print(f"  [Transcribe] {stat['duration']:.1f}s → "
+                  f"{stat['proc_time']:.1f}s ({stat['ratio']:.2f}x)")
+        if result is None:
+            return
+        self._store_result_ordered(result)
+        _tl = getattr(self._gateway, 'transcription_log', None) if self._gateway else None
+        if _tl:
+            try:
+                _tl.insert(result)
+            except Exception:
+                pass
+            try:
+                _tl.check_keywords(result, self._alert_keywords)
+            except Exception:
+                pass
+        _freq_prefix = f'[{result["freq"]}] ' if result.get('freq') else ''
+        if self._log_results:
+            print(f"  [Transcribe] [{result['time_str']}] "
+                  f"{_freq_prefix}({result['duration']}s) {result['text']}")
+        if self._forward_mumble and self._gateway and self._gateway.mumble:
+            try:
+                self._gateway.send_text_message(
+                    f"[{result['time_str']}] {_freq_prefix}{result['text']}")
+            except Exception:
+                pass
+        if self._forward_telegram and self._gateway:
+            try:
+                import urllib.request
+                _tg_data = json.dumps(
+                    {'text': f"[{result['time_str']}] {result['text']}"}).encode()
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        'http://127.0.0.1:8080/telegram_send', data=_tg_data,
+                        headers={'Content-Type': 'application/json'}),
+                    timeout=5)
+            except Exception:
+                pass
+
+    def _store_result_ordered(self, result):
+        """Insert result into _results sorted by timestamp (not arrival order)."""
+        with self._results_lock:
+            lst = list(self._results)
+            idx = len(lst)
+            while idx > 0 and lst[idx - 1]['timestamp'] > result['timestamp']:
+                idx -= 1
+            lst.insert(idx, result)
+            self._results.clear()
+            self._results.extend(lst[-100:])
 

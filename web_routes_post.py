@@ -141,10 +141,19 @@ def handle_transcribe_config(handler, parent):
                 tx._model_size = _parts[1]
                 tx._save()
                 result = {'ok': True, 'note': 'model change takes effect on restart'}
+        elif key == 'mode':
+            _v = str(value).lower()
+            if _v not in ('off', 'local', 'remote', 'pool'):
+                result = {'ok': False, 'error': f'unknown mode: {_v}'}
+            else:
+                tx._mode = _v
+                tx._save()
+                result = {'ok': True, 'note': 'restart required'}
         elif key == 'remote_model':
             from transcribe_engine import RemoteEngine
-            if not isinstance(tx._inf_engine, RemoteEngine):
-                result = {'ok': False, 'error': 'not using remote engine'}
+            _remotes = [e for e in tx._pool if isinstance(e, RemoteEngine)]
+            if not _remotes:
+                result = {'ok': False, 'error': 'no remote engines in pool'}
             else:
                 _v = str(value)
                 from transcriber import _VALID_MODELS
@@ -153,10 +162,14 @@ def handle_transcribe_config(handler, parent):
                 else:
                     import urllib.request as _ur
                     _body = json_mod.dumps({'model': _v}).encode()
-                    _req = _ur.Request(
-                        f'{tx._inf_engine._url}/model', data=_body,
-                        headers={'Content-Type': 'application/json'}, method='POST')
-                    _ur.urlopen(_req, timeout=10)
+                    for _re in _remotes:
+                        try:
+                            _req = _ur.Request(
+                                f'{_re._url}/model', data=_body,
+                                headers={'Content-Type': 'application/json'}, method='POST')
+                            _ur.urlopen(_req, timeout=10)
+                        except Exception:
+                            pass
                     with tx._stats_lock:
                         tx._stats.clear()
                     result = {'ok': True}

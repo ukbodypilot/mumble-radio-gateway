@@ -213,6 +213,17 @@
       <label class="tgl"><input type="checkbox" id="st-log-results" onchange="setConfig('log_results', this.checked)"> Gateway log</label>
     </div>
 
+    <div class="ctrl-field">
+      <label>Inference Mode</label>
+      <select id="st-mode" onchange="setConfig('mode', this.value)">
+        <option value="off">Off</option>
+        <option value="local">Local only</option>
+        <option value="remote">Remote only</option>
+        <option value="pool">Local + Remote pool</option>
+      </select>
+      <div class="ctrl-hint">Change requires restart.</div>
+    </div>
+
     <div class="ctrl-actions">
       <button class="rb rb-sm rb-warn" onclick="restartTranscriber()">Restart</button>
       <button class="rb rb-sm" onclick="window.location='/txlog'">Open Tx Log</button>
@@ -234,17 +245,11 @@
     <div class="ps-chart-wrap" id="ps-chart"></div>
   </div>
 
-  <!-- Remote worker row (hidden when local mode) -->
+  <!-- Workers pool row (visible in remote/pool mode) -->
   <div class="perf-row" id="rw-row" style="display:none">
-    <span class="ps-title">Remote Worker</span>
-    <span id="rw-url" style="font-size:var(--f-xs);color:var(--t-dim)"></span>
-    <span><span id="rw-dot" class="dot off"></span> <span id="rw-state" class="tx-state dim">—</span></span>
-    <span>Model: <span id="rw-model" class="ps-val">—</span></span>
-    <span>Avg: <span id="rw-ratio" class="ps-val">—</span>x</span>
-    <span>Jobs: <span id="rw-total" class="ps-val">0</span></span>
-    <span>RAM: <span id="rw-ram" class="ps-val">—</span> MB</span>
-    <span>Uptime: <span id="rw-uptime" class="ps-val">—</span></span>
-    <span style="margin-left:var(--s-2)">
+    <span class="ps-title">Workers</span>
+    <span id="rw-workers"></span>
+    <span style="margin-left:auto">
       <select id="rw-model-sel" class="rb rb-sm" style="padding:2px 6px;height:28px">
         <optgroup label="Whisper">
           <option value="whisper/small.en">small.en</option>
@@ -256,7 +261,7 @@
           <option value="moonshine/base">base</option>
         </optgroup>
       </select>
-      <button class="rb rb-sm" onclick="switchRemoteModel()" style="margin-left:4px">Switch</button>
+      <button class="rb rb-sm" onclick="switchRemoteModel()" style="margin-left:4px">Switch All Remote</button>
     </span>
   </div>
 </div>
@@ -408,31 +413,34 @@ function poll() {
         document.getElementById('ps-chart').innerHTML = chartHtml;
       }
 
-      // Remote worker row
-      var rw = s.remote_worker;
-      if (rw) {
+      // Workers pool row
+      var workers = s.workers || [];
+      var mode = s.mode || 'local';
+      if (mode !== 'local' && mode !== 'off' && workers.length > 0) {
         document.getElementById('rw-row').style.display = '';
-        document.getElementById('rw-url').textContent = rw.url || '';
-        var rwDot = document.getElementById('rw-dot');
-        var rwState = document.getElementById('rw-state');
-        if (!rw.reachable) {
-          rwDot.className = 'dot off'; rwState.textContent = 'Unreachable'; rwState.className = 'tx-state err';
-        } else if (!rw.model_loaded) {
-          rwDot.className = 'dot off'; rwState.textContent = 'Loading…'; rwState.className = 'tx-state warn';
-        } else {
-          rwDot.className = 'dot on'; rwState.textContent = 'Ready'; rwState.className = 'tx-state ok';
+        var wHtml = '';
+        for (var wi = 0; wi < workers.length; wi++) {
+          var w = workers[wi];
+          var wDotCls = w.model_loaded ? 'dot on' : 'dot off';
+          var wLabel = w.type === 'local' ? 'local' : (w.url || 'remote').replace('http://', '');
+          var wModel = w.model_key || '—';
+          var wFlight = (w.inflight != null && w.inflight > 0) ? ' · ' + w.inflight + ' active' : '';
+          var wRatio = (w.avg_ratio != null) ? ' · <span class="ps-val ' + (w.avg_ratio < 1 ? 'ok' : 'err') + '">' + w.avg_ratio + 'x</span>' : '';
+          var wReach = (w.type === 'remote' && !w.reachable) ? ' <span class="ps-val err">unreachable</span>' : '';
+          wHtml += '<span style="margin-right:var(--s-4)"><span class="' + wDotCls + '"></span> <b>' + wLabel + '</b> ' + wModel + wFlight + wRatio + wReach + '</span>';
         }
-        document.getElementById('rw-model').textContent = rw.model_key || '—';
-        var sel = document.getElementById('rw-model-sel');
-        if (rw.model_key && sel.value !== rw.model_key) sel.value = rw.model_key;
-        var rwRatioEl = document.getElementById('rw-ratio');
-        rwRatioEl.textContent = rw.avg_ratio != null ? rw.avg_ratio : '—';
-        if (rw.avg_ratio != null) rwRatioEl.className = 'ps-val ' + (rw.avg_ratio < 1 ? 'ok' : 'err');
-        document.getElementById('rw-total').textContent = rw.total_transcriptions || 0;
-        document.getElementById('rw-ram').textContent = rw.ram_mb != null ? rw.ram_mb : '—';
-        var up = rw.uptime_secs;
-        document.getElementById('rw-uptime').textContent = up != null
-          ? (up < 3600 ? Math.floor(up/60) + 'm' : Math.floor(up/3600) + 'h' + Math.floor((up%3600)/60) + 'm') : '—';
+        document.getElementById('rw-workers').innerHTML = wHtml;
+        var firstRemote = workers.find(function(w) { return w.type === 'remote' && w.model_key; });
+        if (firstRemote) {
+          var sel = document.getElementById('rw-model-sel');
+          if (sel.value !== firstRemote.model_key) sel.value = firstRemote.model_key;
+        }
+      } else {
+        document.getElementById('rw-row').style.display = 'none';
+      }
+      if (s.mode) {
+        var modeEl = document.getElementById('st-mode');
+        if (modeEl && modeEl.value !== s.mode) modeEl.value = s.mode;
       }
 
       // Latest result
@@ -474,8 +482,6 @@ function switchRemoteModel() {
   var btn = document.querySelector('#rw-row button');
   btn.disabled = true;
   btn.textContent = 'Loading…';
-  document.getElementById('rw-state').textContent = 'Switching…';
-  document.getElementById('rw-state').className = 'tx-state warn';
   fetch('/transcribe_config', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
