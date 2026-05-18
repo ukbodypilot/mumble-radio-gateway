@@ -5,7 +5,7 @@ import os
 import subprocess
 import threading
 import time
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
@@ -30,7 +30,6 @@ _DEFAULT_STATE = {
 _MAX_WAIT_SECS   = 600   # 10 min timeout waiting for Claude's report
 _POLL_INTERVAL   = 5     # seconds between polls
 _LOOP_INTERVAL   = 30    # seconds between schedule checks
-_REPORTS_RETAIN_DAYS = 7 # rotation horizon for manager_reports.jsonl
 
 
 class ManagerEngine:
@@ -66,9 +65,6 @@ class ManagerEngine:
     # ── Public API ────────────────────────────────────────────────────────
 
     def start(self):
-        # Prune reports older than the retention horizon on every startup,
-        # so the file stays bounded even if the gateway runs for months.
-        self._prune_reports()
         self._thread = threading.Thread(target=self._loop, daemon=True, name='manager-engine')
         self._thread.start()
 
@@ -161,15 +157,7 @@ class ManagerEngine:
         return now.strftime('%Y-%m-%d-') + f'{slot_hour:02d}'
 
     def _loop(self):
-        last_prune_hour = -1
         while not self._stop.wait(_LOOP_INTERVAL):
-            # Prune older-than-7-day reports once per clock hour, regardless
-            # of whether the manager is enabled — file stays bounded even on
-            # long-running gateways where the manager isn't actively running.
-            cur_hour = datetime.now().hour
-            if cur_hour != last_prune_hour:
-                self._prune_reports()
-                last_prune_hour = cur_hour
             with self._lock:
                 enabled = self._state.get('enabled')
                 running = self._state.get('running')
@@ -309,55 +297,6 @@ class ManagerEngine:
             pass
         return None
 
-    def _prune_reports(self):
-        """Keep only reports newer than _REPORTS_RETAIN_DAYS. Atomic rewrite.
-
-        Entries with unparseable timestamps are kept (never silently delete
-        data we can't classify). Cheap — runs on a small JSONL file.
-        """
-        try:
-            cutoff = datetime.now() - timedelta(days=_REPORTS_RETAIN_DAYS)
-        except Exception:
-            return
-        kept = []
-        dropped = 0
-        try:
-            with open(_REPORTS_FILE) as f:
-                for line in f:
-                    line = line.rstrip('\n')
-                    if not line.strip():
-                        continue
-                    keep = True
-                    try:
-                        e = json.loads(line)
-                        ts_str = str(e.get('ts', '')).replace('Z', '')
-                        ts = datetime.fromisoformat(ts_str)
-                        if ts < cutoff:
-                            keep = False
-                    except Exception:
-                        pass  # unparseable → keep
-                    if keep:
-                        kept.append(line)
-                    else:
-                        dropped += 1
-        except FileNotFoundError:
-            return
-        except Exception as e:
-            print(f"  [Manager] Prune read error: {e}")
-            return
-        if dropped == 0:
-            return
-        try:
-            tmp = _REPORTS_FILE + '.tmp'
-            with open(tmp, 'w') as f:
-                for line in kept:
-                    f.write(line + '\n')
-            os.replace(tmp, _REPORTS_FILE)
-            print(f"  [Manager] Pruned {dropped} report(s) older than {_REPORTS_RETAIN_DAYS}d "
-                  f"(kept {len(kept)})", flush=True)
-        except Exception as e:
-            print(f"  [Manager] Prune write error: {e}")
-
     def _write_error_report(self, run_id: str, task_type: str, reason: str):
         entry = {
             'ts':       datetime.now().isoformat(timespec='seconds'),
@@ -372,7 +311,6 @@ class ManagerEngine:
                 f.write(json.dumps(entry) + '\n')
         except Exception as e:
             print(f"  [Manager] Failed to write error report: {e}")
-        self._prune_reports()
         with self._lock:
             self._state['unread_alerts'] = True
             self._save_state()
