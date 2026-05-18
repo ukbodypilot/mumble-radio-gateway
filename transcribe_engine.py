@@ -31,21 +31,32 @@ _STATUS_POLL_INTERVAL = 10  # seconds between /status polls on remote worker
 def _pick_worker(pool: list, duration: float = 0.0, split_threshold: float = 0.0):
     """Return the engine for this utterance.
 
-    With split_threshold=0 (disabled): least-busy worker.
+    Skips engines that aren't ready (e.g. unreachable remote workers) so we
+    degrade gracefully — e.g. if the long-tier remote is offline, long clips
+    fall back to the local Moonshine rather than silently dropping into a
+    failed HTTP POST.
+
+    With split_threshold=0 (disabled): least-busy among ready workers.
     With split_threshold>0: route by clip length.  Short clips (< threshold)
     prefer Moonshine engines (no fixed-window cost); long clips prefer Whisper
     engines (30s encoder cost amortises better).  Within the chosen tier, pick
-    least-busy.  Soft fallback to the other tier if the preferred is empty.
+    least-busy.  Soft fallback to the other tier if the preferred is empty
+    (covers tier-down case).
     """
     if not pool:
         return None
-    if split_threshold <= 0:
+    ready = [e for e in pool if e.is_ready()]
+    if not ready:
+        # Nothing ready — return least-busy from the full pool. The transcribe
+        # call will fail, but at least we tried and the error is visible.
         return min(pool, key=lambda e: e._inflight)
-    short_tier = [e for e in pool if e.engine == 'moonshine']
-    long_tier = [e for e in pool if e.engine == 'whisper']
+    if split_threshold <= 0:
+        return min(ready, key=lambda e: e._inflight)
+    short_tier = [e for e in ready if e.engine == 'moonshine']
+    long_tier = [e for e in ready if e.engine == 'whisper']
     preferred = short_tier if duration < split_threshold else long_tier
     fallback = long_tier if duration < split_threshold else short_tier
-    candidates = preferred or fallback or pool
+    candidates = preferred or fallback or ready
     return min(candidates, key=lambda e: e._inflight)
 
 
