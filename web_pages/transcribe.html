@@ -3,732 +3,369 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Transcription · Console</title>
+<title>Live Transcription</title>
 <link rel="stylesheet" href="/pages/common.css">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Major+Mono+Display&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  /* ── Console aesthetic ──────────────────────────────────────────
-     Dark instrument panel for live transcription. Fixed-width stat
-     grids and mono numerics so values never shift the layout.
-  ─────────────────────────────────────────────────────────────── */
+  /* Transcribe page — uses the gateway's standard CSS tokens
+     (--t-*, --s-*, --f-*) and components (.panel, .rb, .tag, .metric).
+     Layout goal: fixed-width grids so numeric values don't shift the
+     layout when their digit count changes. */
 
-  :root {
-    --c-bg:        #0a0a0c;
-    --c-bg-2:      #0e0f12;
-    --c-panel:     #13151a;
-    --c-panel-2:   #181b21;
-    --c-rule:      #1c1e23;
-    --c-border:    #262930;
-    --c-border-hi: #353941;
-    --c-text:      #e8e6e0;
-    --c-text-dim:  #8a8780;
-    --c-text-mute: #585651;
-    --c-amber:     #e9a039;     /* live signal */
-    --c-amber-hi:  #ffc265;     /* peak */
-    --c-green:     #7fcf8a;     /* under realtime / healthy */
-    --c-cyan:      #6cb4c8;     /* secondary live data */
-    --c-warn:      #f0a96b;
-    --c-err:       #ef6a73;
-    --c-pulse:     rgba(233,160,57,0.18);
+  body { padding-bottom: var(--s-5); }
 
-    --f-serif: 'Newsreader', 'Iowan Old Style', Georgia, serif;
-    --f-sans:  'IBM Plex Sans', -apple-system, system-ui, sans-serif;
-    --f-mono:  'IBM Plex Mono', 'JetBrains Mono', 'Menlo', monospace;
-    --f-stencil: 'Major Mono Display', 'IBM Plex Mono', monospace;
+  /* Top status strip */
+  .head-bar {
+    display: flex; align-items: center; gap: var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    margin-bottom: var(--s-3);
+    flex-wrap: wrap;
+  }
+  .head-bar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--t-text-mute); }
+  .head-bar .dot.on  { background: var(--t-ok); }
+  .head-bar .dot.off { background: var(--t-err); }
+  .head-bar .dot.live{ background: var(--t-accent); }
 
-    --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
-  }
-
-  html, body { background: var(--c-bg); color: var(--c-text); height: 100%; margin: 0; }
-  body {
-    font-family: var(--f-sans);
-    font-size: 14px;
-    line-height: 1.5;
-    /* Subtle radial vignette + faint horizontal sweep — adds atmosphere
-       without being noisy. */
-    background:
-      radial-gradient(ellipse 80% 50% at 50% 0%, rgba(233,160,57,0.04), transparent 60%),
-      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(108,180,200,0.025), transparent 70%),
-      var(--c-bg);
-    padding: var(--s5) var(--s6);
-    max-width: 1480px; margin: 0 auto;
-    box-sizing: border-box;
-  }
-  *, *::before, *::after { box-sizing: border-box; }
-
-  /* ── Page header ────────────────────────────────────────────── */
-  .console-head {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: end;
-    gap: var(--s5);
-    padding-bottom: var(--s4);
-    margin-bottom: var(--s5);
-    border-bottom: 1px solid var(--c-rule);
-    position: relative;
-  }
-  .console-head::after {
-    /* hairline accent below the bottom border */
-    content: ''; position: absolute; left: 0; bottom: -2px;
-    width: 64px; height: 2px; background: var(--c-amber);
-  }
-  .h-title {
-    font-family: var(--f-serif);
-    font-weight: 400;
-    font-size: 42px;
-    line-height: 1;
-    letter-spacing: -0.015em;
-    margin: 0;
-    color: var(--c-text);
-  }
-  .h-title em {
-    font-style: italic;
-    color: var(--c-amber);
-    font-weight: 400;
-  }
-  .h-sub {
-    margin-top: var(--s2);
-    font-family: var(--f-stencil);
-    font-size: 11px;
-    letter-spacing: 0.18em;
-    color: var(--c-text-dim);
+  /* Section header strip — number + label + hairline + meta */
+  .sect-head {
+    display: flex; align-items: center; gap: var(--s-3);
+    margin: var(--s-5) 0 var(--s-2);
+    font-size: var(--f-xs);
+    color: var(--t-text-dim);
+    letter-spacing: 0.08em;
     text-transform: uppercase;
   }
-  .h-status {
-    display: flex; align-items: center; gap: var(--s3);
-    font-family: var(--f-mono);
-    font-size: 13px;
-  }
-  .h-status .pip {
-    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
-    background: var(--c-text-mute);
-    box-shadow: 0 0 0 2px rgba(0,0,0,0.4);
-  }
-  .h-status .pip.on   { background: var(--c-green); box-shadow: 0 0 12px var(--c-green), 0 0 0 2px rgba(0,0,0,0.4); }
-  .h-status .pip.live { background: var(--c-amber); box-shadow: 0 0 12px var(--c-amber), 0 0 0 2px rgba(0,0,0,0.4); animation: pulse 1.6s ease-in-out infinite; }
-  .h-status .pip.off  { background: var(--c-err);   box-shadow: 0 0 8px var(--c-err), 0 0 0 2px rgba(0,0,0,0.4); }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-  .h-status .state { color: var(--c-text); font-weight: 500; }
-  .h-status .state.live { color: var(--c-amber); }
-  .h-status .state.ok   { color: var(--c-green); }
-  .h-status .state.err  { color: var(--c-err); }
-  .h-status .state.dim  { color: var(--c-text-mute); }
-  .h-status .enabled-toggle {
-    display: inline-flex; align-items: center; gap: 8px;
-    color: var(--c-text-dim);
-    font-family: var(--f-stencil); font-size: 10px;
-    letter-spacing: 0.14em; text-transform: uppercase;
-    cursor: pointer; user-select: none;
-  }
-  .h-status .enabled-toggle input { accent-color: var(--c-amber); }
+  .sect-head .num { color: var(--t-accent); font-weight: 600; }
+  .sect-head .lbl { color: var(--t-text); font-weight: 600; }
+  .sect-head .rule { flex: 1; height: 1px; background: var(--t-border); }
+  .sect-head .meta { color: var(--t-text-dim); }
 
-  /* ── Section header strip ───────────────────────────────────── */
-  .sect {
-    margin: var(--s6) 0 var(--s4);
-    display: flex; align-items: baseline; gap: var(--s3);
-  }
-  .sect .num {
-    font-family: var(--f-stencil);
-    font-size: 11px;
-    letter-spacing: 0.18em;
-    color: var(--c-amber);
-  }
-  .sect .label {
-    font-family: var(--f-stencil);
-    font-size: 13px;
-    letter-spacing: 0.22em;
-    color: var(--c-text);
-    text-transform: uppercase;
-  }
-  .sect .rule {
-    flex: 1;
-    height: 1px;
-    background: var(--c-rule);
-    margin-left: var(--s2);
-  }
-  .sect .meta {
-    font-family: var(--f-mono);
-    font-size: 11px;
-    color: var(--c-text-mute);
-    margin-left: auto;
-  }
-
-  /* ── Stat tile grid (sections 01/02/03) ─────────────────────── */
+  /* 3-column stat grid for SIGNAL / THROUGHPUT / RESOURCES */
   .stat-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: var(--s4);
+    gap: var(--s-3);
   }
-  @media (max-width: 1000px) {
-    .stat-grid { grid-template-columns: 1fr; }
-  }
-  .panel {
-    background: var(--c-panel);
-    border: 1px solid var(--c-border);
-    border-radius: 2px;
-    position: relative;
-  }
-  /* corner registration marks */
-  .panel::before, .panel::after {
-    content: ''; position: absolute; width: 8px; height: 8px;
-    border: 1px solid var(--c-amber); opacity: 0.55;
-  }
-  .panel::before { top: -1px; left: -1px; border-right: none; border-bottom: none; }
-  .panel::after  { top: -1px; right: -1px; border-left: none; border-bottom: none; }
+  @media (max-width: 900px) { .stat-grid { grid-template-columns: 1fr; } }
 
-  .panel-head {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: var(--s2) var(--s4);
-    border-bottom: 1px solid var(--c-rule);
-    font-family: var(--f-stencil);
-    font-size: 11px;
-    letter-spacing: 0.18em;
-    color: var(--c-text-dim);
-  }
-  .panel-head .num {
-    color: var(--c-amber);
-  }
-  .panel-body {
-    padding: var(--s3) var(--s4);
-  }
-
-  /* key/value row — fixed column widths, mono values, right-aligned */
+  /* key/value row — fixed columns so the value never pushes the label */
   .kv {
     display: grid;
     grid-template-columns: 1fr auto;
     align-items: baseline;
-    padding: 6px 0;
-    border-bottom: 1px dotted var(--c-rule);
-    min-height: 26px;
+    padding: 5px 0;
+    border-bottom: 1px dotted var(--t-border);
   }
   .kv:last-child { border-bottom: none; }
   .kv .k {
-    font-family: var(--f-stencil);
-    font-size: 10px;
-    letter-spacing: 0.16em;
-    color: var(--c-text-dim);
+    color: var(--t-text-dim);
+    font-size: var(--f-xs);
+    letter-spacing: 0.05em;
     text-transform: uppercase;
   }
   .kv .v {
-    font-family: var(--f-mono);
     font-variant-numeric: tabular-nums;
-    font-size: 14px;
-    color: var(--c-text);
     text-align: right;
+    color: var(--t-text);
     min-width: 0;
-    font-weight: 500;
   }
-  .v .unit {
-    font-size: 11px;
-    color: var(--c-text-mute);
-    margin-left: 4px;
-    font-weight: 400;
-  }
-  .v.ok    { color: var(--c-green); }
-  .v.warn  { color: var(--c-warn); }
-  .v.err   { color: var(--c-err); }
-  .v.live  { color: var(--c-amber); }
-  .v.dim   { color: var(--c-text-mute); }
+  .v .unit { color: var(--t-text-mute); margin-left: 4px; font-size: var(--f-xs); }
+  .v.ok   { color: var(--t-ok); }
+  .v.warn { color: var(--t-warn); }
+  .v.err  { color: var(--t-err); }
+  .v.dim  { color: var(--t-text-mute); }
+  .v.live { color: var(--t-accent); }
 
-  /* ── Bar meters (level + VAD) ──────────────────────────────── */
-  .meter {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    gap: var(--s2);
-    padding: 8px 0;
-    border-bottom: 1px dotted var(--c-rule);
-    min-height: 32px;
-  }
+  /* Bar meters — same look as the rest of the site uses .bar */
+  .meter { padding: 6px 0; border-bottom: 1px dotted var(--t-border); }
   .meter:last-child { border-bottom: none; }
-  .meter-head {
-    display: flex; justify-content: space-between; align-items: baseline; gap: 6px;
-    margin-bottom: 4px;
-  }
-  .meter-name {
-    font-family: var(--f-stencil); font-size: 10px;
-    letter-spacing: 0.16em; color: var(--c-text-dim);
+  .meter-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .meter-head .k {
+    font-size: var(--f-xs);
+    color: var(--t-text-dim);
+    letter-spacing: 0.05em;
     text-transform: uppercase;
   }
-  .meter-val {
-    font-family: var(--f-mono); font-variant-numeric: tabular-nums;
-    font-size: 13px; color: var(--c-text);
-    min-width: 70px; text-align: right;
-  }
+  .meter-head .v { font-variant-numeric: tabular-nums; font-size: var(--f-sm); }
   .bar-wrap {
-    grid-column: 1 / -1;
+    margin-top: 4px;
     height: 10px;
-    background: var(--c-bg);
-    border: 1px solid var(--c-border);
-    border-radius: 1px;
+    background: var(--t-bg);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-sm);
     position: relative;
     overflow: hidden;
   }
   .bar-fill {
-    position: absolute; left: 0; top: 0; bottom: 0;
-    width: 0%;
-    background: var(--c-green);
-    transition: width 0.18s linear, background 0.18s ease;
+    position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+    background: var(--t-ok);
+    transition: width 0.15s, background 0.15s;
   }
-  .bar-fill.warn { background: var(--c-warn); }
-  .bar-fill.err  { background: var(--c-err); }
-  .bar-fill.live { background: var(--c-amber); }
-  .bar-mark {
-    position: absolute; top: 0; bottom: 0; width: 1px;
-    background: var(--c-text);
-    opacity: 0.7;
-  }
-  /* tick marks at intervals for the level meter — adds instrument feel */
-  .bar-ticks {
-    position: absolute; inset: 0;
-    background-image:
-      linear-gradient(to right,
-        transparent 0%, transparent calc(20% - 1px),
-        rgba(255,255,255,0.06) 20%, rgba(255,255,255,0.06) 20%, transparent calc(20% + 1px),
-        transparent calc(40% - 1px),
-        rgba(255,255,255,0.06) 40%, transparent calc(40% + 1px),
-        transparent calc(60% - 1px),
-        rgba(255,255,255,0.06) 60%, transparent calc(60% + 1px),
-        transparent calc(80% - 1px),
-        rgba(255,255,255,0.06) 80%, transparent calc(80% + 1px),
-        transparent 100%);
-    pointer-events: none;
-  }
+  .bar-fill.warn { background: var(--t-warn); }
+  .bar-fill.err  { background: var(--t-err); }
+  .bar-fill.live { background: var(--t-accent); }
+  .bar-mark { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--t-text); opacity: 0.5; }
 
-  /* ── Workers grid ────────────────────────────────────────── */
+  /* Workers grid */
   .workers-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: var(--s4);
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: var(--s-3);
   }
   .worker-card {
-    background: var(--c-panel);
-    border: 1px solid var(--c-border);
-    border-radius: 2px;
-    position: relative;
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
   }
-  .worker-card::before, .worker-card::after {
-    content: ''; position: absolute; width: 6px; height: 6px;
-    border: 1px solid var(--c-border-hi);
-  }
-  .worker-card::before { bottom: -1px; left: -1px; border-right: none; border-top: none; }
-  .worker-card::after  { bottom: -1px; right: -1px; border-left: none; border-top: none; }
-  .worker-card.unhealthy { border-color: var(--c-err); }
-  .worker-card.unhealthy::before, .worker-card.unhealthy::after { border-color: var(--c-err); }
+  .worker-card.unhealthy { border-color: var(--t-err); }
   .worker-head {
-    padding: var(--s3) var(--s4);
-    border-bottom: 1px solid var(--c-rule);
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    gap: var(--s2);
+    display: flex; justify-content: space-between; align-items: center;
+    padding: var(--s-2) var(--s-3);
+    border-bottom: 1px solid var(--t-border);
+    gap: var(--s-2);
   }
-  .worker-name {
-    font-family: var(--f-stencil);
-    font-size: 11px;
-    letter-spacing: 0.16em;
+  .worker-head .who {
+    font-size: var(--f-xs);
+    font-weight: 600;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--c-text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    color: var(--t-text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .worker-name .who {
-    color: var(--c-amber);
+  .worker-head .who .engine {
+    color: var(--t-accent);
     margin-right: 6px;
   }
   .worker-meta {
-    font-family: var(--f-mono);
-    font-size: 11px;
-    color: var(--c-text-dim);
-    padding: 4px var(--s4) var(--s2);
+    padding: 4px var(--s-3);
+    color: var(--t-text-dim);
+    font-size: var(--f-xs);
     word-break: break-all;
   }
-  .worker-stats {
-    padding: var(--s2) var(--s4) var(--s3);
-  }
-  .worker-status-badge {
-    font-family: var(--f-stencil);
-    font-size: 10px;
-    letter-spacing: 0.14em;
-    color: var(--c-text-mute);
-    text-transform: uppercase;
-    display: inline-flex; align-items: center; gap: 6px;
-  }
-  .worker-status-badge .dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--c-text-mute);
-  }
-  .worker-status-badge.on  .dot { background: var(--c-green); box-shadow: 0 0 8px var(--c-green); }
-  .worker-status-badge.off .dot { background: var(--c-err); }
-  .worker-status-badge.warn .dot { background: var(--c-warn); }
-  .worker-error {
-    margin-top: 6px;
-    padding: 4px 8px;
-    background: rgba(239,106,115,0.08);
-    border-left: 2px solid var(--c-err);
-    font-family: var(--f-mono);
-    font-size: 11px;
-    color: var(--c-err);
+  .worker-stats { padding: 4px var(--s-3) var(--s-2); }
+  .worker-err {
+    margin: 4px var(--s-3) var(--s-2);
+    padding: 4px var(--s-2);
+    background: rgba(224,72,72,0.08);
+    border-left: 2px solid var(--t-err);
+    color: var(--t-err);
+    font-size: var(--f-xs);
   }
 
-  /* Workers section trailing controls */
+  /* Workers footer — switch all remote */
   .workers-foot {
-    margin-top: var(--s4);
-    padding: var(--s3) var(--s4);
-    background: var(--c-panel);
-    border: 1px solid var(--c-border);
-    border-radius: 2px;
-    display: flex; align-items: center; gap: var(--s3);
+    display: flex; align-items: center; gap: var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    margin-top: var(--s-3);
     flex-wrap: wrap;
   }
   .workers-foot .lbl {
-    font-family: var(--f-stencil);
-    font-size: 10px;
-    letter-spacing: 0.16em;
-    color: var(--c-text-dim);
+    color: var(--t-text-dim);
+    font-size: var(--f-xs);
+    letter-spacing: 0.05em;
     text-transform: uppercase;
   }
 
-  /* ── Latest transmission card ──────────────────────────────── */
+  /* Latest transmission card — uses .panel feel with an accent edge */
   .latest {
-    background: linear-gradient(180deg, var(--c-panel) 0%, var(--c-panel-2) 100%);
-    border: 1px solid var(--c-border);
-    border-left: 3px solid var(--c-amber);
-    padding: var(--s4) var(--s5);
-    position: relative;
-    min-height: 100px;
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-left: 3px solid var(--t-accent);
+    border-radius: var(--r-md);
+    padding: var(--s-3) var(--s-4);
+    min-height: 84px;
   }
   .latest-empty {
-    font-family: var(--f-serif);
+    color: var(--t-text-mute);
     font-style: italic;
-    font-size: 18px;
-    color: var(--c-text-mute);
     text-align: center;
-    padding: var(--s4) 0;
+    padding: var(--s-3) 0;
   }
   .latest-meta {
     display: grid;
     grid-template-columns: auto auto auto 1fr;
-    gap: var(--s4);
-    font-family: var(--f-mono);
-    font-size: 12px;
-    color: var(--c-text-dim);
-    padding-bottom: var(--s3);
-    border-bottom: 1px solid var(--c-rule);
-    margin-bottom: var(--s3);
+    gap: var(--s-3);
+    align-items: baseline;
+    padding-bottom: var(--s-2);
+    border-bottom: 1px solid var(--t-border);
+    margin-bottom: var(--s-2);
+    font-size: var(--f-sm);
     font-variant-numeric: tabular-nums;
   }
-  .latest-time { color: var(--c-amber); font-weight: 500; }
-  .latest-source { color: var(--c-text); text-transform: uppercase; letter-spacing: 0.06em; }
-  .latest-freq { color: var(--c-cyan); }
-  .latest-dur { text-align: right; }
+  .latest-time   { color: var(--t-accent); font-weight: 600; }
+  .latest-source { color: var(--t-text); text-transform: uppercase; letter-spacing: 0.05em; font-size: var(--f-xs); }
+  .latest-freq   { color: var(--t-text-dim); }
+  .latest-dur    { color: var(--t-text-mute); text-align: right; font-size: var(--f-xs); }
   .latest-text {
-    font-family: var(--f-serif);
-    font-size: 20px;
-    line-height: 1.4;
-    color: var(--c-text);
-    letter-spacing: -0.005em;
+    font-size: var(--f-md);
+    line-height: 1.45;
+    color: var(--t-text);
   }
 
-  /* ── Controls (settings) ──────────────────────────────────── */
+  /* Controls grid */
   .ctrl-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: var(--s4);
+    gap: var(--s-3);
   }
   .ctrl-cell {
-    background: var(--c-panel);
-    border: 1px solid var(--c-border);
-    padding: var(--s3) var(--s4);
-    display: flex; flex-direction: column; gap: var(--s2);
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    padding: var(--s-2) var(--s-3);
+    display: flex; flex-direction: column; gap: var(--s-1);
   }
-  .ctrl-cell .ctrl-head {
+  .ctrl-head {
     display: flex; justify-content: space-between; align-items: baseline;
-    font-family: var(--f-stencil);
-    font-size: 10px;
-    letter-spacing: 0.16em;
-    color: var(--c-text-dim);
+    font-size: var(--f-xs);
+    color: var(--t-text-dim);
+    letter-spacing: 0.05em;
     text-transform: uppercase;
   }
-  .ctrl-cell .ctrl-head .v {
-    font-family: var(--f-mono);
-    color: var(--c-amber);
+  .ctrl-head .v {
+    color: var(--t-accent);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0;
   }
+  .ctrl-cell select, .ctrl-cell input[type="text"] {
+    background: var(--t-btn);
+    color: var(--t-text);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-sm);
+    padding: var(--s-1) var(--s-2);
+    font: inherit;
+    font-size: var(--f-sm);
+  }
+  .ctrl-cell select:focus, .ctrl-cell input[type="text"]:focus {
+    border-color: var(--t-accent); outline: none;
+  }
+  .ctrl-cell input[type="range"] { width: 100%; }
   .ctrl-hint {
-    color: var(--c-text-mute);
-    font-size: 11px;
+    font-size: var(--f-xs);
+    color: var(--t-text-mute);
     line-height: 1.4;
-    font-family: var(--f-sans);
   }
-  .ctrl-cell select, .ctrl-cell input[type=text] {
-    background: var(--c-bg);
-    color: var(--c-text);
-    border: 1px solid var(--c-border);
-    padding: 6px 10px;
-    font-family: var(--f-mono);
-    font-size: 13px;
-    width: 100%;
-  }
-  .ctrl-cell select:focus, .ctrl-cell input[type=text]:focus {
-    border-color: var(--c-amber);
-    outline: none;
-  }
+  .check-row { display: flex; gap: var(--s-3); flex-wrap: wrap; }
 
-  /* Range slider — console-instrument styling */
-  input[type=range] {
-    width: 100%;
-    -webkit-appearance: none;
-    appearance: none;
-    background: transparent;
-    height: 20px;
-    margin: 0;
-  }
-  input[type=range]::-webkit-slider-runnable-track {
-    height: 2px;
-    background: var(--c-border);
-    border-radius: 0;
-  }
-  input[type=range]::-moz-range-track {
-    height: 2px;
-    background: var(--c-border);
-  }
-  input[type=range]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 14px; height: 14px;
-    background: var(--c-amber);
-    margin-top: -6px;
-    cursor: pointer;
-    border-radius: 0;
-    box-shadow: 0 0 0 3px rgba(233,160,57,0.18);
-  }
-  input[type=range]::-moz-range-thumb {
-    width: 14px; height: 14px;
-    background: var(--c-amber);
-    border: none;
-    cursor: pointer;
-    border-radius: 0;
-    box-shadow: 0 0 0 3px rgba(233,160,57,0.18);
-  }
+  .btn-row { display: flex; gap: var(--s-2); margin-top: var(--s-3); }
 
-  /* checkbox style */
-  .check-row {
-    display: flex; gap: var(--s4); flex-wrap: wrap;
-  }
-  .check {
-    display: inline-flex; align-items: center; gap: 8px;
-    cursor: pointer;
-    font-family: var(--f-stencil); font-size: 10px;
-    letter-spacing: 0.14em; color: var(--c-text);
-    text-transform: uppercase;
-  }
-  .check input { accent-color: var(--c-amber); }
-
-  /* Buttons */
-  .btn {
-    background: transparent;
-    border: 1px solid var(--c-border-hi);
-    color: var(--c-text);
-    padding: 8px 16px;
-    font-family: var(--f-stencil);
-    font-size: 11px;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-  .btn:hover {
-    border-color: var(--c-amber);
-    color: var(--c-amber);
-  }
-  .btn:disabled {
-    opacity: 0.5; cursor: wait;
-  }
-  .btn-prim {
-    background: var(--c-amber);
-    color: var(--c-bg);
-    border-color: var(--c-amber);
-  }
-  .btn-prim:hover {
-    background: var(--c-amber-hi);
-    border-color: var(--c-amber-hi);
-    color: var(--c-bg);
-  }
-  .btn-warn {
-    border-color: var(--c-warn);
-    color: var(--c-warn);
-  }
-  .btn-warn:hover {
-    background: var(--c-warn);
-    color: var(--c-bg);
-    border-color: var(--c-warn);
-  }
-  .btn-row {
-    display: flex; gap: var(--s3); align-items: center;
-    margin-top: var(--s4);
-  }
-
-  /* ── Bottom utility strip (feed health + chart) ───────────── */
+  /* Feed health strip */
   .util-strip {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: var(--s5);
-    padding: var(--s3) var(--s4);
-    background: var(--c-panel);
-    border: 1px solid var(--c-border);
-    font-family: var(--f-mono); font-size: 11px;
-    color: var(--c-text-dim);
-    flex-wrap: wrap;
+    padding: var(--s-2) var(--s-3);
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    font-size: var(--f-xs);
+    color: var(--t-text-dim);
+    display: flex; flex-wrap: wrap; gap: var(--s-3);
+    font-variant-numeric: tabular-nums;
   }
-  .util-strip .group {
-    display: inline-flex; align-items: baseline; gap: 6px;
-    margin-right: var(--s4);
-  }
+  .util-strip .group { display: inline-flex; align-items: baseline; gap: 6px; }
   .util-strip .lbl {
-    font-family: var(--f-stencil); font-size: 10px;
-    letter-spacing: 0.14em; color: var(--c-text-mute);
+    letter-spacing: 0.05em;
     text-transform: uppercase;
+    color: var(--t-text-mute);
   }
-  .util-strip .v { color: var(--c-text); font-variant-numeric: tabular-nums; }
-  .util-strip .v.warn { color: var(--c-warn); }
-  .util-strip .v.err  { color: var(--c-err); }
+  .util-strip .v { color: var(--t-text); }
+  .util-strip .v.warn { color: var(--t-warn); }
+  .util-strip .v.err  { color: var(--t-err); }
 
-  .spark {
-    display: flex; align-items: flex-end; gap: 2px;
-    height: 28px; min-width: 80px;
-  }
-  .spark-bar {
-    width: 5px; min-height: 2px;
-    background: var(--c-green);
-    border-radius: 0;
-    opacity: 0.85;
-  }
-  .spark-bar.over { background: var(--c-err); }
-
-  /* footer */
-  .console-foot {
-    margin-top: var(--s7);
-    padding-top: var(--s4);
-    border-top: 1px solid var(--c-rule);
-    font-family: var(--f-stencil); font-size: 10px;
-    letter-spacing: 0.16em; color: var(--c-text-mute);
-    text-transform: uppercase;
-    display: flex; justify-content: space-between; align-items: center;
-  }
-  .console-foot em {
-    font-family: var(--f-serif);
-    font-style: italic;
-    font-weight: 400;
-    letter-spacing: 0;
-    text-transform: none;
-    color: var(--c-text-dim);
-  }
-
-  /* tx-state colour synonyms used by poll() — keep working */
-  .tx-state.live { color: var(--c-amber); }
-  .tx-state.ok   { color: var(--c-green); }
-  .tx-state.warn { color: var(--c-warn); }
-  .tx-state.err  { color: var(--c-err); }
-  .tx-state.dim  { color: var(--c-text-mute); }
+  /* Spark of recent ratios */
+  .spark { display: inline-flex; align-items: flex-end; gap: 2px; height: 22px; }
+  .spark-bar { width: 4px; min-height: 2px; background: var(--t-ok); }
+  .spark-bar.over { background: var(--t-err); }
 </style>
 </head>
 <body>
 <script src="/pages/common.js"></script>
 <script>openNav && openNav();</script>
 
-<!-- ── HEADER ────────────────────────────────────────────────── -->
-<div class="console-head">
-  <div>
-    <h1 class="h-title">Transcription <em>Console</em></h1>
-    <div class="h-sub">Live ASR · VAD-gated · Moonshine + Whisper pool</div>
-  </div>
-  <div class="h-status">
-    <label class="enabled-toggle">
-      <input type="checkbox" id="st-enabled" onchange="setConfig('enabled', this.checked)" checked>
-      Armed
-    </label>
-    <span style="color: var(--c-rule);">·</span>
-    <span class="pip off" id="st-dot"></span>
-    <span class="state dim" id="st-state">—</span>
-  </div>
+<!-- ── Status strip ─────────────────────────────────────────────── -->
+<div class="head-bar">
+  <label class="tgl">
+    <input type="checkbox" id="st-enabled" onchange="setConfig('enabled', this.checked)" checked>
+    <span class="dot off" id="st-dot"></span>
+    <span id="st-state">—</span>
+  </label>
+  <span class="dim" style="margin-left:var(--s-2)">Mode</span>
+  <span class="tag" id="res-mode-tag">—</span>
+  <span class="dim" style="margin-left:var(--s-2)">Model</span>
+  <span id="st-model-disp">—</span>
+  <span style="margin-left:auto" class="dim">Total</span>
+  <span id="st-total">0</span>
 </div>
 
-<!-- ── STATS ROW (sections 01, 02, 03) ───────────────────────── -->
+<!-- ── 01–03 — Stat tiles ───────────────────────────────────────── -->
 <div class="stat-grid">
 
-  <!-- 01 / SIGNAL -->
   <div class="panel">
-    <div class="panel-head"><span><span class="num">01</span> / Signal</span><span id="st-model-disp" style="color:var(--c-text-dim);">—</span></div>
-    <div class="panel-body">
-      <div class="meter">
-        <div class="meter-head">
-          <span class="meter-name">Input level</span>
-          <span class="meter-val" id="st-lvl-db">—</span>
-        </div>
-        <div class="bar-wrap">
-          <div class="bar-ticks"></div>
-          <div class="bar-fill" id="st-lvl" style="width:0%"></div>
-        </div>
+    <div class="panel-head">
+      <span class="panel-title"><span class="cyan">01</span> · Signal</span>
+      <span class="panel-meta">VAD-gated input</span>
+    </div>
+
+    <div class="meter">
+      <div class="meter-head">
+        <span class="k">Input level</span>
+        <span class="v" id="st-lvl-db">—</span>
       </div>
-      <div class="meter">
-        <div class="meter-head">
-          <span class="meter-name">VAD probability</span>
-          <span class="meter-val" id="st-vad-db">—</span>
-        </div>
-        <div class="bar-wrap">
-          <div class="bar-ticks"></div>
-          <div class="bar-fill" id="st-vad" style="width:0%"></div>
-          <div class="bar-mark" id="st-vad-mark" style="left:50%"></div>
-        </div>
+      <div class="bar-wrap">
+        <div class="bar-fill" id="st-lvl" style="width:0%"></div>
+      </div>
+    </div>
+    <div class="meter">
+      <div class="meter-head">
+        <span class="k">VAD probability</span>
+        <span class="v" id="st-vad-db">—</span>
+      </div>
+      <div class="bar-wrap">
+        <div class="bar-fill" id="st-vad" style="width:0%"></div>
+        <div class="bar-mark" id="st-vad-mark" style="left:50%"></div>
       </div>
     </div>
   </div>
 
-  <!-- 02 / THROUGHPUT -->
   <div class="panel">
-    <div class="panel-head"><span><span class="num">02</span> / Throughput</span><span id="ps-count" style="color:var(--c-text-dim);font-family:var(--f-mono);font-variant-numeric:tabular-nums;">0</span></div>
-    <div class="panel-body">
-      <div class="kv"><span class="k">Avg ratio</span><span class="v" id="ps-ratio">—<span class="unit">x</span></span></div>
-      <div class="kv"><span class="k">Realtime</span><span class="v" id="ps-rt-pct">—<span class="unit">%</span></span></div>
-      <div class="kv"><span class="k">Avg audio</span><span class="v" id="ps-dur">—<span class="unit">s</span></span></div>
-      <div class="kv"><span class="k">Avg proc</span><span class="v" id="ps-proc">—<span class="unit">s</span></span></div>
-      <div class="kv"><span class="k">Recent</span><span class="v" id="ps-chart-wrap" style="text-align:right;"><span class="spark" id="ps-chart" style="display:inline-flex;"></span></span></div>
+    <div class="panel-head">
+      <span class="panel-title"><span class="cyan">02</span> · Throughput</span>
+      <span class="panel-meta"><span id="ps-count">0</span> samples</span>
     </div>
+    <div class="kv"><span class="k">Avg ratio</span><span class="v" id="ps-ratio">—<span class="unit">x</span></span></div>
+    <div class="kv"><span class="k">Realtime</span><span class="v" id="ps-rt-pct">—<span class="unit">%</span></span></div>
+    <div class="kv"><span class="k">Avg audio</span><span class="v" id="ps-dur">—<span class="unit">s</span></span></div>
+    <div class="kv"><span class="k">Avg proc</span><span class="v" id="ps-proc">—<span class="unit">s</span></span></div>
+    <div class="kv"><span class="k">Recent</span><span class="v"><span class="spark" id="ps-chart"></span></span></div>
   </div>
 
-  <!-- 03 / RESOURCES -->
   <div class="panel">
-    <div class="panel-head"><span><span class="num">03</span> / Resources</span><span id="res-mode-tag" style="color:var(--c-amber);font-family:var(--f-stencil);font-size:10px;letter-spacing:0.16em;text-transform:uppercase;">—</span></div>
-    <div class="panel-body">
-      <div class="kv"><span class="k">Pending</span><span class="v" id="ps-queue-depth">0</span></div>
-      <div class="kv"><span class="k">Queue audio</span><span class="v" id="ps-queue-secs">0<span class="unit">s</span></span></div>
-      <div class="kv"><span class="k">Lag (est.)</span><span class="v" id="ps-lag">—<span class="unit">s</span></span></div>
-      <div class="kv"><span class="k">Gateway RAM</span><span class="v" id="ps-ram">—<span class="unit">MB</span></span></div>
-      <div class="kv"><span class="k">Total stored</span><span class="v" id="st-total">0</span></div>
+    <div class="panel-head">
+      <span class="panel-title"><span class="cyan">03</span> · Resources</span>
+      <span class="panel-meta" id="res-workers-meta">— workers</span>
     </div>
+    <div class="kv"><span class="k">Pending</span><span class="v" id="ps-queue-depth">0</span></div>
+    <div class="kv"><span class="k">Queue audio</span><span class="v" id="ps-queue-secs">0<span class="unit">s</span></span></div>
+    <div class="kv"><span class="k">Lag (est.)</span><span class="v" id="ps-lag">—<span class="unit">s</span></span></div>
+    <div class="kv"><span class="k">Gateway RAM</span><span class="v" id="ps-ram">—<span class="unit">MB</span></span></div>
+    <div class="kv"><span class="k">Split &lt;</span><span class="v" id="res-split">—<span class="unit">s</span></span></div>
   </div>
 
 </div>
 
-<!-- ── 04 / WORKERS ───────────────────────────────────────────── -->
-<div class="sect" id="workers-section">
-  <span class="num">04</span>
-  <span class="label">Workers</span>
+<!-- ── 04 — Workers ───────────────────────────────────────────── -->
+<div class="sect-head">
+  <span class="num">04</span><span class="lbl">Workers</span>
   <span class="rule"></span>
   <span class="meta" id="workers-meta">—</span>
 </div>
 <div class="workers-grid" id="workers-grid"></div>
 <div class="workers-foot" id="workers-foot" style="display:none">
-  <span class="lbl">Switch all remote</span>
-  <select id="rw-model-sel" onchange="_rwModelDirty=true" style="background:var(--c-bg);color:var(--c-text);border:1px solid var(--c-border);padding:6px 10px;font-family:var(--f-mono);font-size:12px;">
+  <span class="lbl">Switch all remote →</span>
+  <select id="rw-model-sel" onchange="_rwModelDirty=true" style="background:var(--t-btn);color:var(--t-text);border:1px solid var(--t-border);padding:3px var(--s-2);font:inherit;font-size:var(--f-sm);">
     <optgroup label="Whisper">
       <option value="whisper/small.en">small.en</option>
       <option value="whisper/medium.en">medium.en</option>
@@ -739,13 +376,12 @@
       <option value="moonshine/base">base</option>
     </optgroup>
   </select>
-  <button class="btn btn-prim" onclick="switchRemoteModel()">Apply</button>
+  <button class="rb rb-sm rb-primary" onclick="switchRemoteModel()">Apply</button>
 </div>
 
-<!-- ── 05 / LATEST ───────────────────────────────────────────── -->
-<div class="sect">
-  <span class="num">05</span>
-  <span class="label">Latest transmission</span>
+<!-- ── 05 — Latest ────────────────────────────────────────────── -->
+<div class="sect-head">
+  <span class="num">05</span><span class="lbl">Latest transmission</span>
   <span class="rule"></span>
 </div>
 <div class="latest" id="latest-card">
@@ -759,10 +395,9 @@
   <div class="latest-text" id="latest-text" style="display:none"></div>
 </div>
 
-<!-- ── 06 / CONTROLS ─────────────────────────────────────────── -->
-<div class="sect">
-  <span class="num">06</span>
-  <span class="label">Controls</span>
+<!-- ── 06 — Controls ──────────────────────────────────────────── -->
+<div class="sect-head">
+  <span class="num">06</span><span class="lbl">Controls</span>
   <span class="rule"></span>
 </div>
 
@@ -800,7 +435,7 @@
     <input type="range" id="st-split" min="0" max="30" step="0.5" value="10"
            oninput="document.getElementById('st-split-val').textContent=parseFloat(this.value).toFixed(1)+'s'"
            onchange="setConfig('split_threshold_secs', this.value)">
-    <div class="ctrl-hint">Pool mode: clips under N sec → Moonshine; longer → Whisper. 0 = no length routing.</div>
+    <div class="ctrl-hint">Pool mode: clips under N sec → Moonshine; longer → Whisper. 0 = no routing.</div>
   </div>
 
   <div class="ctrl-cell">
@@ -808,7 +443,7 @@
     <input type="range" id="st-vad-thresh" min="0.1" max="0.9" step="0.05" value="0.5"
            oninput="document.getElementById('st-vad-val').textContent=parseFloat(this.value).toFixed(2)"
            onchange="setConfig('vad_threshold', this.value)">
-    <div class="ctrl-hint">Silero probability 0–1. Higher = less sensitive. Exit = value − 0.15.</div>
+    <div class="ctrl-hint">Silero prob 0–1. Higher = less sensitive. Exit = value − 0.15.</div>
   </div>
 
   <div class="ctrl-cell">
@@ -816,7 +451,7 @@
     <input type="range" id="st-vad-hold" min="0.3" max="5.0" step="0.1" value="1.0"
            oninput="document.getElementById('st-hold-val').textContent=parseFloat(this.value).toFixed(1)+'s'"
            onchange="setConfig('vad_hold', this.value)">
-    <div class="ctrl-hint">Silence before utterance is closed.</div>
+    <div class="ctrl-hint">Silence before utterance closes.</div>
   </div>
 
   <div class="ctrl-cell">
@@ -846,9 +481,9 @@
   <div class="ctrl-cell">
     <div class="ctrl-head"><span>Forward to</span></div>
     <div class="check-row">
-      <label class="check"><input type="checkbox" id="st-mumble"    onchange="setConfig('forward_mumble', this.checked)"> Mumble</label>
-      <label class="check"><input type="checkbox" id="st-telegram"  onchange="setConfig('forward_telegram', this.checked)"> Telegram</label>
-      <label class="check"><input type="checkbox" id="st-log-results" onchange="setConfig('log_results', this.checked)"> Log</label>
+      <label class="tgl"><input type="checkbox" id="st-mumble"      onchange="setConfig('forward_mumble', this.checked)"> Mumble</label>
+      <label class="tgl"><input type="checkbox" id="st-telegram"    onchange="setConfig('forward_telegram', this.checked)"> Telegram</label>
+      <label class="tgl"><input type="checkbox" id="st-log-results" onchange="setConfig('log_results', this.checked)"> Log</label>
     </div>
     <div class="ctrl-hint">Cross-post each transcript.</div>
   </div>
@@ -856,31 +491,22 @@
 </div>
 
 <div class="btn-row">
-  <button class="btn btn-warn" onclick="restartTranscriber()">⟳ Restart transcriber</button>
-  <button class="btn" onclick="window.location='/txlog'">Open Tx Log →</button>
+  <button class="rb rb-sm rb-warn" onclick="restartTranscriber()">Restart transcriber</button>
+  <button class="rb rb-sm" onclick="window.location='/txlog'">Open Tx Log →</button>
 </div>
 
-<!-- ── 07 / FEED HEALTH ─────────────────────────────────────── -->
-<div class="sect">
-  <span class="num">07</span>
-  <span class="label">Feed health</span>
+<!-- ── 07 — Feed health ───────────────────────────────────────── -->
+<div class="sect-head">
+  <span class="num">07</span><span class="lbl">Feed health</span>
   <span class="rule"></span>
 </div>
-
 <div class="util-strip">
-  <div>
-    <span class="group"><span class="lbl">Queue</span><span class="v" id="fh-qd">0/200</span></span>
-    <span class="group"><span class="lbl">Peak</span><span class="v" id="fh-peak">0</span></span>
-    <span class="group"><span class="lbl">Drops</span><span class="v" id="fh-drops">0</span></span>
-    <span class="group"><span class="lbl">Blocks&gt;5ms</span><span class="v" id="fh-blocks">0</span></span>
-    <span class="group"><span class="lbl">Proc</span><span class="v" id="fh-proc">—</span></span>
-    <span class="group"><span class="lbl">Per-bus</span><span class="v" id="fh-perbus">—</span></span>
-  </div>
-</div>
-
-<div class="console-foot">
-  <span>Console <em>v3.4</em> · radio-gateway</span>
-  <span id="console-now">—</span>
+  <span class="group"><span class="lbl">Queue</span><span class="v" id="fh-qd">0/200</span></span>
+  <span class="group"><span class="lbl">Peak</span><span class="v" id="fh-peak">0</span></span>
+  <span class="group"><span class="lbl">Drops</span><span class="v" id="fh-drops">0</span></span>
+  <span class="group"><span class="lbl">Blocks&gt;5ms</span><span class="v" id="fh-blocks">0</span></span>
+  <span class="group"><span class="lbl">Proc last/mean/max</span><span class="v" id="fh-proc">—</span></span>
+  <span class="group"><span class="lbl">Per-bus</span><span class="v" id="fh-perbus">—</span></span>
 </div>
 
 <script>
@@ -889,7 +515,6 @@ var _configSynced = false;
 var _rwModelDirty = false;
 
 function _set(id, txt) { var e=document.getElementById(id); if(e) e.textContent = txt; }
-function _cls(id, cls) { var e=document.getElementById(id); if(e) e.className = cls; }
 
 function poll() {
   fetch('/transcriptions?since=' + _lastTimestamp)
@@ -901,18 +526,20 @@ function poll() {
       var pip = document.getElementById('st-dot');
       var state = document.getElementById('st-state');
       if (!s.enabled) {
-        pip.className = 'pip off'; state.textContent = 'Disabled'; state.className = 'state dim';
+        pip.className = 'dot off'; state.textContent = 'Disabled'; state.className = 'dim';
       } else if (s.model_loaded) {
-        if (s.vad_open) { pip.className = 'pip live'; state.textContent = 'Listening'; state.className = 'state live'; }
-        else            { pip.className = 'pip on';   state.textContent = 'Ready';     state.className = 'state ok'; }
+        if (s.vad_open) { pip.className = 'dot live'; state.textContent = 'Listening'; state.className = 'cyan'; }
+        else            { pip.className = 'dot on';   state.textContent = 'Ready';     state.className = 'green'; }
       } else {
-        pip.className = 'pip off'; state.textContent = 'Loading model…'; state.className = 'state warn';
+        pip.className = 'dot off'; state.textContent = 'Loading model…'; state.className = 'yellow';
       }
       _set('st-model-disp', s.model || '—');
       _set('st-total', s.total_transcriptions || 0);
 
       // Mode tag
-      _set('res-mode-tag', (s.mode || 'local').toUpperCase());
+      var modeTag = document.getElementById('res-mode-tag');
+      modeTag.textContent = (s.mode || 'local').toUpperCase();
+      modeTag.className = 'tag accent';
 
       // VAD bar
       var vprob = s.vad_prob || 0, vth = s.vad_threshold || 0.5;
@@ -922,7 +549,7 @@ function poll() {
       document.getElementById('st-vad-mark').style.left = (vth * 100) + '%';
       _set('st-vad-db', vprob.toFixed(2));
 
-      // Level bar (−60 dB to 0 dB mapped to 0–100%)
+      // Level bar (−60 dB to 0 dB → 0-100%)
       var vdb = s.vad_db || -96;
       var lvl = document.getElementById('st-lvl');
       lvl.style.width = Math.max(0, Math.min(100, (vdb + 60) * 100 / 60)) + '%';
@@ -945,8 +572,8 @@ function poll() {
       var pr = document.getElementById('fh-proc');
       pr.textContent = lm.toFixed(1) + ' / ' + mn.toFixed(1) + ' / ' + mx.toFixed(1) + ' ms';
       pr.className = 'v' + (mn > 20 ? ' err' : mn > 10 ? ' warn' : '');
-      var ps = fh.per_stream_mean_ms || {}, parts = [];
-      for (var sid in ps) parts.push(sid + ' ' + ps[sid].toFixed(1) + 'ms');
+      var ps2 = fh.per_stream_mean_ms || {}, parts = [];
+      for (var sid in ps2) parts.push(sid + ' ' + ps2[sid].toFixed(1) + 'ms');
       _set('fh-perbus', parts.length ? parts.join(' · ') : '—');
 
       // First-load sync
@@ -981,7 +608,14 @@ function poll() {
         if (s.mode)                           document.getElementById('st-mode').value = s.mode;
       }
 
-      // Performance throughput
+      // Resources: split threshold (live update)
+      if (s.split_threshold_secs !== undefined) {
+        var spl = document.getElementById('res-split');
+        spl.innerHTML = parseFloat(s.split_threshold_secs).toFixed(1) + '<span class="unit">s</span>';
+        spl.className = 'v';
+      }
+
+      // Throughput
       var stats = s.stats || {};
       if (!stats.count) {
         ['ps-ratio','ps-rt-pct','ps-dur','ps-proc'].forEach(function(id){
@@ -1002,12 +636,10 @@ function poll() {
         var d1 = document.getElementById('ps-dur'); d1.innerHTML = (stats.avg_duration||0) + '<span class="unit">s</span>'; d1.className = 'v';
         var d2 = document.getElementById('ps-proc'); d2.innerHTML = (stats.avg_proc_time||0) + '<span class="unit">s</span>'; d2.className = 'v';
         _set('ps-count', stats.count);
-
-        // Spark of recent ratios
         var recent = stats.recent || [], html = '';
         for (var i = 0; i < recent.length; i++) {
           var r = recent[i];
-          var h = Math.min(28, Math.max(2, r.ratio * 18));
+          var h = Math.min(22, Math.max(2, r.ratio * 14));
           html += '<div class="spark-bar' + (r.ratio < 1 ? '' : ' over') + '" title="' + r.duration + 's→' + r.proc_time + 's (' + r.ratio + 'x)" style="height:' + h + 'px"></div>';
         }
         document.getElementById('ps-chart').innerHTML = html;
@@ -1040,19 +672,24 @@ function poll() {
       var grid = document.getElementById('workers-grid');
       var foot = document.getElementById('workers-foot');
       var hasRemote = workers.some(function(w){return w.type==='remote';});
+      _set('workers-meta', workers.length + ' worker' + (workers.length===1?'':'s') + ' · ' + mode);
+      _set('res-workers-meta', workers.length + (workers.length===1?' worker':' workers'));
+
       if (workers.length === 0) {
-        grid.innerHTML = '<div class="panel" style="padding:var(--s4);color:var(--c-text-mute);text-align:center;font-family:var(--f-serif);font-style:italic;">No workers in pool. Mode: ' + mode + '.</div>';
+        grid.innerHTML = '<div class="panel"><div style="color:var(--t-text-mute);text-align:center;padding:var(--s-3);font-style:italic">No workers in pool</div></div>';
         foot.style.display = 'none';
       } else {
         var cardsHtml = '';
         for (var wi = 0; wi < workers.length; wi++) {
           var w = workers[wi];
           var healthy = w.model_loaded && (w.type !== 'remote' || w.reachable);
-          var statusCls = healthy ? 'on' : 'off';
-          var statusText = (!w.model_loaded) ? 'loading' : (w.type === 'remote' && !w.reachable) ? 'unreachable' : 'ready';
+          var statusText, statusCls;
+          if (!w.model_loaded)                          { statusText = 'loading';     statusCls = 'warn'; }
+          else if (w.type === 'remote' && !w.reachable) { statusText = 'unreachable'; statusCls = 'err'; }
+          else                                          { statusText = 'ready';       statusCls = 'ok'; }
           var whoLabel = w.type === 'local' ? 'LOCAL' : (w.url||'remote').replace(/^https?:\/\//, '');
-          var modelLabel = w.model_key || '—';
           var engineLabel = (w.engine || '').toUpperCase();
+          var modelLabel = w.model_key || '—';
           var tempCls = 'v', tempStr = '—';
           if (w.cpu_temp_c != null) {
             tempStr = w.cpu_temp_c + '<span class="unit">°C</span>';
@@ -1068,13 +705,13 @@ function poll() {
           var doneStr = w.dispatched != null ? w.dispatched : '0';
           var activeStr = w.inflight != null ? w.inflight : '0';
           var errHtml = w.last_switch_error
-            ? '<div class="worker-error" title="' + w.last_switch_error.replace(/"/g,'&quot;') + '">' + w.last_switch_error + '</div>'
+            ? '<div class="worker-err" title="' + w.last_switch_error.replace(/"/g,'&quot;') + '">' + w.last_switch_error + '</div>'
             : '';
           cardsHtml +=
             '<div class="worker-card' + (healthy ? '' : ' unhealthy') + '">' +
               '<div class="worker-head">' +
-                '<div class="worker-name"><span class="who">' + engineLabel + '</span>' + whoLabel + '</div>' +
-                '<span class="worker-status-badge ' + statusCls + '"><span class="dot"></span>' + statusText + '</span>' +
+                '<div class="who"><span class="engine">' + engineLabel + '</span>' + whoLabel + '</div>' +
+                '<span class="tag ' + statusCls + '">' + statusText + '</span>' +
               '</div>' +
               '<div class="worker-meta">' + modelLabel + '</div>' +
               '<div class="worker-stats">' +
@@ -1099,7 +736,6 @@ function poll() {
           }
         }
       }
-      _set('workers-meta', workers.length + ' / ' + mode);
 
       // Latest result
       var results = d.results || [];
@@ -1119,12 +755,8 @@ function poll() {
         if (latest.proc_time) durStr += ' → ' + latest.proc_time + 's';
         if (latest.ratio) durStr += ' (' + latest.ratio + 'x)';
         _set('latest-dur', durStr);
-        _set('latest-text', '"' + (latest.text || '') + '"');
+        _set('latest-text', latest.text || '');
       }
-
-      // Clock
-      var now = new Date();
-      _set('console-now', now.toTimeString().substring(0,8) + ' · ' + now.toDateString());
     })
     .catch(function(e){ console.error('Poll error:', e); });
 }
