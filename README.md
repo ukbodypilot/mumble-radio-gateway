@@ -1,8 +1,8 @@
 # Radio Gateway
 
-A full-stack Linux radio gateway that bridges analog and digital two-way radios to the internet: Mumble VoIP, Broadcastify streaming, Winlink email over packet radio, APRS tracking, Telegram bot control, AI-powered announcements, and a 20-page web UI. Bus-based audio routing with a visual drag-and-drop editor, plugin-based radio support, per-stream diagnostic tracing, and 95+ MCP tools for AI control -- all from a single Python process.
+A full-stack Linux radio gateway that bridges analog and digital two-way radios to the internet: Mumble VoIP, Broadcastify streaming, Winlink email over packet radio, APRS tracking, Telegram bot control, AI-powered announcements, distributed AI transcription, and scheduled fleet health checks — all driven from a single Python process with a 20+ page web UI. Bus-based audio routing with a visual drag-and-drop editor, plugin-based radio support that scales across multiple machines via the link endpoint protocol, per-stream diagnostic tracing, and 95+ MCP tools for AI control.
 
-**Radios:** TH-9800 (AIOC), TH-D75 (Bluetooth), KV4P (USB serial), FTM-150 (remote endpoint), RSPduo dual SDR receiver.
+**Radios:** TH-9800 (AIOC USBIP), TH-D75 (Bluetooth RFCOMM + SCO), KV4P (USB serial), FTM-150 (remote AIOC endpoint), IC-7100 (CI-V remote endpoint), RSPduo dual SDR receiver.
 **Packet:** Winlink email via Direwolf TNC + Pat client. APRS decode with station mapping. BBS terminal. Gateway proximity map from Winlink CMS directory.
 **Audio:** Sub-millisecond jitter bus mixer with per-stream trace diagnostics. Fire-and-forget PTT. Direct ALSA capture bypassing PipeWire.
 
