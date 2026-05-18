@@ -3,280 +3,752 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Live Transcription</title>
+<title>Transcription · Console</title>
 <link rel="stylesheet" href="/pages/common.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Major+Mono+Display&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  html, body { height: 100%; margin: 0; }
-  body { display: flex; flex-direction: column; padding: var(--s-3); box-sizing: border-box; gap: var(--s-3); }
+  /* ── Console aesthetic ──────────────────────────────────────────
+     Dark instrument panel for live transcription. Fixed-width stat
+     grids and mono numerics so values never shift the layout.
+  ─────────────────────────────────────────────────────────────── */
 
-  .status-bar {
-    display: flex; gap: var(--s-3); align-items: center; flex-wrap: wrap;
-    padding: var(--s-2) var(--s-3); background: var(--t-panel);
-    border: 1px solid var(--t-border); border-radius: var(--r-md);
-    flex-shrink: 0; font-size: var(--f-sm);
+  :root {
+    --c-bg:        #0a0a0c;
+    --c-bg-2:      #0e0f12;
+    --c-panel:     #13151a;
+    --c-panel-2:   #181b21;
+    --c-rule:      #1c1e23;
+    --c-border:    #262930;
+    --c-border-hi: #353941;
+    --c-text:      #e8e6e0;
+    --c-text-dim:  #8a8780;
+    --c-text-mute: #585651;
+    --c-amber:     #e9a039;     /* live signal */
+    --c-amber-hi:  #ffc265;     /* peak */
+    --c-green:     #7fcf8a;     /* under realtime / healthy */
+    --c-cyan:      #6cb4c8;     /* secondary live data */
+    --c-warn:      #f0a96b;
+    --c-err:       #ef6a73;
+    --c-pulse:     rgba(233,160,57,0.18);
+
+    --f-serif: 'Newsreader', 'Iowan Old Style', Georgia, serif;
+    --f-sans:  'IBM Plex Sans', -apple-system, system-ui, sans-serif;
+    --f-mono:  'IBM Plex Mono', 'JetBrains Mono', 'Menlo', monospace;
+    --f-stencil: 'Major Mono Display', 'IBM Plex Mono', monospace;
+
+    --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
   }
-  .status-bar .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-  .status-bar .dot.on  { background: var(--t-ok); }
-  .status-bar .dot.off { background: var(--t-err); }
-  .st-label { color: var(--t-text-dim); }
-  .tx-state.warn { color: var(--t-warn); }
-  .tx-state.ok   { color: var(--t-ok); }
-  .tx-state.dim  { color: var(--t-text-dim); }
 
-  .meter-cluster { display: inline-flex; align-items: center; gap: var(--s-1); flex: 0 0 auto; }
-  .meter-label { color: var(--t-text-dim); font-size: var(--f-xs); text-transform: uppercase; letter-spacing: 0.05em; width: 55px; flex-shrink: 0; }
-  .vad-bar { width: 120px; height: 12px; background: var(--t-bg); border: 1px solid var(--t-border); border-radius: var(--r-sm); overflow: hidden; position: relative; flex-shrink: 0; }
-  .vad-fill { display: block; height: 100%; background: var(--t-warn); transition: width 0.2s, background 0.2s; }
-  .vad-fill.speech { background: var(--t-ok); }
-  .vad-fill.edge   { background: var(--t-warn); }
-  .vad-fill.gated  { background: var(--t-err); }
-  .vad-mark { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--t-text); opacity: 0.7; }
-  .vad-db { color: var(--t-text-dim); font-size: var(--f-xs); font-variant-numeric: tabular-nums; width: 42px; display: inline-block; text-align: right; flex-shrink: 0; }
-  .lvl-bar { width: 100px; height: 12px; background: var(--t-bg); border: 1px solid var(--t-border); border-radius: var(--r-sm); overflow: hidden; flex-shrink: 0; }
-  .lvl-fill { display: block; height: 100%; background: var(--t-accent); transition: width 0.1s; }
-
-  /* Latest result card */
-  .latest-card {
-    background: var(--t-panel); border: 1px solid var(--t-border);
-    border-left: 3px solid var(--t-accent); border-radius: var(--r-md);
-    padding: var(--s-3); flex: 1 1 auto; min-height: 72px;
-    display: flex; flex-direction: column; gap: var(--s-1);
+  html, body { background: var(--c-bg); color: var(--c-text); height: 100%; margin: 0; }
+  body {
+    font-family: var(--f-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    /* Subtle radial vignette + faint horizontal sweep — adds atmosphere
+       without being noisy. */
+    background:
+      radial-gradient(ellipse 80% 50% at 50% 0%, rgba(233,160,57,0.04), transparent 60%),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(108,180,200,0.025), transparent 70%),
+      var(--c-bg);
+    padding: var(--s5) var(--s6);
+    max-width: 1480px; margin: 0 auto;
+    box-sizing: border-box;
   }
-  .latest-meta { display: flex; gap: var(--s-2); align-items: center; font-size: var(--f-sm); }
-  .latest-time   { color: var(--t-accent); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .latest-source { color: var(--t-text-dim); text-transform: uppercase; font-size: var(--f-xs); letter-spacing: 0.5px; }
-  .latest-freq   { color: var(--t-text-dim); font-size: var(--f-xs); font-variant-numeric: tabular-nums; }
-  .latest-dur    { color: var(--t-text-mute); font-size: var(--f-xs); margin-left: auto; }
-  .latest-text   { color: var(--t-text); font-size: 1.1em; line-height: 1.5; }
-  .latest-empty  { color: var(--t-text-mute); font-style: italic; font-size: var(--f-sm); align-self: center; margin: auto; }
+  *, *::before, *::after { box-sizing: border-box; }
 
-  /* Feed health */
-  .feed-health {
-    display: flex; flex-wrap: wrap; gap: var(--s-3);
-    padding: var(--s-1) var(--s-2); background: var(--t-panel);
-    border: 1px solid var(--t-border); border-radius: var(--r-md);
-    flex-shrink: 0; font-size: var(--f-xs); color: var(--t-text-dim);
+  /* ── Page header ────────────────────────────────────────────── */
+  .console-head {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: var(--s5);
+    padding-bottom: var(--s4);
+    margin-bottom: var(--s5);
+    border-bottom: 1px solid var(--c-rule);
+    position: relative;
+  }
+  .console-head::after {
+    /* hairline accent below the bottom border */
+    content: ''; position: absolute; left: 0; bottom: -2px;
+    width: 64px; height: 2px; background: var(--c-amber);
+  }
+  .h-title {
+    font-family: var(--f-serif);
+    font-weight: 400;
+    font-size: 42px;
+    line-height: 1;
+    letter-spacing: -0.015em;
+    margin: 0;
+    color: var(--c-text);
+  }
+  .h-title em {
+    font-style: italic;
+    color: var(--c-amber);
+    font-weight: 400;
+  }
+  .h-sub {
+    margin-top: var(--s2);
+    font-family: var(--f-stencil);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--c-text-dim);
+    text-transform: uppercase;
+  }
+  .h-status {
+    display: flex; align-items: center; gap: var(--s3);
+    font-family: var(--f-mono);
+    font-size: 13px;
+  }
+  .h-status .pip {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--c-text-mute);
+    box-shadow: 0 0 0 2px rgba(0,0,0,0.4);
+  }
+  .h-status .pip.on   { background: var(--c-green); box-shadow: 0 0 12px var(--c-green), 0 0 0 2px rgba(0,0,0,0.4); }
+  .h-status .pip.live { background: var(--c-amber); box-shadow: 0 0 12px var(--c-amber), 0 0 0 2px rgba(0,0,0,0.4); animation: pulse 1.6s ease-in-out infinite; }
+  .h-status .pip.off  { background: var(--c-err);   box-shadow: 0 0 8px var(--c-err), 0 0 0 2px rgba(0,0,0,0.4); }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .h-status .state { color: var(--c-text); font-weight: 500; }
+  .h-status .state.live { color: var(--c-amber); }
+  .h-status .state.ok   { color: var(--c-green); }
+  .h-status .state.err  { color: var(--c-err); }
+  .h-status .state.dim  { color: var(--c-text-mute); }
+  .h-status .enabled-toggle {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--c-text-dim);
+    font-family: var(--f-stencil); font-size: 10px;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    cursor: pointer; user-select: none;
+  }
+  .h-status .enabled-toggle input { accent-color: var(--c-amber); }
+
+  /* ── Section header strip ───────────────────────────────────── */
+  .sect {
+    margin: var(--s6) 0 var(--s4);
+    display: flex; align-items: baseline; gap: var(--s3);
+  }
+  .sect .num {
+    font-family: var(--f-stencil);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--c-amber);
+  }
+  .sect .label {
+    font-family: var(--f-stencil);
+    font-size: 13px;
+    letter-spacing: 0.22em;
+    color: var(--c-text);
+    text-transform: uppercase;
+  }
+  .sect .rule {
+    flex: 1;
+    height: 1px;
+    background: var(--c-rule);
+    margin-left: var(--s2);
+  }
+  .sect .meta {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    color: var(--c-text-mute);
+    margin-left: auto;
+  }
+
+  /* ── Stat tile grid (sections 01/02/03) ─────────────────────── */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--s4);
+  }
+  @media (max-width: 1000px) {
+    .stat-grid { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--c-panel);
+    border: 1px solid var(--c-border);
+    border-radius: 2px;
+    position: relative;
+  }
+  /* corner registration marks */
+  .panel::before, .panel::after {
+    content: ''; position: absolute; width: 8px; height: 8px;
+    border: 1px solid var(--c-amber); opacity: 0.55;
+  }
+  .panel::before { top: -1px; left: -1px; border-right: none; border-bottom: none; }
+  .panel::after  { top: -1px; right: -1px; border-left: none; border-bottom: none; }
+
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: var(--s2) var(--s4);
+    border-bottom: 1px solid var(--c-rule);
+    font-family: var(--f-stencil);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--c-text-dim);
+  }
+  .panel-head .num {
+    color: var(--c-amber);
+  }
+  .panel-body {
+    padding: var(--s3) var(--s4);
+  }
+
+  /* key/value row — fixed column widths, mono values, right-aligned */
+  .kv {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: baseline;
+    padding: 6px 0;
+    border-bottom: 1px dotted var(--c-rule);
+    min-height: 26px;
+  }
+  .kv:last-child { border-bottom: none; }
+  .kv .k {
+    font-family: var(--f-stencil);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--c-text-dim);
+    text-transform: uppercase;
+  }
+  .kv .v {
+    font-family: var(--f-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+    color: var(--c-text);
+    text-align: right;
+    min-width: 0;
+    font-weight: 500;
+  }
+  .v .unit {
+    font-size: 11px;
+    color: var(--c-text-mute);
+    margin-left: 4px;
+    font-weight: 400;
+  }
+  .v.ok    { color: var(--c-green); }
+  .v.warn  { color: var(--c-warn); }
+  .v.err   { color: var(--c-err); }
+  .v.live  { color: var(--c-amber); }
+  .v.dim   { color: var(--c-text-mute); }
+
+  /* ── Bar meters (level + VAD) ──────────────────────────────── */
+  .meter {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: var(--s2);
+    padding: 8px 0;
+    border-bottom: 1px dotted var(--c-rule);
+    min-height: 32px;
+  }
+  .meter:last-child { border-bottom: none; }
+  .meter-head {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 6px;
+    margin-bottom: 4px;
+  }
+  .meter-name {
+    font-family: var(--f-stencil); font-size: 10px;
+    letter-spacing: 0.16em; color: var(--c-text-dim);
+    text-transform: uppercase;
+  }
+  .meter-val {
+    font-family: var(--f-mono); font-variant-numeric: tabular-nums;
+    font-size: 13px; color: var(--c-text);
+    min-width: 70px; text-align: right;
+  }
+  .bar-wrap {
+    grid-column: 1 / -1;
+    height: 10px;
+    background: var(--c-bg);
+    border: 1px solid var(--c-border);
+    border-radius: 1px;
+    position: relative;
+    overflow: hidden;
+  }
+  .bar-fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    width: 0%;
+    background: var(--c-green);
+    transition: width 0.18s linear, background 0.18s ease;
+  }
+  .bar-fill.warn { background: var(--c-warn); }
+  .bar-fill.err  { background: var(--c-err); }
+  .bar-fill.live { background: var(--c-amber); }
+  .bar-mark {
+    position: absolute; top: 0; bottom: 0; width: 1px;
+    background: var(--c-text);
+    opacity: 0.7;
+  }
+  /* tick marks at intervals for the level meter — adds instrument feel */
+  .bar-ticks {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(to right,
+        transparent 0%, transparent calc(20% - 1px),
+        rgba(255,255,255,0.06) 20%, rgba(255,255,255,0.06) 20%, transparent calc(20% + 1px),
+        transparent calc(40% - 1px),
+        rgba(255,255,255,0.06) 40%, transparent calc(40% + 1px),
+        transparent calc(60% - 1px),
+        rgba(255,255,255,0.06) 60%, transparent calc(60% + 1px),
+        transparent calc(80% - 1px),
+        rgba(255,255,255,0.06) 80%, transparent calc(80% + 1px),
+        transparent 100%);
+    pointer-events: none;
+  }
+
+  /* ── Workers grid ────────────────────────────────────────── */
+  .workers-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--s4);
+  }
+  .worker-card {
+    background: var(--c-panel);
+    border: 1px solid var(--c-border);
+    border-radius: 2px;
+    position: relative;
+  }
+  .worker-card::before, .worker-card::after {
+    content: ''; position: absolute; width: 6px; height: 6px;
+    border: 1px solid var(--c-border-hi);
+  }
+  .worker-card::before { bottom: -1px; left: -1px; border-right: none; border-top: none; }
+  .worker-card::after  { bottom: -1px; right: -1px; border-left: none; border-top: none; }
+  .worker-card.unhealthy { border-color: var(--c-err); }
+  .worker-card.unhealthy::before, .worker-card.unhealthy::after { border-color: var(--c-err); }
+  .worker-head {
+    padding: var(--s3) var(--s4);
+    border-bottom: 1px solid var(--c-rule);
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: var(--s2);
+  }
+  .worker-name {
+    font-family: var(--f-stencil);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--c-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .worker-name .who {
+    color: var(--c-amber);
+    margin-right: 6px;
+  }
+  .worker-meta {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    color: var(--c-text-dim);
+    padding: 4px var(--s4) var(--s2);
+    word-break: break-all;
+  }
+  .worker-stats {
+    padding: var(--s2) var(--s4) var(--s3);
+  }
+  .worker-status-badge {
+    font-family: var(--f-stencil);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    color: var(--c-text-mute);
+    text-transform: uppercase;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .worker-status-badge .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--c-text-mute);
+  }
+  .worker-status-badge.on  .dot { background: var(--c-green); box-shadow: 0 0 8px var(--c-green); }
+  .worker-status-badge.off .dot { background: var(--c-err); }
+  .worker-status-badge.warn .dot { background: var(--c-warn); }
+  .worker-error {
+    margin-top: 6px;
+    padding: 4px 8px;
+    background: rgba(239,106,115,0.08);
+    border-left: 2px solid var(--c-err);
+    font-family: var(--f-mono);
+    font-size: 11px;
+    color: var(--c-err);
+  }
+
+  /* Workers section trailing controls */
+  .workers-foot {
+    margin-top: var(--s4);
+    padding: var(--s3) var(--s4);
+    background: var(--c-panel);
+    border: 1px solid var(--c-border);
+    border-radius: 2px;
+    display: flex; align-items: center; gap: var(--s3);
+    flex-wrap: wrap;
+  }
+  .workers-foot .lbl {
+    font-family: var(--f-stencil);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--c-text-dim);
+    text-transform: uppercase;
+  }
+
+  /* ── Latest transmission card ──────────────────────────────── */
+  .latest {
+    background: linear-gradient(180deg, var(--c-panel) 0%, var(--c-panel-2) 100%);
+    border: 1px solid var(--c-border);
+    border-left: 3px solid var(--c-amber);
+    padding: var(--s4) var(--s5);
+    position: relative;
+    min-height: 100px;
+  }
+  .latest-empty {
+    font-family: var(--f-serif);
+    font-style: italic;
+    font-size: 18px;
+    color: var(--c-text-mute);
+    text-align: center;
+    padding: var(--s4) 0;
+  }
+  .latest-meta {
+    display: grid;
+    grid-template-columns: auto auto auto 1fr;
+    gap: var(--s4);
+    font-family: var(--f-mono);
+    font-size: 12px;
+    color: var(--c-text-dim);
+    padding-bottom: var(--s3);
+    border-bottom: 1px solid var(--c-rule);
+    margin-bottom: var(--s3);
     font-variant-numeric: tabular-nums;
   }
-  .fh-label { text-transform: uppercase; letter-spacing: 0.06em; }
-  .fh-val { color: var(--t-text); }
-  .fh-val.warn { color: var(--t-warn); }
-  .fh-val.err  { color: var(--t-err); }
-  .fh-group { display: inline-flex; gap: 4px; align-items: center; }
+  .latest-time { color: var(--c-amber); font-weight: 500; }
+  .latest-source { color: var(--c-text); text-transform: uppercase; letter-spacing: 0.06em; }
+  .latest-freq { color: var(--c-cyan); }
+  .latest-dur { text-align: right; }
+  .latest-text {
+    font-family: var(--f-serif);
+    font-size: 20px;
+    line-height: 1.4;
+    color: var(--c-text);
+    letter-spacing: -0.005em;
+  }
 
-  /* Settings panel */
-  .settings-panel {
-    background: var(--t-panel); border: 1px solid var(--t-border);
-    border-radius: var(--r-md); flex-shrink: 0;
+  /* ── Controls (settings) ──────────────────────────────────── */
+  .ctrl-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: var(--s4);
   }
-  .settings-head {
-    display: flex; align-items: center; gap: var(--s-2);
-    padding: var(--s-2) var(--s-3);
-    border-bottom: 1px solid var(--t-border);
+  .ctrl-cell {
+    background: var(--c-panel);
+    border: 1px solid var(--c-border);
+    padding: var(--s3) var(--s4);
+    display: flex; flex-direction: column; gap: var(--s2);
   }
-  .settings-head-label {
-    color: var(--t-text-dim); font-size: var(--f-xs);
-    text-transform: uppercase; letter-spacing: .06em;
+  .ctrl-cell .ctrl-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-family: var(--f-stencil);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--c-text-dim);
+    text-transform: uppercase;
   }
-  .settings-body {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: var(--s-4); padding: var(--s-3);
+  .ctrl-cell .ctrl-head .v {
+    font-family: var(--f-mono);
+    color: var(--c-amber);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
   }
-  .ctrl-field { display: flex; flex-direction: column; gap: var(--s-1); }
-  .ctrl-field label { color: var(--t-text-dim); font-size: var(--f-xs); text-transform: uppercase; letter-spacing: 0.05em; }
-  .ctrl-val { color: var(--t-text-mute); font-size: var(--f-xs); }
-  .ctrl-hint { color: var(--t-text-mute); font-size: var(--f-xs); margin-top: 2px; line-height: 1.4; }
-  .ctrl-sel {
-    background: var(--t-btn); color: var(--t-text);
-    border: 1px solid var(--t-border); border-radius: var(--r-sm);
-    padding: 2px var(--s-1); font: inherit; font-size: var(--f-sm);
+  .ctrl-hint {
+    color: var(--c-text-mute);
+    font-size: 11px;
+    line-height: 1.4;
+    font-family: var(--f-sans);
   }
-  .ctrl-input {
-    background: var(--t-btn); color: var(--t-text);
-    border: 1px solid var(--t-border); border-radius: var(--r-sm);
-    padding: var(--s-1) var(--s-2); font: inherit; font-size: var(--f-sm);
+  .ctrl-cell select, .ctrl-cell input[type=text] {
+    background: var(--c-bg);
+    color: var(--c-text);
+    border: 1px solid var(--c-border);
+    padding: 6px 10px;
+    font-family: var(--f-mono);
+    font-size: 13px;
+    width: 100%;
   }
-  .ctrl-input:focus { border-color: var(--t-accent); outline: none; }
-  .ctrl-group { display: flex; flex-direction: column; gap: var(--s-1); }
-  .ctrl-group > label { color: var(--t-text-dim); font-size: var(--f-xs); text-transform: uppercase; letter-spacing: 0.05em; }
-  .ctrl-actions { display: flex; flex-direction: column; gap: var(--s-1); align-items: flex-start; justify-content: flex-end; }
+  .ctrl-cell select:focus, .ctrl-cell input[type=text]:focus {
+    border-color: var(--c-amber);
+    outline: none;
+  }
 
-  /* Perf chart */
-  .perf-row { display: flex; gap: var(--s-4); flex-wrap: wrap; align-items: center; padding: var(--s-1) var(--s-3); border-top: 1px solid var(--t-border); font-size: var(--f-sm); }
-  .ps-title { color: var(--t-accent); font-size: var(--f-xs); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
-  .ps-val { font-weight: 600; font-variant-numeric: tabular-nums; }
-  .ps-val.ok   { color: var(--t-ok); }
-  .ps-val.err  { color: var(--t-err); }
-  .ps-val.warn { color: var(--t-warn); }
-  .ps-chart-wrap { display: flex; align-items: flex-end; gap: 2px; height: 28px; }
-  .ps-bar { width: 10px; border-radius: 1px; }
-  .ps-bar.ok  { background: var(--t-ok); }
-  .ps-bar.err { background: var(--t-err); }
+  /* Range slider — console-instrument styling */
+  input[type=range] {
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    height: 20px;
+    margin: 0;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 2px;
+    background: var(--c-border);
+    border-radius: 0;
+  }
+  input[type=range]::-moz-range-track {
+    height: 2px;
+    background: var(--c-border);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px; height: 14px;
+    background: var(--c-amber);
+    margin-top: -6px;
+    cursor: pointer;
+    border-radius: 0;
+    box-shadow: 0 0 0 3px rgba(233,160,57,0.18);
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 14px; height: 14px;
+    background: var(--c-amber);
+    border: none;
+    cursor: pointer;
+    border-radius: 0;
+    box-shadow: 0 0 0 3px rgba(233,160,57,0.18);
+  }
+
+  /* checkbox style */
+  .check-row {
+    display: flex; gap: var(--s4); flex-wrap: wrap;
+  }
+  .check {
+    display: inline-flex; align-items: center; gap: 8px;
+    cursor: pointer;
+    font-family: var(--f-stencil); font-size: 10px;
+    letter-spacing: 0.14em; color: var(--c-text);
+    text-transform: uppercase;
+  }
+  .check input { accent-color: var(--c-amber); }
+
+  /* Buttons */
+  .btn {
+    background: transparent;
+    border: 1px solid var(--c-border-hi);
+    color: var(--c-text);
+    padding: 8px 16px;
+    font-family: var(--f-stencil);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .btn:hover {
+    border-color: var(--c-amber);
+    color: var(--c-amber);
+  }
+  .btn:disabled {
+    opacity: 0.5; cursor: wait;
+  }
+  .btn-prim {
+    background: var(--c-amber);
+    color: var(--c-bg);
+    border-color: var(--c-amber);
+  }
+  .btn-prim:hover {
+    background: var(--c-amber-hi);
+    border-color: var(--c-amber-hi);
+    color: var(--c-bg);
+  }
+  .btn-warn {
+    border-color: var(--c-warn);
+    color: var(--c-warn);
+  }
+  .btn-warn:hover {
+    background: var(--c-warn);
+    color: var(--c-bg);
+    border-color: var(--c-warn);
+  }
+  .btn-row {
+    display: flex; gap: var(--s3); align-items: center;
+    margin-top: var(--s4);
+  }
+
+  /* ── Bottom utility strip (feed health + chart) ───────────── */
+  .util-strip {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--s5);
+    padding: var(--s3) var(--s4);
+    background: var(--c-panel);
+    border: 1px solid var(--c-border);
+    font-family: var(--f-mono); font-size: 11px;
+    color: var(--c-text-dim);
+    flex-wrap: wrap;
+  }
+  .util-strip .group {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    margin-right: var(--s4);
+  }
+  .util-strip .lbl {
+    font-family: var(--f-stencil); font-size: 10px;
+    letter-spacing: 0.14em; color: var(--c-text-mute);
+    text-transform: uppercase;
+  }
+  .util-strip .v { color: var(--c-text); font-variant-numeric: tabular-nums; }
+  .util-strip .v.warn { color: var(--c-warn); }
+  .util-strip .v.err  { color: var(--c-err); }
+
+  .spark {
+    display: flex; align-items: flex-end; gap: 2px;
+    height: 28px; min-width: 80px;
+  }
+  .spark-bar {
+    width: 5px; min-height: 2px;
+    background: var(--c-green);
+    border-radius: 0;
+    opacity: 0.85;
+  }
+  .spark-bar.over { background: var(--c-err); }
+
+  /* footer */
+  .console-foot {
+    margin-top: var(--s7);
+    padding-top: var(--s4);
+    border-top: 1px solid var(--c-rule);
+    font-family: var(--f-stencil); font-size: 10px;
+    letter-spacing: 0.16em; color: var(--c-text-mute);
+    text-transform: uppercase;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .console-foot em {
+    font-family: var(--f-serif);
+    font-style: italic;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--c-text-dim);
+  }
+
+  /* tx-state colour synonyms used by poll() — keep working */
+  .tx-state.live { color: var(--c-amber); }
+  .tx-state.ok   { color: var(--c-green); }
+  .tx-state.warn { color: var(--c-warn); }
+  .tx-state.err  { color: var(--c-err); }
+  .tx-state.dim  { color: var(--c-text-mute); }
 </style>
 </head>
 <body>
 <script src="/pages/common.js"></script>
-<script>openNav();</script>
+<script>openNav && openNav();</script>
 
-<!-- Status bar -->
-<div class="status-bar">
-  <label class="tgl"><input type="checkbox" id="st-enabled" onchange="setConfig('enabled', this.checked)" checked> <span class="dot" id="st-dot"></span> <span id="st-state" class="tx-state">—</span></label>
-  <span><span class="st-label">Engine:</span> moonshine</span>
-  <span><span class="st-label">Model:</span> <span id="st-model-disp">—</span></span>
-  <span class="meter-cluster"><span class="meter-label">Audio</span><span class="lvl-bar"><span class="lvl-fill" id="st-lvl"></span></span><span id="st-lvl-db" class="vad-db">—</span></span>
-  <span class="meter-cluster"><span class="meter-label">Speech</span><span class="vad-bar"><span class="vad-fill" id="st-vad"></span><span id="st-vad-mark" class="vad-mark"></span></span><span id="st-vad-db" class="vad-db">—</span></span>
-  <span><span class="st-label">Pending:</span> <span id="st-pending">0</span></span>
-  <span><span class="st-label">Total:</span> <span id="st-total">0</span></span>
-</div>
-
-<!-- Feed health -->
-<div class="feed-health">
-  <span class="fh-group"><span class="fh-label">Queue</span> <span class="fh-val" id="fh-qd">0/200</span></span>
-  <span class="fh-group"><span class="fh-label">Peak</span> <span class="fh-val" id="fh-peak">0</span></span>
-  <span class="fh-group"><span class="fh-label">Drops</span> <span class="fh-val" id="fh-drops">0</span></span>
-  <span class="fh-group"><span class="fh-label">Blocks&gt;5ms</span> <span class="fh-val" id="fh-blocks">0</span></span>
-  <span class="fh-group"><span class="fh-label">Proc</span> <span class="fh-val" id="fh-proc">—</span></span>
-  <span class="fh-group"><span class="fh-label">Per-bus</span> <span class="fh-val" id="fh-perbus">—</span></span>
-</div>
-
-<!-- Settings -->
-<div class="settings-panel">
-  <div class="settings-head">
-    <span class="settings-head-label">Settings</span>
+<!-- ── HEADER ────────────────────────────────────────────────── -->
+<div class="console-head">
+  <div>
+    <h1 class="h-title">Transcription <em>Console</em></h1>
+    <div class="h-sub">Live ASR · VAD-gated · Moonshine + Whisper pool</div>
   </div>
-  <div class="settings-body">
-
-    <div class="ctrl-field">
-      <label>Model</label>
-      <select id="st-model-sel" onchange="setConfig('model', this.value)" class="ctrl-sel">
-        <optgroup label="Moonshine">
-          <option value="moonshine/tiny">tiny (fastest)</option>
-          <option value="moonshine/base" selected>base (balanced)</option>
-        </optgroup>
-        <optgroup label="Whisper (accurate, slower)">
-          <option value="whisper/small.en">small.en</option>
-          <option value="whisper/medium.en">medium.en ★</option>
-          <option value="whisper/large-v3-turbo">large-v3-turbo</option>
-        </optgroup>
-      </select>
-      <div class="ctrl-hint">Change requires restart. Whisper requires: pip install faster-whisper</div>
-    </div>
-
-    <div class="ctrl-field">
-      <label>VAD Threshold</label>
-      <input type="range" id="st-vad-thresh" min="0.1" max="0.9" step="0.05" value="0.5"
-             oninput="document.getElementById('st-vad-val').textContent=parseFloat(this.value).toFixed(2)"
-             onchange="setConfig('vad_threshold', this.value)">
-      <span id="st-vad-val" class="ctrl-val">0.50</span>
-      <div class="ctrl-hint">Silero probability 0–1. Higher = less sensitive. Exit = value − 0.15.</div>
-    </div>
-
-    <div class="ctrl-field">
-      <label>VAD Hold</label>
-      <input type="range" id="st-vad-hold" min="0.3" max="5.0" step="0.1" value="1.0"
-             oninput="document.getElementById('st-hold-val').textContent=this.value+'s'"
-             onchange="setConfig('vad_hold', this.value)">
-      <span id="st-hold-val" class="ctrl-val">1.0s</span>
-      <div class="ctrl-hint">Silence before segment is closed.</div>
-    </div>
-
-    <div class="ctrl-field">
-      <label>Min Duration</label>
-      <input type="range" id="st-min-dur" min="0.1" max="3.0" step="0.1" value="0.5"
-             oninput="document.getElementById('st-dur-val').textContent=this.value+'s'"
-             onchange="setConfig('min_duration', this.value)">
-      <span id="st-dur-val" class="ctrl-val">0.5s</span>
-      <div class="ctrl-hint">Segments shorter than this are discarded.</div>
-    </div>
-
-    <div class="ctrl-field">
-      <label>Audio Boost</label>
-      <input type="range" id="st-boost" min="100" max="1000" step="50" value="100"
-             oninput="document.getElementById('st-boost-val').textContent=this.value+'%'"
-             onchange="setConfig('audio_boost', this.value)">
-      <span id="st-boost-val" class="ctrl-val">100%</span>
-      <div class="ctrl-hint">Amplify audio before recognition.</div>
-    </div>
-
-    <div class="ctrl-field">
-      <label>Alert Keywords</label>
-      <input type="text" id="st-keywords" class="ctrl-input"
-             placeholder="e.g. mayday, emergency"
-             onchange="setConfig('alert_keywords', this.value)">
-      <div class="ctrl-hint">Comma-separated. Match sends Telegram alert.</div>
-    </div>
-
-    <div class="ctrl-group">
-      <label>Forward to</label>
-      <label class="tgl"><input type="checkbox" id="st-mumble" onchange="setConfig('forward_mumble', this.checked)"> Mumble chat</label>
-      <label class="tgl"><input type="checkbox" id="st-telegram" onchange="setConfig('forward_telegram', this.checked)"> Telegram</label>
-      <label class="tgl"><input type="checkbox" id="st-log-results" onchange="setConfig('log_results', this.checked)"> Gateway log</label>
-    </div>
-
-    <div class="ctrl-field">
-      <label>Inference Mode</label>
-      <select id="st-mode" onchange="setConfig('mode', this.value)">
-        <option value="off">Off</option>
-        <option value="local">Local only</option>
-        <option value="remote">Remote only</option>
-        <option value="pool">Local + Remote pool</option>
-      </select>
-      <div class="ctrl-hint">Change requires restart.</div>
-    </div>
-
-    <div class="ctrl-field">
-      <label>Split Threshold</label>
-      <input type="range" id="st-split" min="0" max="30" step="0.5" value="10"
-             oninput="document.getElementById('st-split-val').textContent=parseFloat(this.value).toFixed(1)+'s'"
-             onchange="setConfig('split_threshold_secs', this.value)">
-      <span id="st-split-val" class="ctrl-val">10.0s</span>
-      <div class="ctrl-hint">Pool mode only: clips under N seconds → Moonshine; longer → Whisper. 0 = least-busy (no length routing). No restart needed.</div>
-    </div>
-
-    <div class="ctrl-actions">
-      <button class="rb rb-sm rb-warn" onclick="restartTranscriber()">Restart</button>
-      <button class="rb rb-sm" onclick="window.location='/txlog'">Open Tx Log</button>
-    </div>
-
-  </div>
-
-  <!-- Performance row -->
-  <div class="perf-row" id="perf-row" style="display:none">
-    <span class="ps-title">Perf</span>
-    <span>Avg: <span id="ps-ratio" class="ps-val">—</span>x realtime</span>
-    <span>Realtime: <span id="ps-rt-pct" class="ps-val">—</span>%</span>
-    <span>Avg audio: <span id="ps-dur">—</span>s</span>
-    <span>Avg proc: <span id="ps-proc">—</span>s</span>
-    <span>Samples: <span id="ps-count">0</span></span>
-    <span>Queue: <span id="ps-queue-depth" class="ps-val">0</span> (<span id="ps-queue-secs" class="ps-val">0</span>s)</span>
-    <span>Lag: <span id="ps-lag" class="ps-val">—</span>s</span>
-    <span>RAM: <span id="ps-ram" class="ps-val">—</span> MB</span>
-    <div class="ps-chart-wrap" id="ps-chart"></div>
-  </div>
-
-  <!-- Workers pool row (visible in remote/pool mode) -->
-  <div class="perf-row" id="rw-row" style="display:none">
-    <span class="ps-title">Workers</span>
-    <span id="rw-workers"></span>
-    <span style="margin-left:auto">
-      <select id="rw-model-sel" class="rb rb-sm" style="padding:2px 6px;height:28px" onchange="_rwModelDirty=true">
-        <optgroup label="Whisper">
-          <option value="whisper/small.en">small.en</option>
-          <option value="whisper/medium.en">medium.en</option>
-          <option value="whisper/large-v3-turbo">large-v3-turbo ★</option>
-        </optgroup>
-        <optgroup label="Moonshine">
-          <option value="moonshine/tiny">tiny</option>
-          <option value="moonshine/base">base</option>
-        </optgroup>
-      </select>
-      <button class="rb rb-sm" onclick="switchRemoteModel()" style="margin-left:4px">Switch All Remote</button>
-    </span>
+  <div class="h-status">
+    <label class="enabled-toggle">
+      <input type="checkbox" id="st-enabled" onchange="setConfig('enabled', this.checked)" checked>
+      Armed
+    </label>
+    <span style="color: var(--c-rule);">·</span>
+    <span class="pip off" id="st-dot"></span>
+    <span class="state dim" id="st-state">—</span>
   </div>
 </div>
 
-<!-- Latest result -->
-<div class="latest-card" id="latest-card">
+<!-- ── STATS ROW (sections 01, 02, 03) ───────────────────────── -->
+<div class="stat-grid">
+
+  <!-- 01 / SIGNAL -->
+  <div class="panel">
+    <div class="panel-head"><span><span class="num">01</span> / Signal</span><span id="st-model-disp" style="color:var(--c-text-dim);">—</span></div>
+    <div class="panel-body">
+      <div class="meter">
+        <div class="meter-head">
+          <span class="meter-name">Input level</span>
+          <span class="meter-val" id="st-lvl-db">—</span>
+        </div>
+        <div class="bar-wrap">
+          <div class="bar-ticks"></div>
+          <div class="bar-fill" id="st-lvl" style="width:0%"></div>
+        </div>
+      </div>
+      <div class="meter">
+        <div class="meter-head">
+          <span class="meter-name">VAD probability</span>
+          <span class="meter-val" id="st-vad-db">—</span>
+        </div>
+        <div class="bar-wrap">
+          <div class="bar-ticks"></div>
+          <div class="bar-fill" id="st-vad" style="width:0%"></div>
+          <div class="bar-mark" id="st-vad-mark" style="left:50%"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 02 / THROUGHPUT -->
+  <div class="panel">
+    <div class="panel-head"><span><span class="num">02</span> / Throughput</span><span id="ps-count" style="color:var(--c-text-dim);font-family:var(--f-mono);font-variant-numeric:tabular-nums;">0</span></div>
+    <div class="panel-body">
+      <div class="kv"><span class="k">Avg ratio</span><span class="v" id="ps-ratio">—<span class="unit">x</span></span></div>
+      <div class="kv"><span class="k">Realtime</span><span class="v" id="ps-rt-pct">—<span class="unit">%</span></span></div>
+      <div class="kv"><span class="k">Avg audio</span><span class="v" id="ps-dur">—<span class="unit">s</span></span></div>
+      <div class="kv"><span class="k">Avg proc</span><span class="v" id="ps-proc">—<span class="unit">s</span></span></div>
+      <div class="kv"><span class="k">Recent</span><span class="v" id="ps-chart-wrap" style="text-align:right;"><span class="spark" id="ps-chart" style="display:inline-flex;"></span></span></div>
+    </div>
+  </div>
+
+  <!-- 03 / RESOURCES -->
+  <div class="panel">
+    <div class="panel-head"><span><span class="num">03</span> / Resources</span><span id="res-mode-tag" style="color:var(--c-amber);font-family:var(--f-stencil);font-size:10px;letter-spacing:0.16em;text-transform:uppercase;">—</span></div>
+    <div class="panel-body">
+      <div class="kv"><span class="k">Pending</span><span class="v" id="ps-queue-depth">0</span></div>
+      <div class="kv"><span class="k">Queue audio</span><span class="v" id="ps-queue-secs">0<span class="unit">s</span></span></div>
+      <div class="kv"><span class="k">Lag (est.)</span><span class="v" id="ps-lag">—<span class="unit">s</span></span></div>
+      <div class="kv"><span class="k">Gateway RAM</span><span class="v" id="ps-ram">—<span class="unit">MB</span></span></div>
+      <div class="kv"><span class="k">Total stored</span><span class="v" id="st-total">0</span></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── 04 / WORKERS ───────────────────────────────────────────── -->
+<div class="sect" id="workers-section">
+  <span class="num">04</span>
+  <span class="label">Workers</span>
+  <span class="rule"></span>
+  <span class="meta" id="workers-meta">—</span>
+</div>
+<div class="workers-grid" id="workers-grid"></div>
+<div class="workers-foot" id="workers-foot" style="display:none">
+  <span class="lbl">Switch all remote</span>
+  <select id="rw-model-sel" onchange="_rwModelDirty=true" style="background:var(--c-bg);color:var(--c-text);border:1px solid var(--c-border);padding:6px 10px;font-family:var(--f-mono);font-size:12px;">
+    <optgroup label="Whisper">
+      <option value="whisper/small.en">small.en</option>
+      <option value="whisper/medium.en">medium.en</option>
+      <option value="whisper/large-v3-turbo">large-v3-turbo ★</option>
+    </optgroup>
+    <optgroup label="Moonshine">
+      <option value="moonshine/tiny">tiny</option>
+      <option value="moonshine/base">base</option>
+    </optgroup>
+  </select>
+  <button class="btn btn-prim" onclick="switchRemoteModel()">Apply</button>
+</div>
+
+<!-- ── 05 / LATEST ───────────────────────────────────────────── -->
+<div class="sect">
+  <span class="num">05</span>
+  <span class="label">Latest transmission</span>
+  <span class="rule"></span>
+</div>
+<div class="latest" id="latest-card">
   <div class="latest-empty" id="latest-empty">Listening for transmissions…</div>
   <div class="latest-meta" id="latest-meta" style="display:none">
     <span class="latest-time" id="latest-time"></span>
@@ -287,224 +759,374 @@
   <div class="latest-text" id="latest-text" style="display:none"></div>
 </div>
 
+<!-- ── 06 / CONTROLS ─────────────────────────────────────────── -->
+<div class="sect">
+  <span class="num">06</span>
+  <span class="label">Controls</span>
+  <span class="rule"></span>
+</div>
+
+<div class="ctrl-grid">
+
+  <div class="ctrl-cell">
+    <div class="ctrl-head"><span>Inference mode</span></div>
+    <select id="st-mode" onchange="setConfig('mode', this.value)">
+      <option value="off">Off</option>
+      <option value="local">Local only</option>
+      <option value="remote">Remote only</option>
+      <option value="pool">Local + Remote pool</option>
+    </select>
+    <div class="ctrl-hint">Change requires restart.</div>
+  </div>
+
+  <div class="ctrl-cell">
+    <div class="ctrl-head"><span>Local model</span></div>
+    <select id="st-model-sel" onchange="setConfig('model', this.value)">
+      <optgroup label="Moonshine">
+        <option value="moonshine/tiny">tiny (fastest)</option>
+        <option value="moonshine/base" selected>base (balanced)</option>
+      </optgroup>
+      <optgroup label="Whisper">
+        <option value="whisper/small.en">small.en</option>
+        <option value="whisper/medium.en">medium.en ★</option>
+        <option value="whisper/large-v3-turbo">large-v3-turbo</option>
+      </optgroup>
+    </select>
+    <div class="ctrl-hint">Change requires restart. Whisper needs faster-whisper installed.</div>
+  </div>
+
+  <div class="ctrl-cell">
+    <div class="ctrl-head"><span>Split threshold</span><span class="v" id="st-split-val">10.0s</span></div>
+    <input type="range" id="st-split" min="0" max="30" step="0.5" value="10"
+           oninput="document.getElementById('st-split-val').textContent=parseFloat(this.value).toFixed(1)+'s'"
+           onchange="setConfig('split_threshold_secs', this.value)">
+    <div class="ctrl-hint">Pool mode: clips under N sec → Moonshine; longer → Whisper. 0 = no length routing.</div>
+  </div>
+
+  <div class="ctrl-cell">
+    <div class="ctrl-head"><span>VAD threshold</span><span class="v" id="st-vad-val">0.50</span></div>
+    <input type="range" id="st-vad-thresh" min="0.1" max="0.9" step="0.05" value="0.5"
+           oninput="document.getElementById('st-vad-val').textContent=parseFloat(this.value).toFixed(2)"
+           onchange="setConfig('vad_threshold', this.value)">
+    <div class="ctrl-hint">Silero probability 0–1. Higher = less sensitive. Exit = value − 0.15.</div>
+  </div>
+
+  <div class="ctrl-cell">
+    <div class="ctrl-head"><span>VAD hold</span><span class="v" id="st-hold-val">1.0s</span></div>
+    <input type="range" id="st-vad-hold" min="0.3" max="5.0" step="0.1" value="1.0"
+           oninput="document.getElementById('st-hold-val').textContent=parseFloat(this.value).toFixed(1)+'s'"
+           onchange="setConfig('vad_hold', this.value)">
+    <div class="ctrl-hint">Silence before utterance is closed.</div>
+  </div>
+
+  <div class="ctrl-cell">
+    <div class="ctrl-head"><span>Min duration</span><span class="v" id="st-dur-val">0.5s</span></div>
+    <input type="range" id="st-min-dur" min="0.1" max="3.0" step="0.1" value="0.5"
+           oninput="document.getElementById('st-dur-val').textContent=parseFloat(this.value).toFixed(1)+'s'"
+           onchange="setConfig('min_duration', this.value)">
+    <div class="ctrl-hint">Segments shorter than this are discarded.</div>
+  </div>
+
+  <div class="ctrl-cell">
+    <div class="ctrl-head"><span>Audio boost</span><span class="v" id="st-boost-val">100%</span></div>
+    <input type="range" id="st-boost" min="100" max="1000" step="50" value="100"
+           oninput="document.getElementById('st-boost-val').textContent=this.value+'%'"
+           onchange="setConfig('audio_boost', this.value)">
+    <div class="ctrl-hint">Amplify pre-recognition.</div>
+  </div>
+
+  <div class="ctrl-cell">
+    <div class="ctrl-head"><span>Alert keywords</span></div>
+    <input type="text" id="st-keywords"
+           placeholder="mayday, emergency"
+           onchange="setConfig('alert_keywords', this.value)">
+    <div class="ctrl-hint">Comma-separated. Match sends Telegram alert.</div>
+  </div>
+
+  <div class="ctrl-cell">
+    <div class="ctrl-head"><span>Forward to</span></div>
+    <div class="check-row">
+      <label class="check"><input type="checkbox" id="st-mumble"    onchange="setConfig('forward_mumble', this.checked)"> Mumble</label>
+      <label class="check"><input type="checkbox" id="st-telegram"  onchange="setConfig('forward_telegram', this.checked)"> Telegram</label>
+      <label class="check"><input type="checkbox" id="st-log-results" onchange="setConfig('log_results', this.checked)"> Log</label>
+    </div>
+    <div class="ctrl-hint">Cross-post each transcript.</div>
+  </div>
+
+</div>
+
+<div class="btn-row">
+  <button class="btn btn-warn" onclick="restartTranscriber()">⟳ Restart transcriber</button>
+  <button class="btn" onclick="window.location='/txlog'">Open Tx Log →</button>
+</div>
+
+<!-- ── 07 / FEED HEALTH ─────────────────────────────────────── -->
+<div class="sect">
+  <span class="num">07</span>
+  <span class="label">Feed health</span>
+  <span class="rule"></span>
+</div>
+
+<div class="util-strip">
+  <div>
+    <span class="group"><span class="lbl">Queue</span><span class="v" id="fh-qd">0/200</span></span>
+    <span class="group"><span class="lbl">Peak</span><span class="v" id="fh-peak">0</span></span>
+    <span class="group"><span class="lbl">Drops</span><span class="v" id="fh-drops">0</span></span>
+    <span class="group"><span class="lbl">Blocks&gt;5ms</span><span class="v" id="fh-blocks">0</span></span>
+    <span class="group"><span class="lbl">Proc</span><span class="v" id="fh-proc">—</span></span>
+    <span class="group"><span class="lbl">Per-bus</span><span class="v" id="fh-perbus">—</span></span>
+  </div>
+</div>
+
+<div class="console-foot">
+  <span>Console <em>v3.4</em> · radio-gateway</span>
+  <span id="console-now">—</span>
+</div>
+
 <script>
 var _lastTimestamp = 0;
 var _configSynced = false;
-var _rwModelDirty = false;  // true once user touches the remote model selector
+var _rwModelDirty = false;
+
+function _set(id, txt) { var e=document.getElementById(id); if(e) e.textContent = txt; }
+function _cls(id, cls) { var e=document.getElementById(id); if(e) e.className = cls; }
 
 function poll() {
   fetch('/transcriptions?since=' + _lastTimestamp)
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
+    .then(function(r){ return r.json(); })
+    .then(function(d){
       var s = d.status || {};
 
-      // Status bar
-      var dot = document.getElementById('st-dot');
+      // Header status pip
+      var pip = document.getElementById('st-dot');
       var state = document.getElementById('st-state');
       if (!s.enabled) {
-        dot.className = 'dot off'; state.textContent = 'Disabled'; state.className = 'tx-state dim';
+        pip.className = 'pip off'; state.textContent = 'Disabled'; state.className = 'state dim';
       } else if (s.model_loaded) {
-        dot.className = 'dot on';
-        state.textContent = s.vad_open ? 'Listening…' : 'Ready';
-        state.className = 'tx-state ' + (s.vad_open ? 'warn' : 'ok');
+        if (s.vad_open) { pip.className = 'pip live'; state.textContent = 'Listening'; state.className = 'state live'; }
+        else            { pip.className = 'pip on';   state.textContent = 'Ready';     state.className = 'state ok'; }
       } else {
-        dot.className = 'dot off'; state.textContent = 'Loading model…'; state.className = 'tx-state warn';
+        pip.className = 'pip off'; state.textContent = 'Loading model…'; state.className = 'state warn';
       }
-      document.getElementById('st-pending').textContent = s.pending || 0;
-      document.getElementById('st-total').textContent = s.total_transcriptions || 0;
-      document.getElementById('st-model-disp').textContent = s.model || '—';
+      _set('st-model-disp', s.model || '—');
+      _set('st-total', s.total_transcriptions || 0);
 
-      // VAD meters
-      var _vprob = s.vad_prob || 0, _vth = s.vad_threshold || 0.5;
-      var vadFill = document.getElementById('st-vad');
-      vadFill.style.width = Math.max(0, Math.min(100, _vprob * 100)) + '%';
-      vadFill.className = 'vad-fill ' + (_vprob >= _vth ? 'speech' : (_vprob >= _vth - 0.15 ? 'edge' : 'gated'));
-      document.getElementById('st-vad-mark').style.left = (_vth * 100) + '%';
-      document.getElementById('st-vad-db').textContent = _vprob.toFixed(2);
-      var _vdb = s.vad_db || -96;
-      var lvlFill = document.getElementById('st-lvl');
-      lvlFill.style.width = Math.max(0, Math.min(100, (_vdb + 60) * 100 / 60)) + '%';
-      lvlFill.style.background = _vdb > -40 ? 'var(--t-ok)' : _vdb > -55 ? 'var(--t-warn)' : 'var(--t-err)';
-      document.getElementById('st-lvl-db').textContent = _vdb > -95 ? _vdb.toFixed(0) + 'dB' : '—';
+      // Mode tag
+      _set('res-mode-tag', (s.mode || 'local').toUpperCase());
+
+      // VAD bar
+      var vprob = s.vad_prob || 0, vth = s.vad_threshold || 0.5;
+      var vad = document.getElementById('st-vad');
+      vad.style.width = Math.max(0, Math.min(100, vprob * 100)) + '%';
+      vad.className = 'bar-fill ' + (vprob >= vth ? 'live' : (vprob >= vth - 0.15 ? 'warn' : 'err'));
+      document.getElementById('st-vad-mark').style.left = (vth * 100) + '%';
+      _set('st-vad-db', vprob.toFixed(2));
+
+      // Level bar (−60 dB to 0 dB mapped to 0–100%)
+      var vdb = s.vad_db || -96;
+      var lvl = document.getElementById('st-lvl');
+      lvl.style.width = Math.max(0, Math.min(100, (vdb + 60) * 100 / 60)) + '%';
+      lvl.className = 'bar-fill ' + (vdb > -40 ? '' : vdb > -55 ? 'warn' : 'err');
+      _set('st-lvl-db', vdb > -95 ? vdb.toFixed(0) + ' dB' : '—');
 
       // Feed health
       var fh = s.feed || {};
       var fhMax = fh.queue_max || 200, fhQd = fh.queue_depth || 0;
       var el = document.getElementById('fh-qd');
       el.textContent = fhQd + '/' + fhMax;
-      el.className = 'fh-val' + (fhQd > fhMax * 0.5 ? ' err' : fhQd > fhMax * 0.2 ? ' warn' : '');
-      var pk = document.getElementById('fh-peak');
-      pk.textContent = fh.peak_qd || 0;
-      pk.className = 'fh-val' + ((fh.peak_qd || 0) > fhMax * 0.5 ? ' warn' : '');
-      var dr = document.getElementById('fh-drops');
-      dr.textContent = fh.dropped_full || 0;
-      dr.className = 'fh-val' + ((fh.dropped_full || 0) > 0 ? ' err' : '');
-      var bl = document.getElementById('fh-blocks');
-      bl.textContent = fh.enqueue_blocks_gt_5ms || 0;
-      bl.className = 'fh-val' + ((fh.enqueue_blocks_gt_5ms || 0) > 0 ? ' warn' : '');
+      el.className = 'v' + (fhQd > fhMax * 0.5 ? ' err' : fhQd > fhMax * 0.2 ? ' warn' : '');
+      var pk = document.getElementById('fh-peak'); pk.textContent = fh.peak_qd || 0;
+      pk.className = 'v' + ((fh.peak_qd || 0) > fhMax * 0.5 ? ' warn' : '');
+      var dr = document.getElementById('fh-drops'); dr.textContent = fh.dropped_full || 0;
+      dr.className = 'v' + ((fh.dropped_full || 0) > 0 ? ' err' : '');
+      var bl = document.getElementById('fh-blocks'); bl.textContent = fh.enqueue_blocks_gt_5ms || 0;
+      bl.className = 'v' + ((fh.enqueue_blocks_gt_5ms || 0) > 0 ? ' warn' : '');
+      var lm = fh.proc_last_ms||0, mn = fh.proc_mean_ms||0, mx = fh.proc_max_ms||0;
       var pr = document.getElementById('fh-proc');
-      var _lm = fh.proc_last_ms || 0, _mn = fh.proc_mean_ms || 0, _mx = fh.proc_max_ms || 0;
-      pr.textContent = 'last ' + _lm.toFixed(1) + ' / mean ' + _mn.toFixed(1) + ' / max ' + _mx.toFixed(1) + 'ms';
-      pr.className = 'fh-val' + (_mn > 20 ? ' err' : _mn > 10 ? ' warn' : '');
-      var _ps = fh.per_stream_mean_ms || {}, _parts = [];
-      for (var sid in _ps) _parts.push(sid + '=' + _ps[sid].toFixed(1) + 'ms');
-      document.getElementById('fh-perbus').textContent = _parts.length ? _parts.join(' ') : '—';
+      pr.textContent = lm.toFixed(1) + ' / ' + mn.toFixed(1) + ' / ' + mx.toFixed(1) + ' ms';
+      pr.className = 'v' + (mn > 20 ? ' err' : mn > 10 ? ' warn' : '');
+      var ps = fh.per_stream_mean_ms || {}, parts = [];
+      for (var sid in ps) parts.push(sid + ' ' + ps[sid].toFixed(1) + 'ms');
+      _set('fh-perbus', parts.length ? parts.join(' · ') : '—');
 
-      // Sync controls on first load
+      // First-load sync
       if (!_configSynced && s.model_loaded) {
         _configSynced = true;
-        if (s.enabled !== undefined) document.getElementById('st-enabled').checked = s.enabled;
-        if (s.model) document.getElementById('st-model-sel').value = s.model;
+        if (s.enabled !== undefined)  document.getElementById('st-enabled').checked = s.enabled;
+        if (s.model)                  document.getElementById('st-model-sel').value = s.model;
         if (s.vad_threshold !== undefined) {
           document.getElementById('st-vad-thresh').value = s.vad_threshold;
-          document.getElementById('st-vad-val').textContent = parseFloat(s.vad_threshold).toFixed(2);
+          _set('st-vad-val', parseFloat(s.vad_threshold).toFixed(2));
         }
         if (s.vad_hold) {
           document.getElementById('st-vad-hold').value = s.vad_hold;
-          document.getElementById('st-hold-val').textContent = s.vad_hold + 's';
+          _set('st-hold-val', parseFloat(s.vad_hold).toFixed(1) + 's');
         }
         if (s.min_duration) {
           document.getElementById('st-min-dur').value = s.min_duration;
-          document.getElementById('st-dur-val').textContent = s.min_duration + 's';
+          _set('st-dur-val', parseFloat(s.min_duration).toFixed(1) + 's');
         }
         if (s.split_threshold_secs !== undefined) {
           document.getElementById('st-split').value = s.split_threshold_secs;
-          document.getElementById('st-split-val').textContent = parseFloat(s.split_threshold_secs).toFixed(1) + 's';
+          _set('st-split-val', parseFloat(s.split_threshold_secs).toFixed(1) + 's');
         }
         if (s.audio_boost) {
           document.getElementById('st-boost').value = s.audio_boost;
-          document.getElementById('st-boost-val').textContent = s.audio_boost + '%';
+          _set('st-boost-val', s.audio_boost + '%');
         }
-        if (s.forward_mumble !== undefined) document.getElementById('st-mumble').checked = s.forward_mumble;
+        if (s.forward_mumble !== undefined)   document.getElementById('st-mumble').checked = s.forward_mumble;
         if (s.forward_telegram !== undefined) document.getElementById('st-telegram').checked = s.forward_telegram;
-        if (s.log_results !== undefined) document.getElementById('st-log-results').checked = s.log_results;
-        if (s.alert_keywords !== undefined) document.getElementById('st-keywords').value = s.alert_keywords;
+        if (s.log_results !== undefined)      document.getElementById('st-log-results').checked = s.log_results;
+        if (s.alert_keywords !== undefined)   document.getElementById('st-keywords').value = s.alert_keywords;
+        if (s.mode)                           document.getElementById('st-mode').value = s.mode;
       }
 
-      // Performance
-      var ps = s.stats || {};
-      if (!ps.count) {
-        // Stats reset (restart, fresh start) — clear displayed values so
-        // stale numbers don't linger until the next transcription arrives.
+      // Performance throughput
+      var stats = s.stats || {};
+      if (!stats.count) {
         ['ps-ratio','ps-rt-pct','ps-dur','ps-proc'].forEach(function(id){
-          var el = document.getElementById(id);
-          el.textContent = '—'; el.className = 'ps-val';
+          var e = document.getElementById(id);
+          if (!e) return;
+          e.innerHTML = '—<span class="unit">' + (id==='ps-ratio'?'x':id==='ps-rt-pct'?'%':'s') + '</span>';
+          e.className = 'v dim';
         });
-        document.getElementById('ps-count').textContent = '0';
+        _set('ps-count', '0');
         document.getElementById('ps-chart').innerHTML = '';
-      }
-      if (ps.count > 0) {
-        document.getElementById('perf-row').style.display = '';
+      } else {
         var ratioEl = document.getElementById('ps-ratio');
-        ratioEl.textContent = ps.avg_ratio || '—';
-        ratioEl.className = 'ps-val ' + ((ps.avg_ratio || 1) < 1 ? 'ok' : 'err');
+        ratioEl.innerHTML = stats.avg_ratio + '<span class="unit">x</span>';
+        ratioEl.className = 'v ' + (stats.avg_ratio < 1 ? 'ok' : 'err');
         var rtEl = document.getElementById('ps-rt-pct');
-        rtEl.textContent = ps.realtime_pct || 0;
-        rtEl.className = 'ps-val ' + ((ps.realtime_pct || 0) >= 80 ? 'ok' : (ps.realtime_pct || 0) >= 50 ? 'warn' : 'err');
-        document.getElementById('ps-dur').textContent = ps.avg_duration || '—';
-        document.getElementById('ps-proc').textContent = ps.avg_proc_time || '—';
-        document.getElementById('ps-count').textContent = ps.count;
+        rtEl.innerHTML = (stats.realtime_pct || 0) + '<span class="unit">%</span>';
+        rtEl.className = 'v ' + ((stats.realtime_pct || 0) >= 80 ? 'ok' : (stats.realtime_pct || 0) >= 50 ? 'warn' : 'err');
+        var d1 = document.getElementById('ps-dur'); d1.innerHTML = (stats.avg_duration||0) + '<span class="unit">s</span>'; d1.className = 'v';
+        var d2 = document.getElementById('ps-proc'); d2.innerHTML = (stats.avg_proc_time||0) + '<span class="unit">s</span>'; d2.className = 'v';
+        _set('ps-count', stats.count);
 
-        // Queue depth + in-flight (both contribute to backlog)
-        var qPending = s.pending || 0;
-        var qInflight = s.inflight || 0;
-        var qDepth = qPending + qInflight;
-        var qSecs = s.pending_audio_secs || 0;
-        var qEl = document.getElementById('ps-queue-depth');
-        qEl.textContent = qDepth + (qInflight > 0 ? ' (' + qInflight + ' in-flight)' : '');
-        qEl.className = 'ps-val ' + (qDepth === 0 ? 'ok' : qDepth < 10 ? 'warn' : 'err');
-        var qsEl = document.getElementById('ps-queue-secs');
-        qsEl.textContent = qSecs;
-        qsEl.className = 'ps-val ' + (qSecs < 5 ? 'ok' : qSecs < 20 ? 'warn' : 'err');
-
-        // Estimated lag — pending audio + assume in-flight items average
-        // ~avg_duration seconds each, all multiplied by avg processing ratio.
-        var lagEl = document.getElementById('ps-lag');
-        var avgDur = ps.avg_duration || 0;
-        var lagSecs = qSecs + (qInflight * avgDur);
-        var lag = lagSecs > 0 ? Math.round(lagSecs * (ps.avg_ratio || 1) * 10) / 10 : 0;
-        lagEl.textContent = lag > 0 ? lag : '0';
-        lagEl.className = 'ps-val ' + (lag < 5 ? 'ok' : lag < 30 ? 'warn' : 'err');
-
-        // RAM
-        var ramEl = document.getElementById('ps-ram');
-        var ramMb = s.ram_mb || 0;
-        ramEl.textContent = ramMb;
-        ramEl.className = 'ps-val ' + (ramMb < 1000 ? 'ok' : ramMb < 2000 ? 'warn' : 'err');
-
-        var recent = ps.recent || [], chartHtml = '';
-        for (var ri = 0; ri < recent.length; ri++) {
-          var r = recent[ri];
-          chartHtml += '<div class="ps-bar ' + (r.ratio < 1 ? 'ok' : 'err') +
-            '" title="' + r.duration + 's→' + r.proc_time + 's (' + r.ratio + 'x)"' +
-            ' style="height:' + Math.min(28, Math.max(2, r.ratio * 22)) + 'px"></div>';
+        // Spark of recent ratios
+        var recent = stats.recent || [], html = '';
+        for (var i = 0; i < recent.length; i++) {
+          var r = recent[i];
+          var h = Math.min(28, Math.max(2, r.ratio * 18));
+          html += '<div class="spark-bar' + (r.ratio < 1 ? '' : ' over') + '" title="' + r.duration + 's→' + r.proc_time + 's (' + r.ratio + 'x)" style="height:' + h + 'px"></div>';
         }
-        document.getElementById('ps-chart').innerHTML = chartHtml;
+        document.getElementById('ps-chart').innerHTML = html;
       }
 
-      // Workers pool row
+      // Resources column
+      var qPending = s.pending || 0, qInflight = s.inflight || 0;
+      var qDepth = qPending + qInflight;
+      var qSecs = s.pending_audio_secs || 0;
+      var qEl = document.getElementById('ps-queue-depth');
+      qEl.innerHTML = qDepth + (qInflight > 0 ? ' <span class="unit">(' + qInflight + ' in-flight)</span>' : '');
+      qEl.className = 'v ' + (qDepth === 0 ? 'ok' : qDepth < 10 ? 'warn' : 'err');
+      var qsEl = document.getElementById('ps-queue-secs');
+      qsEl.innerHTML = qSecs + '<span class="unit">s</span>';
+      qsEl.className = 'v ' + (qSecs < 5 ? 'ok' : qSecs < 20 ? 'warn' : 'err');
+      var avgDur = stats.avg_duration || 0;
+      var lagSecs = qSecs + (qInflight * avgDur);
+      var lag = lagSecs > 0 ? Math.round(lagSecs * (stats.avg_ratio || 1) * 10) / 10 : 0;
+      var lagEl = document.getElementById('ps-lag');
+      lagEl.innerHTML = (lag > 0 ? lag : '0') + '<span class="unit">s</span>';
+      lagEl.className = 'v ' + (lag < 5 ? 'ok' : lag < 30 ? 'warn' : 'err');
+      var ramEl = document.getElementById('ps-ram');
+      var ramMb = s.ram_mb || 0;
+      ramEl.innerHTML = ramMb + '<span class="unit">MB</span>';
+      ramEl.className = 'v ' + (ramMb < 1500 ? 'ok' : ramMb < 3000 ? 'warn' : 'err');
+
+      // Workers grid (cards)
       var workers = s.workers || [];
       var mode = s.mode || 'local';
-      if (mode !== 'local' && mode !== 'off' && workers.length > 0) {
-        document.getElementById('rw-row').style.display = '';
-        var wHtml = '';
+      var grid = document.getElementById('workers-grid');
+      var foot = document.getElementById('workers-foot');
+      var hasRemote = workers.some(function(w){return w.type==='remote';});
+      if (workers.length === 0) {
+        grid.innerHTML = '<div class="panel" style="padding:var(--s4);color:var(--c-text-mute);text-align:center;font-family:var(--f-serif);font-style:italic;">No workers in pool. Mode: ' + mode + '.</div>';
+        foot.style.display = 'none';
+      } else {
+        var cardsHtml = '';
         for (var wi = 0; wi < workers.length; wi++) {
           var w = workers[wi];
-          var wDotCls = w.model_loaded ? 'dot on' : 'dot off';
-          var wLabel = w.type === 'local' ? 'local' : (w.url || 'remote').replace('http://', '');
-          var wModel = w.model_key || '—';
-          var wFlight = (w.inflight != null && w.inflight > 0) ? ' · ' + w.inflight + ' active' : '';
-          var wCount = (w.dispatched != null) ? ' · ' + w.dispatched + ' done' : '';
-          var wRatio = (w.avg_ratio != null) ? ' · <span class="ps-val ' + (w.avg_ratio < 1 ? 'ok' : 'err') + '">' + w.avg_ratio + 'x</span>' : '';
-          var wReach = (w.type === 'remote' && !w.reachable) ? ' <span class="ps-val err">unreachable</span>' : '';
-          var wErr = w.last_switch_error ? ' <span class="ps-val err" title="' + w.last_switch_error.replace(/"/g,'&quot;') + '">switch failed</span>' : '';
-          var wTemp = '';
+          var healthy = w.model_loaded && (w.type !== 'remote' || w.reachable);
+          var statusCls = healthy ? 'on' : 'off';
+          var statusText = (!w.model_loaded) ? 'loading' : (w.type === 'remote' && !w.reachable) ? 'unreachable' : 'ready';
+          var whoLabel = w.type === 'local' ? 'LOCAL' : (w.url||'remote').replace(/^https?:\/\//, '');
+          var modelLabel = w.model_key || '—';
+          var engineLabel = (w.engine || '').toUpperCase();
+          var tempCls = 'v', tempStr = '—';
           if (w.cpu_temp_c != null) {
-            var tc = w.cpu_temp_c;
-            var tcls = tc < 75 ? 'ok' : tc < 90 ? 'warn' : 'err';
-            wTemp = ' · <span class="ps-val ' + tcls + '">' + tc + '°C</span>';
+            tempStr = w.cpu_temp_c + '<span class="unit">°C</span>';
+            tempCls = 'v ' + (w.cpu_temp_c < 75 ? 'ok' : w.cpu_temp_c < 90 ? 'warn' : 'err');
           }
-          var wFan = (w.fan_rpm != null) ? ' · ' + w.fan_rpm + ' RPM' : '';
-          wHtml += '<span style="margin-right:var(--s-4)"><span class="' + wDotCls + '"></span> <b>' + wLabel + '</b> ' + wModel + wCount + wFlight + wRatio + wTemp + wFan + wReach + wErr + '</span>';
+          var ratioCls = 'v dim', ratioStr = '—<span class="unit">x</span>';
+          if (w.avg_ratio != null) {
+            ratioStr = w.avg_ratio + '<span class="unit">x</span>';
+            ratioCls = 'v ' + (w.avg_ratio < 1 ? 'ok' : 'err');
+          }
+          var fanStr = w.fan_rpm != null ? w.fan_rpm + '<span class="unit">RPM</span>' : '—';
+          var ramStr = w.ram_mb != null ? w.ram_mb + '<span class="unit">MB</span>' : '—';
+          var doneStr = w.dispatched != null ? w.dispatched : '0';
+          var activeStr = w.inflight != null ? w.inflight : '0';
+          var errHtml = w.last_switch_error
+            ? '<div class="worker-error" title="' + w.last_switch_error.replace(/"/g,'&quot;') + '">' + w.last_switch_error + '</div>'
+            : '';
+          cardsHtml +=
+            '<div class="worker-card' + (healthy ? '' : ' unhealthy') + '">' +
+              '<div class="worker-head">' +
+                '<div class="worker-name"><span class="who">' + engineLabel + '</span>' + whoLabel + '</div>' +
+                '<span class="worker-status-badge ' + statusCls + '"><span class="dot"></span>' + statusText + '</span>' +
+              '</div>' +
+              '<div class="worker-meta">' + modelLabel + '</div>' +
+              '<div class="worker-stats">' +
+                '<div class="kv"><span class="k">Done</span><span class="v">' + doneStr + '</span></div>' +
+                '<div class="kv"><span class="k">Active</span><span class="v ' + (activeStr>0?'live':'dim') + '">' + activeStr + '</span></div>' +
+                '<div class="kv"><span class="k">Ratio</span><span class="' + ratioCls + '">' + ratioStr + '</span></div>' +
+                '<div class="kv"><span class="k">Temp</span><span class="' + tempCls + '">' + tempStr + '</span></div>' +
+                '<div class="kv"><span class="k">Fan</span><span class="v">' + fanStr + '</span></div>' +
+                '<div class="kv"><span class="k">RAM</span><span class="v">' + ramStr + '</span></div>' +
+              '</div>' +
+              errHtml +
+            '</div>';
         }
-        document.getElementById('rw-workers').innerHTML = wHtml;
-        if (!_rwModelDirty) {
-          var firstRemote = workers.find(function(w) { return w.type === 'remote' && w.model_key; });
+        grid.innerHTML = cardsHtml;
+        foot.style.display = hasRemote ? 'flex' : 'none';
+
+        if (hasRemote && !_rwModelDirty) {
+          var firstRemote = workers.find(function(w){return w.type==='remote' && w.model_key;});
           if (firstRemote) {
             var sel = document.getElementById('rw-model-sel');
             if (sel.value !== firstRemote.model_key) sel.value = firstRemote.model_key;
           }
         }
-      } else {
-        document.getElementById('rw-row').style.display = 'none';
       }
-      if (s.mode) {
-        var modeEl = document.getElementById('st-mode');
-        if (modeEl && modeEl.value !== s.mode) modeEl.value = s.mode;
-      }
+      _set('workers-meta', workers.length + ' / ' + mode);
 
       // Latest result
       var results = d.results || [];
-      for (var i = 0; i < results.length; i++) {
-        if (results[i].timestamp > _lastTimestamp) _lastTimestamp = results[i].timestamp;
+      for (var ri = 0; ri < results.length; ri++) {
+        if (results[ri].timestamp > _lastTimestamp) _lastTimestamp = results[ri].timestamp;
       }
       if (results.length > 0) {
         var latest = results[results.length - 1];
         document.getElementById('latest-empty').style.display = 'none';
         document.getElementById('latest-meta').style.display = '';
         document.getElementById('latest-text').style.display = '';
-        document.getElementById('latest-time').textContent = latest.time_str || '';
-        document.getElementById('latest-source').textContent = latest.source || '';
-        document.getElementById('latest-freq').textContent = latest.freq ? latest.freq + ' MHz' : '';
+        _set('latest-time', latest.time_str || '');
+        _set('latest-source', latest.source || '');
+        _set('latest-freq', latest.freq ? latest.freq + ' MHz' : '');
         var durStr = '';
         if (latest.duration) durStr += latest.duration + 's';
         if (latest.proc_time) durStr += ' → ' + latest.proc_time + 's';
         if (latest.ratio) durStr += ' (' + latest.ratio + 'x)';
-        document.getElementById('latest-dur').textContent = durStr;
-        document.getElementById('latest-text').textContent = latest.text || '';
+        _set('latest-dur', durStr);
+        _set('latest-text', '"' + (latest.text || '') + '"');
       }
+
+      // Clock
+      var now = new Date();
+      _set('console-now', now.toTimeString().substring(0,8) + ' · ' + now.toDateString());
     })
-    .catch(function(e) { console.error('Poll error:', e); });
+    .catch(function(e){ console.error('Poll error:', e); });
 }
 
 function setConfig(key, value) {
@@ -512,30 +1134,27 @@ function setConfig(key, value) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({key: key, value: value})
-  }).then(function(r) { return r.json(); }).then(function(d) {
+  }).then(function(r){return r.json();}).then(function(d){
     if (!d.ok) alert(d.error || 'Failed to set ' + key);
   });
 }
 
 function switchRemoteModel() {
   var model = document.getElementById('rw-model-sel').value;
-  var btn = document.querySelector('#rw-row button');
-  btn.disabled = true;
-  btn.textContent = 'Loading…';
+  var btn = document.querySelector('#workers-foot button');
+  btn.disabled = true; btn.textContent = 'Loading…';
   fetch('/transcribe_config', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({key: 'remote_model', value: model})
-  }).then(function(r) { return r.json(); })
-    .then(function(d) {
-      btn.disabled = false;
-      btn.textContent = 'Switch';
-      if (d.ok) { _rwModelDirty = false; }
+  }).then(function(r){return r.json();})
+    .then(function(d){
+      btn.disabled = false; btn.textContent = 'Apply';
+      if (d.ok) _rwModelDirty = false;
       else alert('Switch failed: ' + (d.error || 'unknown error'));
     })
-    .catch(function(e) {
-      btn.disabled = false;
-      btn.textContent = 'Switch';
+    .catch(function(e){
+      btn.disabled = false; btn.textContent = 'Apply';
       alert('Switch failed: ' + e);
     });
 }
@@ -547,13 +1166,14 @@ function restartTranscriber() {
   document.getElementById('latest-empty').style.display = '';
   document.getElementById('latest-meta').style.display = 'none';
   document.getElementById('latest-text').style.display = 'none';
-  document.getElementById('latest-empty').textContent = 'Restarting…';
-  // Clear PERF row immediately — don't wait for next poll
+  _set('latest-empty', 'Restarting…');
   ['ps-ratio','ps-rt-pct','ps-dur','ps-proc'].forEach(function(id){
-    var el = document.getElementById(id);
-    el.textContent = '—'; el.className = 'ps-val';
+    var e = document.getElementById(id);
+    if (!e) return;
+    e.innerHTML = '—<span class="unit">' + (id==='ps-ratio'?'x':id==='ps-rt-pct'?'%':'s') + '</span>';
+    e.className = 'v dim';
   });
-  document.getElementById('ps-count').textContent = '0';
+  _set('ps-count', '0');
   document.getElementById('ps-chart').innerHTML = '';
 }
 
