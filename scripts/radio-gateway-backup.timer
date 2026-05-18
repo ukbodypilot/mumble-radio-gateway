@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Radio Gateway backup every 6 hours
+
+[Timer]
+# Wait 10 min after boot so the system has settled before the first run.
+OnBootSec=10min
+OnUnitActiveSec=6h
+# Catch up if the machine was off when a tick would have fired.
+Persistent=true
+Unit=radio-gateway-backup.service
+
+[Install]
+WantedBy=timers.target

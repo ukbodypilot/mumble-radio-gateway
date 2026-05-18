@@ -1476,6 +1476,22 @@ if [ -f "$PS_SERVICE_SRC" ]; then
     echo "  ✓ radio-gateway-powersave.service installed and enabled"
 fi
 
+# Install backup service + timer — pushes operational docs + state files to
+# gdrive every 6 hours (only if rclone gdrive remote is configured).
+BK_SVC_SRC="$SCRIPT_DIR/radio-gateway-backup.service"
+BK_TIM_SRC="$SCRIPT_DIR/radio-gateway-backup.timer"
+if [ -f "$BK_SVC_SRC" ] && [ -f "$BK_TIM_SRC" ]; then
+    sudo cp "$BK_SVC_SRC" /etc/systemd/system/radio-gateway-backup.service
+    sudo cp "$BK_TIM_SRC" /etc/systemd/system/radio-gateway-backup.timer
+    sudo systemctl daemon-reload
+    if rclone listremotes 2>/dev/null | grep -q '^gdrive:'; then
+        sudo systemctl enable --now radio-gateway-backup.timer 2>/dev/null || true
+        echo "  ✓ radio-gateway-backup.timer installed and active (every 6h)"
+    else
+        echo "  ⚠ radio-gateway-backup.timer installed but NOT enabled (no rclone gdrive: remote configured)"
+    fi
+fi
+
 # Install Telegram bot service (not enabled — requires config first)
 TG_SERVICE_SRC="$GATEWAY_DIR/tools/telegram-bot.service"
 TG_SERVICE_DEST="/etc/systemd/system/telegram-bot.service"

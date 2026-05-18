@@ -1,0 +1,29 @@
+[Unit]
+Description=Radio Gateway operational docs backup to Google Drive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=user
+Group=user
+WorkingDirectory=/home/user/Downloads/radio-gateway
+Environment=HOME=/home/user
+
+# Push the docs and state files that are gitignored and hand-edited or
+# accumulated at runtime. Skips files that don't exist so a fresh box
+# doesn't fail. Secrets (gateway_config.txt) are deliberately excluded —
+# they should be transferred manually between machines.
+#
+# Restore on a new host:
+#   rclone copy gdrive:radio-gateway/manager/ /home/user/Downloads/radio-gateway/
+ExecStart=/bin/bash -c '\
+  cd /home/user/Downloads/radio-gateway || exit 1; \
+  for f in hourly.md daily.md SYSTEM_MANIFEST.md \
+           manager_state.json manager_reports.jsonl \
+           .transcribe_settings.json; do \
+    if [ -f "$f" ]; then \
+      rclone copy --quiet "$f" gdrive:radio-gateway/manager/ \
+        && echo "  uploaded $f"; \
+    fi; \
+  done'
