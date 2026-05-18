@@ -4,6 +4,42 @@ All notable changes to Radio Gateway.
 
 ## [Unreleased]
 
+## [3.7.0] -- 2026-05-18
+
+### Added — Distributed transcription pool
+
+The transcription system is now multi-machine. VAD continues to run locally, but ASR inference can be local, remote, or routed between both per utterance.
+
+- **`transcribe_engine.py`** — shared module: `LocalInferenceEngine` (Moonshine or Whisper via faster-whisper in-process), `RemoteEngine` (HTTP POST to a worker with background `/status` polling), `_pick_worker()` dispatcher with length-based tier routing and least-busy fallback.
+- **`tools/transcribe_worker.py`** — standalone HTTP server wrapping `LocalInferenceEngine`. Endpoints: `POST /transcribe` (raw float32 audio in, JSON `{text, proc_time}` out), `POST /model` (runtime model swap with old-model release + `malloc_trim`), `GET /status` (model state, CPU temp, fan RPM, RAM, last switch error). Reads `WHISPER_CPU_THREADS` from env to cap CPU thread count on thermally constrained boxes.
+- **Pool modes**: `off`, `local`, `remote`, `pool`. Pool mode adds length-based routing — clips under `TRANSCRIBE_SPLIT_THRESHOLD_SECS` prefer Moonshine engines (no fixed-window cost); longer clips prefer Whisper engines. Soft fallback to the other tier on outage.
+- **New config keys**: `TRANSCRIBE_MODE`, `TRANSCRIBE_REMOTE_URLS` (comma-separated), `TRANSCRIBE_SPLIT_THRESHOLD_SECS` (default 10). `TRANSCRIBE_REMOTE_URL` accepted as alias.
+- **Out-of-order result handling** — utterances inserted into the log sorted by `start_time` (VAD close time) not arrival order, so pool completions stay chronologically correct.
+- **Per-engine telemetry** — `dispatched`, `inflight`, `avg_ratio`, `ram_mb`, `cpu_temp_c`, `fan_rpm`, `last_switch_error` on every worker card.
+- **Web UI** at **/transcribe** rebuilt: numbered sections (`01 / Signal`, `02 / Throughput`, `03 / Resources`, `04 / Workers`, …), fixed-width tabular numerics so values never push neighbouring elements, worker cards with stable slots, mode selector + split threshold slider.
+
+### Added — Audio meter unification (RG.vu)
+
+System-wide upgrade of every audio level / VAD meter to hardware-VU physics.
+
+- **`web_pages/common.js`** — `RG.vu` engine: rAF interpolator with asymmetric attack (~50ms) / decay (~500ms) envelope, peak-hold sliver, clip-path based gradient reveal so green→amber→red zones only become visible when the bar actually reaches their tick locations (no more whole-bar colour flipping).
+- **Adoption** in dashboard link bars, sdr level + per-channel bars, monitor, d75, packet, kv4p, transcribe, and the outer-frame shell.html strip (AIOC, KV4P, SDR1/2, REMOTE, AN, SP, MON, link endpoints). All polls at 1Hz but render at 60fps via the rAF loop.
+- **System bars** (sysBar — CPU/RAM/Swap/Disk) fixed: was flipping the whole bar to yellow/red when crossing 60%/80%; now uses a fixed-width gradient revealed by width, so amber/red zones only appear when the bar fills past their tick positions.
+
+### Added — Gateway docs persistence
+
+- **`scripts/radio-gateway-backup.service`** + `.timer` — 6-hourly rclone push of operational docs (`hourly.md`, `daily.md`, `SYSTEM_MANIFEST.md`) and state files (`manager_state.json`, `manager_reports.jsonl`, `.transcribe_settings.json`) to `gdrive:radio-gateway/manager/`. Secrets (`gateway_config.txt`) deliberately excluded.
+- **Manager reports JSONL** retention is open-ended on disk (was un-bounded; the 7-day prune got reverted at user request — reports persist across reboots and the manager UI reads up to the last 100).
+
+### Fixed
+
+- **`install.sh` package-manager detection** ([#3](https://github.com/ukbodypilot/radio-gateway/issues/3)) — was matching the Debian-shipped `pacman` arcade-game package and assuming Arch on a Raspberry Pi OS install. Now reads `/etc/os-release` first; command-existence fallback checks for `/etc/pacman.d` before accepting pacman.
+- **`radio-gateway-powersave.service`** — was failing since May 10 because USB devices (GPS dongle, RTL2838) had migrated to a different bus. Rewritten to match devices by `idVendor:idProduct` not hardcoded path; checked into repo + installed by the installer.
+- **D75 watchdog silent death** — the BT serial reconnect loop's outer thread had no `try/except`, so a stray exception killed the watchdog and left the plugin in a half-broken state (audio still flowing, serial dead, no recovery attempts, multiple reconnects per day). Wrapped the loop body, added a 60-second heartbeat log, switched the spawn to `python3 -u` so any future failure prints reach the journal immediately.
+- **dell-smm-hwmon module** loaded + persisted on the gateway Optiplex so the local LocalInferenceEngine's fan RPM telemetry populates (CPU fan + chassis fan are now visible alongside core temp).
+- **Manager reports rendering** — newer reports use a dict for `findings` while older ones used a list; the renderer assumed list and silently crashed on dicts, leaving the page blank. Handles both shapes now.
+- **Pool-aware fallback** — `_pick_worker()` filters to ready engines before tier selection. If the long-tier remote is offline, long clips fall back to the local Moonshine engine instead of vanishing into a failed HTTP POST.
+
 ## [3.6.0] -- 2026-05-08
 
 ### Added — Fleet Manager

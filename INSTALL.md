@@ -97,7 +97,7 @@ The script is broken into 15 numbered phases. The main ones:
 
 1. System packages (`pacman`/`apt`): Python, PortAudio, HIDAPI, FFmpeg, Opus, alsa-utils, tmux, avahi.
 2. ALSA loopback module (`snd-aloop`): persistent load + validation.
-3. Python packages (see `requirements.txt`): numpy, scipy, pyaudio, pymumble, moonshine-onnx (transcription), silero-vad, pyrnnoise (denoise), mcp, etc.
+3. Python packages (see `requirements.txt`): numpy, scipy, pyaudio, pymumble, useful-moonshine-onnx + faster-whisper (transcription engines), silero-vad, pyrnnoise (denoise), mcp, etc. The pool dispatcher can route between local and remote workers — see [docs/transcription-pool.md](docs/transcription-pool.md) for multi-machine deployment.
 4. KV4P-HT Python driver cloned + installed editable at `~/kv4p-ht-python`.
 5. UDEV rules for KV4P, AIOC, optionally CH340 USB relay modules.
 6. User added to `audio` + serial groups; realtime limits + passwordless sudo for `modprobe`.
@@ -253,7 +253,7 @@ Project-local runtime files (all inside the repo directory):
 | `gateway_config.txt`                | Your edited config (NEVER committed — in `.gitignore`)                     |
 | `routing_config.json`               | Bus/connection topology (edited via `/routing` page)                       |
 | `sdr_channels.json`                 | SDR channel definitions (edited via `/sdr` page)                           |
-| `.transcribe_settings.json`         | Moonshine + VAD thresholds (edited via `/transcribe` page)                 |
+| `.transcribe_settings.json`         | Engine + VAD + pool routing settings (edited via `/transcribe` page)       |
 | `recordings/`                       | Loop recorder segments + on-demand exports                                 |
 | `logs/`                             | Rolling console logs                                                       |
 

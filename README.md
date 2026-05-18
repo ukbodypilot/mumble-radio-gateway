@@ -628,21 +628,58 @@ REPEATER_RADIUS_KM = 50
 
 ## Transcription
 
-Live voice-to-text using [Moonshine](https://github.com/usefulsensors/moonshine) ONNX (local, no cloud API, English-only). Each transcription is tagged with the source radio name and frequency.
+Live voice-to-text. Local **or** distributed across a pool of machines — VAD runs on the gateway, ASR inference can run locally, on a remote worker, or be routed between both by clip length. No cloud APIs.
 
-- **ASR engine:** Moonshine base/tiny -- CPU-efficient ONNX inference, real-time on a Haswell i5. Much faster and lighter than Whisper.
-- **VAD:** Silero v5 ML speech classifier with probability threshold (default 0.5) and hysteresis. Ignores squelch tails, carrier noise, DTMF, pilot tones, and dead air that trigger a dBFS envelope follower.
-- **Neural denoise (optional):** RNNoise or DeepFilterNet 3 (user-selectable engine) wet/dry mix on the ASR audio path. Toggle + engine select in transcribe Controls panel.
-- **Anti-aliased resampling:** polyphase filter (scipy `resample_poly`) from 48 kHz to 16 kHz -- no aliasing artifacts from bare decimation.
-- **Hallucination filter:** drops common no-speech outputs ("thanks for watching", etc.) from Moonshine's output.
-- Frequency + source tagging: each entry shows radio name and frequency (e.g. `SDR1 · 446.760 MHz`).
-- Forward to Mumble chat and/or Telegram.
-- Configurable: model size, VAD threshold, VAD hold, min duration, audio boost, denoise mix.
+### Architecture
+
+Three pieces:
+
+- **VAD (always local)** — Silero v5 ML speech classifier with probability threshold (default 0.5) and hysteresis. Ignores squelch tails, carrier noise, DTMF, pilot tones, and dead air that an envelope follower would trip on. VAD segments stream audio into utterances and sends them to the dispatcher.
+- **Pool dispatcher** — picks an engine per utterance. Supports demand-based (least-busy) and length-based routing.
+- **Inference engines** — `LocalInferenceEngine` runs in the gateway process; `RemoteEngine` POSTs the audio to a `transcribe_worker.py` HTTP server on another machine.
+
+Two ASR families:
+- **Moonshine** (tiny / base) — fast, linear cost with clip length, no fixed window. Wins on short clips.
+- **Whisper** (small.en / medium.en / large-v3-turbo via faster-whisper) — much better accuracy on longer/harder audio but has a fixed ~30-second encoder cost per call.
+
+### Pool modes
+
+| Mode | Behaviour |
+|------|-----------|
+| `off` | Transcription disabled |
+| `local` | Local engine only |
+| `remote` | Remote workers only |
+| `pool` | Local + Remote, with optional length-based routing |
+
+When mode is `pool` and `TRANSCRIBE_SPLIT_THRESHOLD_SECS > 0`, clips shorter than the threshold prefer Moonshine engines and longer clips prefer Whisper engines. Soft fallback to the other tier if the preferred is empty (single worker down, etc.). Set the threshold to 0 to disable length routing — workers are picked by least-busy only.
+
+### Config
 
 ```ini
 ENABLE_TRANSCRIPTION = true
-TRANSCRIBE_MODEL = base
+TRANSCRIBE_MODE = pool                                      # off | local | remote | pool
+TRANSCRIBE_MODEL = moonshine/base                           # local engine model
+TRANSCRIBE_REMOTE_URLS = http://192.168.2.109:9800          # comma-separated remote worker URLs
+TRANSCRIBE_SPLIT_THRESHOLD_SECS = 10                        # 0 = least-busy only; >0 = length routing
 ```
+
+### Remote worker
+
+`tools/transcribe_worker.py` is a standalone HTTP server that wraps `LocalInferenceEngine`. Deploy two files (`transcribe_engine.py`, `transcribe_worker.py`) and a model package (`useful-moonshine-onnx` or `faster-whisper`) onto another Linux box, run as a systemd user service, point the gateway at it.
+
+See [docs/transcription-pool.md](docs/transcription-pool.md) for the full deployment guide, telemetry payload, health monitoring, and worker tuning (CPU thread cap, thermal management).
+
+### Other features
+
+- **Frequency + source tagging** — each entry shows radio name and frequency (e.g. `SDR1 · 446.760 MHz`)
+- **Anti-aliased resampling** — polyphase filter (scipy `resample_poly`) from 48 kHz to 16 kHz
+- **Hallucination filter** — drops common no-speech outputs ("thanks for watching", etc.)
+- **Neural denoise (per bus)** — RNNoise or DeepFilterNet 3 in the routing-page bus controls; the transcription sink receives whatever audio the bus produces
+- **Forward to Mumble chat / Telegram / gateway log** — per-utterance cross-posting
+- **Live model switching** for remote workers via the transcribe page (no restart)
+- **Per-engine telemetry** — dispatched count, in-flight, avg ratio, CPU temp, fan RPM, RAM
+- **VU-style meters** with attack/decay envelope and zone-based level coloring
+- **7-day retention** for the manager reports log + 6-hourly gdrive backup of operational docs
 
 ![Transcription](docs/screenshots/transcribe.png)
 
