@@ -180,51 +180,77 @@ class D75Plugin(RadioPlugin):
         return False
 
     def _watchdog(self):
-        """Monitor BT connection; reconnect when serial or audio drops."""
+        """Monitor BT connection; reconnect when serial or audio drops.
+
+        The whole body is wrapped in try/except — a stray exception used to
+        silently kill the watchdog thread, leaving the plugin in a state where
+        serial was dead but nothing was trying to recover it. Also logs a
+        heartbeat every minute so we can verify the watchdog is alive even
+        when nothing's wrong.
+        """
+        _hb_counter = 0
+        _hb_interval = max(1, 60 // self._RECONNECT_DELAY)  # heartbeat ~60s
         while self._running:
             time.sleep(self._RECONNECT_DELAY)
             if not self._running:
                 break
-            serial_ok = self._serial and self._serial.connected
-            rx_alive = self._rx_thread and self._rx_thread.is_alive()
+            try:
+                serial_ok = self._serial and self._serial.connected
+                rx_alive = self._rx_thread and self._rx_thread.is_alive()
 
-            do_full = not serial_ok or not rx_alive
+                _hb_counter += 1
+                if _hb_counter >= _hb_interval:
+                    _hb_counter = 0
+                    print(f"[D75] Watchdog: alive (serial={serial_ok} rx={rx_alive})", flush=True)
 
-            if not serial_ok and rx_alive:
-                # RFCOMM ch2 died but SCO is still alive — try serial-only first.
-                # After _SERIAL_ONLY_MAX failures the radio is probably holding a
-                # stale ch2 handle; escalate to full reconnect to clear it.
-                print(f"[D75] Watchdog: serial lost, audio alive — serial-only reconnect", flush=True)
-                for attempt in range(1, self._SERIAL_ONLY_MAX + 1):
-                    if not self._running:
-                        return
-                    if self._reconnect_serial_only():
-                        do_full = False
-                        break
-                    if attempt < self._SERIAL_ONLY_MAX:
-                        print(f"[D75] Watchdog: serial-only {attempt}/{self._SERIAL_ONLY_MAX} failed, retry in {self._RECONNECT_DELAY}s", flush=True)
+                do_full = not serial_ok or not rx_alive
+
+                if not serial_ok and rx_alive:
+                    # RFCOMM ch2 died but SCO is still alive — try serial-only first.
+                    # After _SERIAL_ONLY_MAX failures the radio is probably holding a
+                    # stale ch2 handle; escalate to full reconnect to clear it.
+                    print(f"[D75] Watchdog: serial lost, audio alive — serial-only reconnect", flush=True)
+                    for attempt in range(1, self._SERIAL_ONLY_MAX + 1):
+                        if not self._running:
+                            return
+                        if self._reconnect_serial_only():
+                            do_full = False
+                            break
+                        if attempt < self._SERIAL_ONLY_MAX:
+                            print(f"[D75] Watchdog: serial-only {attempt}/{self._SERIAL_ONLY_MAX} failed, retry in {self._RECONNECT_DELAY}s", flush=True)
+                            time.sleep(self._RECONNECT_DELAY)
+                        else:
+                            print(f"[D75] Watchdog: serial-only {attempt}/{self._SERIAL_ONLY_MAX} failed — escalating to full reconnect", flush=True)
+
+                if do_full:
+                    print(f"[D75] Watchdog: full reconnect (serial={serial_ok} rx={rx_alive})", flush=True)
+                    try:
+                        if self._audio:
+                            self._audio.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        if self._serial:
+                            self._serial.disconnect()
+                    except Exception:
+                        pass
+                    self._serial = None
+                    self._audio = None
+                    time.sleep(2)
+                    _bt_tries = 0
+                    while self._running and not self._bt_connect():
+                        _bt_tries += 1
+                        print(f"[D75] Watchdog: BT retry #{_bt_tries} in {self._RECONNECT_DELAY}s", flush=True)
                         time.sleep(self._RECONNECT_DELAY)
-                    else:
-                        print(f"[D75] Watchdog: serial-only {attempt}/{self._SERIAL_ONLY_MAX} failed — escalating to full reconnect", flush=True)
-
-            if do_full:
-                print(f"[D75] Watchdog: full reconnect (serial={serial_ok} rx={rx_alive})", flush=True)
-                try:
-                    if self._audio:
-                        self._audio.disconnect()
-                except Exception:
-                    pass
-                try:
-                    if self._serial:
-                        self._serial.disconnect()
-                except Exception:
-                    pass
-                self._serial = None
-                self._audio = None
-                time.sleep(2)
-                while self._running and not self._bt_connect():
-                    print(f"[D75] Watchdog: BT retry in {self._RECONNECT_DELAY}s", flush=True)
-                    time.sleep(self._RECONNECT_DELAY)
+                    if self._running:
+                        print(f"[D75] Watchdog: BT reconnected after {_bt_tries} retr{'y' if _bt_tries==1 else 'ies'}", flush=True)
+            except Exception as e:
+                # Anything unexpected — log it loudly but keep the watchdog
+                # thread alive so the link doesn't fall into the unrecovered
+                # state where nothing's watching for the next drop.
+                import traceback
+                print(f"[D75] Watchdog: caught exception, continuing: {type(e).__name__}: {e}", flush=True)
+                traceback.print_exc()
 
     def teardown(self):
         """Disconnect Bluetooth."""
