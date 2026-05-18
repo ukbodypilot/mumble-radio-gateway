@@ -275,9 +275,10 @@
   .util-strip .v.warn { color: var(--t-warn); }
   .util-strip .v.err  { color: var(--t-err); }
 
-  /* Spark of recent ratios */
+  /* Spark of recent ratios — green <1x, orange 1-3x, red >3x */
   .spark { display: inline-flex; align-items: flex-end; gap: 2px; height: 22px; }
   .spark-bar { width: 4px; min-height: 2px; background: var(--t-ok); }
+  .spark-bar.warn { background: var(--t-warn); }
   .spark-bar.over { background: var(--t-err); }
 </style>
 </head>
@@ -629,7 +630,7 @@ function poll() {
       } else {
         var ratioEl = document.getElementById('ps-ratio');
         ratioEl.innerHTML = stats.avg_ratio + '<span class="unit">x</span>';
-        ratioEl.className = 'v ' + (stats.avg_ratio < 1 ? 'ok' : 'err');
+        ratioEl.className = 'v ' + (stats.avg_ratio < 1 ? 'ok' : stats.avg_ratio <= 3 ? 'warn' : 'err');
         var rtEl = document.getElementById('ps-rt-pct');
         rtEl.innerHTML = (stats.realtime_pct || 0) + '<span class="unit">%</span>';
         rtEl.className = 'v ' + ((stats.realtime_pct || 0) >= 80 ? 'ok' : (stats.realtime_pct || 0) >= 50 ? 'warn' : 'err');
@@ -640,7 +641,8 @@ function poll() {
         for (var i = 0; i < recent.length; i++) {
           var r = recent[i];
           var h = Math.min(22, Math.max(2, r.ratio * 14));
-          html += '<div class="spark-bar' + (r.ratio < 1 ? '' : ' over') + '" title="' + r.duration + 's→' + r.proc_time + 's (' + r.ratio + 'x)" style="height:' + h + 'px"></div>';
+          var sCls = r.ratio < 1 ? '' : r.ratio <= 3 ? ' warn' : ' over';
+          html += '<div class="spark-bar' + sCls + '" title="' + r.duration + 's→' + r.proc_time + 's (' + r.ratio + 'x)" style="height:' + h + 'px"></div>';
         }
         document.getElementById('ps-chart').innerHTML = html;
       }
@@ -698,7 +700,7 @@ function poll() {
           var ratioCls = 'v dim', ratioStr = '—<span class="unit">x</span>';
           if (w.avg_ratio != null) {
             ratioStr = w.avg_ratio + '<span class="unit">x</span>';
-            ratioCls = 'v ' + (w.avg_ratio < 1 ? 'ok' : 'err');
+            ratioCls = 'v ' + (w.avg_ratio < 1 ? 'ok' : w.avg_ratio <= 3 ? 'warn' : 'err');
           }
           var fanStr = w.fan_rpm != null ? w.fan_rpm + '<span class="unit">RPM</span>' : '—';
           var ramStr = w.ram_mb != null ? w.ram_mb + '<span class="unit">MB</span>' : '—';
