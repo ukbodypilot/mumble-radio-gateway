@@ -1463,6 +1463,19 @@ else
     echo "  ⚠ Service template not found ($SERVICE_TEMPLATE) — skipping"
 fi
 
+# Install power-save service — sets schedutil governor + USB autosuspend
+# on safely-suspendable devices (GPS dongle, unused RTL2838). Matches by
+# VID:PID so port-swaps don't break it.
+PS_SERVICE_SRC="$SCRIPT_DIR/radio-gateway-powersave.service"
+PS_SERVICE_DEST="/etc/systemd/system/radio-gateway-powersave.service"
+if [ -f "$PS_SERVICE_SRC" ]; then
+    sudo cp "$PS_SERVICE_SRC" "$PS_SERVICE_DEST"
+    sudo systemctl daemon-reload
+    sudo systemctl enable radio-gateway-powersave.service 2>/dev/null || true
+    sudo systemctl restart radio-gateway-powersave.service 2>/dev/null || true
+    echo "  ✓ radio-gateway-powersave.service installed and enabled"
+fi
+
 # Install Telegram bot service (not enabled — requires config first)
 TG_SERVICE_SRC="$GATEWAY_DIR/tools/telegram-bot.service"
 TG_SERVICE_DEST="/etc/systemd/system/telegram-bot.service"
