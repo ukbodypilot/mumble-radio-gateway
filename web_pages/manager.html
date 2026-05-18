@@ -147,30 +147,53 @@ function applyStatus(d) {
   if (d.last_run_ts) last.textContent = (d.last_run_type || '') + ' · ' + d.last_run_ts;
 }
 
+function _esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+function _renderFindings(f) {
+  // Older reports use a flat list of strings; newer ones nest a dict.
+  // Handle both so a single bad shape doesn't blank the entire window.
+  if (f == null) return '';
+  if (Array.isArray(f)) {
+    if (!f.length) return '';
+    return '<ul>' + f.map(function(x){ return '<li>' + _esc(x) + '</li>'; }).join('') + '</ul>';
+  }
+  if (typeof f === 'object') {
+    var s;
+    try { s = JSON.stringify(f, null, 2); }
+    catch (e) { s = String(f); }
+    return '<pre style="font-size:var(--f-xs);color:var(--t-text-dim);white-space:pre-wrap;margin:0;">' + _esc(s) + '</pre>';
+  }
+  return '<div>' + _esc(f) + '</div>';
+}
+
 function loadReports() {
   fetch('/manager/reports').then(function(r){return r.json();}).then(function(reports){
     var box = document.getElementById('report-box');
     if (!reports.length) { box.innerHTML = '<span class="dim">No reports yet.</span>'; return; }
     var html = '';
     for (var i = reports.length - 1; i >= 0; i--) {
-      var r = reports[i];
+      var r = reports[i] || {};
       var sev = r.severity || 'ok';
       var cls = sev === 'elevated' ? 'err' : sev === 'warning' ? 'warn' : 'ok';
-      var findings = (r.findings || []).map(function(f){
-        return '<li>' + f.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</li>';
-      }).join('');
+      var findingsHtml = '';
+      try { findingsHtml = _renderFindings(r.findings); }
+      catch (e) { findingsHtml = '<div class="err">Render error: ' + _esc(e.message) + '</div>'; }
       html += '<div class="rpt-entry">'
             + '<div class="rpt-header" onclick="toggleRpt(this)">'
             + '<span class="dot ' + cls + '">&#x25cf;</span>'
-            + '<b>' + (r.task || '') + '</b>'
-            + '<span style="color:var(--t-text-dim);font-size:var(--f-xs)">' + (r.ts || '') + '</span>'
-            + '<span class="' + cls + '" style="font-size:var(--f-xs)">' + (r.summary || '').replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>'
+            + '<b>' + _esc(r.task || '') + '</b>'
+            + '<span style="color:var(--t-text-dim);font-size:var(--f-xs)">' + _esc(r.ts || '') + '</span>'
+            + '<span class="' + cls + '" style="font-size:var(--f-xs)">' + _esc(r.summary || '') + '</span>'
             + '</div>'
-            + (findings ? '<div class="rpt-body"><ul>' + findings + '</ul></div>' : '')
+            + (findingsHtml ? '<div class="rpt-body">' + findingsHtml + '</div>' : '')
             + '</div>';
     }
     box.innerHTML = html;
-  }).catch(function(){});
+  }).catch(function(e){
+    console.error('loadReports failed:', e);
+    var box = document.getElementById('report-box');
+    if (box) box.innerHTML = '<span class="err">Failed to load reports: ' + _esc(e.message || e) + '</span>';
+  });
 }
 
 function toggleRpt(hdr) {
