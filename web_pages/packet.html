@@ -235,12 +235,12 @@
     </div>
     <div class="pkt-row pkt-row-center">
       <span class="pkt-meter-label">Radio→TNC:</span>
-      <div class="pkt-meter"><div id="st-rx-bar" class="pkt-meter-fill ok"></div></div>
+      <div class="pkt-meter vu vu-tone-mono"><div id="st-rx-bar" class="pkt-meter-fill ok"></div></div>
       <span id="st-rx-level" class="pkt-val pkt-meter-val">0</span>
     </div>
     <div class="pkt-row pkt-row-center">
       <span class="pkt-meter-label">DW decode:</span>
-      <div class="pkt-meter"><div id="st-dw-bar2" class="pkt-meter-fill accent"></div></div>
+      <div class="pkt-meter vu vu-tone-mono"><div id="st-dw-bar2" class="pkt-meter-fill accent"></div></div>
       <span id="st-dw-level" class="pkt-val cyan pkt-meter-val">—</span>
     </div>
     <div class="pkt-row pkt-row-divider">
@@ -444,10 +444,10 @@ function pollStatus() {
 
     // Audio level bars
     var rxLvl = s.rx_audio_level || 0;
-    document.getElementById('st-rx-bar').style.width = Math.min(100, rxLvl) + '%';
+    if (window.RG && RG.vu) RG.vu.set(document.getElementById('st-rx-bar').parentElement, Math.min(100, rxLvl));
     document.getElementById('st-rx-level').textContent = rxLvl;
     var dwLvl = s.dw_audio_level || 0;
-    document.getElementById('st-dw-bar2').style.width = Math.min(100, dwLvl) + '%';
+    if (window.RG && RG.vu) RG.vu.set(document.getElementById('st-dw-bar2').parentElement, Math.min(100, dwLvl));
     document.getElementById('st-dw-level').textContent = dwLvl || '—';
 
     // Direwolf log tail

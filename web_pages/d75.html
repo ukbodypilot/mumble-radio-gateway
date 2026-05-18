@@ -401,7 +401,7 @@
 
       <div class="d75-row">
         <span class="d75-label">S:</span>
-        <div class="d75-meter">
+        <div class="d75-meter vu">
           <div id="d75-a-sig-bar" class="d75-meter-fill"></div>
           <span id="d75-a-sig-text" class="d75-meter-text">S0</span>
         </div>
@@ -488,7 +488,7 @@
 
       <div class="d75-row">
         <span class="d75-label">S:</span>
-        <div class="d75-meter">
+        <div class="d75-meter vu">
           <div id="d75-b-sig-bar" class="d75-meter-fill"></div>
           <span id="d75-b-sig-text" class="d75-meter-text">S0</span>
         </div>
@@ -991,7 +991,7 @@ function updateD75(d) {
     document.getElementById('d75-a-mode').textContent = _modes[String(a.mode)] || '?';
     document.getElementById('d75-a-power').textContent = _powers[String(a.power)] || '';
     var aSig = a.signal || 0;
-    document.getElementById('d75-a-sig-bar').style.width = (aSig / 5 * 100) + '%';
+    if (window.RG && RG.vu) RG.vu.set(document.getElementById('d75-a-sig-bar').parentElement, aSig / 5 * 100);
     document.getElementById('d75-a-sig-text').textContent = 'S' + aSig;
     if (Date.now() > _toneEditUntil[0] && Date.now() > _ctrlEditUntil) {
       document.getElementById('d75-a-mode-sel').value = a.mode != null ? a.mode : 0;
@@ -1014,7 +1014,7 @@ function updateD75(d) {
     document.getElementById('d75-b-mode').textContent = _modes[String(b.mode)] || '?';
     document.getElementById('d75-b-power').textContent = _powers[String(b.power)] || '';
     var bSig = b.signal || 0;
-    document.getElementById('d75-b-sig-bar').style.width = (bSig / 5 * 100) + '%';
+    if (window.RG && RG.vu) RG.vu.set(document.getElementById('d75-b-sig-bar').parentElement, bSig / 5 * 100);
     document.getElementById('d75-b-sig-text').textContent = 'S' + bSig;
     if (Date.now() > _toneEditUntil[1] && Date.now() > _ctrlEditUntil) {
       document.getElementById('d75-b-mode-sel').value = b.mode != null ? b.mode : 0;

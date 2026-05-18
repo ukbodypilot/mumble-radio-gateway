@@ -188,9 +188,9 @@
   .ch-level-wrap { width:80px; height:14px; background:var(--t-btn);
                    border:1px solid var(--t-border); border-radius:var(--r-sm);
                    overflow:hidden; flex-shrink:0; }
-  .ch-level-bar { height:100%; width:0%; background:var(--t-ok); }
-  .ch-level-bar.warn { background:var(--t-warn); }
-  .ch-level-bar.err  { background:var(--t-err); }
+  .ch-level-fill { height:100%; width:0%; background:var(--t-ok); }
+  .ch-level-fill.warn { background:var(--t-warn); }
+  .ch-level-fill.err  { background:var(--t-err); }
   .ch-freq { width:120px; font-family:inherit; }
   .ch-mod  { width:70px; }
   .ch-sq   { width:60px; }
@@ -237,7 +237,7 @@
     </div>
     <div class="audio-row">
       <span class="lbl">Audio</span>
-      <div class="lvl-wrap"><div id="sdr-audio-bar" class="lvl-fill"></div></div>
+      <div class="lvl-wrap vu"><div id="sdr-audio-bar" class="lvl-fill"></div></div>
       <span id="sdr-audio-val" class="lvl-val">0</span>
     </div>
   </div>
@@ -250,7 +250,7 @@
     </div>
     <div class="audio-row">
       <span class="lbl">Audio</span>
-      <div class="lvl-wrap"><div id="sdr2-audio-bar" class="lvl-fill"></div></div>
+      <div class="lvl-wrap vu"><div id="sdr2-audio-bar" class="lvl-fill"></div></div>
       <span id="sdr2-audio-val" class="lvl-val">0</span>
     </div>
   </div>
@@ -527,7 +527,7 @@
     </div>
     <div class="audio-row">
       <span class="lbl">Audio</span>
-      <div class="lvl-wrap"><div id="single-audio-bar" class="lvl-fill"></div></div>
+      <div class="lvl-wrap vu"><div id="single-audio-bar" class="lvl-fill"></div></div>
       <span id="single-audio-val" class="lvl-val">0</span>
     </div>
   </div>
@@ -679,9 +679,18 @@ function setModeStatus(text, cls) {
 function setLvlClass(id, pct) {
   var el = document.getElementById(id);
   if (!el) return;
-  el.style.width = pct + '%';
-  el.classList.toggle('warn', pct >= 70 && pct < 90);
-  el.classList.toggle('err',  pct >= 90);
+  // Route through the shared VU engine so we get attack/decay envelope
+  // + peak-hold sliver + zone-correct color reveal (no more amber/red
+  // bleeding into the bar before the level actually reaches them).
+  // The element's parent is the wrap, which needs class "vu" — handled
+  // in the markup via the .lvl-wrap.vu class.
+  if (window.RG && RG.vu) {
+    RG.vu.set(el.parentElement, pct);
+  } else {
+    el.style.width = pct + '%';
+    el.classList.toggle('warn', pct >= 70 && pct < 90);
+    el.classList.toggle('err',  pct >= 90);
+  }
 }
 
 /* ── Mode switching ─────────────────────────────────────────────────── */
@@ -789,7 +798,7 @@ function renderChannelList(channels) {
     var ch = singleChannels[i];
     html += '<div class="ch-row" data-idx="' + i + '">';
     html += '<span class="ch-num">' + (i + 1) + '</span>';
-    html += '<div class="ch-level-wrap"><div class="ch-level-bar" id="ch-level-' + i + '"></div></div>';
+    html += '<div class="ch-level-wrap vu"><div class="ch-level-fill" id="ch-level-' + i + '"></div></div>';
     html += '<input type="number" step="0.00125" min="0.001" max="2000" value="' + (ch.frequency || ch.freq || 446.5) + '" class="si ch-freq" title="Frequency (MHz)">';
     html += '<select class="si ch-mod" title="Modulation">';
     html += '<option value="nfm"' + ((ch.modulation || 'nfm') === 'nfm' ? ' selected' : '') + '>NFM</option>';
@@ -1133,9 +1142,10 @@ createPoller('/sdrstatus', 1000, function(d) {
         var lastW = _chLevelWidths.get(ci);
         if (lastW === undefined || Math.abs(p - lastW) > 1) {
           _chLevelWidths.set(ci, p);
-          bar.style.width = p + '%';
-          bar.classList.toggle('warn', p >= 70 && p < 90);
-          bar.classList.toggle('err',  p >= 90);
+          // Route through VU engine; bar.parentElement is the wrap with
+          // class "vu" (added in markup). Engine does the colour zones.
+          if (window.RG && RG.vu) RG.vu.set(bar.parentElement, p);
+          else { bar.style.width = p + '%'; }
         }
       }
     }

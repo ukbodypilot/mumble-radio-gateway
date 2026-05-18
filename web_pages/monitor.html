@@ -82,7 +82,7 @@
   </div>
   <div class="mon-level-box">
     <span class="mon-level-label">Level</span>
-    <div class="mon-level-track"><div id="mon-level-bar" class="mon-level-fill"></div></div>
+    <div class="mon-level-track vu"><div id="mon-level-bar" class="mon-level-fill"></div></div>
     <div class="mon-db-line"><span id="mon-db">—</span> dB</div>
   </div>
   <div class="mon-stats">
@@ -181,10 +181,12 @@ function monStartAudio() {
     _monFrameCount++;
     if (_monFrameCount % 4 === 0) {
       var pct = Math.min(100, Math.max(0, Math.round((db + 60) * (100 / 60))));
-      var bar = document.getElementById('mon-level-bar');
-      bar.style.width = pct + '%';
-      bar.classList.toggle('warn', pct >= 70 && pct < 90);
-      bar.classList.toggle('err',  pct >= 90);
+      if (window.RG && RG.vu) {
+        RG.vu.set(document.getElementById('mon-level-bar').parentElement, pct);
+      } else {
+        var bar = document.getElementById('mon-level-bar');
+        bar.style.width = pct + '%';
+      }
       document.getElementById('mon-db').textContent = db > -100 ? db.toFixed(1) : '—';
     }
 
@@ -246,9 +248,8 @@ function monStop() {
   monReleaseWakeLock();
   monStopSilentAudio();
   monSetState('', 'Disconnected');
-  var bar = document.getElementById('mon-level-bar');
-  bar.style.width = '0%';
-  bar.classList.remove('warn','err');
+  if (window.RG && RG.vu) RG.vu.set(document.getElementById('mon-level-bar').parentElement, 0);
+  else document.getElementById('mon-level-bar').style.width = '0%';
   document.getElementById('mon-db').textContent = '—';
   document.getElementById('mon-duration').textContent = '0:00';
   document.getElementById('mon-bytes').textContent = '0 B';

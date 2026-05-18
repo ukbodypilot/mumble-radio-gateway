@@ -176,26 +176,44 @@ window.RG = window.RG || {};
   var attached = new WeakSet();
 
   function _findWrap(el) {
+    // Any element passed in that has a .vu class (or one of the legacy
+    // wrap classes) is treated as the wrap. Otherwise we look for a
+    // descendant. Final fallback: the el itself.
     if (!el) return null;
-    if (el.classList && (el.classList.contains('bar-wrap') ||
-                         el.classList.contains('vu') ||
-                         el.classList.contains('lvl-bar') ||
-                         el.classList.contains('vad-bar'))) return el;
-    return el.querySelector('.bar-wrap, .vu, .lvl-bar, .vad-bar');
+    if (el.classList && el.classList.contains('vu')) return el;
+    var inner = el.querySelector('.vu');
+    return inner || el;
+  }
+
+  function _findFill(wrap) {
+    // Permissive: any first descendant whose class contains "-fill" and is
+    // not a sparkline bar. Lets the engine work with .bar-fill, .lvl-fill,
+    // .link-fill, .mon-level-fill, .d75-meter-fill, .pkt-meter-fill, .kv-meter-fill
+    // without enumerating each here.
+    var nodes = wrap.querySelectorAll('[class*="-fill"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n.className.indexOf('spark-bar') !== -1) continue;
+      return n;
+    }
+    return null;
   }
 
   function attach(el) {
     if (!el || attached.has(el)) return null;
     var wrap = _findWrap(el) || el;
-    var fill = wrap.querySelector('.bar-fill, .lvl-fill, .vad-fill');
+    var fill = _findFill(wrap);
     if (!fill) return null;
-    // GPU-accelerated transform path. The fill spans the full wrap; we
-    // reveal it with scaleX so width-of-bar animations don't trigger layout.
-    fill.style.transformOrigin = 'left center';
+    // Fill spans the full wrap and carries the gradient; reveal it with
+    // clip-path so the gradient stays anchored to the bar's left edge
+    // (NOT scaled). At 50% fill you see only the leftmost half of the
+    // gradient — entirely green — and amber/red zones become visible
+    // only when the fill actually reaches them.
     fill.style.width = '100%';
     fill.style.transition = 'none';
+    fill.style.transform = 'none';
     var initialW = (parseFloat(fill.dataset.initialWidth) || 0);
-    fill.style.transform = 'scaleX(' + (initialW / 100) + ')';
+    fill.style.clipPath = 'inset(0 ' + (100 - initialW) + '% 0 0)';
     // Peak marker — auto-created if missing.
     var peak = wrap.querySelector('.vu-peak');
     if (!peak) {
@@ -221,13 +239,15 @@ window.RG = window.RG || {};
     if (!m) return;
     var v = Math.max(0, Math.min(100, +percent || 0));
     m.target = v;
-    if (opts && typeof opts === 'string') {
-      // backward-compat: pass class name as 3rd arg
-      var base = 'bar-fill';
-      if (m.fill.className !== base + ' ' + opts) m.fill.className = base + ' ' + opts;
-    } else if (opts && opts.class) {
-      var c = 'bar-fill ' + opts.class;
-      if (m.fill.className !== c) m.fill.className = c;
+    if (opts && (typeof opts === 'string' || opts.class)) {
+      // Preserve whichever fill class was already on the element so the
+      // engine works with .bar-fill / .lvl-fill / .vad-fill / .link-fill
+      // alike. Append the tone class (speech / gated / rx / tx / etc.).
+      var tone = (typeof opts === 'string') ? opts : opts.class;
+      var existing = m.fill.className.split(/\s+/);
+      var base = existing[0] || 'bar-fill';
+      var next = base + ' ' + tone;
+      if (m.fill.className !== next) m.fill.className = next;
     }
   }
 
@@ -256,7 +276,7 @@ window.RG = window.RG || {};
         m.peakLvl -= PEAK_FALL_PER_FRAME;
         if (m.peakLvl < m.current) m.peakLvl = m.current;
       }
-      m.fill.style.transform = 'scaleX(' + (m.current / 100) + ')';
+      m.fill.style.clipPath = 'inset(0 ' + (100 - m.current) + '% 0 0)';
       // peak visible only when above the current rendered level by >2pt,
       // and above 4% — avoids a stray pixel at idle.
       if (m.peakLvl > 4 && m.peakLvl - m.current > 2) {

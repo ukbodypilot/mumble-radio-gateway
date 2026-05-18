@@ -150,7 +150,7 @@
 
     <div class="kv-row mt-3">
       <span class="kv-label w-meter">S-meter</span>
-      <div id="kv-sig-meter" class="kv-meter">
+      <div id="kv-sig-meter" class="kv-meter vu">
         <div id="kv-meter-fill" class="kv-meter-fill"></div>
         <div id="kv-meter-text" class="kv-meter-text">S0</div>
       </div>
@@ -158,7 +158,7 @@
 
     <div class="kv-row">
       <span class="kv-label w-meter">Audio</span>
-      <div class="kv-meter">
+      <div class="kv-meter vu">
         <div id="kv-audio-fill" class="kv-meter-fill accent"></div>
         <div id="kv-audio-text" class="kv-meter-text">0%</div>
       </div>
@@ -321,15 +321,14 @@ function kvUpdate(d) {
     var raw = d.signal || 0;
     var s = Math.round(raw * 9 / 255);
     var pct = Math.min(100, Math.round(raw * 100 / 255));
-    document.getElementById('kv-meter-fill').style.width = pct + '%';
+    if (window.RG && RG.vu) RG.vu.set(document.getElementById('kv-sig-meter'), pct);
+    else document.getElementById('kv-meter-fill').style.width = pct + '%';
     document.getElementById('kv-meter-text').textContent = 'S' + s + ' (' + raw + ')';
-    var sigMeter = document.getElementById('kv-sig-meter');
-    sigMeter.classList.toggle('warn', pct >= 70 && pct < 90);
-    sigMeter.classList.toggle('err',  pct >= 90);
 
     // Audio level
     var aLvl = Math.round(d.audio_level || 0);
-    document.getElementById('kv-audio-fill').style.width = Math.min(100, aLvl) + '%';
+    if (window.RG && RG.vu) RG.vu.set(document.getElementById('kv-audio-fill').parentElement, Math.min(100, aLvl));
+    else document.getElementById('kv-audio-fill').style.width = Math.min(100, aLvl) + '%';
     document.getElementById('kv-audio-text').textContent = aLvl + '%';
 
     // Update controls — skip any field the user currently has focused
