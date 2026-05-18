@@ -150,14 +150,19 @@
   }
   #shell-bars .sb-track::before { left: 70%; background: var(--t-warn); opacity: 0.6; }
   #shell-bars .sb-track::after  { left: 95%; background: var(--t-err);  opacity: 0.7; }
+  /* Bars use clip-path to reveal only the leftmost portion of a
+     full-width gradient. With transform:scaleX (previous approach) the
+     gradient got compressed into the visible portion, so yellow/red
+     showed at low levels — the user-reported bug. clip-path keeps the
+     gradient anchored so amber/red become visible only once the bar
+     actually reaches their tick positions (70% and 95%). */
   #shell-bars .sb-bar {
     display: block;
     position: absolute;
     left: 0; width: 100%;
-    transform: scaleX(0);
-    transform-origin: left center;
     height: calc(50% - 3px);
-    transition: transform 0.08s linear;
+    clip-path: inset(0 100% 0 0);
+    transition: clip-path 0.08s linear;
     z-index: 1;
   }
   #shell-bars .sb-bar.sb-in         { background: linear-gradient(to right, var(--t-ok) 70%, var(--t-warn) 70%, var(--t-warn) 95%, var(--t-err) 95%); top: 2px; }
@@ -167,13 +172,16 @@
   /* Dual-lane bars: RX (green) top half, TX (red) bottom half — no pct label. */
   .sb-bar-rx, .sb-bar-tx {
     position: absolute; left: 0;
+    width: 100%;
     height: calc(50% - 3px);
+    clip-path: inset(0 100% 0 0);
+    transition: clip-path 0.08s linear;
     z-index: 1;
   }
-  .sb-bar-rx { top: 2px;    width: 100%; transform: scaleX(0); transform-origin: left center; transition: transform 0.08s linear;
+  .sb-bar-rx { top: 2px;
                background: linear-gradient(to right, var(--t-ok) 70%, var(--t-warn) 70%, var(--t-warn) 95%, var(--t-err) 95%);
                color: var(--t-ok); }
-  .sb-bar-tx { bottom: 2px; width: 100%; transform: scaleX(0); transform-origin: left center; transition: transform 0.08s linear;
+  .sb-bar-tx { bottom: 2px;
                background: var(--t-err); color: var(--t-err); }
 
   #shell-bars .mute-ind {
@@ -638,10 +646,12 @@ function _sbUpdate(key, label, raw, cls, ducked, muted) {
   _sbSmooth[key] = s;
   var w = Math.round(s);
   r.bar.className = 'sb-bar ' + (ducked ? 'sb-ducked-bar' : cls);
-  // Asymmetric CSS transition: snappy rise (80ms), smooth fall (250ms) so
-  // the bar slides continuously between polls rather than stepping.
-  r.bar.style.transition = rising ? 'transform 0.08s linear' : 'none';
-  r.bar.style.transform = 'scaleX(' + (w / 100) + ')';
+  // Asymmetric CSS transition: snappy rise (80ms), smoother fall (250ms)
+  // so the bar slides continuously between polls rather than stepping.
+  // clip-path keeps the gradient anchored — yellow/red zones only become
+  // visible when the bar actually fills past their positions (70%, 95%).
+  r.bar.style.transition = 'clip-path ' + (rising ? '0.08s linear' : '0.25s ease-out');
+  r.bar.style.clipPath = 'inset(0 ' + (100 - w) + '% 0 0)';
   r.mute.style.display = muted ? '' : 'none';
   _sbOrder.push(key);
 }
@@ -669,10 +679,10 @@ function _sbUpdateDual(key, label, rxRaw, txRaw, muted) {
   sm.rx = sm.rx + (rx - sm.rx) * (rx > sm.rx ? 1.0 : 0.9);
   sm.tx = sm.tx + (tx - sm.tx) * (tx > sm.tx ? 1.0 : 0.9);
   _sbDualSmooth[key] = sm;
-  r.rxBar.style.transition = rx > sm.rx ? 'transform 0.08s linear' : 'none';
-  r.txBar.style.transition = tx > sm.tx ? 'transform 0.08s linear' : 'none';
-  r.rxBar.style.transform = 'scaleX(' + (Math.round(sm.rx) / 100) + ')';
-  r.txBar.style.transform = 'scaleX(' + (Math.round(sm.tx) / 100) + ')';
+  r.rxBar.style.transition = 'clip-path ' + (rx > sm.rx ? '0.08s linear' : '0.25s ease-out');
+  r.txBar.style.transition = 'clip-path ' + (tx > sm.tx ? '0.08s linear' : '0.25s ease-out');
+  r.rxBar.style.clipPath = 'inset(0 ' + (100 - Math.round(sm.rx)) + '% 0 0)';
+  r.txBar.style.clipPath = 'inset(0 ' + (100 - Math.round(sm.tx)) + '% 0 0)';
   r.mute.style.display = muted ? '' : 'none';
   _sbOrder.push(key);
 }
