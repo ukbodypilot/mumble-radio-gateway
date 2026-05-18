@@ -30,14 +30,31 @@ else
 fi
 
 # ── Detect distro / package manager ─────────────────────────
+# /etc/os-release is the reliable signal. Falling back on "command -v
+# pacman" was wrong because Debian ships an unrelated "pacman" arcade-
+# game package — if that's installed the older check thought we were
+# on Arch and tried `pacman -Sy` on a system with no Arch repos
+# (see issue #3).
 DISTRO="unknown"
-if command -v pacman &>/dev/null; then
-    DISTRO="arch"
-elif command -v apt-get &>/dev/null; then
-    DISTRO="debian"
-else
-    echo "ERROR: No supported package manager found (need apt-get or pacman)"
-    exit 1
+if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    case "$ID $ID_LIKE" in
+        *debian*|*ubuntu*|*raspbian*) DISTRO="debian" ;;
+        *arch*|*manjaro*|*endeavouros*) DISTRO="arch" ;;
+    esac
+fi
+# Fallback by command if /etc/os-release was inconclusive. apt-get is
+# tried first because Debian-with-pacman-arcade-game is the trap above.
+if [ "$DISTRO" = "unknown" ]; then
+    if command -v apt-get &>/dev/null; then
+        DISTRO="debian"
+    elif command -v pacman &>/dev/null && [ -d /etc/pacman.d ]; then
+        DISTRO="arch"
+    else
+        echo "ERROR: No supported package manager found (need apt-get or pacman)"
+        exit 1
+    fi
 fi
 echo "Package manager: $DISTRO"
 
