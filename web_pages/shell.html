@@ -162,8 +162,9 @@
     left: 0; width: 100%;
     height: calc(50% - 3px);
     clip-path: inset(0 100% 0 0);
-    transition: clip-path 0.08s linear;
     z-index: 1;
+    /* No CSS transition — JS rAF tick updates clip-path every frame
+       with proper attack/decay envelope, so we'd just fight ourselves. */
   }
   #shell-bars .sb-bar.sb-in         { background: linear-gradient(to right, var(--t-ok) 70%, var(--t-warn) 70%, var(--t-warn) 95%, var(--t-err) 95%); top: 2px; }
   #shell-bars .sb-bar.sb-out        { background: var(--t-err);    bottom: 2px; }
@@ -175,8 +176,8 @@
     width: 100%;
     height: calc(50% - 3px);
     clip-path: inset(0 100% 0 0);
-    transition: clip-path 0.08s linear;
     z-index: 1;
+    /* rAF tick handles motion — see _sbUpdateDual. */
   }
   .sb-bar-rx { top: 2px;
                background: linear-gradient(to right, var(--t-ok) 70%, var(--t-warn) 70%, var(--t-warn) 95%, var(--t-err) 95%);
@@ -620,10 +621,16 @@ function stopMic() {
 // --- Audio level bars (always visible) ---
 // Semantic bar classes: sb-in (receive), sb-out (transmit), sb-loc (local output).
 // Ducked overrides to amber — identity comes from the text label, not hue.
-// In-place DOM updates (keyed by label) let the CSS width transition actually run.
-var _sbRows = {};   // key -> {row, bar, mute}
-var _sbSmooth = {}; // key -> smoothed level (exponential)
-var _sbOrder = [];  // last-seen order of keys so re-orderings are reflected
+// In-place DOM updates (keyed by label).
+// Polls arrive at 1 Hz. To avoid jerky steps the displayed value is
+// decoupled from the polled value: poll updates a target, a rAF loop
+// interpolates the current value toward it at 60 fps with asymmetric
+// attack/decay (punchy rise, gentle fall) — same physics as RG.vu but
+// inlined here so the shell stays self-contained.
+var _sbRows = {};       // key -> {row, bar, mute}
+var _sbTarget = {};     // key -> target % (from poll)
+var _sbCurrent = {};    // key -> currently displayed %
+var _sbOrder = [];      // last-seen order of keys so re-orderings are reflected
 function _sbEnsure(key, label) {
   var r = _sbRows[key];
   if (r) return r;
@@ -637,27 +644,22 @@ function _sbEnsure(key, label) {
 }
 function _sbUpdate(key, label, raw, cls, ducked, muted) {
   var r = _sbEnsure(key, label);
-  // Exponential smoothing — fast attack for spikes, slower decay feels natural.
-  var prev = _sbSmooth[key] || 0;
-  var v = Math.min(Math.max(raw || 0, 0), 100);
-  var rising = v > prev;
-  var a = rising ? 1.0 : 0.9;
-  var s = prev + (v - prev) * a;
-  _sbSmooth[key] = s;
-  var w = Math.round(s);
-  r.bar.className = 'sb-bar ' + (ducked ? 'sb-ducked-bar' : cls);
-  // Asymmetric CSS transition: snappy rise (80ms), smoother fall (250ms)
-  // so the bar slides continuously between polls rather than stepping.
-  // clip-path keeps the gradient anchored — yellow/red zones only become
-  // visible when the bar actually fills past their positions (70%, 95%).
-  r.bar.style.transition = 'clip-path ' + (rising ? '0.08s linear' : '0.25s ease-out');
-  r.bar.style.clipPath = 'inset(0 ' + (100 - w) + '% 0 0)';
+  // Poll just updates the target. The rAF tick below does the actual
+  // motion at 60 fps — no CSS transition needed.
+  _sbTarget[key] = Math.min(Math.max(raw || 0, 0), 100);
+  if (r.bar.dataset.cls !== cls || r.bar.dataset.ducked !== String(!!ducked)) {
+    r.bar.className = 'sb-bar ' + (ducked ? 'sb-ducked-bar' : cls);
+    r.bar.dataset.cls = cls;
+    r.bar.dataset.ducked = String(!!ducked);
+    r.bar.style.transition = 'none';   // rAF drives clip-path directly
+  }
   r.mute.style.display = muted ? '' : 'none';
   _sbOrder.push(key);
 }
 // Dual-lane bars: one track split into green RX (top) + red TX (bottom), no pct label.
-var _sbDualRows = {};   // key -> {row, rxBar, txBar, mute}
-var _sbDualSmooth = {}; // key -> {rx, tx}
+var _sbDualRows = {};       // key -> {row, rxBar, txBar, mute}
+var _sbDualTarget = {};     // key -> {rx, tx} (from poll)
+var _sbDualCurrent = {};    // key -> {rx, tx} (displayed)
 function _sbEnsureDual(key, label) {
   var r = _sbDualRows[key];
   if (r) return r;
@@ -673,19 +675,51 @@ function _sbEnsureDual(key, label) {
 }
 function _sbUpdateDual(key, label, rxRaw, txRaw, muted) {
   var r = _sbEnsureDual(key, label);
-  var sm = _sbDualSmooth[key] || {rx:0, tx:0};
-  var rx = Math.min(Math.max(rxRaw||0,0),100);
-  var tx = Math.min(Math.max(txRaw||0,0),100);
-  sm.rx = sm.rx + (rx - sm.rx) * (rx > sm.rx ? 1.0 : 0.9);
-  sm.tx = sm.tx + (tx - sm.tx) * (tx > sm.tx ? 1.0 : 0.9);
-  _sbDualSmooth[key] = sm;
-  r.rxBar.style.transition = 'clip-path ' + (rx > sm.rx ? '0.08s linear' : '0.25s ease-out');
-  r.txBar.style.transition = 'clip-path ' + (tx > sm.tx ? '0.08s linear' : '0.25s ease-out');
-  r.rxBar.style.clipPath = 'inset(0 ' + (100 - Math.round(sm.rx)) + '% 0 0)';
-  r.txBar.style.clipPath = 'inset(0 ' + (100 - Math.round(sm.tx)) + '% 0 0)';
+  // Poll updates targets only; rAF tick handles motion.
+  _sbDualTarget[key] = {
+    rx: Math.min(Math.max(rxRaw || 0, 0), 100),
+    tx: Math.min(Math.max(txRaw || 0, 0), 100),
+  };
+  if (r.rxBar.style.transition !== 'none') {
+    r.rxBar.style.transition = 'none';
+    r.txBar.style.transition = 'none';
+  }
   r.mute.style.display = muted ? '' : 'none';
   _sbOrder.push(key);
 }
+
+// rAF interpolator — runs at 60 fps. Each frame nudges current toward
+// target with asymmetric envelope: fast attack (snappy rise), gentle
+// decay (gravitational fall). Same physics as RG.vu, inlined.
+(function() {
+  var ATTACK = 0.55, DECAY = 0.07;
+  function step(cur, target) {
+    var diff = target - cur;
+    if (Math.abs(diff) < 0.05) return target;
+    return cur + diff * (diff > 0 ? ATTACK : DECAY);
+  }
+  function tick() {
+    var k;
+    for (k in _sbRows) {
+      var t = _sbTarget[k] || 0;
+      var c = _sbCurrent[k] || 0;
+      var n = step(c, t);
+      _sbCurrent[k] = n;
+      _sbRows[k].bar.style.clipPath = 'inset(0 ' + (100 - n) + '% 0 0)';
+    }
+    for (k in _sbDualRows) {
+      var tt = _sbDualTarget[k] || {rx:0, tx:0};
+      var cc = _sbDualCurrent[k] || {rx:0, tx:0};
+      cc.rx = step(cc.rx, tt.rx);
+      cc.tx = step(cc.tx, tt.tx);
+      _sbDualCurrent[k] = cc;
+      _sbDualRows[k].rxBar.style.clipPath = 'inset(0 ' + (100 - cc.rx) + '% 0 0)';
+      _sbDualRows[k].txBar.style.clipPath = 'inset(0 ' + (100 - cc.tx) + '% 0 0)';
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
 createPoller('/status', 1000, function(s) {
     _sbOrder = [];
     // Dual-lane bars: each full-duplex radio gets its own RX+TX compound bar.
