@@ -689,78 +689,15 @@ See the [Gateway Link documentation](docs/gateway_link.md) for the full protocol
 
 ## Fleet Manager
 
-The Fleet Manager is a **document-driven autonomous monitoring and maintenance system**. Instead of hard-coded checks, thresholds, and alert rules, it works by handing a set of plain-English task documents to a Claude Code session already running on the gateway, asking it to perform the tasks, and reading back a structured report. The entire behaviour of the monitoring system is plain text you can read and edit in a browser.
+A **document-driven autonomous monitoring and maintenance system**. Plain-English task lists (`hourly.md`, `daily.md`) are handed to a Claude Code session running on the gateway on a schedule; Claude does the checks, writes a structured JSON report back, and the engine reads it. The entire behaviour of the monitoring system is text you can read and edit in a browser. No code changes, no restarts.
 
-### Why not hard-coded checks?
+A sample line from the live `daily.md`:
 
-Traditional monitoring platforms — Nagios, Zabbix, custom cron scripts — are rigid. You define checks in code or YAML. Adding a new check means editing a config file, redeploying, and hoping the schema supports what you need. Thresholds are constants. Remediation steps are `if/else` branches. Edge cases need code.
+> "Ping each known node. For any that doesn't respond, scan the whole subnet, identify each responding host by hostname and `uname -m`, and if you find the missing one update SYSTEM_MANIFEST.md with the new IP."
 
-The Fleet Manager inverts this. The "check" is a sentence:
+That one sentence replaces what would be a 100+ line shell script in a traditional setup — and adding a new check is just adding another sentence.
 
-> "Ping each known node. If one doesn't respond, scan the subnet, try to identify it by SSH fingerprint, and update the manifest with its new address."
-
-That instruction took two minutes to write. A traditional monitoring system would take hours to implement the same logic, and it would break the moment a fingerprint changed.
-
-Because the agent is Claude, it can:
-- **Reason about ambiguous output** — a partial SSH response, an unexpected hostname, a service in a degraded-but-running state
-- **Take corrective action** — restart a non-critical service, update a config file, amend a document
-- **Escalate intelligently** — decide whether something is worth waking you up for, not just whether a threshold was crossed
-- **Self-update its own task files** — if a node moves to a new IP, the daily task list is updated in place for next time
-
-### How it works
-
-The gateway runs a background scheduler (`manager_engine.py`) that fires on two schedules:
-
-- **Hourly** — reads `hourly.md`, sends it as a prompt to the `claude-gateway` tmux session, waits for Claude to append a structured JSON report to `manager_reports.jsonl`
-- **Daily** — same, using `daily.md`, at a configurable time (default 06:00)
-
-Each run embeds a `run_id`. Claude is instructed to include that id in its report line so the engine can match the response even if other activity occurred in the session between the send and the read.
-
-If the report has `severity: elevated`, the engine fires a Telegram alert to the user. An unread-alert indicator (`●`) appears on the System menu in the web UI.
-
-### The System Manifest
-
-`SYSTEM_MANIFEST.md` is the authoritative reference document for the entire fleet — hardware, roles, IPs, service contracts, known failure modes, and run history. The agent reads it before each daily run so it has full context without needing it baked into code.
-
-The manifest is a living document. When the agent discovers a node has moved to a new IP, it edits the manifest directly. When you add a machine to the fleet, you add a section to the manifest and the agent knows about it on the next run. No redeployment, no schema migration.
-
-The manifest is gitignored because it contains LAN IPs, credentials, and internal topology. It lives only on the gateway. The same applies to `hourly.md`, `daily.md`, `manager_state.json`, and `manager_reports.jsonl`.
-
-### Configuring behaviour
-
-Everything is plain text, edited directly in the browser at **System → Manager**:
-
-| Document | Purpose |
-|---|---|
-| `SYSTEM_MANIFEST.md` | Fleet topology, service contracts, known quirks |
-| `hourly.md` | What Claude checks and reports every hour |
-| `daily.md` | What Claude checks, repairs, and reports once a day |
-
-Each document has a **View** button (rendered markdown, read-only) and an **Edit** button (in-browser textarea, Ctrl+S to save). Changes take effect on the next scheduled run — no restart needed.
-
-To add a new check, open `hourly.md` and write it in plain English. To change what constitutes an elevated alert, edit the reporting instructions at the bottom of the file. To add a new fleet node, add a section to `SYSTEM_MANIFEST.md`.
-
-### Use cases
-
-**Fleet health at a glance** — every hour, Claude checks that all radio services are alive, the SDR is receiving, the stream is connected, and disk and memory are healthy. You get a one-line summary in the report list; click to expand findings. If anything is wrong you get a Telegram message.
-
-**Automatic node discovery** — if a DHCP node moves to a new address, the daily run detects the miss, sweeps the subnet, identifies the node by SSH fingerprint, and updates the manifest. Next time you SSH in, the address in the manifest is correct.
-
-**Self-healing services** — the daily task list instructs the agent to restart non-critical services (Mumble, CAT, SDRplay) if they are found down. The gateway doesn't need a watchdog for every individual service; the agent handles it.
-
-**Docker stack monitoring** — the daily run SSHes to the Mac Mini media server, lists container states, and flags anything stopped. No Portainer webhook configuration needed.
-
-**Extensible without code** — want to monitor a new node? Add it to the manifest and add a check to `daily.md`. Want to start checking log error rates? Add a line. Want Claude to attempt a repair before alerting you? Change "report only" to "restart if safe, then report". None of this requires a gateway restart.
-
-### Web UI
-
-The Manager page lives at **System → Manager** in the web UI. It shows:
-
-- ON/OFF toggle and daily run time (configurable)
-- Run Hourly Now / Run Daily Now buttons
-- View and Edit links for all three documents
-- A persistent scrollable report list, newest first, with expandable findings per entry
-- A red `●` on the System menu label when there are unacknowledged elevated reports
+**See [docs/fleet-manager.md](docs/fleet-manager.md)** for the full architecture, more English-task examples, the report format, remediation actions, the gdrive backup of operational docs, and lessons learned from running it in production.
 
 ## Other Features
 
