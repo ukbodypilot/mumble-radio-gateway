@@ -64,6 +64,35 @@ def _get_rss_mb():
     return 0.0
 
 
+def _read_int(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except Exception:
+        return None
+
+
+def _get_cpu_temp_c():
+    """Highest reading across all thermal zones, in °C. None if unavailable."""
+    import glob
+    temps = []
+    for f in glob.glob('/sys/class/thermal/thermal_zone*/temp'):
+        v = _read_int(f)
+        if v is not None and v > 0:
+            temps.append(v / 1000.0)
+    return round(max(temps), 1) if temps else None
+
+
+def _get_fan_rpm():
+    """First fan's current RPM via applesmc. None if not Apple hardware."""
+    import glob
+    for f in sorted(glob.glob('/sys/devices/platform/applesmc.*/fan*_input')):
+        v = _read_int(f)
+        if v is not None:
+            return v
+    return None
+
+
 # ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
@@ -99,6 +128,8 @@ class Handler(BaseHTTPRequestHandler):
             'avg_ratio': avg_ratio,
             'uptime_secs': round(time.time() - st['start_time']),
             'ram_mb': _get_rss_mb(),
+            'cpu_temp_c': _get_cpu_temp_c(),
+            'fan_rpm': _get_fan_rpm(),
             'last_switch_error': _last_switch_error,
         }
         self._send(200, payload)

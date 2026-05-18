@@ -458,7 +458,14 @@ function poll() {
           var wRatio = (w.avg_ratio != null) ? ' · <span class="ps-val ' + (w.avg_ratio < 1 ? 'ok' : 'err') + '">' + w.avg_ratio + 'x</span>' : '';
           var wReach = (w.type === 'remote' && !w.reachable) ? ' <span class="ps-val err">unreachable</span>' : '';
           var wErr = w.last_switch_error ? ' <span class="ps-val err" title="' + w.last_switch_error.replace(/"/g,'&quot;') + '">switch failed</span>' : '';
-          wHtml += '<span style="margin-right:var(--s-4)"><span class="' + wDotCls + '"></span> <b>' + wLabel + '</b> ' + wModel + wCount + wFlight + wRatio + wReach + wErr + '</span>';
+          var wTemp = '';
+          if (w.cpu_temp_c != null) {
+            var tc = w.cpu_temp_c;
+            var tcls = tc < 75 ? 'ok' : tc < 90 ? 'warn' : 'err';
+            wTemp = ' · <span class="ps-val ' + tcls + '">' + tc + '°C</span>';
+          }
+          var wFan = (w.fan_rpm != null) ? ' · ' + w.fan_rpm + ' RPM' : '';
+          wHtml += '<span style="margin-right:var(--s-4)"><span class="' + wDotCls + '"></span> <b>' + wLabel + '</b> ' + wModel + wCount + wFlight + wRatio + wTemp + wFan + wReach + wErr + '</span>';
         }
         document.getElementById('rw-workers').innerHTML = wHtml;
         if (!_rwModelDirty) {
