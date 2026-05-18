@@ -453,3 +453,103 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--t-accent); }
 
 @keyframes cell-flash { 0% { background: var(--t-accent); color: var(--t-bg); } 100% { background: transparent; color: inherit; } }
 .flash { animation: cell-flash 0.6s ease-out; }
+
+/* ── Audio meters ──────────────────────────────────────────────────────
+   Two tiers:
+   1. Non-opt-in (.bar-fill / .lvl-fill / .vad-fill): a single eased
+      transition so direct width writes from pages don't snap. Modest
+      improvement; layout-affecting (width animation).
+   2. Opt-in (parent has class .vu): full physics via RG.vu engine in
+      common.js — transform:scaleX so it's GPU-accelerated, asymmetric
+      attack/decay, peak-hold sliver, gradient color zones. */
+
+.bar-fill, .lvl-fill, .vad-fill {
+  transition: width 220ms cubic-bezier(.06, .9, .25, 1);
+}
+
+.vu, .lvl-bar.vu, .vad-bar.vu, .bar-wrap.vu {
+  position: relative;
+  isolation: isolate;
+  background:
+    /* faint vertical tick marks at -40, -20, -10, -6, -3, 0 dB
+       (mapped to 33%, 67%, 83%, 90%, 95%, 100%) */
+    linear-gradient(to right,
+      transparent 0, transparent calc(33% - 0.5px),
+      rgba(255,255,255,0.08) calc(33% - 0.5px), rgba(255,255,255,0.08) calc(33% + 0.5px),
+      transparent calc(33% + 0.5px),
+      transparent calc(67% - 0.5px),
+      rgba(255,255,255,0.08) calc(67% - 0.5px), rgba(255,255,255,0.08) calc(67% + 0.5px),
+      transparent calc(67% + 0.5px),
+      transparent calc(83% - 0.5px),
+      rgba(255,255,255,0.10) calc(83% - 0.5px), rgba(255,255,255,0.10) calc(83% + 0.5px),
+      transparent calc(83% + 0.5px),
+      transparent calc(90% - 0.5px),
+      rgba(255,160,80,0.18) calc(90% - 0.5px), rgba(255,160,80,0.18) calc(90% + 0.5px),
+      transparent calc(90% + 0.5px),
+      transparent calc(95% - 0.5px),
+      rgba(255,90,90,0.20) calc(95% - 0.5px), rgba(255,90,90,0.20) calc(95% + 0.5px),
+      transparent calc(95% + 0.5px),
+      transparent 100%
+    ),
+    var(--t-bg);
+  box-shadow:
+    inset 0 1px 0 rgba(0,0,0,0.4),
+    inset 0 -1px 0 rgba(255,255,255,0.04);
+}
+
+/* Continuous color zones: a fixed gradient lives on the fill element;
+   the engine reveals it with scaleX from the left. Result: at low fill
+   only green is visible, the amber/red zones appear as the bar grows
+   into them. No more class flips when crossing a threshold. */
+.vu .bar-fill, .vu .lvl-fill, .vu .vad-fill {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  background:
+    linear-gradient(to right,
+      var(--t-ok)     0%,
+      var(--t-ok)    66%,
+      var(--t-warn)  85%,
+      var(--t-err)  100%);
+  border-radius: 0;
+  transition: none;            /* engine handles motion */
+  transform-origin: left center;
+  /* a top sheen for the polished look */
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.15);
+}
+
+/* VAD bars are about "is it speech" not "how loud" — give them a single
+   tone so the gradient doesn't read as level. Engine still controls scale. */
+.vu.vu-tone-mono .bar-fill,
+.vu.vu-tone-mono .vad-fill {
+  background: var(--t-accent);
+}
+.vu.vu-tone-mono .bar-fill.speech,
+.vu.vu-tone-mono .vad-fill.speech { background: var(--t-ok); }
+.vu.vu-tone-mono .bar-fill.gated,
+.vu.vu-tone-mono .vad-fill.gated  { background: var(--t-err); opacity: 0.55; }
+.vu.vu-tone-mono .bar-fill.edge,
+.vu.vu-tone-mono .vad-fill.edge   { background: var(--t-warn); }
+
+/* Peak-hold sliver — 2px hairline that catches the high-water mark and
+   falls gently after ~1s (engine controls position/opacity). */
+.vu-peak {
+  position: absolute;
+  top: -1px; bottom: -1px;
+  width: 2px;
+  margin-left: -1px;
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 0 4px rgba(255,255,255,0.6);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease-out;
+  z-index: 2;
+}
+
+/* Threshold marker variant (used on the VAD bar for setpoint indicator) */
+.vu .bar-mark, .vu .vad-mark {
+  z-index: 1;
+  background: var(--t-text);
+  opacity: 0.55;
+  box-shadow: 0 0 2px rgba(0,0,0,0.5);
+}

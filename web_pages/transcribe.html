@@ -315,8 +315,8 @@
         <span class="k">Input level</span>
         <span class="v" id="st-lvl-db">—</span>
       </div>
-      <div class="bar-wrap">
-        <div class="bar-fill" id="st-lvl" style="width:0%"></div>
+      <div class="bar-wrap vu" id="st-lvl-wrap">
+        <div class="bar-fill" id="st-lvl"></div>
       </div>
     </div>
     <div class="meter">
@@ -324,8 +324,8 @@
         <span class="k">VAD probability</span>
         <span class="v" id="st-vad-db">—</span>
       </div>
-      <div class="bar-wrap">
-        <div class="bar-fill" id="st-vad" style="width:0%"></div>
+      <div class="bar-wrap vu vu-tone-mono" id="st-vad-wrap">
+        <div class="bar-fill" id="st-vad"></div>
         <div class="bar-mark" id="st-vad-mark" style="left:50%"></div>
       </div>
     </div>
@@ -542,19 +542,18 @@ function poll() {
       modeTag.textContent = (s.mode || 'local').toUpperCase();
       modeTag.className = 'tag accent';
 
-      // VAD bar
+      // VAD bar — opt-in to RG.vu physics; tone class drives mono color
       var vprob = s.vad_prob || 0, vth = s.vad_threshold || 0.5;
-      var vad = document.getElementById('st-vad');
-      vad.style.width = Math.max(0, Math.min(100, vprob * 100)) + '%';
-      vad.className = 'bar-fill ' + (vprob >= vth ? 'live' : (vprob >= vth - 0.15 ? 'warn' : 'err'));
+      RG.vu.set('st-vad-wrap', vprob * 100, {
+        class: (vprob >= vth ? 'speech' : (vprob >= vth - 0.15 ? 'edge' : 'gated'))
+      });
       document.getElementById('st-vad-mark').style.left = (vth * 100) + '%';
       _set('st-vad-db', vprob.toFixed(2));
 
-      // Level bar (−60 dB to 0 dB → 0-100%)
+      // Level bar (−60 dB → 0 dB mapped to 0–100). Gradient color zones
+      // come from CSS; engine just animates the scale + peak-hold sliver.
       var vdb = s.vad_db || -96;
-      var lvl = document.getElementById('st-lvl');
-      lvl.style.width = Math.max(0, Math.min(100, (vdb + 60) * 100 / 60)) + '%';
-      lvl.className = 'bar-fill ' + (vdb > -40 ? '' : vdb > -55 ? 'warn' : 'err');
+      RG.vu.set('st-lvl-wrap', Math.max(0, Math.min(100, (vdb + 60) * 100 / 60)));
       _set('st-lvl-db', vdb > -95 ? vdb.toFixed(0) + ' dB' : '—');
 
       // Feed health
