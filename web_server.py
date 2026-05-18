@@ -1544,366 +1544,396 @@ class WebConfigServer:
             'connections': connections,
         }
 
+    # ── Routing command dispatch ──────────────────────────────────
+    # Each command from the routing UI maps to a _routing_cmd_<name>
+    # method below. The dispatcher just loads config, looks up the
+    # handler, and calls it. Add a command by writing the method and
+    # adding an entry to _ROUTING_CMD_DISPATCH at class level.
     def _handle_routing_cmd(self, data):
-        """Handle routing commands from the web UI."""
         cmd = data.get('cmd', '')
+        handler = self._ROUTING_CMD_DISPATCH.get(cmd)
+        if not handler:
+            return {'ok': False, 'error': f'unknown command: {cmd}'}
         busses, connections, _layout = self._load_routing_config()
+        return handler(self, data, busses, connections)
 
-        if cmd == 'add_bus':
-            name = data.get('name', '').strip()
-            bus_type = data.get('type', 'listen').strip()
-            if not name:
-                return {'ok': False, 'error': 'name required'}
-            if bus_type not in ('listen', 'solo', 'duplex', 'simplex'):
-                return {'ok': False, 'error': f'invalid type: {bus_type}'}
-            bus_id = name.lower().replace(' ', '_')
-            if any(b['id'] == bus_id for b in busses):
-                return {'ok': False, 'error': f'bus "{bus_id}" already exists'}
-            busses.append({'id': bus_id, 'name': name, 'type': bus_type, 'sources': [], 'sinks': []})
-            self._save_routing_config(busses, connections)
-            return {'ok': True}
+    # ── Bus CRUD ──────────────────────────────────────────────────
 
-        elif cmd == 'rename_bus':
-            bus_id = data.get('id', '')
-            new_name = data.get('name', '').strip()
-            if not new_name:
-                return {'ok': False, 'error': 'name required'}
-            for b in busses:
-                if b['id'] == bus_id:
-                    b['name'] = new_name
-                    self._save_routing_config(busses, connections)
-                    return {'ok': True, 'name': new_name}
-            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+    def _routing_cmd_add_bus(self, data, busses, connections):
+        name = data.get('name', '').strip()
+        bus_type = data.get('type', 'listen').strip()
+        if not name:
+            return {'ok': False, 'error': 'name required'}
+        if bus_type not in ('listen', 'solo', 'duplex', 'simplex'):
+            return {'ok': False, 'error': f'invalid type: {bus_type}'}
+        bus_id = name.lower().replace(' ', '_')
+        if any(b['id'] == bus_id for b in busses):
+            return {'ok': False, 'error': f'bus "{bus_id}" already exists'}
+        busses.append({'id': bus_id, 'name': name, 'type': bus_type, 'sources': [], 'sinks': []})
+        self._save_routing_config(busses, connections)
+        return {'ok': True}
 
-        elif cmd == 'delete_bus':
-            bus_id = data.get('id', '')
-            busses = [b for b in busses if b['id'] != bus_id]
-            connections = [c for c in connections if c.get('from') != bus_id and c.get('to') != bus_id]
-            self._save_routing_config(busses, connections)
-            return {'ok': True}
-
-        elif cmd == 'connect':
-            source = data.get('source')
-            bus = data.get('bus')
-            sink = data.get('sink')
-
-            if source and bus:
-                # Source → Bus connection
-                conn = {'type': 'source-bus', 'from': source, 'to': bus}
-                if conn not in connections:
-                    connections.append(conn)
-                    # Update bus sources list
-                    for b in busses:
-                        if b['id'] == bus and source not in b.get('sources', []):
-                            b.setdefault('sources', []).append(source)
+    def _routing_cmd_rename_bus(self, data, busses, connections):
+        bus_id = data.get('id', '')
+        new_name = data.get('name', '').strip()
+        if not new_name:
+            return {'ok': False, 'error': 'name required'}
+        for b in busses:
+            if b['id'] == bus_id:
+                b['name'] = new_name
                 self._save_routing_config(busses, connections)
-                return {'ok': True}
+                return {'ok': True, 'name': new_name}
+        return {'ok': False, 'error': f'bus not found: {bus_id}'}
 
-            elif bus and sink:
-                # Bus → Sink connection
-                conn = {'type': 'bus-sink', 'from': bus, 'to': sink}
-                if conn not in connections:
-                    connections.append(conn)
-                    for b in busses:
-                        if b['id'] == bus and sink not in b.get('sinks', []):
-                            b.setdefault('sinks', []).append(sink)
-                self._save_routing_config(busses, connections)
-                return {'ok': True}
+    def _routing_cmd_delete_bus(self, data, busses, connections):
+        bus_id = data.get('id', '')
+        busses = [b for b in busses if b['id'] != bus_id]
+        connections = [c for c in connections if c.get('from') != bus_id and c.get('to') != bus_id]
+        self._save_routing_config(busses, connections)
+        return {'ok': True}
 
-            return {'ok': False, 'error': 'specify source+bus or bus+sink'}
+    # ── Connections ───────────────────────────────────────────────
 
-        elif cmd == 'disconnect':
-            source = data.get('source')
-            bus = data.get('bus')
-            sink = data.get('sink')
+    def _routing_cmd_connect(self, data, busses, connections):
+        source = data.get('source')
+        bus = data.get('bus')
+        sink = data.get('sink')
 
-            if source and bus:
-                connections = [c for c in connections if not (c['type'] == 'source-bus' and c['from'] == source and c['to'] == bus)]
+        if source and bus:
+            conn = {'type': 'source-bus', 'from': source, 'to': bus}
+            if conn not in connections:
+                connections.append(conn)
                 for b in busses:
-                    if b['id'] == bus:
-                        b['sources'] = [s for s in b.get('sources', []) if s != source]
-            elif bus and sink:
-                connections = [c for c in connections if not (c['type'] == 'bus-sink' and c['from'] == bus and c['to'] == sink)]
-                for b in busses:
-                    if b['id'] == bus:
-                        b['sinks'] = [s for s in b.get('sinks', []) if s != sink]
-
+                    if b['id'] == bus and source not in b.get('sources', []):
+                        b.setdefault('sources', []).append(source)
             self._save_routing_config(busses, connections)
             return {'ok': True}
 
-        elif cmd == 'save_all':
-            # Full save from Drawflow — replace connections + update bus sources/sinks + layout
-            new_connections = data.get('connections', [])
-            bus_updates = data.get('bus_updates', {})
-            layout = data.get('layout')
-            for b in busses:
-                upd = bus_updates.get(b['id'], {})
-                b['sources'] = upd.get('sources', [])
-                b['sinks'] = upd.get('sinks', [])
-            self._save_routing_config(busses, new_connections, layout=layout)
-            # Reload bus manager, refresh cached maps, sync mixer sources
-            if self.gateway and hasattr(self.gateway, 'bus_manager') and self.gateway.bus_manager:
-                try:
-                    self.gateway.bus_manager.reload()
-                    self.gateway._bus_stream_flags = self.gateway.bus_manager.get_bus_stream_flags()
-                    self.gateway._bus_sinks = self.gateway.bus_manager.get_bus_sinks()
-                    self.gateway._listen_bus_id = self.gateway.bus_manager.get_listen_bus_id()
-                except Exception as e:
-                    return {'ok': True, 'warning': f'saved but reload failed: {e}'}
-            # Reset stale sink audio levels
-            if self.gateway:
-                self.gateway.speaker_audio_level = 0
-                self.gateway.stream_audio_level = 0
-                self.gateway.mumble_tx_level = 0
-                if getattr(self.gateway, 'th9800_plugin', None):
-                    self.gateway.th9800_plugin.tx_audio_level = 0
-                if self.gateway.kv4p_plugin:
-                    self.gateway.kv4p_plugin.tx_audio_level = 0
-            if self.gateway and getattr(self.gateway, 'bus_manager', None):
-                try:
-                    self.gateway.bus_manager.sync_listen_bus()
-                except Exception as e:
-                    print(f"  [routing] sync_listen_bus error: {e}")
-            # Log reload confirmation
-            _bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
-            if _bm:
-                _bus_ids = list(_bm._busses.keys())
-                _sink_map = getattr(self.gateway, '_bus_sinks', {})
-                print(f"  [routing] Saved & reloaded: busses={_bus_ids} sinks={dict(_sink_map)}")
+        elif bus and sink:
+            conn = {'type': 'bus-sink', 'from': bus, 'to': sink}
+            if conn not in connections:
+                connections.append(conn)
+                for b in busses:
+                    if b['id'] == bus and sink not in b.get('sinks', []):
+                        b.setdefault('sinks', []).append(sink)
+            self._save_routing_config(busses, connections)
             return {'ok': True}
 
-        elif cmd == 'toggle_proc':
-            bus_id = data.get('bus', '')
-            filt = data.get('filter', '')
-            if filt not in ('gate', 'hpf', 'lpf', 'notch', 'dfn', 'pcm', 'mp3', 'vad', 'loop'):
-                return {'ok': False, 'error': f'invalid filter: {filt}'}
-            for b in busses:
-                if b['id'] == bus_id:
-                    proc = b.setdefault('processing', {})
-                    proc[filt] = not proc.get(filt, False)
-                    self._save_routing_config(busses, connections)
-                    # Update cached stream flags on gateway + BusManager
-                    if filt in ('pcm', 'mp3', 'vad', 'loop') and self.gateway:
-                        flags = getattr(self.gateway, '_bus_stream_flags', {})
-                        bus_flags = flags.setdefault(bus_id, {'pcm': False, 'mp3': False, 'vad': False})
-                        bus_flags[filt] = proc[filt]
-                    bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
-                    # Stop loop recorder when toggled off
-                    if filt == 'loop' and not proc[filt] and self.gateway:
-                        _lr = getattr(self.gateway, 'loop_recorder', None)
-                        if _lr:
-                            _lr.stop(bus_id)
-                    if bm:
-                        if bus_id in bm._bus_config:
-                            bm._bus_config[bus_id][filt] = proc[filt]
-                        # Update the live AudioProcessor (create if needed)
-                        if filt in ('gate', 'hpf', 'lpf', 'notch', 'dfn'):
-                            _bp = bm._bus_processors.get(bus_id)
-                            if not _bp:
-                                _bp = AudioProcessor(f"bus_{bus_id}", self.gateway.config)
-                                bm._bus_processors[bus_id] = _bp
-                            setattr(_bp, 'enable_noise_gate' if filt == 'gate' else f'enable_{filt}', proc[filt])
-                    return {'ok': True, 'state': proc[filt]}
-            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+        return {'ok': False, 'error': 'specify source+bus or bus+sink'}
 
-        elif cmd == 'set_dfn_mix':
-            bus_id = data.get('bus', '')
+    def _routing_cmd_disconnect(self, data, busses, connections):
+        source = data.get('source')
+        bus = data.get('bus')
+        sink = data.get('sink')
+
+        if source and bus:
+            connections = [c for c in connections
+                           if not (c['type'] == 'source-bus' and c['from'] == source and c['to'] == bus)]
+            for b in busses:
+                if b['id'] == bus:
+                    b['sources'] = [s for s in b.get('sources', []) if s != source]
+        elif bus and sink:
+            connections = [c for c in connections
+                           if not (c['type'] == 'bus-sink' and c['from'] == bus and c['to'] == sink)]
+            for b in busses:
+                if b['id'] == bus:
+                    b['sinks'] = [s for s in b.get('sinks', []) if s != sink]
+
+        self._save_routing_config(busses, connections)
+        return {'ok': True}
+
+    def _routing_cmd_save_all(self, data, busses, connections):
+        """Wholesale save from Drawflow — replace connections, update bus
+        sources/sinks, reload bus manager, reset stale sink levels."""
+        new_connections = data.get('connections', [])
+        bus_updates = data.get('bus_updates', {})
+        layout = data.get('layout')
+        for b in busses:
+            upd = bus_updates.get(b['id'], {})
+            b['sources'] = upd.get('sources', [])
+            b['sinks'] = upd.get('sinks', [])
+        self._save_routing_config(busses, new_connections, layout=layout)
+
+        if self.gateway and hasattr(self.gateway, 'bus_manager') and self.gateway.bus_manager:
             try:
-                mix = max(0.0, min(1.0, float(data.get('mix', 0.5))))
-            except (ValueError, TypeError):
-                return {'ok': False, 'error': 'invalid mix value'}
-            for b in busses:
-                if b['id'] == bus_id:
-                    proc = b.setdefault('processing', {})
-                    proc['dfn_mix'] = mix
-                    self._save_routing_config(busses, connections)
-                    bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
-                    if bm:
-                        if bus_id in bm._bus_config:
-                            bm._bus_config[bus_id]['dfn_mix'] = mix
-                        _bp = bm._bus_processors.get(bus_id)
-                        if _bp is not None:
-                            _bp.dfn_mix = mix
-                    return {'ok': True, 'mix': mix}
-            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+                self.gateway.bus_manager.reload()
+                self.gateway._bus_stream_flags = self.gateway.bus_manager.get_bus_stream_flags()
+                self.gateway._bus_sinks = self.gateway.bus_manager.get_bus_sinks()
+                self.gateway._listen_bus_id = self.gateway.bus_manager.get_listen_bus_id()
+            except Exception as e:
+                return {'ok': True, 'warning': f'saved but reload failed: {e}'}
 
-        elif cmd == 'set_dfn_atten':
-            # DFN attenuation cap in dB. 0 = model decides (can pump);
-            # 15–25 is typical real-world range. Clamped to [0, 60].
-            bus_id = data.get('bus', '')
+        # Reset stale sink levels so muted/disconnected sinks read 0
+        if self.gateway:
+            self.gateway.speaker_audio_level = 0
+            self.gateway.stream_audio_level = 0
+            self.gateway.mumble_tx_level = 0
+            if getattr(self.gateway, 'th9800_plugin', None):
+                self.gateway.th9800_plugin.tx_audio_level = 0
+            if self.gateway.kv4p_plugin:
+                self.gateway.kv4p_plugin.tx_audio_level = 0
+        if self.gateway and getattr(self.gateway, 'bus_manager', None):
             try:
-                atten = max(0.0, min(60.0, float(data.get('atten_db', 18.0))))
-            except (ValueError, TypeError):
-                return {'ok': False, 'error': 'invalid atten_db value'}
-            for b in busses:
-                if b['id'] == bus_id:
-                    proc = b.setdefault('processing', {})
-                    proc['dfn_atten_db'] = atten
-                    self._save_routing_config(busses, connections)
-                    bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
-                    if bm:
-                        if bus_id in bm._bus_config:
-                            bm._bus_config[bus_id]['dfn_atten_db'] = atten
+                self.gateway.bus_manager.sync_listen_bus()
+            except Exception as e:
+                print(f"  [routing] sync_listen_bus error: {e}")
+
+        _bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+        if _bm:
+            _bus_ids = list(_bm._busses.keys())
+            _sink_map = getattr(self.gateway, '_bus_sinks', {})
+            print(f"  [routing] Saved & reloaded: busses={_bus_ids} sinks={dict(_sink_map)}")
+        return {'ok': True}
+
+    # ── Per-bus processing settings (D-stack toggles + params) ────────
+
+    def _routing_cmd_toggle_proc(self, data, busses, connections):
+        bus_id = data.get('bus', '')
+        filt = data.get('filter', '')
+        if filt not in ('gate', 'hpf', 'lpf', 'notch', 'dfn', 'pcm', 'mp3', 'vad', 'loop'):
+            return {'ok': False, 'error': f'invalid filter: {filt}'}
+        for b in busses:
+            if b['id'] == bus_id:
+                proc = b.setdefault('processing', {})
+                proc[filt] = not proc.get(filt, False)
+                self._save_routing_config(busses, connections)
+                # Update cached stream flags on gateway + BusManager
+                if filt in ('pcm', 'mp3', 'vad', 'loop') and self.gateway:
+                    flags = getattr(self.gateway, '_bus_stream_flags', {})
+                    bus_flags = flags.setdefault(bus_id, {'pcm': False, 'mp3': False, 'vad': False})
+                    bus_flags[filt] = proc[filt]
+                bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+                # Stop loop recorder when toggled off
+                if filt == 'loop' and not proc[filt] and self.gateway:
+                    _lr = getattr(self.gateway, 'loop_recorder', None)
+                    if _lr:
+                        _lr.stop(bus_id)
+                if bm:
+                    if bus_id in bm._bus_config:
+                        bm._bus_config[bus_id][filt] = proc[filt]
+                    # Update the live AudioProcessor (create if needed)
+                    if filt in ('gate', 'hpf', 'lpf', 'notch', 'dfn'):
                         _bp = bm._bus_processors.get(bus_id)
-                        if _bp is not None:
-                            _bp.dfn_atten_db = atten
-                    return {'ok': True, 'atten_db': atten}
-            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+                        if not _bp:
+                            _bp = AudioProcessor(f"bus_{bus_id}", self.gateway.config)
+                            bm._bus_processors[bus_id] = _bp
+                        setattr(_bp, 'enable_noise_gate' if filt == 'gate' else f'enable_{filt}', proc[filt])
+                return {'ok': True, 'state': proc[filt]}
+        return {'ok': False, 'error': f'bus not found: {bus_id}'}
 
-        elif cmd == 'set_dfn_engine':
-            # Per-bus denoise engine selection — 'rnnoise' | 'deepfilternet'.
-            # Persists to routing_config.json and applies live via
-            # AudioProcessor.set_dfn_engine (drops the current stream so the
-            # next audio chunk rebuilds with the new engine).
-            from audio_util import DENOISE_ENGINE_IDS
-            bus_id = data.get('bus', '')
-            engine = str(data.get('engine', ''))
-            if engine not in DENOISE_ENGINE_IDS:
-                return {'ok': False,
-                        'error': f'invalid engine; must be one of {list(DENOISE_ENGINE_IDS)}'}
-            for b in busses:
-                if b['id'] == bus_id:
-                    proc = b.setdefault('processing', {})
-                    proc['dfn_engine'] = engine
-                    self._save_routing_config(busses, connections)
-                    bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
-                    if bm:
-                        if bus_id in bm._bus_config:
-                            bm._bus_config[bus_id]['dfn_engine'] = engine
-                        _bp = bm._bus_processors.get(bus_id)
-                        if _bp is not None:
-                            _bp.set_dfn_engine(engine)
-                    return {'ok': True, 'engine': engine}
-            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+    def _routing_cmd_set_dfn_mix(self, data, busses, connections):
+        bus_id = data.get('bus', '')
+        try:
+            mix = max(0.0, min(1.0, float(data.get('mix', 0.5))))
+        except (ValueError, TypeError):
+            return {'ok': False, 'error': 'invalid mix value'}
+        for b in busses:
+            if b['id'] == bus_id:
+                proc = b.setdefault('processing', {})
+                proc['dfn_mix'] = mix
+                self._save_routing_config(busses, connections)
+                bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+                if bm:
+                    if bus_id in bm._bus_config:
+                        bm._bus_config[bus_id]['dfn_mix'] = mix
+                    _bp = bm._bus_processors.get(bus_id)
+                    if _bp is not None:
+                        _bp.dfn_mix = mix
+                return {'ok': True, 'mix': mix}
+        return {'ok': False, 'error': f'bus not found: {bus_id}'}
 
-        elif cmd == 'set_loop_hours':
-            bus_id = data.get('bus', '')
-            hours = data.get('hours', 24)
-            try:
-                hours = max(1, min(168, int(hours)))  # 1h to 7 days
-            except (ValueError, TypeError):
-                return {'ok': False, 'error': 'invalid hours value'}
-            for b in busses:
-                if b['id'] == bus_id:
-                    proc = b.setdefault('processing', {})
-                    proc['loop_hours'] = hours
-                    self._save_routing_config(busses, connections)
-                    bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
-                    if bm and bus_id in bm._bus_config:
-                        bm._bus_config[bus_id]['loop_hours'] = hours
-                    lr = getattr(self.gateway, 'loop_recorder', None)
-                    if lr:
-                        lr.set_retention(bus_id, hours)
-                    return {'ok': True, 'hours': hours}
-            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+    def _routing_cmd_set_dfn_atten(self, data, busses, connections):
+        # DFN attenuation cap in dB. 0 = model decides (can pump);
+        # 15–25 is typical real-world range. Clamped to [0, 60].
+        bus_id = data.get('bus', '')
+        try:
+            atten = max(0.0, min(60.0, float(data.get('atten_db', 18.0))))
+        except (ValueError, TypeError):
+            return {'ok': False, 'error': 'invalid atten_db value'}
+        for b in busses:
+            if b['id'] == bus_id:
+                proc = b.setdefault('processing', {})
+                proc['dfn_atten_db'] = atten
+                self._save_routing_config(busses, connections)
+                bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+                if bm:
+                    if bus_id in bm._bus_config:
+                        bm._bus_config[bus_id]['dfn_atten_db'] = atten
+                    _bp = bm._bus_processors.get(bus_id)
+                    if _bp is not None:
+                        _bp.dfn_atten_db = atten
+                return {'ok': True, 'atten_db': atten}
+        return {'ok': False, 'error': f'bus not found: {bus_id}'}
 
-        elif cmd == 'bus_mute':
-            bus_id = data.get('bus', '')
-            for b in busses:
-                if b['id'] == bus_id:
-                    b['muted'] = not b.get('muted', False)
-                    self._save_routing_config(busses, connections)
-                    # Update live BusManager state
-                    bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
-                    if bm and bus_id in bm._bus_config:
-                        bm._bus_config[bus_id]['muted'] = b['muted']
-                    # Update primary listen bus mute cache
-                    if self.gateway and bus_id == getattr(self.gateway, '_listen_bus_id', None):
-                        self.gateway._listen_bus_muted = b['muted']
-                    return {'ok': True, 'muted': b['muted']}
-            return {'ok': False, 'error': f'bus not found: {bus_id}'}
+    def _routing_cmd_set_dfn_engine(self, data, busses, connections):
+        # Per-bus denoise engine — 'rnnoise' | 'deepfilternet'.
+        # AudioProcessor.set_dfn_engine drops the current stream so the
+        # next audio chunk rebuilds with the new engine.
+        from audio_util import DENOISE_ENGINE_IDS
+        bus_id = data.get('bus', '')
+        engine = str(data.get('engine', ''))
+        if engine not in DENOISE_ENGINE_IDS:
+            return {'ok': False,
+                    'error': f'invalid engine; must be one of {list(DENOISE_ENGINE_IDS)}'}
+        for b in busses:
+            if b['id'] == bus_id:
+                proc = b.setdefault('processing', {})
+                proc['dfn_engine'] = engine
+                self._save_routing_config(busses, connections)
+                bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+                if bm:
+                    if bus_id in bm._bus_config:
+                        bm._bus_config[bus_id]['dfn_engine'] = engine
+                    _bp = bm._bus_processors.get(bus_id)
+                    if _bp is not None:
+                        _bp.set_dfn_engine(engine)
+                return {'ok': True, 'engine': engine}
+        return {'ok': False, 'error': f'bus not found: {bus_id}'}
 
-        elif cmd == 'mute':
-            target_id = data.get('id', '')
-            # NUL sink is permanently muted — ignore toggle.
-            if target_id == 'nul':
-                return {'ok': True, 'muted': True}
-            # Check if it's a sink without a plugin object
-            _sink_ids = ('speaker', 'broadcastify', 'mumble', 'remote_audio_tx')
-            if target_id in _sink_ids and self.gateway:
-                muted_sinks = getattr(self.gateway, '_muted_sinks', set())
-                if target_id in muted_sinks:
-                    muted_sinks.discard(target_id)
-                    muted = False
-                else:
-                    muted_sinks.add(target_id)
-                    muted = True
-                self.gateway._muted_sinks = muted_sinks
-                return {'ok': True, 'muted': muted}
-            plugin = self._get_plugin_by_id(target_id)
-            if plugin:
-                # TX and RX share one plugin object but have independent
-                # signal paths — toggle a separate flag for *_tx sinks so
-                # muting TX doesn't silence RX (and vice versa).
-                if target_id.endswith('_tx'):
-                    plugin.tx_muted = not getattr(plugin, 'tx_muted', False)
-                    return {'ok': True, 'muted': plugin.tx_muted}
-                plugin.muted = not getattr(plugin, 'muted', False)
-                return {'ok': True, 'muted': plugin.muted}
-            return {'ok': False, 'error': f'unknown source/sink: {target_id}'}
+    def _routing_cmd_set_loop_hours(self, data, busses, connections):
+        bus_id = data.get('bus', '')
+        hours = data.get('hours', 24)
+        try:
+            hours = max(1, min(168, int(hours)))  # 1h to 7 days
+        except (ValueError, TypeError):
+            return {'ok': False, 'error': 'invalid hours value'}
+        for b in busses:
+            if b['id'] == bus_id:
+                proc = b.setdefault('processing', {})
+                proc['loop_hours'] = hours
+                self._save_routing_config(busses, connections)
+                bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+                if bm and bus_id in bm._bus_config:
+                    bm._bus_config[bus_id]['loop_hours'] = hours
+                lr = getattr(self.gateway, 'loop_recorder', None)
+                if lr:
+                    lr.set_retention(bus_id, hours)
+                return {'ok': True, 'hours': hours}
+        return {'ok': False, 'error': f'bus not found: {bus_id}'}
 
-        elif cmd == 'gain':
-            target_id = data.get('id', '')
-            value = int(data.get('value', 100))
-            _gw = self.gateway
-            plugin = self._get_plugin_by_id(target_id)
-            if plugin:
-                _is_tx = target_id.endswith('_tx')
-                if _is_tx and hasattr(plugin, 'tx_audio_boost'):
-                    plugin.tx_audio_boost = value / 100.0
-                else:
-                    plugin.audio_boost = value / 100.0
-                # Persist link endpoint gains
-                _ep_name = getattr(plugin, 'endpoint_name', '')
-                if _ep_name and _gw:
-                    _key = 'tx_boost' if _is_tx else 'rx_boost'
-                    settings = _gw.link_endpoint_settings.setdefault(_ep_name, {})
-                    settings[_key] = value
-                    _gw._save_link_settings()
-                # Persist source gains
-                if _gw:
-                    _gw._source_gains[target_id] = value
-                    _gw._save_source_gains()
-                return {'ok': True, 'gain': value}
-            # Passive sinks (mumble, broadcastify, speaker, etc.)
-            _passive_sinks = ('mumble', 'broadcastify', 'speaker',
-                              'transcription', 'remote_audio_tx')
-            if target_id in _passive_sinks and _gw:
-                _gw._sink_gains[target_id] = value / 100.0
+    def _routing_cmd_bus_mute(self, data, busses, connections):
+        bus_id = data.get('bus', '')
+        for b in busses:
+            if b['id'] == bus_id:
+                b['muted'] = not b.get('muted', False)
+                self._save_routing_config(busses, connections)
+                bm = getattr(self.gateway, 'bus_manager', None) if self.gateway else None
+                if bm and bus_id in bm._bus_config:
+                    bm._bus_config[bus_id]['muted'] = b['muted']
+                # Update primary listen bus mute cache
+                if self.gateway and bus_id == getattr(self.gateway, '_listen_bus_id', None):
+                    self.gateway._listen_bus_muted = b['muted']
+                return {'ok': True, 'muted': b['muted']}
+        return {'ok': False, 'error': f'bus not found: {bus_id}'}
+
+    # ── Source/sink mute, gain, speaker ───────────────────────────
+
+    def _routing_cmd_mute(self, data, busses, connections):
+        target_id = data.get('id', '')
+        # NUL sink is permanently muted — ignore toggle.
+        if target_id == 'nul':
+            return {'ok': True, 'muted': True}
+        # Sinks without a plugin object — toggle a separate gateway flag
+        _sink_ids = ('speaker', 'broadcastify', 'mumble', 'remote_audio_tx')
+        if target_id in _sink_ids and self.gateway:
+            muted_sinks = getattr(self.gateway, '_muted_sinks', set())
+            if target_id in muted_sinks:
+                muted_sinks.discard(target_id)
+                muted = False
+            else:
+                muted_sinks.add(target_id)
+                muted = True
+            self.gateway._muted_sinks = muted_sinks
+            return {'ok': True, 'muted': muted}
+        plugin = self._get_plugin_by_id(target_id)
+        if plugin:
+            # TX and RX share one plugin object but have independent
+            # signal paths — toggle a separate flag for *_tx sinks so
+            # muting TX doesn't silence RX (and vice versa).
+            if target_id.endswith('_tx'):
+                plugin.tx_muted = not getattr(plugin, 'tx_muted', False)
+                return {'ok': True, 'muted': plugin.tx_muted}
+            plugin.muted = not getattr(plugin, 'muted', False)
+            return {'ok': True, 'muted': plugin.muted}
+        return {'ok': False, 'error': f'unknown source/sink: {target_id}'}
+
+    def _routing_cmd_gain(self, data, busses, connections):
+        target_id = data.get('id', '')
+        value = int(data.get('value', 100))
+        _gw = self.gateway
+        plugin = self._get_plugin_by_id(target_id)
+        if plugin:
+            _is_tx = target_id.endswith('_tx')
+            if _is_tx and hasattr(plugin, 'tx_audio_boost'):
+                plugin.tx_audio_boost = value / 100.0
+            else:
+                plugin.audio_boost = value / 100.0
+            # Persist link endpoint gains
+            _ep_name = getattr(plugin, 'endpoint_name', '')
+            if _ep_name and _gw:
+                _key = 'tx_boost' if _is_tx else 'rx_boost'
+                settings = _gw.link_endpoint_settings.setdefault(_ep_name, {})
+                settings[_key] = value
+                _gw._save_link_settings()
+            if _gw:
                 _gw._source_gains[target_id] = value
                 _gw._save_source_gains()
-                return {'ok': True, 'gain': value}
-            return {'ok': False, 'error': f'unknown source/sink: {target_id}'}
+            return {'ok': True, 'gain': value}
+        # Passive sinks (mumble, broadcastify, speaker, etc.) — no plugin
+        _passive_sinks = ('mumble', 'broadcastify', 'speaker',
+                          'transcription', 'remote_audio_tx')
+        if target_id in _passive_sinks and _gw:
+            _gw._sink_gains[target_id] = value / 100.0
+            _gw._source_gains[target_id] = value
+            _gw._save_source_gains()
+            return {'ok': True, 'gain': value}
+        return {'ok': False, 'error': f'unknown source/sink: {target_id}'}
 
-        elif cmd == 'speaker_mode':
-            mode = data.get('mode', 'virtual').lower()
-            if mode not in ('virtual', 'auto', 'real'):
-                return {'ok': False, 'error': f'invalid mode: {mode}'}
-            gw = self.gateway
-            if not gw:
-                return {'ok': False, 'error': 'gateway not ready'}
-            gw.config.SPEAKER_MODE = mode
-            # Close existing real stream if switching to virtual
-            if mode == 'virtual':
-                if gw.speaker_stream:
-                    try:
-                        if gw.speaker_stream.is_active():
-                            gw.speaker_stream.stop_stream()
-                        gw.speaker_stream.close()
-                    except Exception:
-                        pass
-                    gw.speaker_stream = None
-                    gw.speaker_queue = None
-                    print(f"  [Speaker] Switched to virtual (metering only)")
-                return {'ok': True, 'mode': mode, 'device': None}
-            else:
-                # Try to open real device
-                if not gw.speaker_stream:
-                    gw.open_speaker_output()
-                _dev = 'connected' if gw.speaker_stream else 'virtual (fallback)'
-                return {'ok': True, 'mode': mode if gw.speaker_stream else 'virtual', 'device': _dev}
+    def _routing_cmd_speaker_mode(self, data, busses, connections):
+        mode = data.get('mode', 'virtual').lower()
+        if mode not in ('virtual', 'auto', 'real'):
+            return {'ok': False, 'error': f'invalid mode: {mode}'}
+        gw = self.gateway
+        if not gw:
+            return {'ok': False, 'error': 'gateway not ready'}
+        gw.config.SPEAKER_MODE = mode
+        if mode == 'virtual':
+            # Close existing real stream
+            if gw.speaker_stream:
+                try:
+                    if gw.speaker_stream.is_active():
+                        gw.speaker_stream.stop_stream()
+                    gw.speaker_stream.close()
+                except Exception:
+                    pass
+                gw.speaker_stream = None
+                gw.speaker_queue = None
+                print(f"  [Speaker] Switched to virtual (metering only)")
+            return {'ok': True, 'mode': mode, 'device': None}
+        # auto / real — try to open device
+        if not gw.speaker_stream:
+            gw.open_speaker_output()
+        _dev = 'connected' if gw.speaker_stream else 'virtual (fallback)'
+        return {'ok': True, 'mode': mode if gw.speaker_stream else 'virtual', 'device': _dev}
 
-        return {'ok': False, 'error': f'unknown command: {cmd}'}
+    # ── Dispatch table — add a command by writing a method above ──
+    _ROUTING_CMD_DISPATCH = {
+        'add_bus':         _routing_cmd_add_bus,
+        'rename_bus':      _routing_cmd_rename_bus,
+        'delete_bus':      _routing_cmd_delete_bus,
+        'connect':         _routing_cmd_connect,
+        'disconnect':      _routing_cmd_disconnect,
+        'save_all':        _routing_cmd_save_all,
+        'toggle_proc':     _routing_cmd_toggle_proc,
+        'set_dfn_mix':     _routing_cmd_set_dfn_mix,
+        'set_dfn_atten':   _routing_cmd_set_dfn_atten,
+        'set_dfn_engine':  _routing_cmd_set_dfn_engine,
+        'set_loop_hours':  _routing_cmd_set_loop_hours,
+        'bus_mute':        _routing_cmd_bus_mute,
+        'mute':            _routing_cmd_mute,
+        'gain':            _routing_cmd_gain,
+        'speaker_mode':    _routing_cmd_speaker_mode,
+    }
 
     def _get_plugin_by_id(self, id):
         """Resolve a source/sink ID to the corresponding plugin/source object."""
