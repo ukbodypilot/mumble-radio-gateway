@@ -67,9 +67,9 @@ Code at `/home/user/link/`, deployed via scp from gateway.
 | Name | Host | IP | Plugin | Notes |
 |------|------|----|--------|-------|
 | celeron-ftm150 | Intel Celeron | .134 | aioc | FTM-150 radio, packet/Winlink TNC |
-| d75-pi | Pi Zero 2W | .123 | d75 | D75 via BT, DietPi read-only root, tmpfs code (updated 2026-05-11) |
+| d75-pi | Pi Zero 2W | .123 | d75 | D75 via BT, DietPi read-only root, tmpfs code (updated 2026-05-11); BT serial connected after gateway restart 2026-05-24 |
 | cm5-aioc | Pi CM5 | .144 (wifi, DHCP) | aioc | Non-WiFi CM5 variant, USB WiFi (MT7610U), Debian Trixie (IP updated 2026-05-17) |
-| cm5-ic7100 | Pi CM5 | .144 (same host) | ic7100 | IC-7100 plugin; serial_connected:false, audio not active as of 2026-05-18 — in-progress setup |
+| cm5-ic7100 | Pi CM5 | .144 (same host) | ic7100 | IC-7100 plugin; appeared 2026-05-17, absent from endpoint list since 2026-05-19 18:00 (3+ checks) — likely removed or powered off |
 
 - Pi-hole DNS on gateway (.140:53) + dnscrypt-proxy DoH (127.0.0.1:5053)
 - Gateway static IP .140 (manual NM config)
