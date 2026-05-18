@@ -78,18 +78,24 @@
   .sat-fill.none { background:var(--t-text-mute); }
   .sat-snr   { min-width:28px; font-size:var(--f-xs); color:var(--t-text); }
 
-  /* Dashboard system bars (sysBar — CPU/RAM/Swap/Disk) use a fixed
-     three-zone gradient sized to the bar's reference width (100px).
-     Setting style.width:Npx reveals only the leftmost N px of the
-     gradient — so yellow/red only show once the bar has actually
-     reached the 60px / 80px tick marks. No more whole-bar colour flip. */
+  /* Dashboard system bars (sysBar — CPU/RAM/Swap/Disk): a fixed-size
+     three-zone gradient anchored to the bar's reference width (100px).
+     Because the element's actual width is set to N px via style.width,
+     only the leftmost N px of the 100-px gradient is visible. So:
+       0–60 % : entirely green (only green portion of gradient visible)
+       60–80 %: green section + amber strip from 60–N (no red yet)
+       80–100%: green + amber + red strip from 80–N
+     Amber and red can ONLY appear once the bar reaches their tick
+     positions — fixing the previous bug where the whole bar flipped. */
   .bar.bar-rx, .bar.bar-tx {
-    background:
-      linear-gradient(to right,
-        var(--t-ok)   0,    var(--t-ok)   60px,
-        var(--t-warn) 60px, var(--t-warn) 80px,
-        var(--t-err)  80px, var(--t-err)  100px) left center / 100px 100% no-repeat,
-      var(--t-bg);
+    background-color: var(--t-bg);
+    background-image: linear-gradient(to right,
+      var(--t-ok)   0px,   var(--t-ok)   60px,
+      var(--t-warn) 60px,  var(--t-warn) 80px,
+      var(--t-err)  80px,  var(--t-err)  100px);
+    background-size: 100px 100%;
+    background-position: left center;
+    background-repeat: no-repeat;
     transition: width 220ms cubic-bezier(.06, .9, .25, 1);
   }
   /* Tone overrides — for cases where the bar should be a fixed colour
