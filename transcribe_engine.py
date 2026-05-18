@@ -25,6 +25,56 @@ _STATUS_POLL_INTERVAL = 10  # seconds between /status polls on remote worker
 
 
 # ---------------------------------------------------------------------------
+# Host telemetry helpers — same shape as the remote worker's, so local
+# LocalInferenceEngine cards can show CPU temp/fan/RAM just like remote ones.
+# ---------------------------------------------------------------------------
+
+def _read_int_file(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except Exception:
+        return None
+
+
+def _host_rss_mb():
+    try:
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except Exception:
+        pass
+    return None
+
+
+def _host_cpu_temp_c():
+    """Highest reading across all thermal zones, in °C. None if unavailable."""
+    import glob
+    temps = []
+    for f in glob.glob('/sys/class/thermal/thermal_zone*/temp'):
+        v = _read_int_file(f)
+        if v is not None and v > 0:
+            temps.append(v / 1000.0)
+    return round(max(temps), 1) if temps else None
+
+
+def _host_fan_rpm():
+    """First fan's RPM via applesmc, or hwmon if available. None if not found."""
+    import glob
+    for f in sorted(glob.glob('/sys/devices/platform/applesmc.*/fan*_input')):
+        v = _read_int_file(f)
+        if v is not None:
+            return v
+    # Fallback: hwmon (works on many regular PCs)
+    for f in sorted(glob.glob('/sys/class/hwmon/hwmon*/fan*_input')):
+        v = _read_int_file(f)
+        if v is not None and v > 0:
+            return v
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Local engine
 # ---------------------------------------------------------------------------
 
@@ -74,6 +124,8 @@ class LocalInferenceEngine:
         self._tokenizer = None
         self._inflight = 0           # in-flight requests (for pool dispatch)
         self._dispatched = 0         # gateway-side completed call count
+        self._proc_sum = 0.0         # sum of proc_time across dispatched calls
+        self._audio_sum = 0.0        # sum of audio durations across dispatched calls
 
     def load(self):
         """Load the model. Raises on failure."""
@@ -124,7 +176,13 @@ class LocalInferenceEngine:
             return ' '.join(seg.text.strip() for seg in segments)
         return ''
 
+    def record_stat(self, duration: float, proc_time: float):
+        """Track running ratio for this engine. Called from dispatcher after each call."""
+        self._proc_sum += float(proc_time)
+        self._audio_sum += float(duration)
+
     def get_status(self) -> dict:
+        avg_ratio = round(self._proc_sum / self._audio_sum, 3) if self._audio_sum > 0 else None
         return {
             'type': 'local',
             'model_key': self.model_key,
@@ -132,6 +190,10 @@ class LocalInferenceEngine:
             'model_loaded': self.is_loaded,
             'inflight': self._inflight,
             'dispatched': self._dispatched,
+            'avg_ratio': avg_ratio,
+            'ram_mb': _host_rss_mb(),
+            'cpu_temp_c': _host_cpu_temp_c(),
+            'fan_rpm': _host_fan_rpm(),
         }
 
     def stop(self):

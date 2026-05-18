@@ -992,6 +992,10 @@ class RadioTranscriber:
                     'bus': item.get('source_id', ''),
                     'time_str': time.strftime('%H:%M:%S', time.localtime(item['start_time'])),
                 }
+            # Track per-engine ratio (LocalInferenceEngine only — RemoteEngine
+            # gets its avg_ratio from the worker's /status payload).
+            if hasattr(engine, 'record_stat'):
+                engine.record_stat(stat['duration'], stat['proc_time'])
             return stat, result
         finally:
             engine._inflight = max(0, engine._inflight - 1)
