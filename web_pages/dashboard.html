@@ -78,6 +78,26 @@
   .sat-fill.none { background:var(--t-text-mute); }
   .sat-snr   { min-width:28px; font-size:var(--f-xs); color:var(--t-text); }
 
+  /* Dashboard system bars (sysBar — CPU/RAM/Swap/Disk) use a fixed
+     three-zone gradient sized to the bar's reference width (100px).
+     Setting style.width:Npx reveals only the leftmost N px of the
+     gradient — so yellow/red only show once the bar has actually
+     reached the 60px / 80px tick marks. No more whole-bar colour flip. */
+  .bar.bar-rx, .bar.bar-tx {
+    background:
+      linear-gradient(to right,
+        var(--t-ok)   0,    var(--t-ok)   60px,
+        var(--t-warn) 60px, var(--t-warn) 80px,
+        var(--t-err)  80px, var(--t-err)  100px) left center / 100px 100% no-repeat,
+      var(--t-bg);
+    transition: width 220ms cubic-bezier(.06, .9, .25, 1);
+  }
+  /* Tone overrides — for cases where the bar should be a fixed colour
+     regardless of level (e.g. RAM as accent). Used by sysBar's tone arg. */
+  .bar.bar-rx.tone-accent, .bar.bar-tx.tone-accent { background: var(--t-accent); }
+  .bar.bar-rx.tone-warn,   .bar.bar-tx.tone-warn   { background: var(--t-warn); }
+  /* Legacy whole-bar colours — kept for non-sysBar callers that still
+     toggle these classes (charts elsewhere etc.). */
   .bar.warn   { background:var(--t-warn); }
   .bar.err    { background:var(--t-err); }
   .bar.accent { background:var(--t-accent); }
@@ -624,8 +644,8 @@ function updateStatus() {
           lh2+='<div class="link-body">';
           if(le.capabilities&&le.capabilities.ptt) lh2+='<button onclick="linkPttToggle(&quot;'+ename+'&quot;)" class="'+(le.ptt_active?'link-ptt on':'link-ptt')+'">'+(le.ptt_active?'PTT ON':'PTT')+'</button>';
           lh2+='<div class="link-col">';
-          lh2+='<div class="link-row"><span class="link-label">RX</span><div class="link-bar vu vu-tone-mono" data-vu-rx="'+le.id+'"><div class="link-fill rx"></div></div></div>';
-          lh2+='<div class="link-row"><span class="link-label">TX</span><div class="link-bar vu vu-tone-mono" data-vu-tx="'+le.id+'"><div class="link-fill tx"></div></div></div>';
+          lh2+='<div class="link-row"><span class="link-label">RX</span><div class="link-bar vu vu-tone-mono" data-vu-rx="'+le.name+'"><div class="link-fill rx"></div></div></div>';
+          lh2+='<div class="link-row"><span class="link-label">TX</span><div class="link-bar vu vu-tone-mono" data-vu-tx="'+le.name+'"><div class="link-fill tx"></div></div></div>';
           lh2+='<div class="link-row mt-1"><button onclick="linkMuteToggle(&quot;'+ename+'&quot;,&quot;rx&quot;)" class="'+(le.rx_muted?'link-mute on':'link-mute')+'">Mute</button><input type="range" min="-10" max="10" step="1" value="'+rxGain+'" class="link-slider" oninput="linkGain(&quot;'+ename+'&quot;,&quot;rx_gain&quot;,this.value)"><span class="link-gain-val">'+rxGain+' dB</span></div>';
           lh2+='<div class="link-row"><button onclick="linkMuteToggle(&quot;'+ename+'&quot;,&quot;tx&quot;)" class="'+(le.tx_muted?'link-mute on':'link-mute')+'">Mute</button><input type="range" min="-10" max="10" step="1" value="'+txGain+'" class="link-slider" oninput="linkGain(&quot;'+ename+'&quot;,&quot;tx_gain&quot;,this.value)"><span class="link-gain-val">'+txGain+' dB</span></div>';
           lh2+='</div></div>';
@@ -638,8 +658,8 @@ function updateStatus() {
         // bars get the proper attack/decay envelope + peak-hold sliver.
         for (var _i = 0; _i < eps.length; _i++) {
           var _le = eps[_i];
-          var _rxEl = document.querySelector('[data-vu-rx="' + _le.id + '"]');
-          var _txEl = document.querySelector('[data-vu-tx="' + _le.id + '"]');
+          var _rxEl = document.querySelector('[data-vu-rx="' + _le.name + '"]');
+          var _txEl = document.querySelector('[data-vu-tx="' + _le.name + '"]');
           if (_rxEl && window.RG && RG.vu) RG.vu.set(_rxEl, _le.level || 0);
           if (_txEl && window.RG && RG.vu) RG.vu.set(_txEl, _le.tx_level || 0);
         }
@@ -698,7 +718,17 @@ setInterval(function(){if(_lost){fetch('/status').then(function(r){if(r.ok){_los
 updateStatus();
 
 // ── Sysinfo ──
-function sysBar(pct,tone){var cls=pct>80?'err':pct>60?'warn':(tone||'');var w=Math.round(Math.min(Math.max(pct,0),100));var p=pct<10?'  '+pct:pct<100?' '+pct:''+pct;return '<span class="bar-pct">'+p+'%</span><span class="bar bar-rx '+cls+'" style="width:'+w+'px"></span>';}
+function sysBar(pct,tone){
+  // Color zones live in the bar's CSS background gradient (0-60px green,
+  // 60-80px amber, 80-100px red). Setting the bar's width reveals only
+  // the leftmost portion of that gradient, so amber/red appear only when
+  // the bar has actually filled past 60/80%. No threshold-driven class
+  // flip — the whole-bar colour was the bug.
+  var w=Math.round(Math.min(Math.max(pct,0),100));
+  var p=pct<10?'  '+pct:pct<100?' '+pct:''+pct;
+  var toneCls=tone?(' tone-'+tone):'';
+  return '<span class="bar-pct">'+p+'%</span><span class="bar bar-rx'+toneCls+'" style="width:'+w+'px"></span>';
+}
 var _lastSysinfoHTML='';
 createPoller('/sysinfo',2000,function(s){
   var h='<div class="st-row">';
