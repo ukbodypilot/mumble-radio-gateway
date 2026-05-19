@@ -39,10 +39,11 @@ BT serial (CAT control) on d75-pi drops silently after 2-3+ hours of uptime. Obs
 - **No auto-recovery**: Serial stays down indefinitely until the next reconnect event (TCP port change is the indicator of a true reconnect).
 - **Duration by endpoint code version**:
   - `442f7407815769fa` — serial dropped at ~2h
-  - `22e41770622f6bdf` — held 3h17m+ (longest session record before restart)
-  - `fb9897833f4ef6b4` — 12h32m+ at 2026-05-27 08:19 (still running through morning with active radio use; prev record 3h17m — likely fixed)
+  - `22e41770622f6bdf` — held 3h17m+ (longest session before restart)
+  - `fb9897833f4ef6b4` — **14h35m+ CONFIRMED FIXED** — serial still up when gateway restarted 2026-05-19 ~08:18 (survived overnight quiet + active morning use with PTT bursts)
+  - `a9099125f428ba48` — deployed 2026-05-19 ~08:36; serial up on new session (port :37898, ~46m at 16:00 check)
 - **Detection in fleet checks**: If `serial_connected:false` and TCP port is UNCHANGED from last check → silent drop (not a reconnect). If port changed → reconnect event (serial will be up briefly).
-- **Root cause**: Unknown. Likely BlueZ RFCOMM link timeout or D75 CAT serial idle disconnect. No fix deployed as of 2026-05-26.
+- **Root cause**: Unknown. Likely BlueZ RFCOMM link timeout or D75 CAT serial idle disconnect. **fb9897833+ appears to have fixed it.**
 
 ## Transcription pool (current state)
 
@@ -84,6 +85,6 @@ Multi-machine via `transcribe_engine.py`. Mode is `pool`: local Moonshine engine
 - [feedback_verify_deploys.md](feedback_verify_deploys.md) — prove new code is running before claiming "fixed".
 
 **Bug history:** bugs.md, bugs_2026_03_30.md, bugs_2026_04_01.md, bugs_2026_04_05.md, bugs_2026_04_13.md
-**Feedback (active rules):** feedback_config_safety.md, feedback_single_source_config.md, feedback_no_gateway_restart.md, feedback_instrument_not_guess.md, feedback_host_cpu_traps.md
+**Feedback (active rules):** feedback_config_safety.md, feedback_single_source_config.md, feedback_no_gateway_restart.md, feedback_instrument_not_guess.md, feedback_host_cpu_traps.md, feedback_no_self_scheduling.md
 **References:** reference_host_tweaks.md, reference_gdrive_backup.md
 **Project notes (load when touching that area):** project_audio_quality.md, project_ftm150_endpoint.md, project_packet_radio.md, project_listen_bus_unify.md, project_loop_recorder.md, project_sdr_single_mode.md, project_internet_endpoints.md, project_d75_cleanup.md, project_rust_audio_core.md (deferred)

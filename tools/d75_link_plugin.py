@@ -570,6 +570,11 @@ class D75Plugin(RadioPlugin):
                         break
         except Exception:
             pass
+        try:
+            import socket
+            stats['hostname'] = socket.gethostname()
+        except Exception:
+            pass
         return stats
 
     # -- Internal: memory scan --

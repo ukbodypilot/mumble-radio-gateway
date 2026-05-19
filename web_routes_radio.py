@@ -93,6 +93,97 @@ def handle_d75cmd(handler, parent):
         pass
     return
 
+def handle_ic7100cmd(handler, parent):
+    """POST /ic7100cmd — dispatch IC-7100 panel commands to the link endpoint."""
+    length = int(handler.headers.get('Content-Length', 0))
+    body = handler.rfile.read(length).decode('utf-8')
+    result = {'ok': False}
+    try:
+        data = json_mod.loads(body)
+        cmd = data.get('cmd', '')
+        args = data.get('args', '')
+        gw = parent.gateway
+        _link = getattr(gw, 'link_server', None) if gw else None
+
+        # Locate the IC-7100 endpoint
+        _ep = None
+        if _link:
+            for ep_name, ep_src in gw.link_endpoints.items():
+                if getattr(ep_src, 'plugin_type', None) == 'ic7100':
+                    _ep = ep_name
+                    break
+
+        if not (_ep and _link):
+            result = {'ok': False, 'error': 'IC-7100 not connected'}
+        elif cmd == 'ptt':
+            # Caller may send explicit state, else toggle from cached
+            if 'state' in data:
+                _new = bool(data.get('state'))
+            else:
+                _ptt_now = getattr(gw, '_link_ptt_active', {}).get(_ep, False)
+                _new = not _ptt_now
+            _link.send_command_to(_ep, {'cmd': 'ptt', 'state': _new})
+            result = {'ok': True, 'ptt': _new}
+        elif cmd == 'freq':
+            # Accept MHz as string or float
+            try:
+                _mhz = float(args)
+            except (TypeError, ValueError):
+                result = {'ok': False, 'error': 'freq must be a number (MHz)'}
+            else:
+                _link.send_command_to(_ep, {'cmd': 'frequency', 'freq': _mhz})
+                result = {'ok': True, 'freq': _mhz}
+        elif cmd == 'mode':
+            _mode = data.get('mode', args)
+            _filter = data.get('filter')
+            _payload = {'cmd': 'mode', 'mode': _mode}
+            if _filter is not None:
+                _payload['filter'] = int(_filter)
+            _link.send_command_to(_ep, _payload)
+            result = {'ok': True, 'mode': _mode}
+        elif cmd == 'ctcss':
+            _payload = {'cmd': 'ctcss'}
+            for _k in ('tx_hz', 'rx_hz', 'tx_on', 'rx_on'):
+                if _k in data:
+                    _payload[_k] = data[_k]
+            _link.send_command_to(_ep, _payload)
+            result = {'ok': True}
+        elif cmd in ('rx_gain', 'tx_gain'):
+            try:
+                _db = float(data.get('db', args))
+            except (TypeError, ValueError):
+                result = {'ok': False, 'error': f'{cmd} db must be a number'}
+            else:
+                _link.send_command_to(_ep, {'cmd': cmd, 'db': _db})
+                result = {'ok': True, 'db': _db}
+        elif cmd == 'mute':
+            _src = gw.link_endpoints.get(_ep)
+            if _src is not None:
+                _src.muted = not _src.muted
+                result = {'ok': True, 'muted': _src.muted}
+            else:
+                result = {'ok': False, 'error': 'audio source missing'}
+        elif cmd == 'cat':
+            # Raw CI-V passthrough — args expected as hex string
+            _link.send_command_to(_ep, {'cmd': 'cat', 'raw': args})
+            result = {'ok': True, 'response': 'cat sent'}
+        elif cmd == 'status':
+            _link.send_command_to(_ep, {'cmd': 'status'})
+            result = {'ok': True, 'response': 'status requested'}
+        else:
+            result = {'ok': False, 'error': f'unknown cmd: {cmd}'}
+    except Exception as e:
+        result = {'ok': False, 'error': str(e)}
+    try:
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'application/json')
+        handler.end_headers()
+        handler.wfile.write(json_mod.dumps(result).encode('utf-8'))
+    except BrokenPipeError:
+        pass
+    return
+
+
 def handle_kv4pcmd(handler, parent):
     """POST /kv4pcmd"""
     length = int(handler.headers.get('Content-Length', 0))
@@ -455,6 +546,10 @@ def handle_packet_cmd(handler, parent):
             result = pp.execute({'cmd': 'bbs_send', 'text': data.get('text', '')})
         elif action == 'force_audio':
             result = pp.execute({'cmd': 'force_audio'})
+        elif action == 'setendpoint':
+            new_name = data.get('name', '')
+            resolved = pp.set_endpoint_pref(new_name)
+            result = {"ok": True, "endpoint_pref": pp._endpoint_pref, "endpoint_active": resolved}
         elif action == 'winlink/compose':
             result = _winlink_compose(data)
         elif action == 'winlink/connect':

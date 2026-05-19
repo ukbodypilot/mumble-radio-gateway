@@ -244,7 +244,12 @@
       <span id="st-dw-level" class="pkt-val cyan pkt-meter-val">—</span>
     </div>
     <div class="pkt-row pkt-row-divider">
-      <span><span class="pkt-label">Endpoint:</span> <span id="st-ep-name" class="pkt-val">—</span></span>
+      <span><span class="pkt-label">Packet Radio:</span>
+        <select id="st-ep-select" class="pkt-input" style="min-width:140px" onchange="setEndpoint(this.value)">
+          <option value="">(auto-select)</option>
+        </select>
+      </span>
+      <span><span class="pkt-label">Active:</span> <span id="st-ep-name" class="pkt-val">—</span></span>
       <span><span class="pkt-label">EP Mode:</span> <span id="st-ep-mode" class="pkt-val">—</span></span>
       <span><span class="pkt-label">DW Proc:</span> <span id="st-ep-dw" class="pkt-val">—</span></span>
       <span><span class="pkt-label">Audio I/O:</span> <span id="st-ep-audio" class="pkt-val">—</span></span>
@@ -418,6 +423,36 @@ function forceAudio() {
   });
 }
 
+// ── Packet radio endpoint selection ──
+function setEndpoint(name) {
+  pktPost('setendpoint', {name: name || ''}).then(function(d) {
+    if (d.error) alert('Error: ' + d.error);
+    pollStatus();
+  });
+}
+
+function syncEndpointDropdown(s) {
+  var sel = document.getElementById('st-ep-select');
+  if (!sel) return;
+  var available = s.endpoints_available || [];
+  var pref = s.endpoint_pref || '';
+  // Build option set: "" (auto) + each available name
+  var want = [''].concat(available);
+  // Only redraw if option set changed (preserves focus)
+  var have = Array.prototype.map.call(sel.options, function(o){ return o.value; });
+  var same = (want.length === have.length) && want.every(function(v,i){ return v === have[i]; });
+  if (!same) {
+    sel.innerHTML = '';
+    want.forEach(function(name) {
+      var opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name === '' ? '(auto-select)' : name;
+      sel.appendChild(opt);
+    });
+  }
+  if (sel.value !== pref) sel.value = pref;
+}
+
 // ── Direwolf log toggle ──
 var _dwLogVisible = true;
 function toggleDwLog() {
@@ -465,10 +500,13 @@ function pollStatus() {
       }
     });
 
+    // Endpoint dropdown (available packet-capable endpoints + current selection)
+    syncEndpointDropdown(s);
+
     // Endpoint status
     var ep = s.endpoint || {};
-    document.getElementById('st-ep-name').textContent = ep.endpoint_name || '—';
-    document.getElementById('st-ep-name').className = 'pkt-val ' + (ep.connected ? 'green' : 'red');
+    document.getElementById('st-ep-name').textContent = s.endpoint_active || ep.endpoint_name || '—';
+    document.getElementById('st-ep-name').className = 'pkt-val ' + (ep.connected ? 'green' : (s.endpoint_active ? 'yellow' : 'red'));
     var epMode = ep.endpoint_mode || 'unknown';
     document.getElementById('st-ep-mode').textContent = epMode;
     document.getElementById('st-ep-mode').className = 'pkt-val ' + (epMode === 'audio' ? 'green' : epMode === 'data' ? 'yellow' : 'red');

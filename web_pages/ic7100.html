@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IC-7100 — Radio Gateway</title>
+<link rel="stylesheet" href="/pages/common.css">
+<style>
+  /* IC-7100 panel — wfview-style main window in HTML.
+     Reuses the phosphor vocabulary from /d75 and /radio for consistency. */
+
+  .ic-bar {
+    margin-bottom: var(--s-3);
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    padding: var(--s-2) var(--s-3);
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    flex-wrap: wrap;
+  }
+  .ic-bar .sep   { color: var(--t-border); }
+  .ic-spacer     { flex: 1; }
+  .ic-label      { color: var(--t-text-dim); font-size: var(--f-sm); }
+  .ic-val        { color: var(--t-text); font-variant-numeric: tabular-nums; }
+  .ic-val.ok     { color: var(--t-ok); }
+  .ic-val.warn   { color: var(--t-warn); }
+  .ic-val.err    { color: var(--t-err); }
+  .ic-val.dim    { color: var(--t-text-dim); }
+
+  /* Big freq display — wfview top-center.
+     Each digit is a clickable/scrollable span. Mouse wheel on a digit
+     steps that decade; Up/Down arrows step the active digit; Left/Right
+     move the active position. */
+  .ic-freq-display {
+    font-family: var(--f-mono, monospace);
+    font-size: 2.6em;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--t-accent);
+    font-variant-numeric: tabular-nums;
+    padding: 0 var(--s-3);
+    min-width: 7em;
+    text-align: right;
+    user-select: none;
+    outline: none;
+    display: inline-flex;
+    align-items: baseline;
+  }
+  .ic-freq-display:focus { outline: 1px dashed var(--t-accent); }
+  .ic-fd {
+    display: inline-block;
+    min-width: 0.7em;
+    text-align: center;
+    cursor: ns-resize;
+    padding: 0 0.02em;
+    border-bottom: 2px solid transparent;
+    transition: background 0.1s;
+  }
+  .ic-fd:hover { background: var(--t-panel-hi); }
+  .ic-fd.active {
+    color: var(--t-bg);
+    background: var(--t-accent);
+    border-bottom-color: var(--t-text);
+  }
+  .ic-fd.leading { color: var(--t-text-dim); }
+  .ic-freq-dot { color: var(--t-text-dim); margin: 0 0.05em; }
+  .ic-freq-unit { color: var(--t-text-dim); font-size: 0.4em; vertical-align: super; margin-left: 0.4em; }
+
+  /* Tune-step button row (wfview-style ±decade) */
+  .ic-tune-steps {
+    display: flex; gap: 2px; align-items: center; flex-wrap: wrap;
+    margin-top: var(--s-1);
+  }
+  .ic-tune-steps button {
+    min-width: 3em;
+    font-family: var(--f-mono, monospace);
+    font-size: var(--f-xs);
+  }
+  .ic-tune-steps .ic-tune-zero { background: var(--t-panel-hi); }
+
+  /* Band + mode button rows */
+  .ic-btn-row    { display: flex; gap: var(--s-1); flex-wrap: wrap; }
+  .ic-btn-row button.active {
+    background: var(--t-accent); color: var(--t-bg); border-color: var(--t-accent);
+  }
+
+  /* S-meter bar */
+  .ic-smeter-wrap {
+    flex: 1;
+    min-width: 200px;
+    height: 18px;
+    background: var(--t-bg);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-sm);
+    overflow: hidden;
+    position: relative;
+  }
+  .ic-smeter-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--t-ok) 0%, var(--t-warn) 60%, var(--t-err) 95%);
+    transition: width 0.15s linear;
+  }
+  .ic-smeter-ticks {
+    position: absolute; inset: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(to right,
+      transparent 0, transparent calc(100% / 9 - 1px),
+      var(--t-border) calc(100% / 9 - 1px), var(--t-border) calc(100% / 9));
+    opacity: 0.4;
+  }
+
+  /* TX badge */
+  .ic-tx-badge {
+    display: none;
+    background: var(--t-err);
+    color: var(--t-bg);
+    padding: 2px var(--s-2);
+    border-radius: var(--r-sm);
+    font-size: var(--f-xs);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  .ic-tx-badge.on { display: inline-block; }
+
+  /* Cards */
+  .ic-card {
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    padding: var(--s-3);
+    margin-bottom: var(--s-3);
+  }
+  .ic-card-title {
+    color: var(--t-accent);
+    font-weight: 600;
+    font-size: var(--f-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: var(--s-2);
+  }
+  .ic-row {
+    display: flex; align-items: center; gap: var(--s-3);
+    flex-wrap: wrap; margin-bottom: var(--s-2);
+  }
+  .ic-row:last-child { margin-bottom: 0; }
+  .ic-grid-2 {
+    display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3);
+  }
+  @media (max-width: 720px) { .ic-grid-2 { grid-template-columns: 1fr; } }
+
+  .ic-slider { flex: 1; accent-color: var(--t-accent); }
+  .ic-slider-val { min-width: 4em; text-align: right; font-variant-numeric: tabular-nums; }
+
+  .ic-select, .ic-input {
+    background: var(--t-bg);
+    color: var(--t-text);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-sm);
+    padding: 2px 6px;
+    font-size: var(--f-sm);
+  }
+  .ic-input.w-freq { width: 9em; }
+  .ic-input.w-tone { width: 5em; }
+  .ic-input.w-cat  { flex: 1; font-family: var(--f-mono, monospace); }
+
+  /* Offline state */
+  .ic-offline {
+    background: var(--t-panel);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-md);
+    padding: var(--s-3);
+    margin-bottom: var(--s-3);
+  }
+  .ic-offline .head { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
+  .ic-offline .msg  { color: var(--t-err); font-weight: 600; }
+  .ic-offline .detail { color: var(--t-warn); font-size: var(--f-sm); }
+  .ic-offline .checklist { margin-top: var(--s-3); font-size: var(--f-sm); }
+  .ic-offline .checklist > div { margin: var(--s-1) 0; }
+  .dot { display: inline-block; width: 0.7em; }
+  .dot.pending { color: var(--t-text-dim); }
+  .dot.ok      { color: var(--t-ok); }
+  .dot.err     { color: var(--t-err); }
+
+  /* CAT console */
+  #ic-cat-log {
+    background: var(--t-bg);
+    border: 1px solid var(--t-border);
+    border-radius: var(--r-sm);
+    padding: var(--s-2);
+    height: 8em;
+    overflow-y: auto;
+    font-family: var(--f-mono, monospace);
+    font-size: var(--f-xs);
+    color: var(--t-text-dim);
+    white-space: pre-wrap;
+  }
+</style>
+</head><body>
+
+<!-- Offline state ------------------------------------------------------- -->
+<div id="ic-offline" class="ic-offline" style="display:none;">
+  <div class="head">
+    <span class="msg">IC-7100 Not Connected</span>
+    <span id="ic-status-detail" class="detail"></span>
+  </div>
+  <div class="checklist">
+    <div>
+      <span id="ic-chk-link" class="dot pending">&#x25cf;</span>
+      Gateway Link Endpoint: <span id="ic-chk-link-text" class="ic-val dim">checking...</span>
+    </div>
+    <div>
+      <span id="ic-chk-civ" class="dot pending">&#x25cf;</span>
+      CI-V Serial: <span id="ic-chk-civ-text" class="ic-val dim">checking...</span>
+    </div>
+    <div>
+      <span id="ic-chk-audio" class="dot pending">&#x25cf;</span>
+      USB Audio: <span id="ic-chk-audio-text" class="ic-val dim">checking...</span>
+    </div>
+  </div>
+</div>
+
+<!-- Main panel ---------------------------------------------------------- -->
+<div id="ic-panel" style="display:none;">
+
+  <!-- Status bar: endpoint + connection pill + TX badge -->
+  <div class="ic-bar">
+    <span class="ic-label">Endpoint:</span> <span id="ic-ep-name" class="ic-val">&mdash;</span>
+    <span class="sep">|</span>
+    <span class="ic-label">CI-V:</span> <span id="ic-civ-state" class="ic-val">&mdash;</span>
+    <span class="sep">|</span>
+    <span class="ic-label">Audio:</span> <span id="ic-audio-state" class="ic-val">&mdash;</span>
+    <span class="sep">|</span>
+    <span class="ic-label">Mute:</span> <span id="ic-mute-state" class="ic-val">no</span>
+    <span class="ic-spacer"></span>
+    <span id="ic-tx-badge" class="ic-tx-badge">TX</span>
+    <span id="ic-feedback" class="ic-val dim"></span>
+  </div>
+
+  <!-- VFO card: big freq display + band shortcuts + mode buttons + meter + PTT -->
+  <div class="ic-card">
+    <div class="ic-row">
+      <!-- Digit-by-digit freq display: 1 GHz down to 1 Hz, populated by JS.
+           Click a digit to make it active, wheel/arrows step that decade. -->
+      <div id="ic-freq" class="ic-freq-display" tabindex="0"
+           title="Click a digit then mouse-wheel or ↑/↓ to step. ←/→ move position."></div>
+      <div class="ic-row" style="flex-direction:column; align-items:flex-start; gap: var(--s-1);">
+        <div><span class="ic-label">Mode:</span> <span id="ic-mode-cur" class="ic-val">&mdash;</span></div>
+        <div><span class="ic-label">Filter:</span> <span id="ic-filter-cur" class="ic-val">&mdash;</span></div>
+      </div>
+      <div class="ic-spacer"></div>
+      <button class="rb" onclick="icCmd('ptt')" id="ic-ptt-btn" title="Toggle transmit">PTT</button>
+    </div>
+    <div class="ic-row" style="margin-top: calc(-1 * var(--s-2));">
+      <span class="ic-label" style="min-width:60px">Step:</span>
+      <div class="ic-tune-steps" id="ic-tune-steps"></div>
+      <span class="ic-spacer"></span>
+      <span class="ic-label">Enter:</span>
+      <input id="ic-freq-typed" class="ic-input" type="text" inputmode="decimal"
+             placeholder="MHz" style="width:8em"
+             title="Type a frequency (MHz) and press Enter">
+      <span class="ic-label" style="font-size:var(--f-xs)">tip: 14.2 → 14.200 MHz; 14200 → 14.200 MHz</span>
+    </div>
+    <div class="ic-row">
+      <span class="ic-label">Band:</span>
+      <div class="ic-btn-row" id="ic-band-row">
+        <!-- IC-7100 bands populated by JS — 160 / 80 / 40 / 30 / 20 / 17 / 15 / 12 / 10 / 6 / 2 / 70cm -->
+      </div>
+    </div>
+    <div class="ic-row">
+      <span class="ic-label">Mode:</span>
+      <div class="ic-btn-row" id="ic-mode-row">
+        <!-- LSB / USB / AM / CW / CW-R / RTTY / RTTY-R / FM / DV — populated by JS -->
+      </div>
+    </div>
+    <div class="ic-row">
+      <span class="ic-label">S-meter:</span>
+      <div class="ic-smeter-wrap" title="Receive signal strength">
+        <div id="ic-smeter-fill" class="ic-smeter-fill"></div>
+        <div class="ic-smeter-ticks"></div>
+      </div>
+      <span id="ic-smeter-val" class="ic-val" style="min-width:3em;text-align:right">0</span>
+    </div>
+  </div>
+
+  <div class="ic-grid-2">
+    <!-- CTCSS card -->
+    <div class="ic-card">
+      <div class="ic-card-title">CTCSS</div>
+      <div class="ic-row">
+        <label class="ic-label" style="min-width:80px">TX tone:</label>
+        <input id="ic-ctcss-tx" class="ic-input w-tone" type="number" step="0.1" min="0" max="254.1"
+               title="Encode tone in Hz (0 disables)">
+        <label><input type="checkbox" id="ic-ctcss-tx-on"> on</label>
+        <button class="rb rb-sm" onclick="icCtcssApply('tx')">Apply</button>
+      </div>
+      <div class="ic-row">
+        <label class="ic-label" style="min-width:80px">RX tone:</label>
+        <input id="ic-ctcss-rx" class="ic-input w-tone" type="number" step="0.1" min="0" max="254.1"
+               title="Tone squelch in Hz (0 disables)">
+        <label><input type="checkbox" id="ic-ctcss-rx-on"> on</label>
+        <button class="rb rb-sm" onclick="icCtcssApply('rx')">Apply</button>
+      </div>
+    </div>
+
+    <!-- Audio card: RX/TX gain + mute -->
+    <div class="ic-card">
+      <div class="ic-card-title">Audio</div>
+      <div class="ic-row">
+        <label class="ic-label" style="min-width:80px">RX gain:</label>
+        <input id="ic-rx-gain" class="ic-slider" type="range" min="-20" max="20" step="0.5" value="0"
+               oninput="document.getElementById('ic-rx-gain-val').textContent = (+this.value).toFixed(1) + ' dB'"
+               onchange="icCmd('rx_gain', {db: +this.value})">
+        <span id="ic-rx-gain-val" class="ic-slider-val">0.0 dB</span>
+      </div>
+      <div class="ic-row">
+        <label class="ic-label" style="min-width:80px">TX gain:</label>
+        <input id="ic-tx-gain" class="ic-slider" type="range" min="-20" max="20" step="0.5" value="0"
+               oninput="document.getElementById('ic-tx-gain-val').textContent = (+this.value).toFixed(1) + ' dB'"
+               onchange="icCmd('tx_gain', {db: +this.value})">
+        <span id="ic-tx-gain-val" class="ic-slider-val">0.0 dB</span>
+      </div>
+      <div class="ic-row">
+        <button class="rb rb-sm" onclick="icCmd('mute')" id="ic-mute-btn">Toggle Mute</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- HF Panel — RIT/XIT, AGC, NB/NR, preamp/atten, IF shift, filter ----- -->
+  <details class="ic-card" open>
+    <summary class="ic-card-title" style="cursor:pointer">HF Controls</summary>
+
+    <!-- Split + RIT/XIT cluster (wfview groups these as VFO operations).
+         RIT offset uses the same digit-spin pattern as the main freq:
+         click a digit, wheel or ↑/↓ to step. Sign cell toggles ±. -->
+    <div class="ic-row" style="margin-top: var(--s-2)">
+      <span class="ic-label" style="min-width:60px">VFO:</span>
+      <label><input type="checkbox" id="ic-split-on" onchange="icCmd('split', {on: this.checked})"> Split</label>
+      <span class="sep">|</span>
+      <label><input type="checkbox" id="ic-rit-on"  onchange="icCmd('rit', {on: this.checked})"> RIT</label>
+      <div id="ic-rit-hz" class="ic-freq-display" tabindex="0"
+           style="font-size: 1.4em; min-width: unset; padding: 0 var(--s-2);"
+           title="Click a digit then mouse-wheel or ↑/↓ to step. ←/→ move position. Click ± to toggle sign."></div>
+      <span class="ic-label">Hz</span>
+      <button class="rb rb-sm" onclick="_setRitHz(0)" title="Clear RIT offset to 0">Clr</button>
+      <span class="sep">|</span>
+      <label><input type="checkbox" id="ic-xit-on" onchange="icCmd('xit', {on: this.checked})"> XIT</label>
+    </div>
+
+    <!-- AGC / preamp / atten cluster (wfview's RF-frontend group) -->
+    <div class="ic-row">
+      <span class="ic-label" style="min-width:60px">AGC:</span>
+      <div class="ic-btn-row" id="ic-agc-row">
+        <button class="rb rb-sm" data-agc="fast" onclick="icCmd('agc', {mode:'fast'})">Fast</button>
+        <button class="rb rb-sm" data-agc="mid"  onclick="icCmd('agc', {mode:'mid'})">Mid</button>
+        <button class="rb rb-sm" data-agc="slow" onclick="icCmd('agc', {mode:'slow'})">Slow</button>
+      </div>
+      <span class="sep">|</span>
+      <span class="ic-label">Preamp:</span>
+      <div class="ic-btn-row" id="ic-preamp-row">
+        <button class="rb rb-sm" data-preamp="0" onclick="icCmd('preamp', {stage:0})">Off</button>
+        <button class="rb rb-sm" data-preamp="1" onclick="icCmd('preamp', {stage:1})">P1</button>
+        <button class="rb rb-sm" data-preamp="2" onclick="icCmd('preamp', {stage:2})">P2</button>
+      </div>
+      <span class="sep">|</span>
+      <label><input type="checkbox" id="ic-atten-on"
+                    onchange="icCmd('atten', {on: this.checked})"> Atten 20 dB</label>
+    </div>
+
+    <!-- NB / NR cluster (wfview's DSP group) -->
+    <div class="ic-row">
+      <span class="ic-label" style="min-width:60px">NB:</span>
+      <label><input type="checkbox" id="ic-nb-on" onchange="icCmd('nb', {on: this.checked})"> on</label>
+      <input id="ic-nb-level" type="range" min="0" max="100" step="1" value="50" class="ic-slider"
+             style="max-width:160px"
+             oninput="document.getElementById('ic-nb-level-val').textContent = this.value + '%'"
+             onchange="icCmd('nb', {level: +this.value})">
+      <span id="ic-nb-level-val" class="ic-slider-val">50%</span>
+      <span class="sep">|</span>
+      <span class="ic-label">NR:</span>
+      <label><input type="checkbox" id="ic-nr-on" onchange="icCmd('nr', {on: this.checked})"> on</label>
+      <input id="ic-nr-level" type="range" min="0" max="100" step="1" value="50" class="ic-slider"
+             style="max-width:160px"
+             oninput="document.getElementById('ic-nr-level-val').textContent = this.value + '%'"
+             onchange="icCmd('nr', {level: +this.value})">
+      <span id="ic-nr-level-val" class="ic-slider-val">50%</span>
+    </div>
+
+    <!-- Filter + IF shift (wfview's passband group) -->
+    <div class="ic-row">
+      <span class="ic-label" style="min-width:60px">Filter:</span>
+      <div class="ic-btn-row" id="ic-filter-row">
+        <button class="rb rb-sm" data-filter="1" onclick="icCmd('filter', {idx:1})">FIL1</button>
+        <button class="rb rb-sm" data-filter="2" onclick="icCmd('filter', {idx:2})">FIL2</button>
+        <button class="rb rb-sm" data-filter="3" onclick="icCmd('filter', {idx:3})">FIL3</button>
+      </div>
+      <span class="sep">|</span>
+      <span class="ic-label">IF shift:</span>
+      <input id="ic-ifshift" type="range" min="0" max="100" step="1" value="50" class="ic-slider"
+             style="max-width:200px"
+             oninput="document.getElementById('ic-ifshift-val').textContent = this.value + '%'"
+             onchange="icCmd('if_shift', {pct: +this.value})">
+      <span id="ic-ifshift-val" class="ic-slider-val">50%</span>
+      <button class="rb rb-sm" onclick="
+          var el = document.getElementById('ic-ifshift'); el.value = 50;
+          document.getElementById('ic-ifshift-val').textContent = '50%';
+          icCmd('if_shift', {pct: 50});"
+          title="Reset IF shift to center">Center</button>
+    </div>
+  </details>
+
+  <!-- Raw CI-V console (debug) -->
+  <details class="ic-card">
+    <summary class="ic-card-title" style="cursor:pointer">Raw CI-V Console</summary>
+    <div class="ic-row" style="margin-top: var(--s-2)">
+      <input id="ic-cat-in" class="ic-input w-cat" placeholder="hex bytes e.g. FE FE 88 E0 03 FD"
+             onkeydown="if(event.key==='Enter') icCatSend()">
+      <button class="rb rb-sm" onclick="icCatSend()">Send</button>
+      <button class="rb rb-sm" onclick="document.getElementById('ic-cat-log').textContent=''">Clear</button>
+    </div>
+    <div id="ic-cat-log" style="margin-top: var(--s-2)"></div>
+  </details>
+</div>
+
+<script>
+// ── Static data ─────────────────────────────────────────────────────────
+var IC_BANDS = [
+  ['160m', 1.900],  ['80m', 3.750],  ['40m', 7.150],
+  ['30m', 10.125],  ['20m', 14.200], ['17m', 18.118],
+  ['15m', 21.300],  ['12m', 24.940], ['10m', 28.400],
+  ['6m', 50.150],   ['2m', 144.200], ['70cm', 432.100],
+];
+var IC_MODES = ['LSB', 'USB', 'AM', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'FM', 'DV'];
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+function icGet(path) {
+  return fetch(path, {cache: 'no-store'}).then(function(r){ return r.json(); })
+                                         .catch(function(){ return {}; });
+}
+function icPost(body) {
+  return fetch('/ic7100cmd', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  }).then(function(r){ return r.json(); })
+    .catch(function(e){ return {ok:false, error:String(e)}; });
+}
+function icFeedback(msg, isErr) {
+  var el = document.getElementById('ic-feedback');
+  el.textContent = msg;
+  el.className = 'ic-val ' + (isErr ? 'err' : 'ok');
+  setTimeout(function(){ if (el.textContent === msg) el.textContent = ''; }, 3000);
+}
+function icCmd(cmd, extra) {
+  var body = Object.assign({cmd: cmd}, extra || {});
+  return icPost(body).then(function(d){
+    if (!d.ok) icFeedback(d.error || 'cmd failed', true);
+    pollStatus();
+    return d;
+  });
+}
+
+// ── Band + mode row population ─────────────────────────────────────────
+function buildBandRow() {
+  var row = document.getElementById('ic-band-row');
+  IC_BANDS.forEach(function(b) {
+    var btn = document.createElement('button');
+    btn.className = 'rb rb-sm';
+    btn.textContent = b[0];
+    btn.dataset.band = b[0];
+    btn.dataset.freq = b[1];
+    btn.onclick = function() {
+      // Update the display immediately for snappy UX, then send
+      _freqHz = Math.round(b[1] * 1e6);
+      _userTuning = true;
+      _renderFreq();
+      icPost({cmd:'freq', args: String(b[1])}).then(function() {
+        setTimeout(function() { _userTuning = false; }, 250);
+      });
+    };
+    row.appendChild(btn);
+  });
+}
+function buildModeRow() {
+  var row = document.getElementById('ic-mode-row');
+  IC_MODES.forEach(function(m) {
+    var btn = document.createElement('button');
+    btn.className = 'rb rb-sm';
+    btn.textContent = m;
+    btn.dataset.mode = m;
+    btn.onclick = function() { icCmd('mode', {mode: m}); };
+    row.appendChild(btn);
+  });
+}
+
+// ── Freq display: digit-row "spin the knob" controller ─────────────────
+// Frequency is held as integer Hz to avoid float drift. The display
+// renders a row of digit spans (10 GHz down to 1 Hz). Click a digit
+// to make it active; mouse wheel or ↑/↓ step that decade; ←/→ move
+// active position. Sends to the radio with a short debounce so a
+// fast spin batches into a few CI-V writes.
+
+var IC_FREQ_DIGITS = 10;        // 10 GHz .. 1 Hz
+var _freqHz = 14200000;         // current display value in Hz
+var _activePos = 3;             // 0=1Hz, 3=1kHz default
+var _sendDebounce = null;
+var _userTuning = false;        // suppress poll-overwrite while interacting
+
+function _renderFreq() {
+  var el = document.getElementById('ic-freq');
+  if (!el) return;
+  // Build digit string padded to IC_FREQ_DIGITS (1 Hz position is index 0)
+  var hz = Math.max(0, Math.round(_freqHz));
+  var s = String(hz).padStart(IC_FREQ_DIGITS, '0');
+  var html = '';
+  var seenNonZero = false;
+  // We render high-to-low (left to right); pos numbering is low-to-high
+  for (var i = 0; i < IC_FREQ_DIGITS; i++) {
+    var pos = IC_FREQ_DIGITS - 1 - i;  // 9..0
+    var digit = s.charAt(i);
+    if (digit !== '0') seenNonZero = true;
+    var leading = !seenNonZero && pos > 6;  // dim leading zeros above 1 MHz
+    var active = (pos === _activePos);
+    html += '<span class="ic-fd' + (active ? ' active' : '')
+          + (leading ? ' leading' : '') + '" data-pos="' + pos + '">'
+          + digit + '</span>';
+    // Insert thousands separators visually at positions 6 and 3 (between digits)
+    if (pos === 6 || pos === 3) html += '<span class="ic-freq-dot">.</span>';
+  }
+  html += '<span class="ic-freq-unit">MHz</span>';
+  el.innerHTML = html;
+}
+
+function _stepFreq(delta) {
+  _freqHz = Math.max(0, _freqHz + delta);
+  _userTuning = true;
+  _renderFreq();
+  if (_sendDebounce) clearTimeout(_sendDebounce);
+  _sendDebounce = setTimeout(function() {
+    icPost({cmd:'freq', args: String(_freqHz / 1e6)}).then(function(d) {
+      if (!d.ok) icFeedback(d.error || 'tune failed', true);
+      // Release tuning lock 250 ms after last send so poll can sync
+      setTimeout(function() { _userTuning = false; }, 250);
+    });
+  }, 60);
+}
+
+function _moveActivePos(delta) {
+  _activePos = Math.max(0, Math.min(IC_FREQ_DIGITS - 1, _activePos + delta));
+  _renderFreq();
+}
+
+function initFreqDisplay() {
+  var el = document.getElementById('ic-freq');
+
+  el.addEventListener('click', function(e) {
+    var target = e.target.closest('.ic-fd');
+    if (target) {
+      _activePos = +target.dataset.pos;
+      _renderFreq();
+      el.focus();
+    }
+  });
+
+  // Mouse wheel on a digit steps that decade; on the container, steps active
+  el.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var target = e.target.closest('.ic-fd');
+    var pos = target ? +target.dataset.pos : _activePos;
+    var dir = e.deltaY < 0 ? +1 : -1;
+    _stepFreq(dir * Math.pow(10, pos));
+  }, {passive: false});
+
+  el.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowUp')   { e.preventDefault(); _stepFreq( Math.pow(10, _activePos)); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); _stepFreq(-Math.pow(10, _activePos)); }
+    else if (e.key === 'ArrowLeft')  { e.preventDefault(); _moveActivePos(+1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); _moveActivePos(-1); }
+    else if (e.key === 'PageUp')   { e.preventDefault(); _stepFreq( 10 * Math.pow(10, _activePos)); }
+    else if (e.key === 'PageDown') { e.preventDefault(); _stepFreq(-10 * Math.pow(10, _activePos)); }
+    else if (/^[0-9]$/.test(e.key)) {
+      // Type a digit at active pos, then auto-advance to next-lower decade
+      e.preventDefault();
+      var place = Math.pow(10, _activePos);
+      var curDigit = Math.floor(_freqHz / place) % 10;
+      var delta = (parseInt(e.key, 10) - curDigit) * place;
+      _stepFreq(delta);
+      if (_activePos > 0) _moveActivePos(-1);
+    }
+  });
+}
+
+function buildStepRow() {
+  var row = document.getElementById('ic-tune-steps');
+  // wfview-style decade buttons: ±1MHz down to ±1Hz
+  var steps = [
+    [-1000000, '−1M'], [-100000, '−100k'], [-10000, '−10k'], [-1000, '−1k'],
+    [-100, '−100'], [-10, '−10'], [-1, '−1'],
+    [ 1, '+1'], [ 10, '+10'], [ 100, '+100'], [ 1000, '+1k'],
+    [ 10000, '+10k'], [ 100000, '+100k'], [ 1000000, '+1M'],
+  ];
+  steps.forEach(function(s, i) {
+    var b = document.createElement('button');
+    b.className = 'rb rb-sm';
+    b.textContent = s[1];
+    b.title = (s[0] > 0 ? '+' : '') + s[0] + ' Hz';
+    b.onclick = function() { _stepFreq(s[0]); document.getElementById('ic-freq').focus(); };
+    // Mark the boundary between minus and plus
+    if (i === 7) b.style.marginLeft = 'var(--s-2)';
+    row.appendChild(b);
+  });
+}
+
+function initTypedFreq() {
+  var inp = document.getElementById('ic-freq-typed');
+  inp.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter') return;
+    var v = inp.value.trim();
+    if (!v) return;
+    var n = parseFloat(v);
+    if (isNaN(n)) { icFeedback('not a number', true); return; }
+    // Heuristic: numbers <= 3000 are MHz, larger are kHz
+    var mhz = (n > 3000) ? (n / 1000) : n;
+    _freqHz = Math.round(mhz * 1e6);
+    _userTuning = true;
+    _renderFreq();
+    icPost({cmd:'freq', args: String(mhz)}).then(function(d) {
+      if (!d.ok) icFeedback(d.error || 'tune failed', true);
+      setTimeout(function() { _userTuning = false; }, 500);
+    });
+    inp.value = '';
+  });
+}
+
+function setFreqDisplay(mhz) {
+  if (_userTuning) return;
+  _freqHz = Math.round((+mhz) * 1e6);
+  _renderFreq();
+}
+
+// ── RIT digit tuner — same spin pattern, signed ±9999 Hz ───────────────
+var _ritHz = 0;            // current RIT offset, -9999..+9999
+var _ritActivePos = 1;     // 0=1Hz, 1=10Hz, 2=100Hz, 3=1kHz
+var _ritDigits = 4;        // 4-digit magnitude
+var _ritDebounce = null;
+var _ritUserTuning = false;
+
+function _renderRit() {
+  var el = document.getElementById('ic-rit-hz');
+  if (!el) return;
+  var hz = Math.max(-9999, Math.min(9999, _ritHz | 0));
+  var mag = Math.abs(hz);
+  var s = String(mag).padStart(_ritDigits, '0');
+  var sign = (hz < 0) ? '−' : '+';
+  var html = '';
+  // Sign cell — clickable to toggle
+  html += '<span class="ic-fd" data-rit-sign="1" title="Click to toggle sign">' + sign + '</span>';
+  var seenNonZero = false;
+  for (var i = 0; i < _ritDigits; i++) {
+    var pos = _ritDigits - 1 - i;   // 3..0
+    var digit = s.charAt(i);
+    if (digit !== '0') seenNonZero = true;
+    var leading = !seenNonZero && pos > 0;
+    var active = (pos === _ritActivePos);
+    html += '<span class="ic-fd' + (active ? ' active' : '')
+          + (leading ? ' leading' : '') + '" data-rit-pos="' + pos + '">'
+          + digit + '</span>';
+  }
+  el.innerHTML = html;
+}
+
+function _sendRit() {
+  if (_ritDebounce) clearTimeout(_ritDebounce);
+  _ritDebounce = setTimeout(function() {
+    icPost({cmd:'rit', hz: _ritHz}).then(function(d) {
+      if (!d.ok) icFeedback(d.error || 'RIT failed', true);
+      setTimeout(function() { _ritUserTuning = false; }, 250);
+    });
+  }, 60);
+}
+
+function _stepRit(delta) {
+  _ritHz = Math.max(-9999, Math.min(9999, _ritHz + delta));
+  _ritUserTuning = true;
+  _renderRit();
+  _sendRit();
+}
+
+function _setRitHz(hz) {
+  _ritHz = Math.max(-9999, Math.min(9999, hz | 0));
+  _ritUserTuning = true;
+  _renderRit();
+  _sendRit();
+}
+
+function _toggleRitSign() {
+  // Flip sign of the magnitude; 0 stays 0
+  if (_ritHz === 0) return;
+  _ritHz = -_ritHz;
+  _ritUserTuning = true;
+  _renderRit();
+  _sendRit();
+}
+
+function _moveRitActivePos(delta) {
+  _ritActivePos = Math.max(0, Math.min(_ritDigits - 1, _ritActivePos + delta));
+  _renderRit();
+}
+
+function initRitDisplay() {
+  var el = document.getElementById('ic-rit-hz');
+  if (!el) return;
+
+  el.addEventListener('click', function(e) {
+    var sign = e.target.closest('[data-rit-sign]');
+    if (sign) { _toggleRitSign(); el.focus(); return; }
+    var d = e.target.closest('[data-rit-pos]');
+    if (d) {
+      _ritActivePos = +d.dataset.ritPos;
+      _renderRit();
+      el.focus();
+    }
+  });
+
+  el.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var d = e.target.closest('[data-rit-pos]');
+    var pos = d ? +d.dataset.ritPos : _ritActivePos;
+    var dir = e.deltaY < 0 ? +1 : -1;
+    _stepRit(dir * Math.pow(10, pos));
+  }, {passive: false});
+
+  el.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowUp')   { e.preventDefault(); _stepRit( Math.pow(10, _ritActivePos)); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); _stepRit(-Math.pow(10, _ritActivePos)); }
+    else if (e.key === 'ArrowLeft')  { e.preventDefault(); _moveRitActivePos(+1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); _moveRitActivePos(-1); }
+    else if (e.key === '+' || e.key === '-') {
+      e.preventDefault();
+      var want = (e.key === '-') ? -1 : +1;
+      if (Math.sign(_ritHz) !== want && _ritHz !== 0) _toggleRitSign();
+    }
+    else if (e.key === '0' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      _setRitHz(0);
+    }
+  });
+}
+
+function setRitDisplay(hz) {
+  if (_ritUserTuning) return;
+  _ritHz = (typeof hz === 'number') ? hz : 0;
+  _renderRit();
+}
+
+// ── CTCSS ───────────────────────────────────────────────────────────────
+function icCtcssApply(which) {
+  if (which === 'tx') {
+    var hz = parseFloat(document.getElementById('ic-ctcss-tx').value);
+    var on = document.getElementById('ic-ctcss-tx-on').checked;
+    icCmd('ctcss', {tx_hz: isNaN(hz) ? 0 : hz, tx_on: on});
+  } else {
+    var hzR = parseFloat(document.getElementById('ic-ctcss-rx').value);
+    var onR = document.getElementById('ic-ctcss-rx-on').checked;
+    icCmd('ctcss', {rx_hz: isNaN(hzR) ? 0 : hzR, rx_on: onR});
+  }
+}
+
+// ── Raw CI-V console ────────────────────────────────────────────────────
+function icCatSend() {
+  var inp = document.getElementById('ic-cat-in');
+  var hex = inp.value.trim();
+  if (!hex) return;
+  var log = document.getElementById('ic-cat-log');
+  log.textContent += '> ' + hex + '\n';
+  icPost({cmd: 'cat', args: hex}).then(function(d){
+    log.textContent += '< ' + (d.error || d.response || JSON.stringify(d)) + '\n';
+    log.scrollTop = log.scrollHeight;
+  });
+  inp.value = '';
+}
+
+// ── Status polling ─────────────────────────────────────────────────────
+function setOfflineFlags(connected, civ, audio) {
+  var apply = function(id, ok, text) {
+    document.getElementById('ic-chk-' + id).className = 'dot ' + (ok === null ? 'pending' : (ok ? 'ok' : 'err'));
+    document.getElementById('ic-chk-' + id + '-text').textContent = text;
+    document.getElementById('ic-chk-' + id + '-text').className = 'ic-val ' + (ok ? 'ok' : 'dim');
+  };
+  apply('link', connected, connected ? 'connected' : 'no IC-7100 endpoint registered');
+  apply('civ', connected ? civ : null, civ ? 'connected' : (connected ? 'waiting (check USB cable + power)' : 'pending link'));
+  apply('audio', connected ? audio : null, audio ? 'streaming' : (connected ? 'waiting (check USB audio device)' : 'pending link'));
+}
+
+function pollStatus() {
+  icGet('/ic7100status').then(function(s) {
+    var offline = document.getElementById('ic-offline');
+    var panel = document.getElementById('ic-panel');
+    var connected = !!s.connected;
+    var civ = !!s.serial_connected;
+    var audio = !!(s.audio_rx || s.input_active);
+    setOfflineFlags(connected, civ, audio);
+    if (!connected) {
+      offline.style.display = '';
+      panel.style.display = 'none';
+      return;
+    }
+    offline.style.display = 'none';
+    panel.style.display = '';
+
+    // Status bar
+    document.getElementById('ic-ep-name').textContent = s.endpoint_name || '—';
+    document.getElementById('ic-civ-state').textContent = civ ? 'connected' : 'no serial';
+    document.getElementById('ic-civ-state').className = 'ic-val ' + (civ ? 'ok' : 'err');
+    document.getElementById('ic-audio-state').textContent = audio ? 'streaming' : 'no audio';
+    document.getElementById('ic-audio-state').className = 'ic-val ' + (audio ? 'ok' : 'err');
+    document.getElementById('ic-mute-state').textContent = s.rx_muted ? 'yes' : 'no';
+    document.getElementById('ic-mute-state').className = 'ic-val ' + (s.rx_muted ? 'warn' : 'dim');
+
+    // TX badge + PTT button
+    var txOn = !!(s.transmitting || s.ptt_active);
+    var badge = document.getElementById('ic-tx-badge');
+    badge.classList.toggle('on', txOn);
+    var pttBtn = document.getElementById('ic-ptt-btn');
+    pttBtn.classList.toggle('active', txOn);
+
+    // Frequency + mode + filter
+    if (typeof s.freq === 'number') setFreqDisplay(s.freq);
+    document.getElementById('ic-mode-cur').textContent = s.mode || '—';
+    document.getElementById('ic-filter-cur').textContent = (s.filter !== undefined) ? String(s.filter) : '—';
+
+    // Highlight active mode button
+    Array.prototype.forEach.call(document.querySelectorAll('#ic-mode-row button'), function(btn) {
+      btn.classList.toggle('active', btn.dataset.mode === s.mode);
+    });
+
+    // S-meter (0–255 -> 0–100%)
+    var smRaw = (typeof s.smeter === 'number') ? s.smeter : 0;
+    var smPct = Math.max(0, Math.min(100, smRaw * 100 / 255));
+    document.getElementById('ic-smeter-fill').style.width = smPct.toFixed(0) + '%';
+    document.getElementById('ic-smeter-val').textContent = smRaw;
+
+    // Gains — only update if user isn't dragging
+    var rxEl = document.getElementById('ic-rx-gain');
+    if (document.activeElement !== rxEl && typeof s.rx_gain_db === 'number') {
+      rxEl.value = s.rx_gain_db;
+      document.getElementById('ic-rx-gain-val').textContent = (+s.rx_gain_db).toFixed(1) + ' dB';
+    }
+    var txEl = document.getElementById('ic-tx-gain');
+    if (document.activeElement !== txEl && typeof s.tx_gain_db === 'number') {
+      txEl.value = s.tx_gain_db;
+      document.getElementById('ic-tx-gain-val').textContent = (+s.tx_gain_db).toFixed(1) + ' dB';
+    }
+
+    // CTCSS — only update if user isn't editing the input
+    var ctxEls = {
+      'ic-ctcss-tx':    s.ctcss_tx_hz,
+      'ic-ctcss-rx':    s.ctcss_rx_hz,
+    };
+    Object.keys(ctxEls).forEach(function(id) {
+      var el = document.getElementById(id);
+      var v = ctxEls[id];
+      if (document.activeElement !== el && typeof v === 'number') {
+        el.value = v;
+      }
+    });
+    if (document.activeElement !== document.getElementById('ic-ctcss-tx-on')) {
+      document.getElementById('ic-ctcss-tx-on').checked = !!s.ctcss_tx_on;
+    }
+    if (document.activeElement !== document.getElementById('ic-ctcss-rx-on')) {
+      document.getElementById('ic-ctcss-rx-on').checked = !!s.ctcss_rx_on;
+    }
+
+    // -- HF panel sync (Phase C) ----------------------------------------
+    function setCheck(id, val) {
+      var el = document.getElementById(id);
+      if (el && document.activeElement !== el) el.checked = !!val;
+    }
+    function setRange(id, valId, v, suffix) {
+      var el = document.getElementById(id);
+      if (el && document.activeElement !== el && typeof v === 'number') {
+        el.value = v;
+        var lbl = document.getElementById(valId);
+        if (lbl) lbl.textContent = v + (suffix || '');
+      }
+    }
+    function setActiveBtn(rowId, attr, want) {
+      Array.prototype.forEach.call(document.querySelectorAll('#' + rowId + ' button'), function(btn) {
+        btn.classList.toggle('active', String(btn.dataset[attr]) === String(want));
+      });
+    }
+    setCheck('ic-split-on', s.split);
+    setCheck('ic-rit-on',   s.rit_on);
+    setCheck('ic-xit-on',   s.xit_on);
+    setCheck('ic-nb-on',    s.nb_on);
+    setCheck('ic-nr-on',    s.nr_on);
+    setCheck('ic-atten-on', s.atten);
+    if (typeof s.rit_hz === 'number') setRitDisplay(s.rit_hz);
+    setRange('ic-nb-level',  'ic-nb-level-val',  s.nb_level,  '%');
+    setRange('ic-nr-level',  'ic-nr-level-val',  s.nr_level,  '%');
+    setRange('ic-ifshift',   'ic-ifshift-val',   s.if_shift,  '%');
+    setActiveBtn('ic-agc-row',    'agc',    s.agc);
+    setActiveBtn('ic-preamp-row', 'preamp', s.preamp);
+    setActiveBtn('ic-filter-row', 'filter', s.filter);
+  });
+}
+
+// ── Init ────────────────────────────────────────────────────────────────
+buildBandRow();
+buildModeRow();
+buildStepRow();
+initFreqDisplay();
+initTypedFreq();
+initRitDisplay();
+_renderFreq();
+_renderRit();
+pollStatus();
+setInterval(pollStatus, 1000);
+</script>
+</body></html>

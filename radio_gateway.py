@@ -397,6 +397,7 @@ class Config:
             'PACKET_MODEM': 1200,
             'PACKET_DIREWOLF_PATH': '/usr/bin/direwolf',
             'PACKET_REMOTE_TNC': '',
+            'PACKET_RADIO_ENDPOINT': '',     # Link-endpoint name to use for packet; blank = first capable
             'PACKET_UDP_RX_PORT': 7355,
             'PACKET_KISS_PORT': 8001,
             'PACKET_AGW_PORT': 8000,

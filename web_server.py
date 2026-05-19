@@ -683,6 +683,7 @@ class WebConfigServer:
                 '/controls': 'controls.html',
                 '/sdr': 'sdr.html',
                 '/d75': 'd75.html',
+                '/ic7100': 'ic7100.html',
                 '/kv4p': 'kv4p.html',
                 '/radio': 'radio.html',
                 '/telegram': 'telegram.html',
@@ -755,6 +756,8 @@ class WebConfigServer:
                     _rg.handle_transcriptions(self, parent)
                 elif self.path == '/d75status':
                     _rg.handle_d75status(self, parent)
+                elif self.path == '/ic7100status':
+                    _rg.handle_ic7100status(self, parent)
                 elif self.path == '/kv4pstatus':
                     _rg.handle_kv4pstatus(self, parent)
                 elif self.path == '/d75memlist':
@@ -874,6 +877,8 @@ class WebConfigServer:
                     _rp.handle_proc_toggle(self, parent)
                 elif self.path == '/d75cmd':
                     _rp.handle_d75cmd(self, parent)
+                elif self.path == '/ic7100cmd':
+                    _rp.handle_ic7100cmd(self, parent)
                 elif self.path == '/gpscmd':
                     _rp.handle_gpscmd(self, parent)
                 elif self.path == '/kv4pcmd':

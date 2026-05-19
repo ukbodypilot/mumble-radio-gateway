@@ -1252,6 +1252,7 @@ class RadioPlugin:
         "rx_gain": False,
         "tx_gain": False,
         "smeter": False,
+        "packet": False,  # endpoint can host Direwolf via 'mode' command
         "status": True,  # all plugins support status
     }
 
@@ -1357,6 +1358,11 @@ class RadioPlugin:
                     if line.startswith('inet '):
                         stats['net_ip'] = line.split()[1].split('/')[0]
                         break
+        except Exception:
+            pass
+        try:
+            import socket
+            stats['hostname'] = socket.gethostname()
         except Exception:
             pass
         return stats
@@ -1829,6 +1835,7 @@ class AIOCPlugin(AudioPlugin):
         "rx_gain": True,
         "tx_gain": True,
         "smeter": False,
+        "packet": True,  # implements 'mode' command to run Direwolf locally
         "status": True,
     }
 

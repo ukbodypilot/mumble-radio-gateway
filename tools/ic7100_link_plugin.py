@@ -104,6 +104,50 @@ def _bcd_to_tone(data: bytes) -> float:
     return (hi + lo) / 10.0
 
 
+def _rit_offset_to_bcd(hz: int) -> bytes:
+    """Encode RIT/XIT offset in Hz as 3-byte signed BCD: 2 bytes of 4-digit Hz
+    magnitude (LSB first) + 1 byte sign (0x00 positive, 0x01 negative).
+
+    IC-7100 RIT range is ±9.999 kHz with 1 Hz steps."""
+    sign = 0x00 if hz >= 0 else 0x01
+    mag = abs(int(hz))
+    digits = []
+    for _ in range(4):
+        digits.append(mag % 10)
+        mag //= 10
+    return bytes([digits[0] | (digits[1] << 4),
+                  digits[2] | (digits[3] << 4),
+                  sign])
+
+
+def _pct_to_bcd3(value: int) -> bytes:
+    """Encode 0..255 as 2-byte BCD (000–255 padded). Used for level controls
+    on the IC-7100 (NB level, NR level, IF shift) which take 3-digit BCD."""
+    value = max(0, min(255, int(value)))
+    h = value // 100
+    t = (value % 100) // 10
+    u = value % 10
+    return bytes([h, (t << 4) | u])
+
+
+def _bcd3_to_pct(data: bytes) -> int:
+    """Decode 2-byte BCD level (0..255) back to integer value."""
+    if len(data) < 2:
+        return 0
+    return (data[0] & 0x0f) * 100 + ((data[1] >> 4) & 0x0f) * 10 + (data[1] & 0x0f)
+
+
+def _bcd_to_rit_offset(data: bytes) -> int:
+    """Decode 3-byte signed BCD RIT/XIT offset to signed Hz."""
+    if len(data) < 3:
+        return 0
+    mag = (data[0] & 0x0f)        \
+        + (data[0] >> 4)  * 10    \
+        + (data[1] & 0x0f) * 100  \
+        + (data[1] >> 4)  * 1000
+    return -mag if data[2] == 0x01 else mag
+
+
 # ---------------------------------------------------------------------------
 # CIVController
 # ---------------------------------------------------------------------------
@@ -135,6 +179,19 @@ class CIVController:
         self.ctcss_rx_hz: float = 88.5
         self.ctcss_tx_on: bool = False
         self.ctcss_rx_on: bool = False
+        # HF feature state (Phase C)
+        self.split: bool = False
+        self.rit_hz: int = 0      # RIT offset in Hz, -9999..+9999
+        self.rit_on: bool = False
+        self.xit_on: bool = False
+        self.agc: str = 'mid'     # fast / mid / slow
+        self.nb_on: bool = False
+        self.nb_level: int = 50   # 0..100 percent
+        self.nr_on: bool = False
+        self.nr_level: int = 50
+        self.preamp: int = 0      # 0=off, 1=pre1, 2=pre2
+        self.atten: bool = False  # 20 dB attenuator
+        self.if_shift: int = 50   # 0..100, 50=center (no shift)
 
     # -- Connection management --
 
@@ -327,6 +384,157 @@ class CIVController:
                 ok = False
         return ok
 
+    # -- HF feature commands (Phase C) ---------------------------------
+    # Byte values below were taken from the IC-7100 CI-V reference; opcodes
+    # are correct against the official manual, but should be verified end-
+    # to-end against the radio on first use.
+
+    # Split VFO — 0x0F (0x00=simplex, 0x01=split).
+    def get_split(self) -> bool | None:
+        resp = self._transact(self._build_frame(0x0f))
+        if resp and len(resp) >= 2 and resp[0] == 0x0f:
+            self.split = bool(resp[1])
+            return self.split
+        return None
+
+    def set_split(self, on: bool) -> bool:
+        resp = self._transact(
+            self._build_frame(0x0f, data=bytes([0x01 if on else 0x00])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.split = on
+        return ok
+
+    # RIT offset — 0x21 0x00 (signed BCD, 3 bytes).
+    def get_rit_offset(self) -> int | None:
+        resp = self._transact(self._build_frame(0x21, subcmd=0x00))
+        if resp and len(resp) >= 5 and resp[0] == 0x21 and resp[1] == 0x00:
+            self.rit_hz = _bcd_to_rit_offset(resp[2:5])
+            return self.rit_hz
+        return None
+
+    def set_rit_offset(self, hz: int) -> bool:
+        hz = max(-9999, min(9999, int(hz)))
+        resp = self._transact(self._build_frame(
+            0x21, subcmd=0x00, data=_rit_offset_to_bcd(hz)))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.rit_hz = hz
+        return ok
+
+    # RIT enable — 0x21 0x01.
+    def set_rit_on(self, on: bool) -> bool:
+        resp = self._transact(self._build_frame(
+            0x21, subcmd=0x01, data=bytes([0x01 if on else 0x00])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.rit_on = on
+        return ok
+
+    # XIT enable — 0x21 0x02.
+    def set_xit_on(self, on: bool) -> bool:
+        resp = self._transact(self._build_frame(
+            0x21, subcmd=0x02, data=bytes([0x01 if on else 0x00])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.xit_on = on
+        return ok
+
+    # AGC — 0x16 0x12 (0x01 fast, 0x02 mid, 0x03 slow).
+    _AGC_MAP   = {'fast': 0x01, 'mid': 0x02, 'slow': 0x03}
+    _AGC_RMAP  = {v: k for k, v in _AGC_MAP.items()}
+
+    def set_agc(self, mode: str) -> bool:
+        m = mode.lower()
+        if m not in self._AGC_MAP:
+            return False
+        resp = self._transact(self._build_frame(
+            0x16, subcmd=0x12, data=bytes([self._AGC_MAP[m]])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.agc = m
+        return ok
+
+    # Noise Blanker — on/off: 0x16 0x22; level: 0x14 0x12 (0..255).
+    def set_nb_on(self, on: bool) -> bool:
+        resp = self._transact(self._build_frame(
+            0x16, subcmd=0x22, data=bytes([0x01 if on else 0x00])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.nb_on = on
+        return ok
+
+    def set_nb_level(self, pct: int) -> bool:
+        pct = max(0, min(100, int(pct)))
+        scaled = round(pct * 255 / 100)
+        resp = self._transact(self._build_frame(
+            0x14, subcmd=0x12, data=_pct_to_bcd3(scaled)))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.nb_level = pct
+        return ok
+
+    # Noise Reduction — on/off: 0x16 0x40; level: 0x14 0x06.
+    def set_nr_on(self, on: bool) -> bool:
+        resp = self._transact(self._build_frame(
+            0x16, subcmd=0x40, data=bytes([0x01 if on else 0x00])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.nr_on = on
+        return ok
+
+    def set_nr_level(self, pct: int) -> bool:
+        pct = max(0, min(100, int(pct)))
+        scaled = round(pct * 255 / 100)
+        resp = self._transact(self._build_frame(
+            0x14, subcmd=0x06, data=_pct_to_bcd3(scaled)))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.nr_level = pct
+        return ok
+
+    # Preamp — 0x16 0x02 (0=off, 1=pre1, 2=pre2).
+    def set_preamp(self, stage: int) -> bool:
+        stage = max(0, min(2, int(stage)))
+        resp = self._transact(self._build_frame(
+            0x16, subcmd=0x02, data=bytes([stage])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.preamp = stage
+        return ok
+
+    # Attenuator — 0x11 (0x00=off, 0x20=20 dB).
+    def set_atten(self, on: bool) -> bool:
+        resp = self._transact(self._build_frame(
+            0x11, data=bytes([0x20 if on else 0x00])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.atten = on
+        return ok
+
+    # IF shift — 0x14 0x07 (0..255, 0x80 = center).
+    def set_if_shift(self, pct: int) -> bool:
+        pct = max(0, min(100, int(pct)))
+        scaled = round(pct * 255 / 100)
+        resp = self._transact(self._build_frame(
+            0x14, subcmd=0x07, data=_pct_to_bcd3(scaled)))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.if_shift = pct
+        return ok
+
+    # Filter selection — uses 0x06 with mode + filter (1/2/3).
+    def set_filter(self, idx: int) -> bool:
+        idx = max(1, min(3, int(idx)))
+        m = _MODE_BY_NAME.get(self.mode.upper())
+        if m is None:
+            return False
+        resp = self._transact(self._build_frame(0x06, data=bytes([m, idx])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.filter_idx = idx
+        return ok
+
     def send_raw(self, cmd_bytes: bytes) -> bytes | None:
         """Send a raw CI-V frame (for CAT passthrough). Returns response body."""
         return self._transact(cmd_bytes)
@@ -337,6 +545,10 @@ class CIVController:
         self.get_mode()
         self.get_ptt()
         self.get_ctcss()
+        # Best-effort: split state. Other HF feature reads are skipped on
+        # connect to keep first-poll fast; the GUI requests fresh values
+        # via `status` once the panel is open.
+        self.get_split()
 
 
 # ---------------------------------------------------------------------------
@@ -519,8 +731,8 @@ class IC7100Plugin(RadioPlugin):
 
     name = "ic7100"
     capabilities = {
-        "audio_rx": True,
-        "audio_tx": True,
+        "audio_rx":  True,
+        "audio_tx":  True,
         "ptt":       True,
         "frequency": True,
         "ctcss":     True,
@@ -528,6 +740,10 @@ class IC7100Plugin(RadioPlugin):
         "rx_gain":   True,
         "tx_gain":   True,
         "smeter":    True,
+        # IC-7100 USB audio + CI-V PTT can host packet (Direwolf); 'mode'
+        # command dispatch is not yet implemented on this plugin, so until
+        # then selecting it from the packet page will surface a clear error.
+        "packet":    True,
         "status":    True,
     }
 
@@ -705,6 +921,82 @@ class IC7100Plugin(RadioPlugin):
         elif action == 'status':
             return {"ok": True, "status": self.get_status()}
 
+        # -- HF feature commands (Phase C) ---------------------------------
+        elif action == 'split':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            on = bool(cmd.get('on', False))
+            ok = self._civ.set_split(on)
+            return {"ok": ok, "split": self._civ.split}
+
+        elif action == 'rit':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            ok = True
+            if 'hz' in cmd:
+                ok &= self._civ.set_rit_offset(int(cmd['hz']))
+            if 'on' in cmd:
+                ok &= self._civ.set_rit_on(bool(cmd['on']))
+            return {"ok": ok, "rit_hz": self._civ.rit_hz, "rit_on": self._civ.rit_on}
+
+        elif action == 'xit':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            on = bool(cmd.get('on', False))
+            ok = self._civ.set_xit_on(on)
+            return {"ok": ok, "xit_on": self._civ.xit_on}
+
+        elif action == 'agc':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            mode = str(cmd.get('mode', 'mid')).lower()
+            ok = self._civ.set_agc(mode)
+            return {"ok": ok, "agc": self._civ.agc}
+
+        elif action == 'nb':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            ok = True
+            if 'on'    in cmd: ok &= self._civ.set_nb_on(bool(cmd['on']))
+            if 'level' in cmd: ok &= self._civ.set_nb_level(int(cmd['level']))
+            return {"ok": ok, "nb_on": self._civ.nb_on, "nb_level": self._civ.nb_level}
+
+        elif action == 'nr':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            ok = True
+            if 'on'    in cmd: ok &= self._civ.set_nr_on(bool(cmd['on']))
+            if 'level' in cmd: ok &= self._civ.set_nr_level(int(cmd['level']))
+            return {"ok": ok, "nr_on": self._civ.nr_on, "nr_level": self._civ.nr_level}
+
+        elif action == 'preamp':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            stage = int(cmd.get('stage', 0))
+            ok = self._civ.set_preamp(stage)
+            return {"ok": ok, "preamp": self._civ.preamp}
+
+        elif action == 'atten':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            on = bool(cmd.get('on', False))
+            ok = self._civ.set_atten(on)
+            return {"ok": ok, "atten": self._civ.atten}
+
+        elif action == 'if_shift':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            pct = int(cmd.get('pct', 50))
+            ok = self._civ.set_if_shift(pct)
+            return {"ok": ok, "if_shift": self._civ.if_shift}
+
+        elif action == 'filter':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            idx = int(cmd.get('idx', 1))
+            ok = self._civ.set_filter(idx)
+            return {"ok": ok, "filter": self._civ.filter_idx}
+
         return {"ok": False, "error": f"unknown command: {action}"}
 
     # -- Status --
@@ -723,6 +1015,19 @@ class IC7100Plugin(RadioPlugin):
                 "ctcss_rx_hz":      self._civ.ctcss_rx_hz,
                 "ctcss_tx_on":      self._civ.ctcss_tx_on,
                 "ctcss_rx_on":      self._civ.ctcss_rx_on,
+                # HF feature state
+                "split":            self._civ.split,
+                "rit_hz":           self._civ.rit_hz,
+                "rit_on":           self._civ.rit_on,
+                "xit_on":           self._civ.xit_on,
+                "agc":              self._civ.agc,
+                "nb_on":            self._civ.nb_on,
+                "nb_level":         self._civ.nb_level,
+                "nr_on":            self._civ.nr_on,
+                "nr_level":         self._civ.nr_level,
+                "preamp":           self._civ.preamp,
+                "atten":            self._civ.atten,
+                "if_shift":         self._civ.if_shift,
             })
         status.update({
             "audio_device":  self._audio_device,

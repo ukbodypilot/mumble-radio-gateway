@@ -411,6 +411,47 @@ def handle_d75status(handler, parent):
         pass
 
 
+def handle_ic7100status(handler, parent):
+    """GET /ic7100status — IC-7100 link endpoint state for the /ic7100 page."""
+    data = {
+        'connected': False,
+        'endpoint_name': None,
+        'plugin': 'ic7100',
+    }
+    if parent.gateway:
+        gw = parent.gateway
+        # Find the IC-7100 link endpoint (by plugin_type set during REGISTER)
+        ep_name = None
+        for _name, _src in getattr(gw, 'link_endpoints', {}).items():
+            if getattr(_src, 'plugin_type', None) == 'ic7100':
+                ep_name = _name
+                break
+        if ep_name:
+            data['connected'] = True
+            data['endpoint_name'] = ep_name
+            # Forward cached endpoint status (set by on_ack)
+            _ep_status = getattr(gw, '_link_last_status', {}).get(ep_name, {})
+            for _k, _v in _ep_status.items():
+                if _k not in ('plugin',):
+                    data[_k] = _v
+            # Audio level + boost from the link audio source
+            _src = gw.link_endpoints.get(ep_name)
+            if _src is not None:
+                data['audio_level']   = getattr(_src, 'audio_level', 0)
+                data['rx_boost_pct']  = int(getattr(_src, 'audio_boost', 1.0) * 100)
+                data['tx_boost_pct']  = int(getattr(_src, 'tx_audio_boost', 1.0) * 100)
+                data['rx_muted']      = bool(getattr(_src, 'muted', False))
+                data['ptt_active']    = getattr(gw, '_link_ptt_active', {}).get(ep_name, False)
+    try:
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Cache-Control', 'no-cache')
+        handler.end_headers()
+        handler.wfile.write(json_mod.dumps(data).encode('utf-8'))
+    except BrokenPipeError:
+        pass
+
+
 def handle_kv4pstatus(handler, parent):
     """GET /kv4pstatus"""
     # KV4P status JSON endpoint — served by KV4PPlugin

@@ -34,6 +34,8 @@ from ic7100_link_plugin import (
     IC7100Plugin,
     _freq_to_bcd, _bcd_to_freq,
     _tone_to_bcd, _bcd_to_tone,
+    _rit_offset_to_bcd, _bcd_to_rit_offset,
+    _pct_to_bcd3, _bcd3_to_pct,
     _CTCSS,
 )
 
@@ -71,6 +73,19 @@ class CIVSimulator:
         self.ctcss_rx_hz  = 88.5
         self.ctcss_tx_on  = False
         self.ctcss_rx_on  = False
+        # HF feature state (Phase C)
+        self.split    = False
+        self.rit_hz   = 0
+        self.rit_on   = False
+        self.xit_on   = False
+        self.agc      = 0x02   # 0x01 fast, 0x02 mid, 0x03 slow
+        self.nb_on    = False
+        self.nb_level = 0      # 0..255
+        self.nr_on    = False
+        self.nr_level = 0      # 0..255
+        self.preamp   = 0      # 0=off, 1=pre1, 2=pre2
+        self.atten    = 0x00   # 0x00 off, 0x20 on
+        self.if_shift = 0x80   # 0..255, 0x80=center
 
         # Set up socket pair; expose one end as _sock_ctrl for the controller
         self._sock_radio, self._sock_ctrl = socket.socketpair()
@@ -200,14 +215,36 @@ class CIVSimulator:
                 return None
             sub = payload[0]
             if len(payload) == 1:  # read
-                if sub == 0x42:
+                if sub == 0x02:
+                    return self._make_resp(bytes([0x16, 0x02, self.preamp]))
+                elif sub == 0x12:
+                    return self._make_resp(bytes([0x16, 0x12, self.agc]))
+                elif sub == 0x22:
+                    return self._make_resp(bytes([0x16, 0x22,
+                                                  0x01 if self.nb_on else 0x00]))
+                elif sub == 0x40:
+                    return self._make_resp(bytes([0x16, 0x40,
+                                                  0x01 if self.nr_on else 0x00]))
+                elif sub == 0x42:
                     return self._make_resp(bytes([0x16, 0x42,
                                                   0x01 if self.ctcss_rx_on else 0x00]))
                 elif sub == 0x43:
                     return self._make_resp(bytes([0x16, 0x43,
                                                   0x01 if self.ctcss_tx_on else 0x00]))
             elif len(payload) == 2:  # write
-                if sub == 0x42:
+                if sub == 0x02:
+                    self.preamp = payload[1]
+                    return self._ok()
+                elif sub == 0x12:
+                    self.agc = payload[1]
+                    return self._ok()
+                elif sub == 0x22:
+                    self.nb_on = bool(payload[1])
+                    return self._ok()
+                elif sub == 0x40:
+                    self.nr_on = bool(payload[1])
+                    return self._ok()
+                elif sub == 0x42:
                     self.ctcss_rx_on = bool(payload[1])
                     return self._ok()
                 elif sub == 0x43:
@@ -232,6 +269,67 @@ class CIVSimulator:
                 elif sub == 0x01:
                     self.ctcss_rx_hz = hz
                 return self._ok()
+
+        elif cmd == 0x0f:  # Split
+            if not payload:  # read
+                return self._make_resp(bytes([0x0f, 0x01 if self.split else 0x00]))
+            else:            # write
+                self.split = bool(payload[0])
+                return self._ok()
+
+        elif cmd == 0x11:  # Attenuator
+            if not payload:  # read
+                return self._make_resp(bytes([0x11, self.atten]))
+            else:            # write
+                self.atten = payload[0]
+                return self._ok()
+
+        elif cmd == 0x21:  # RIT/XIT
+            if not payload:
+                return None
+            sub = payload[0]
+            if sub == 0x00:           # offset
+                if len(payload) == 1:  # read
+                    return self._make_resp(
+                        bytes([0x21, 0x00]) + _rit_offset_to_bcd(self.rit_hz))
+                elif len(payload) >= 4:  # write
+                    self.rit_hz = _bcd_to_rit_offset(payload[1:4])
+                    return self._ok()
+            elif sub == 0x01:         # RIT on/off
+                if len(payload) == 1:
+                    return self._make_resp(bytes([0x21, 0x01, 0x01 if self.rit_on else 0x00]))
+                elif len(payload) >= 2:
+                    self.rit_on = bool(payload[1])
+                    return self._ok()
+            elif sub == 0x02:         # XIT on/off
+                if len(payload) == 1:
+                    return self._make_resp(bytes([0x21, 0x02, 0x01 if self.xit_on else 0x00]))
+                elif len(payload) >= 2:
+                    self.xit_on = bool(payload[1])
+                    return self._ok()
+
+        elif cmd == 0x14:  # Level controls (NB lvl, NR lvl, IF shift)
+            if not payload:
+                return None
+            sub = payload[0]
+            if sub == 0x07:           # IF shift
+                if len(payload) == 1:
+                    return self._make_resp(bytes([0x14, 0x07]) + _pct_to_bcd3(self.if_shift))
+                elif len(payload) >= 3:
+                    self.if_shift = _bcd3_to_pct(payload[1:3])
+                    return self._ok()
+            elif sub == 0x12:         # NB level
+                if len(payload) == 1:
+                    return self._make_resp(bytes([0x14, 0x12]) + _pct_to_bcd3(self.nb_level))
+                elif len(payload) >= 3:
+                    self.nb_level = _bcd3_to_pct(payload[1:3])
+                    return self._ok()
+            elif sub == 0x06:         # NR level
+                if len(payload) == 1:
+                    return self._make_resp(bytes([0x14, 0x06]) + _pct_to_bcd3(self.nr_level))
+                elif len(payload) >= 3:
+                    self.nr_level = _bcd3_to_pct(payload[1:3])
+                    return self._ok()
 
         elif cmd == 0x1c:  # PTT
             if not payload:
@@ -271,6 +369,19 @@ def _make_patched_controller(sim: CIVSimulator) -> CIVController:
     ctrl.ctcss_rx_hz = 88.5
     ctrl.ctcss_tx_on = False
     ctrl.ctcss_rx_on = False
+    # HF feature state (Phase C)
+    ctrl.split    = False
+    ctrl.rit_hz   = 0
+    ctrl.rit_on   = False
+    ctrl.xit_on   = False
+    ctrl.agc      = 'mid'
+    ctrl.nb_on    = False
+    ctrl.nb_level = 50
+    ctrl.nr_on    = False
+    ctrl.nr_level = 50
+    ctrl.preamp   = 0
+    ctrl.atten    = False
+    ctrl.if_shift = 50
     ctrl._poll_state()
     return ctrl
 
@@ -431,6 +542,112 @@ class TestCIVController(unittest.TestCase):
         self.assertEqual(self.ctrl.freq_hz, 14_225_000)
         self.assertEqual(self.ctrl.mode, 'USB')
 
+    # -- HF feature tests (Phase C) ------------------------------------
+
+    def test_split_set_get(self):
+        self.assertTrue(self.ctrl.set_split(True))
+        self.assertTrue(self.sim.split)
+        self.assertTrue(self.ctrl.get_split())
+        self.assertTrue(self.ctrl.set_split(False))
+        self.assertFalse(self.sim.split)
+
+    def test_rit_offset_positive(self):
+        self.assertTrue(self.ctrl.set_rit_offset(2500))
+        self.assertEqual(self.sim.rit_hz, 2500)
+        self.assertEqual(self.ctrl.get_rit_offset(), 2500)
+
+    def test_rit_offset_negative(self):
+        self.assertTrue(self.ctrl.set_rit_offset(-1500))
+        self.assertEqual(self.sim.rit_hz, -1500)
+        self.assertEqual(self.ctrl.get_rit_offset(), -1500)
+
+    def test_rit_offset_clamp(self):
+        self.assertTrue(self.ctrl.set_rit_offset(50_000))
+        self.assertEqual(self.sim.rit_hz, 9999)
+
+    def test_rit_enable(self):
+        self.assertTrue(self.ctrl.set_rit_on(True))
+        self.assertTrue(self.sim.rit_on)
+        self.assertTrue(self.ctrl.rit_on)
+
+    def test_xit_enable(self):
+        self.assertTrue(self.ctrl.set_xit_on(True))
+        self.assertTrue(self.sim.xit_on)
+        self.assertTrue(self.ctrl.xit_on)
+
+    def test_agc_fast_mid_slow(self):
+        for label, byte in [('fast', 0x01), ('mid', 0x02), ('slow', 0x03)]:
+            self.assertTrue(self.ctrl.set_agc(label))
+            self.assertEqual(self.sim.agc, byte)
+            self.assertEqual(self.ctrl.agc, label)
+
+    def test_agc_invalid(self):
+        self.assertFalse(self.ctrl.set_agc('hyper'))
+
+    def test_nb_on_off(self):
+        self.assertTrue(self.ctrl.set_nb_on(True))
+        self.assertTrue(self.sim.nb_on)
+        self.assertTrue(self.ctrl.set_nb_on(False))
+        self.assertFalse(self.sim.nb_on)
+
+    def test_nb_level(self):
+        self.assertTrue(self.ctrl.set_nb_level(50))
+        # 50% -> round(50 * 255 / 100) = 128
+        self.assertEqual(self.sim.nb_level, 128)
+        self.assertEqual(self.ctrl.nb_level, 50)
+
+    def test_nr_on_off(self):
+        self.assertTrue(self.ctrl.set_nr_on(True))
+        self.assertTrue(self.sim.nr_on)
+
+    def test_nr_level(self):
+        self.assertTrue(self.ctrl.set_nr_level(75))
+        # 75% -> round(75 * 255 / 100) = 191
+        self.assertEqual(self.sim.nr_level, 191)
+        self.assertEqual(self.ctrl.nr_level, 75)
+
+    def test_preamp_stages(self):
+        for stage in (0, 1, 2):
+            self.assertTrue(self.ctrl.set_preamp(stage))
+            self.assertEqual(self.sim.preamp, stage)
+            self.assertEqual(self.ctrl.preamp, stage)
+
+    def test_preamp_clamp(self):
+        self.assertTrue(self.ctrl.set_preamp(99))
+        self.assertEqual(self.ctrl.preamp, 2)
+
+    def test_atten_on_off(self):
+        self.assertTrue(self.ctrl.set_atten(True))
+        self.assertEqual(self.sim.atten, 0x20)
+        self.assertTrue(self.ctrl.set_atten(False))
+        self.assertEqual(self.sim.atten, 0x00)
+
+    def test_if_shift_center(self):
+        self.assertTrue(self.ctrl.set_if_shift(50))
+        # 50% -> 128 (close to 0x80 center)
+        self.assertEqual(self.sim.if_shift, 128)
+
+    def test_filter_select(self):
+        # Filter requires a known mode; set USB first
+        self.ctrl.set_mode('USB')
+        self.assertTrue(self.ctrl.set_filter(2))
+        self.assertEqual(self.sim.filter, 2)
+        self.assertEqual(self.ctrl.filter_idx, 2)
+
+
+class TestRITHelpers(unittest.TestCase):
+
+    def test_rit_offset_zero(self):
+        self.assertEqual(_bcd_to_rit_offset(_rit_offset_to_bcd(0)), 0)
+
+    def test_rit_offset_pos_neg(self):
+        for hz in [1, -1, 500, -500, 9999, -9999, 1234, -8765]:
+            self.assertEqual(_bcd_to_rit_offset(_rit_offset_to_bcd(hz)), hz)
+
+    def test_pct_bcd3_roundtrip(self):
+        for v in [0, 1, 50, 100, 128, 200, 255]:
+            self.assertEqual(_bcd3_to_pct(_pct_to_bcd3(v)), v)
+
 
 # ---------------------------------------------------------------------------
 # Tests: IC7100Plugin.execute() dispatch
@@ -541,6 +758,74 @@ class TestIC7100PluginExecute(unittest.TestCase):
         r = self.plugin.execute({'cmd': 'cat', 'raw': frame.hex()})
         self.assertTrue(r['ok'])
         self.assertIsNotNone(r['response'])
+
+    # -- HF feature dispatch (Phase C) ---------------------------------
+
+    def test_dispatch_split(self):
+        r = self.plugin.execute({'cmd': 'split', 'on': True})
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['split'])
+
+    def test_dispatch_rit_offset_and_enable(self):
+        r = self.plugin.execute({'cmd': 'rit', 'hz': 1500, 'on': True})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['rit_hz'], 1500)
+        self.assertTrue(r['rit_on'])
+
+    def test_dispatch_xit(self):
+        r = self.plugin.execute({'cmd': 'xit', 'on': True})
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['xit_on'])
+
+    def test_dispatch_agc(self):
+        r = self.plugin.execute({'cmd': 'agc', 'mode': 'fast'})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['agc'], 'fast')
+
+    def test_dispatch_nb(self):
+        r = self.plugin.execute({'cmd': 'nb', 'on': True, 'level': 60})
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['nb_on'])
+        self.assertEqual(r['nb_level'], 60)
+
+    def test_dispatch_nr(self):
+        r = self.plugin.execute({'cmd': 'nr', 'on': True, 'level': 40})
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['nr_on'])
+        self.assertEqual(r['nr_level'], 40)
+
+    def test_dispatch_preamp(self):
+        r = self.plugin.execute({'cmd': 'preamp', 'stage': 1})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['preamp'], 1)
+
+    def test_dispatch_atten(self):
+        r = self.plugin.execute({'cmd': 'atten', 'on': True})
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['atten'])
+
+    def test_dispatch_if_shift(self):
+        r = self.plugin.execute({'cmd': 'if_shift', 'pct': 70})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['if_shift'], 70)
+
+    def test_dispatch_filter(self):
+        self.plugin.execute({'cmd': 'mode', 'mode': 'USB'})
+        r = self.plugin.execute({'cmd': 'filter', 'idx': 3})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['filter'], 3)
+
+    def test_status_includes_hf_state(self):
+        self.plugin.execute({'cmd': 'split', 'on': True})
+        self.plugin.execute({'cmd': 'agc',   'mode': 'slow'})
+        r = self.plugin.execute({'cmd': 'status'})
+        self.assertTrue(r['ok'])
+        s = r['status']
+        self.assertTrue(s['split'])
+        self.assertEqual(s['agc'], 'slow')
+        for key in ['rit_hz','rit_on','xit_on','agc','nb_on','nb_level',
+                    'nr_on','nr_level','preamp','atten','if_shift']:
+            self.assertIn(key, s)
 
 
 # ---------------------------------------------------------------------------

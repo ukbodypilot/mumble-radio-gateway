@@ -83,6 +83,7 @@ class PacketRadioPlugin:
         self._ssid = 0
         self._modem_rate = 1200
         self._remote_tnc = ''           # Remote endpoint IP (required)
+        self._endpoint_pref = ''        # PACKET_RADIO_ENDPOINT — name override, blank = auto
         self._cached_endpoint = None    # Cached endpoint name (avoid repeated getpeername)
         self._kiss_port = 8001
         self._pat_port = 8082
@@ -107,6 +108,7 @@ class PacketRadioPlugin:
         self._ssid = int(getattr(config, 'PACKET_SSID', 0))
         self._modem_rate = int(getattr(config, 'PACKET_MODEM', 1200))
         self._remote_tnc = str(getattr(config, 'PACKET_REMOTE_TNC', '')).strip()
+        self._endpoint_pref = str(getattr(config, 'PACKET_RADIO_ENDPOINT', '')).strip()
         self._kiss_port = int(getattr(config, 'PACKET_KISS_PORT', 8001))
         self._pat_port = int(getattr(config, 'PACKET_PAT_PORT', 8082))
         self._aprs_comment = str(getattr(config, 'PACKET_APRS_COMMENT', 'Radio Gateway'))
@@ -276,22 +278,44 @@ class PacketRadioPlugin:
 
     def _find_endpoint(self, force=False):
         """Find the target endpoint name for mode commands.
-        Uses plugin_type match, falls back to config IP if set.
-        Caches result; pass force=True to re-scan."""
+
+        Selection order:
+          1. PACKET_RADIO_ENDPOINT (exact name match), if set and present
+          2. First link endpoint advertising capability 'packet': True
+          3. Legacy fallback: first endpoint with plugin_type == 'aioc'
+          4. Legacy fallback: endpoint matching PACKET_REMOTE_TNC by peer IP
+
+        Caches result; pass force=True to re-scan.
+        """
         if not force and self._cached_endpoint:
             if self._gateway and self._cached_endpoint in self._gateway.link_endpoints:
                 return self._cached_endpoint
             self._cached_endpoint = None
         if not self._gateway or not self._gateway.link_server:
             return None
-        # Prefer plugin_type match
-        for name, src in self._gateway.link_endpoints.items():
+        endpoints = self._gateway.link_endpoints
+
+        # 1. Explicit name override
+        if self._endpoint_pref and self._endpoint_pref in endpoints:
+            self._cached_endpoint = self._endpoint_pref
+            return self._endpoint_pref
+
+        # 2. Capability-based: any endpoint declaring it can host packet
+        for name, src in endpoints.items():
+            caps = getattr(src, '_endpoint_caps', {}) or {}
+            if caps.get('packet'):
+                self._cached_endpoint = name
+                return name
+
+        # 3. Legacy: plugin_type match (pre-capability endpoints)
+        for name, src in endpoints.items():
             if getattr(src, 'plugin_type', None) == 'aioc':
                 self._cached_endpoint = name
                 return name
-        # Fallback: match by config IP if set
+
+        # 4. Fallback: match by config IP if set
         if self._remote_tnc:
-            for name in self._gateway.link_endpoints:
+            for name in endpoints:
                 ep = self._gateway.link_server._endpoints.get(name)
                 if ep:
                     try:
@@ -301,6 +325,36 @@ class PacketRadioPlugin:
                     except Exception:
                         pass
         return None
+
+    def list_packet_endpoints(self):
+        """Return list of endpoint names that advertise packet capability.
+
+        Used by the /packet page dropdown. Falls back to legacy AIOC detection
+        for endpoints registered before the 'packet' capability existed.
+        """
+        if not self._gateway:
+            return []
+        names = []
+        for name, src in self._gateway.link_endpoints.items():
+            caps = getattr(src, '_endpoint_caps', {}) or {}
+            if caps.get('packet') or getattr(src, 'plugin_type', None) == 'aioc':
+                names.append(name)
+        return names
+
+    def set_endpoint_pref(self, name):
+        """Update PACKET_RADIO_ENDPOINT preference at runtime and re-resolve.
+
+        Pass '' to clear (auto-select). Returns the new resolved endpoint name
+        (may be None if no packet-capable endpoint is connected).
+        """
+        self._endpoint_pref = (name or '').strip()
+        self._cached_endpoint = None
+        if self._config is not None:
+            try:
+                setattr(self._config, 'PACKET_RADIO_ENDPOINT', self._endpoint_pref)
+            except Exception:
+                pass
+        return self._find_endpoint(force=True)
 
     def _get_endpoint_ip(self):
         """Get the IP address of the packet endpoint dynamically."""
@@ -459,6 +513,9 @@ class PacketRadioPlugin:
             "pat_running": self._pat_proc is not None and self._pat_proc.poll() is None,
             "log_tail": list(self._direwolf_log)[-15:],
             "endpoint": ep,
+            "endpoint_active": self._find_endpoint(),
+            "endpoint_pref": self._endpoint_pref,
+            "endpoints_available": self.list_packet_endpoints(),
         }
 
     # ── Mode switching ────────────────────────────────────────────────
