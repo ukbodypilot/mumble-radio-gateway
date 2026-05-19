@@ -1,5 +1,13 @@
 # Bug History — Radio Gateway
 
+## D75 watchdog full-reconnect skipped AT+CKPD=200 → TX keyed but silent (2026-05-19)
+**Symptom:** Overnight BT outage at 10:14 UTC, watchdog auto-recovered at 10:16, dashboard showed `connected: true, transmitting: false` all morning. User played a System Sounds → grunge → d75_tx clip; no red TX light, no RF. Journal looked clean (no errors, no warnings) — `[Endpoint] Command: ptt -> OK`, `[Audio TX] frame #1 buf=147ms` all logged.
+**Root cause:** `tools/d75_link_plugin.py` `_bt_connect()` (used on both initial startup AND every watchdog full reconnect) called `audio.connect(send_ckpd=False)` and **never sent CKPD afterward**. The `send_ckpd=False` is correct at that call site (CAT serial on ch2 is open, so CKPD on ch1 would fail with a cross-channel error). But there was no follow-up step to drop serial briefly, send CKPD via `audio.send_ckpd()`, then reconnect serial — the dance the interactive `!btstart` command performs. Result: SCO socket up, RFCOMM ch1 up, TX pacer happily writing frames, but the D75's HSP audio routing was never activated so the radio silently discarded all SCO data. PTT via CAT still keyed the radio for a few ms each press, but with no audio attached the LED never visibly lit during short test sounds.
+**Fix:** Added the CKPD dance to `_bt_connect()` right after `audio.connect(send_ckpd=False)` succeeds: `serial.disconnect()` → 0.5s → `audio.send_ckpd()` → 0.3s → `serial.connect()`. If the post-CKPD serial reopen fails, tear down audio and return False so the watchdog retries cleanly (no half-state). Adds ~0.8s to reconnect time. Commit `8c10ca3`.
+**Files:** `tools/d75_link_plugin.py` `_bt_connect()`
+**How to diagnose next time:** No `[Audio] CKPD sent` line in the journal after a watchdog reconnect = audio routing wasn't activated. Look for `[D75] Activating audio routing (CKPD)...` followed by `[Audio] CKPD sent` between `Audio Connected` and `Connected — CAT + Audio ready`.
+**Related:** mirrors the rule in D75-CAT-Control `feedback_d75_bt.md`.
+
 ## Broadcastify reconnect latched off forever after _connect() exception (2026-04-21)
 **Symptom:** Broadcastify dropped at 02:54 (Errno 104, server closed 5.5h-old connection) with a concurrent DNS blip (Errno -3). Single "Auto-reconnecting (attempt #1)" log at 03:40, then no further retries for 3+ hours. `darkice_pid=null`, `stream_restarts=1`, stream stayed dead.
 **Root cause:** `_auto_reconnect` thread in `audio_sources.py:2544` had no `try/finally`. If `_connect()` raised (DNS lookup failure during the blip), `self._reconnecting = True` was never cleared. Subsequent `send_audio()` calls saw the latch True and skipped scheduling any more reconnect threads.
