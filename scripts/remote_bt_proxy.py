@@ -211,7 +211,8 @@ class SerialManager:
             try:
                 self._ser.sendall((cmd.strip() + '\r').encode('ascii'))
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
-                print(f"[Serial] Send error: {e}")
+                print(f"[Serial-DROP] send_raw('{cmd[:20]}...'): {type(e).__name__}: {e} → marking serial disconnected",
+                      flush=True)
                 self._connected = False
                 return None
             # Wait for matching response
@@ -294,6 +295,10 @@ class SerialManager:
             try:
                 chunk = self._ser.recv(256)
                 if not chunk:
+                    # Peer closed the socket cleanly — RFCOMM ch2 dropped.
+                    print(f"[Serial-DROP] _read_loop: recv() returned empty "
+                          f"(peer closed RFCOMM ch2) → marking serial disconnected",
+                          flush=True)
                     self._connected = False
                     break
                 buf += chunk
@@ -305,7 +310,10 @@ class SerialManager:
                         self._rx_queue.put(line)
             except socket.timeout:
                 continue
-            except (ConnectionResetError, BrokenPipeError, OSError):
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                # Real error on the RFCOMM socket — log type + message
+                print(f"[Serial-DROP] _read_loop: {type(e).__name__}: {e} "
+                      f"→ marking serial disconnected", flush=True)
                 self._connected = False
                 break
         print("[Serial] Read loop ended")

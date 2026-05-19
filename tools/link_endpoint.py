@@ -24,8 +24,20 @@ import sys
 import threading
 import time
 
-# Add parent directory to path so we can import gateway_link
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Make BOTH this script's directory and its parent importable. CRITICAL: insert
+# the script directory AFTER the parent so it ends up at sys.path[0] and any
+# duplicate module name (e.g. d75_link_plugin.py existing in both locations)
+# resolves to the run/ copy that the deploy mechanism keeps current.
+#
+# Previously only the parent was added, and Python's default sys.path[0] (the
+# script's directory) got pre-empted by the explicit insert. Result: when a
+# stale copy existed in the parent directory, it shadowed the deployed copy in
+# run/ for weeks — fixes pushed to the plugin were silently ignored. See git
+# blame for the incident write-up.
+_RUN_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT_DIR = os.path.dirname(_RUN_DIR)
+sys.path.insert(0, _PARENT_DIR)      # parent — fallback for legacy imports
+sys.path.insert(0, _RUN_DIR)         # run dir — wins (deploys go here)
 
 try:
     from gateway_link import GatewayLinkClient, AudioPlugin, AIOCPlugin, RadioPlugin, discover_gateway

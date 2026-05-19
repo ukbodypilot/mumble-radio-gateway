@@ -182,26 +182,60 @@ class D75Plugin(RadioPlugin):
     def _watchdog(self):
         """Monitor BT connection; reconnect when serial or audio drops.
 
-        The whole body is wrapped in try/except — a stray exception used to
-        silently kill the watchdog thread, leaving the plugin in a state where
-        serial was dead but nothing was trying to recover it. Also logs a
-        heartbeat every minute so we can verify the watchdog is alive even
-        when nothing's wrong.
+        Heavily instrumented after weeks of mysterious silent failures —
+        we log every tick so we have a complete timeline when something
+        breaks. Volume is ~6 lines/minute which journalctl handles trivially.
         """
-        _hb_counter = 0
+        print(f"[D75-WD] thread STARTED — interval={self._RECONNECT_DELAY}s, "
+              f"thread_name={threading.current_thread().name}", flush=True)
+        try:
+            self._watchdog_main()
+        except BaseException as e:
+            # BaseException catches KeyboardInterrupt + SystemExit too.
+            # We want to KNOW if the thread dies for any reason.
+            import traceback
+            print(f"[D75-WD] thread EXITING ABNORMALLY: {type(e).__name__}: {e}",
+                  flush=True)
+            traceback.print_exc()
+            raise
+        else:
+            print(f"[D75-WD] thread exited normally (self._running={self._running})",
+                  flush=True)
+
+    def _watchdog_main(self):
+        _tick = 0
+        _last_serial_ok = None
+        _last_rx_alive = None
         _hb_interval = max(1, 60 // self._RECONNECT_DELAY)  # heartbeat ~60s
         while self._running:
             time.sleep(self._RECONNECT_DELAY)
             if not self._running:
                 break
             try:
-                serial_ok = self._serial and self._serial.connected
-                rx_alive = self._rx_thread and self._rx_thread.is_alive()
+                _tick += 1
+                serial_ok = bool(self._serial and self._serial.connected)
+                rx_alive = bool(self._rx_thread and self._rx_thread.is_alive())
 
-                _hb_counter += 1
-                if _hb_counter >= _hb_interval:
-                    _hb_counter = 0
-                    print(f"[D75] Watchdog: alive (serial={serial_ok} rx={rx_alive})", flush=True)
+                # Every tick — minimal one-line trace. Volume is ~6/min.
+                print(f"[D75-WD] tick #{_tick} serial={serial_ok} rx={rx_alive} "
+                      f"_serial_obj={'set' if self._serial else 'None'} "
+                      f"_audio_obj={'set' if self._audio else 'None'}", flush=True)
+
+                # State transitions get a louder marker
+                if serial_ok != _last_serial_ok and _last_serial_ok is not None:
+                    print(f"[D75-WD] STATE CHANGE serial: {_last_serial_ok} → {serial_ok} "
+                          f"(at tick {_tick})", flush=True)
+                if rx_alive != _last_rx_alive and _last_rx_alive is not None:
+                    print(f"[D75-WD] STATE CHANGE rx: {_last_rx_alive} → {rx_alive} "
+                          f"(at tick {_tick})", flush=True)
+                _last_serial_ok = serial_ok
+                _last_rx_alive = rx_alive
+
+                # Heartbeat every ~60s as a positive "I'm alive" signal even
+                # if tick logs get filtered.
+                if _tick % _hb_interval == 0:
+                    print(f"[D75-WD] HEARTBEAT tick={_tick} "
+                          f"(serial={serial_ok} rx={rx_alive})", flush=True)
 
                 do_full = not serial_ok or not rx_alive
 
