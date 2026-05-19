@@ -143,6 +143,23 @@ class D75Plugin(RadioPlugin):
                 print(f"[D75] Audio connect failed")
                 return False
 
+            # Activate D75 HSP audio routing via AT+CKPD=200. The command
+            # must be sent on RFCOMM ch1 while CAT serial (ch2) is closed —
+            # the D75 rejects CKPD when both channels are open at once. Same
+            # dance the interactive !btstart command performs; without it
+            # the SCO link is up at the OS level but the radio silently
+            # discards TX audio, so PTT keys the radio with no modulation
+            # (no red-light → no RF output symptom on 2026-05-19).
+            print("[D75] Activating audio routing (CKPD)...")
+            serial.disconnect()
+            time.sleep(0.5)
+            audio.send_ckpd()
+            time.sleep(0.3)
+            if not serial.connect():
+                audio.disconnect()
+                print(f"[D75] Serial re-connect after CKPD failed")
+                return False
+
             self._serial = serial
             self._audio = audio
             self._rx_buf = b''
