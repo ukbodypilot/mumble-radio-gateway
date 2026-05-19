@@ -1,3 +1,5 @@
+> **Snapshot — kept for reference, not maintained.** This was a research/build log captured during a specific phase of development. Current behaviour may have diverged. For up-to-date docs see [../index.md](../index.md).
+
 # FTM-150 Serial Protocol Reverse Engineering
 
 ## Goal

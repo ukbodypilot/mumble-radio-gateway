@@ -1,3 +1,5 @@
+> **Snapshot — kept for reference, not maintained.** This was a research/build log captured during a specific phase of development. Current behaviour may have diverged. For up-to-date docs see [../index.md](../index.md).
+
 # Audio Quality Research — 2026-04-04
 
 Comprehensive research into audio timing/quality problems in the radio gateway.
