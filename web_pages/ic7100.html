@@ -282,6 +282,16 @@
       </div>
       <span id="ic-smeter-val" class="ic-val" style="min-width:3em;text-align:right">0</span>
     </div>
+    <div class="ic-row">
+      <span class="ic-label">Squelch:</span>
+      <input id="ic-squelch" class="ic-slider" type="range" min="0" max="100" step="1" value="0"
+             style="max-width:240px"
+             oninput="document.getElementById('ic-squelch-val').textContent = this.value + '%'"
+             onchange="icCmd('squelch', {pct: +this.value})"
+             title="Squelch threshold — 0 = open. Mainly used on FM.">
+      <span id="ic-squelch-val" class="ic-slider-val">0%</span>
+      <span id="ic-sql-state" class="ic-val ok" title="Squelch condition">OPEN</span>
+    </div>
   </div>
 
   <div class="ic-grid-2">
@@ -920,6 +930,13 @@ function pollStatus() {
     setRange('ic-nb-level',  'ic-nb-level-val',  s.nb_level,  '%');
     setRange('ic-nr-level',  'ic-nr-level-val',  s.nr_level,  '%');
     setRange('ic-ifshift',   'ic-ifshift-val',   s.if_shift,  '%');
+    setRange('ic-squelch',   'ic-squelch-val',   s.squelch,   '%');
+    var sqlEl = document.getElementById('ic-sql-state');
+    if (sqlEl) {
+      var open = (s.squelch_open !== false);
+      sqlEl.textContent = open ? 'OPEN' : 'MUTED';
+      sqlEl.className = 'ic-val ' + (open ? 'ok' : 'dim');
+    }
     setActiveBtn('ic-agc-row',    'agc',    s.agc);
     setActiveBtn('ic-preamp-row', 'preamp', s.preamp);
     setActiveBtn('ic-filter-row', 'filter', s.filter);

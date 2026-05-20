@@ -192,6 +192,8 @@ class CIVController:
         self.preamp: int = 0      # 0=off, 1=pre1, 2=pre2
         self.atten: bool = False  # 20 dB attenuator
         self.if_shift: int = 50   # 0..100, 50=center (no shift)
+        self.squelch: int = 0     # 0..100 percent (0=open)
+        self.squelch_open: bool = True   # current squelch condition
 
     # -- Connection management --
 
@@ -534,6 +536,26 @@ class CIVController:
         if ok:
             self.filter_idx = idx
         return ok
+
+    # Squelch level — 0x14 0x03 (0..255). Mostly used on FM; on SSB/CW
+    # the squelch is normally run wide open (level 0).
+    def set_squelch(self, pct: int) -> bool:
+        pct = max(0, min(100, int(pct)))
+        scaled = round(pct * 255 / 100)
+        resp = self._transact(self._build_frame(
+            0x14, subcmd=0x03, data=_pct_to_bcd3(scaled)))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.squelch = pct
+        return ok
+
+    # Squelch condition — 0x15 0x01 (0=closed/muted, 1=open/audio passing).
+    def get_squelch_status(self) -> bool | None:
+        resp = self._transact(self._build_frame(0x15, subcmd=0x01))
+        if resp and len(resp) >= 3 and resp[0] == 0x15 and resp[1] == 0x01:
+            self.squelch_open = bool(resp[2])
+            return self.squelch_open
+        return None
 
     def send_raw(self, cmd_bytes: bytes) -> bytes | None:
         """Send a raw CI-V frame (for CAT passthrough). Returns response body."""
@@ -997,6 +1019,13 @@ class IC7100Plugin(RadioPlugin):
             ok = self._civ.set_filter(idx)
             return {"ok": ok, "filter": self._civ.filter_idx}
 
+        elif action == 'squelch':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            pct = int(cmd.get('pct', 0))
+            ok = self._civ.set_squelch(pct)
+            return {"ok": ok, "squelch": self._civ.squelch}
+
         return {"ok": False, "error": f"unknown command: {action}"}
 
     # -- Status --
@@ -1028,6 +1057,8 @@ class IC7100Plugin(RadioPlugin):
                 "preamp":           self._civ.preamp,
                 "atten":            self._civ.atten,
                 "if_shift":         self._civ.if_shift,
+                "squelch":          self._civ.squelch,
+                "squelch_open":     self._civ.squelch_open,
             })
         status.update({
             "audio_device":  self._audio_device,
@@ -1071,6 +1102,7 @@ class IC7100Plugin(RadioPlugin):
                     self._civ.get_mode()
                     self._civ.get_ptt()
                     self._civ.get_smeter()
+                    self._civ.get_squelch_status()
                 except Exception as e:
                     print(f"[IC7100] Poll error: {e}", flush=True)
 

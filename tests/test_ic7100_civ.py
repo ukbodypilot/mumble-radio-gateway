@@ -86,6 +86,8 @@ class CIVSimulator:
         self.preamp   = 0      # 0=off, 1=pre1, 2=pre2
         self.atten    = 0x00   # 0x00 off, 0x20 on
         self.if_shift = 0x80   # 0..255, 0x80=center
+        self.squelch  = 0      # 0..255 squelch level
+        self.squelch_open = True   # squelch condition
 
         # Set up socket pair; expose one end as _sock_ctrl for the controller
         self._sock_radio, self._sock_ctrl = socket.socketpair()
@@ -202,7 +204,11 @@ class CIVSimulator:
                 self.filter = payload[1]
             return self._ok()
 
-        elif cmd == 0x15:  # read meter
+        elif cmd == 0x15:  # read meter / status
+            if payload and payload[0] == 0x01:
+                # Squelch condition: 0=closed, 1=open
+                return self._make_resp(
+                    bytes([0x15, 0x01, 0x01 if self.squelch_open else 0x00]))
             if payload and payload[0] == 0x02:
                 # S-meter: encode smeter (0-255) as 2 BCD bytes (3 digits)
                 v = min(255, max(0, self.smeter))
@@ -312,7 +318,13 @@ class CIVSimulator:
             if not payload:
                 return None
             sub = payload[0]
-            if sub == 0x07:           # IF shift
+            if sub == 0x03:           # Squelch level
+                if len(payload) == 1:
+                    return self._make_resp(bytes([0x14, 0x03]) + _pct_to_bcd3(self.squelch))
+                elif len(payload) >= 3:
+                    self.squelch = _bcd3_to_pct(payload[1:3])
+                    return self._ok()
+            elif sub == 0x07:         # IF shift
                 if len(payload) == 1:
                     return self._make_resp(bytes([0x14, 0x07]) + _pct_to_bcd3(self.if_shift))
                 elif len(payload) >= 3:
@@ -382,6 +394,8 @@ def _make_patched_controller(sim: CIVSimulator) -> CIVController:
     ctrl.preamp   = 0
     ctrl.atten    = False
     ctrl.if_shift = 50
+    ctrl.squelch  = 0
+    ctrl.squelch_open = True
     ctrl._poll_state()
     return ctrl
 
@@ -634,6 +648,24 @@ class TestCIVController(unittest.TestCase):
         self.assertEqual(self.sim.filter, 2)
         self.assertEqual(self.ctrl.filter_idx, 2)
 
+    def test_squelch_level(self):
+        self.assertTrue(self.ctrl.set_squelch(40))
+        # 40% -> round(40 * 255 / 100) = 102
+        self.assertEqual(self.sim.squelch, 102)
+        self.assertEqual(self.ctrl.squelch, 40)
+
+    def test_squelch_clamp(self):
+        self.assertTrue(self.ctrl.set_squelch(250))
+        self.assertEqual(self.ctrl.squelch, 100)
+
+    def test_squelch_status_open(self):
+        self.sim.squelch_open = True
+        self.assertTrue(self.ctrl.get_squelch_status())
+
+    def test_squelch_status_closed(self):
+        self.sim.squelch_open = False
+        self.assertFalse(self.ctrl.get_squelch_status())
+
 
 class TestRITHelpers(unittest.TestCase):
 
@@ -815,6 +847,11 @@ class TestIC7100PluginExecute(unittest.TestCase):
         self.assertTrue(r['ok'])
         self.assertEqual(r['filter'], 3)
 
+    def test_dispatch_squelch(self):
+        r = self.plugin.execute({'cmd': 'squelch', 'pct': 55})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['squelch'], 55)
+
     def test_status_includes_hf_state(self):
         self.plugin.execute({'cmd': 'split', 'on': True})
         self.plugin.execute({'cmd': 'agc',   'mode': 'slow'})
@@ -824,7 +861,8 @@ class TestIC7100PluginExecute(unittest.TestCase):
         self.assertTrue(s['split'])
         self.assertEqual(s['agc'], 'slow')
         for key in ['rit_hz','rit_on','xit_on','agc','nb_on','nb_level',
-                    'nr_on','nr_level','preamp','atten','if_shift']:
+                    'nr_on','nr_level','preamp','atten','if_shift',
+                    'squelch','squelch_open']:
             self.assertIn(key, s)
 
 
