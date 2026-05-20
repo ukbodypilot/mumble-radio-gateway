@@ -258,7 +258,8 @@
       <span class="ic-label">Enter:</span>
       <input id="ic-freq-typed" class="ic-input" type="text" inputmode="decimal"
              placeholder="MHz" style="width:8em"
-             title="Type a frequency (MHz) and press Enter">
+             title="Type a frequency (MHz) then press Enter or tap Set">
+      <button class="rb rb-sm" onclick="applyTypedFreq()">Set</button>
       <span class="ic-label" style="font-size:var(--f-xs)">tip: 14.2 → 14.200 MHz; 14200 → 14.200 MHz</span>
     </div>
     <div class="ic-row">
@@ -611,24 +612,29 @@ function buildStepRow() {
   });
 }
 
+function applyTypedFreq() {
+  var inp = document.getElementById('ic-freq-typed');
+  var v = inp.value.trim();
+  if (!v) return;
+  var n = parseFloat(v);
+  if (isNaN(n)) { icFeedback('not a number', true); return; }
+  // Heuristic: numbers <= 3000 are MHz, larger are kHz
+  var mhz = (n > 3000) ? (n / 1000) : n;
+  _freqHz = Math.round(mhz * 1e6);
+  _userTuning = true;
+  _renderFreq();
+  icPost({cmd:'freq', args: String(mhz)}).then(function(d) {
+    if (!d.ok) icFeedback(d.error || 'tune failed', true);
+    setTimeout(function() { _userTuning = false; }, 500);
+  });
+  inp.value = '';
+  inp.blur();  // dismiss the mobile keyboard
+}
+
 function initTypedFreq() {
   var inp = document.getElementById('ic-freq-typed');
   inp.addEventListener('keydown', function(e) {
-    if (e.key !== 'Enter') return;
-    var v = inp.value.trim();
-    if (!v) return;
-    var n = parseFloat(v);
-    if (isNaN(n)) { icFeedback('not a number', true); return; }
-    // Heuristic: numbers <= 3000 are MHz, larger are kHz
-    var mhz = (n > 3000) ? (n / 1000) : n;
-    _freqHz = Math.round(mhz * 1e6);
-    _userTuning = true;
-    _renderFreq();
-    icPost({cmd:'freq', args: String(mhz)}).then(function(d) {
-      if (!d.ok) icFeedback(d.error || 'tune failed', true);
-      setTimeout(function() { _userTuning = false; }, 500);
-    });
-    inp.value = '';
+    if (e.key === 'Enter') { e.preventDefault(); applyTypedFreq(); }
   });
 }
 
