@@ -425,14 +425,18 @@
 
 <script>
 // ── Static data ─────────────────────────────────────────────────────────
-// USA national calling frequencies (MHz). HF bands use the common SSB
-// calling freq; 30m has no phone allocation so it uses the QRP CW
-// calling freq; 2m / 70cm use the FM simplex national calling freqs.
+// USA national calling frequencies (MHz) + the conventional mode for
+// each. HF bands use the common SSB calling freq; 30m has no phone
+// allocation so it uses the QRP CW calling freq; 2m / 70cm use the FM
+// simplex national calling freqs. The mode is a one-shot default —
+// pressing a band button sets it, but the mode buttons stay fully
+// independent (e.g. tap USB after 2m for 144 MHz SSB work).
+// [name, freq_mhz, mode]
 var IC_BANDS = [
-  ['160m', 1.910],   ['80m', 3.985],   ['40m', 7.285],
-  ['30m', 10.116],   ['20m', 14.285],  ['17m', 18.130],
-  ['15m', 21.385],   ['12m', 24.950],  ['10m', 28.400],
-  ['6m', 50.125],    ['2m', 146.520],  ['70cm', 446.000],
+  ['160m', 1.910,  'LSB'], ['80m', 3.985,  'LSB'], ['40m', 7.285,  'LSB'],
+  ['30m', 10.116,  'CW'],  ['20m', 14.285, 'USB'], ['17m', 18.130, 'USB'],
+  ['15m', 21.385,  'USB'], ['12m', 24.950, 'USB'], ['10m', 28.400, 'USB'],
+  ['6m', 50.125,   'USB'], ['2m', 146.520, 'FM'],  ['70cm', 446.000, 'FM'],
 ];
 var IC_MODES = ['LSB', 'USB', 'AM', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'FM', 'DV'];
 
@@ -474,12 +478,16 @@ function buildBandRow() {
     btn.dataset.band = b[0];
     btn.dataset.freq = b[1];
     btn.onclick = function() {
-      // Update the display immediately for snappy UX, then send
+      // Update the display immediately for snappy UX, then send freq
+      // and the band's conventional mode (one-shot — user can override
+      // with the mode buttons right after).
       _freqHz = Math.round(b[1] * 1e6);
       _userTuning = true;
       _renderFreq();
       icPost({cmd:'freq', args: String(b[1])}).then(function() {
-        setTimeout(function() { _userTuning = false; }, 250);
+        icPost({cmd:'mode', mode: b[2]}).then(function() {
+          setTimeout(function() { _userTuning = false; }, 250);
+        });
       });
     };
     row.appendChild(btn);
