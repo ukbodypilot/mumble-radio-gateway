@@ -266,8 +266,6 @@
       <label title="Allow transmit on the 144/430 MHz antenna connector (2 m / 70 cm)">
         <input type="checkbox" id="ic-tx-vu"
                onchange="icCmd('tx_interlock', {vu: this.checked})"> VHF/UHF</label>
-      <span id="ic-tx-port" class="ic-val dim"
-            title="Antenna port the current frequency would transmit on"></span>
     </div>
     <div class="ic-row" style="margin-top: calc(-1 * var(--s-2));">
       <span class="ic-label" style="min-width:60px">Step:</span>
@@ -301,6 +299,15 @@
       <span id="ic-smeter-val" class="ic-val" style="min-width:3em;text-align:right">0</span>
     </div>
     <div class="ic-row">
+      <span class="ic-label">Volume:</span>
+      <input id="ic-vol" class="ic-slider" type="range" min="0" max="500" step="1" value="100"
+             style="max-width:240px"
+             oninput="document.getElementById('ic-vol-val').textContent = this.value + '%'"
+             onchange="icCmd('vol', {value: +this.value})"
+             title="RX listening volume — audio boost, 100% = unity">
+      <span id="ic-vol-val" class="ic-slider-val">100%</span>
+    </div>
+    <div class="ic-row">
       <span class="ic-label">Squelch:</span>
       <input id="ic-squelch" class="ic-slider" type="range" min="0" max="100" step="1" value="0"
              style="max-width:240px"
@@ -320,15 +327,14 @@
         <label class="ic-label" style="min-width:80px">TX tone:</label>
         <select id="ic-ctcss-tx" class="ic-select"
                 title="CTCSS encode tone (Hz)"></select>
-        <label><input type="checkbox" id="ic-ctcss-tx-on"> on</label>
         <button class="rb rb-sm" onclick="icCtcssApply('tx')">Apply</button>
+        <label><input type="checkbox" id="ic-ctcss-tx-on"> on</label>
       </div>
       <div class="ic-row">
         <label class="ic-label" style="min-width:80px">RX tone:</label>
         <select id="ic-ctcss-rx" class="ic-select"
                 title="TSQL tone (Hz) — used when FM squelch type is TSQL"></select>
         <button class="rb rb-sm" onclick="icCtcssApply('rx')">Apply</button>
-        <span class="ic-label" style="font-size:var(--f-xs)">TSQL on/off is set below</span>
       </div>
     </div>
 
@@ -363,28 +369,6 @@
           <option value="2">TR-RN</option>
           <option value="3">TR-RR (both rev)</option>
         </select>
-      </div>
-    </div>
-
-    <!-- Audio card: RX/TX gain + mute -->
-    <div class="ic-card">
-      <div class="ic-card-title">Audio</div>
-      <div class="ic-row">
-        <label class="ic-label" style="min-width:80px">RX gain:</label>
-        <input id="ic-rx-gain" class="ic-slider" type="range" min="-20" max="20" step="0.5" value="0"
-               oninput="document.getElementById('ic-rx-gain-val').textContent = (+this.value).toFixed(1) + ' dB'"
-               onchange="icCmd('rx_gain', {db: +this.value})">
-        <span id="ic-rx-gain-val" class="ic-slider-val">0.0 dB</span>
-      </div>
-      <div class="ic-row">
-        <label class="ic-label" style="min-width:80px">TX gain:</label>
-        <input id="ic-tx-gain" class="ic-slider" type="range" min="-20" max="20" step="0.5" value="0"
-               oninput="document.getElementById('ic-tx-gain-val').textContent = (+this.value).toFixed(1) + ' dB'"
-               onchange="icCmd('tx_gain', {db: +this.value})">
-        <span id="ic-tx-gain-val" class="ic-slider-val">0.0 dB</span>
-      </div>
-      <div class="ic-row">
-        <button class="rb rb-sm" onclick="icCmd('mute')" id="ic-mute-btn">Toggle Mute</button>
       </div>
     </div>
   </div>
@@ -993,17 +977,6 @@ function pollStatus() {
     setDot('ic-il-vu', s.tx_allow_vu);
     var portAllowed = (s.tx_port === 'vu') ? !!s.tx_allow_vu
                     : (s.tx_port === 'hf') ? !!s.tx_allow_hf : true;
-    var portEl = document.getElementById('ic-tx-port');
-    if (portEl) {
-      if (s.tx_port === 'hf' || s.tx_port === 'vu') {
-        var label = s.tx_port === 'vu' ? 'VHF/UHF' : 'HF';
-        portEl.textContent = 'current band uses ' + label + ' port — TX ' +
-                             (portAllowed ? 'enabled' : 'BLOCKED');
-        portEl.className = 'ic-val ' + (portAllowed ? 'ok' : 'err');
-      } else {
-        portEl.textContent = '';
-      }
-    }
     pttBtn.classList.toggle('blocked', !portAllowed);
     pttBtn.title = portAllowed ? 'Toggle transmit'
                  : 'TX blocked — enable the ' +
@@ -1025,18 +998,6 @@ function pollStatus() {
     var smPct = Math.max(0, Math.min(100, smRaw * 100 / 255));
     document.getElementById('ic-smeter-fill').style.width = smPct.toFixed(0) + '%';
     document.getElementById('ic-smeter-val').textContent = smRaw;
-
-    // Gains — only update if user isn't dragging
-    var rxEl = document.getElementById('ic-rx-gain');
-    if (document.activeElement !== rxEl && typeof s.rx_gain_db === 'number') {
-      rxEl.value = s.rx_gain_db;
-      document.getElementById('ic-rx-gain-val').textContent = (+s.rx_gain_db).toFixed(1) + ' dB';
-    }
-    var txEl = document.getElementById('ic-tx-gain');
-    if (document.activeElement !== txEl && typeof s.tx_gain_db === 'number') {
-      txEl.value = s.tx_gain_db;
-      document.getElementById('ic-tx-gain-val').textContent = (+s.tx_gain_db).toFixed(1) + ' dB';
-    }
 
     // CTCSS — only update if user isn't editing the dropdown
     var ctxEls = {
@@ -1083,6 +1044,7 @@ function pollStatus() {
     setRange('ic-nb-level',  'ic-nb-level-val',  s.nb_level,  '%');
     setRange('ic-nr-level',  'ic-nr-level-val',  s.nr_level,  '%');
     setRange('ic-ifshift',   'ic-ifshift-val',   s.if_shift,  '%');
+    setRange('ic-vol',       'ic-vol-val',       s.rx_boost_pct, '%');
     setRange('ic-squelch',   'ic-squelch-val',   s.squelch,   '%');
     var sqlEl = document.getElementById('ic-sql-state');
     if (sqlEl) {

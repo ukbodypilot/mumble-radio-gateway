@@ -1441,8 +1441,8 @@ class AudioPlugin(RadioPlugin):
         # Load saved settings (gains + gate)
         saved = self._load_settings()
         if saved:
-            self._rx_gain_db = max(-10, min(10, float(saved.get('rx_gain_db', 0))))
-            self._tx_gain_db = max(-10, min(10, float(saved.get('tx_gain_db', 0))))
+            self._rx_gain_db = max(-20, min(20, float(saved.get('rx_gain_db', 0))))
+            self._tx_gain_db = max(-20, min(20, float(saved.get('tx_gain_db', 0))))
             if 'gate_threshold_db' in saved:
                 self._gate_threshold_db = max(-60, min(-10, float(saved['gate_threshold_db'])))
             if 'gate_enabled' in saved:
@@ -1689,12 +1689,12 @@ class AudioPlugin(RadioPlugin):
         """Handle commands from master gateway."""
         action = cmd.get('cmd', '') if isinstance(cmd, dict) else ''
         if action == 'rx_gain':
-            self._rx_gain_db = max(-10, min(10, float(cmd.get('db', 0))))
+            self._rx_gain_db = max(-20, min(20, float(cmd.get('db', 0))))
             self._save_settings()
             print(f"  [Link] AudioPlugin: RX gain set to {self._rx_gain_db:+.1f} dB")
             return {"ok": True, "rx_gain_db": self._rx_gain_db}
         if action == 'tx_gain':
-            self._tx_gain_db = max(-10, min(10, float(cmd.get('db', 0))))
+            self._tx_gain_db = max(-20, min(20, float(cmd.get('db', 0))))
             self._save_settings()
             print(f"  [Link] AudioPlugin: TX gain set to {self._tx_gain_db:+.1f} dB")
             return {"ok": True, "tx_gain_db": self._tx_gain_db}

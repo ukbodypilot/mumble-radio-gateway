@@ -114,7 +114,9 @@
     letter-spacing: 0.1em;
     text-transform: uppercase;
     font-weight: 600;
-    min-width: 3.4em;
+    /* Wide enough for the longest label ("IC7100", 6 chars) so every
+       bar's track starts at the same offset — labels are right-aligned. */
+    min-width: 4.5em;
     text-align: right;
     flex-shrink: 0;
   }

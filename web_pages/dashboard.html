@@ -655,8 +655,8 @@ function updateStatus() {
           lh2+='<div class="link-col">';
           lh2+='<div class="link-row"><span class="link-label">RX</span><div class="link-bar vu vu-tone-mono" data-vu-rx="'+le.name+'"><div class="link-fill rx"></div></div></div>';
           lh2+='<div class="link-row"><span class="link-label">TX</span><div class="link-bar vu vu-tone-mono" data-vu-tx="'+le.name+'"><div class="link-fill tx"></div></div></div>';
-          lh2+='<div class="link-row mt-1"><button onclick="linkMuteToggle(&quot;'+ename+'&quot;,&quot;rx&quot;)" class="'+(le.rx_muted?'link-mute on':'link-mute')+'">Mute</button><input type="range" min="-10" max="10" step="1" value="'+rxGain+'" class="link-slider" oninput="linkGain(&quot;'+ename+'&quot;,&quot;rx_gain&quot;,this.value)"><span class="link-gain-val">'+rxGain+' dB</span></div>';
-          lh2+='<div class="link-row"><button onclick="linkMuteToggle(&quot;'+ename+'&quot;,&quot;tx&quot;)" class="'+(le.tx_muted?'link-mute on':'link-mute')+'">Mute</button><input type="range" min="-10" max="10" step="1" value="'+txGain+'" class="link-slider" oninput="linkGain(&quot;'+ename+'&quot;,&quot;tx_gain&quot;,this.value)"><span class="link-gain-val">'+txGain+' dB</span></div>';
+          lh2+='<div class="link-row mt-1"><button onclick="linkMuteToggle(&quot;'+ename+'&quot;,&quot;rx&quot;)" class="'+(le.rx_muted?'link-mute on':'link-mute')+'">Mute</button><input type="range" min="-20" max="20" step="1" value="'+rxGain+'" class="link-slider" oninput="linkGain(&quot;'+ename+'&quot;,&quot;rx_gain&quot;,this.value)"><span class="link-gain-val">'+rxGain+' dB</span></div>';
+          lh2+='<div class="link-row"><button onclick="linkMuteToggle(&quot;'+ename+'&quot;,&quot;tx&quot;)" class="'+(le.tx_muted?'link-mute on':'link-mute')+'">Mute</button><input type="range" min="-20" max="20" step="1" value="'+txGain+'" class="link-slider" oninput="linkGain(&quot;'+ename+'&quot;,&quot;tx_gain&quot;,this.value)"><span class="link-gain-val">'+txGain+' dB</span></div>';
           lh2+='</div></div>';
           wrap.innerHTML=lh2; lci.appendChild(wrap);
           }

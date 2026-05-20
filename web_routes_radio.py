@@ -180,6 +180,20 @@ def handle_ic7100cmd(handler, parent):
                 result = {'ok': True, 'muted': _src.muted}
             else:
                 result = {'ok': False, 'error': 'audio source missing'}
+        elif cmd == 'vol':
+            # RX listening volume — gateway-side audio boost on the link
+            # source (0-500%, 100 = unity). Applied in audio_sources.py.
+            _src = gw.link_endpoints.get(_ep)
+            if _src is None:
+                result = {'ok': False, 'error': 'audio source missing'}
+            else:
+                try:
+                    pct = max(0, min(500, int(data.get('value', 100))))
+                except (ValueError, TypeError):
+                    result = {'ok': False, 'error': 'vol must be 0-500'}
+                else:
+                    _src.audio_boost = pct / 100.0
+                    result = {'ok': True, 'audio_boost': pct}
         elif cmd == 'cat':
             # Raw CI-V passthrough — args expected as hex string
             _link.send_command_to(_ep, {'cmd': 'cat', 'raw': args})

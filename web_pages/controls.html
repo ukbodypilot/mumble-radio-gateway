@@ -568,12 +568,12 @@ createPoller('/status', 1000, function(s) {
       h += '<div class="link-row"><span class="link-label">TX</span><div class="link-bar"><div class="link-fill tx" style="width:' + (le.tx_level || 0) + '%"></div></div></div>';
       h += '<div class="link-row mt-1">';
       h += '<button onclick="linkMuteToggle(&quot;' + ename + '&quot;,&quot;rx&quot;)" class="' + rxmCls + '">Mute</button>';
-      h += '<input type="range" min="-10" max="10" step="1" value="' + rxGain + '" class="link-slider" oninput="linkGain(&quot;' + ename + '&quot;,&quot;rx_gain&quot;,this.value)">';
+      h += '<input type="range" min="-20" max="20" step="1" value="' + rxGain + '" class="link-slider" oninput="linkGain(&quot;' + ename + '&quot;,&quot;rx_gain&quot;,this.value)">';
       h += '<span class="link-gain-val">' + rxGain + ' dB</span>';
       h += '</div>';
       h += '<div class="link-row">';
       h += '<button onclick="linkMuteToggle(&quot;' + ename + '&quot;,&quot;tx&quot;)" class="' + txmCls + '">Mute</button>';
-      h += '<input type="range" min="-10" max="10" step="1" value="' + txGain + '" class="link-slider" oninput="linkGain(&quot;' + ename + '&quot;,&quot;tx_gain&quot;,this.value)">';
+      h += '<input type="range" min="-20" max="20" step="1" value="' + txGain + '" class="link-slider" oninput="linkGain(&quot;' + ename + '&quot;,&quot;tx_gain&quot;,this.value)">';
       h += '<span class="link-gain-val">' + txGain + ' dB</span>';
       h += '</div>';
       h += '</div></div>';
