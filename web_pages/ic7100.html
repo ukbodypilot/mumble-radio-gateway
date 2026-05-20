@@ -308,9 +308,43 @@
       <div class="ic-row">
         <label class="ic-label" style="min-width:80px">RX tone:</label>
         <input id="ic-ctcss-rx" class="ic-input w-tone" type="number" step="0.1" min="0" max="254.1"
-               title="Tone squelch in Hz (0 disables)">
-        <label><input type="checkbox" id="ic-ctcss-rx-on"> on</label>
+               title="TSQL tone in Hz — used when FM squelch type is TSQL">
         <button class="rb rb-sm" onclick="icCtcssApply('rx')">Apply</button>
+        <span class="ic-label" style="font-size:var(--f-xs)">TSQL on/off is set below</span>
+      </div>
+    </div>
+
+    <!-- FM Squelch card: gating type (Noise/TSQL/DTCS) + DTCS code -->
+    <div class="ic-card">
+      <div class="ic-card-title">FM Squelch</div>
+      <div class="ic-row">
+        <span class="ic-label" style="min-width:80px">Type:</span>
+        <div class="ic-btn-row" id="ic-sqltype-row">
+          <button class="rb rb-sm" data-sqltype="noise"
+                  onclick="icCmd('squelch_type', {type:'noise'})"
+                  title="Carrier/noise squelch — opens on any signal">Noise</button>
+          <button class="rb rb-sm" data-sqltype="tsql"
+                  onclick="icCmd('squelch_type', {type:'tsql'})"
+                  title="Tone squelch — opens only on matching CTCSS tone (set RX tone above)">TSQL</button>
+          <button class="rb rb-sm" data-sqltype="dtcs"
+                  onclick="icCmd('squelch_type', {type:'dtcs'})"
+                  title="Digital tone code squelch — opens only on matching DTCS code">DTCS</button>
+        </div>
+      </div>
+      <div class="ic-row">
+        <label class="ic-label" style="min-width:80px">DTCS code:</label>
+        <select id="ic-dtcs-code" class="ic-select"
+                onchange="icCmd('dtcs', {code: +this.value})"
+                title="DTCS code (octal) — applies when type is DTCS"></select>
+        <label class="ic-label">Polarity:</label>
+        <select id="ic-dtcs-pol" class="ic-select"
+                onchange="icCmd('dtcs', {polarity: +this.value})"
+                title="DTCS TX/RX polarity">
+          <option value="0">TN-RN (normal)</option>
+          <option value="1">TN-RR</option>
+          <option value="2">TR-RN</option>
+          <option value="3">TR-RR (both rev)</option>
+        </select>
       </div>
     </div>
 
@@ -791,10 +825,34 @@ function icCtcssApply(which) {
     var on = document.getElementById('ic-ctcss-tx-on').checked;
     icCmd('ctcss', {tx_hz: isNaN(hz) ? 0 : hz, tx_on: on});
   } else {
+    // RX apply sets only the TSQL tone frequency; TSQL on/off is owned
+    // by the FM Squelch type selector.
     var hzR = parseFloat(document.getElementById('ic-ctcss-rx').value);
-    var onR = document.getElementById('ic-ctcss-rx-on').checked;
-    icCmd('ctcss', {rx_hz: isNaN(hzR) ? 0 : hzR, rx_on: onR});
+    icCmd('ctcss', {rx_hz: isNaN(hzR) ? 0 : hzR});
   }
+}
+
+// DTCS code list (octal-style) — mirrors _DTCS_CODES in the plugin.
+var IC_DTCS_CODES = [
+  23,25,26,31,32,36,43,47,51,53,54,65,71,72,73,74,
+  114,115,116,122,125,131,132,134,143,145,152,155,156,162,
+  165,172,174,205,212,223,225,226,243,244,245,246,251,252,
+  255,261,263,265,266,271,274,306,311,315,325,331,332,343,
+  346,351,356,364,365,371,411,412,413,423,431,432,445,446,
+  452,454,455,462,464,465,466,503,506,516,523,526,532,546,
+  565,606,612,624,627,631,632,654,662,664,703,712,723,731,
+  732,734,743,754
+];
+function buildDtcsCodes() {
+  var sel = document.getElementById('ic-dtcs-code');
+  if (!sel) return;
+  IC_DTCS_CODES.forEach(function(code) {
+    var opt = document.createElement('option');
+    opt.value = code;
+    // Render as 3-digit octal-style label, e.g. 23 -> "023"
+    opt.textContent = String(code).padStart(3, '0');
+    sel.appendChild(opt);
+  });
 }
 
 // ── Raw CI-V console ────────────────────────────────────────────────────
@@ -898,9 +956,6 @@ function pollStatus() {
     if (document.activeElement !== document.getElementById('ic-ctcss-tx-on')) {
       document.getElementById('ic-ctcss-tx-on').checked = !!s.ctcss_tx_on;
     }
-    if (document.activeElement !== document.getElementById('ic-ctcss-rx-on')) {
-      document.getElementById('ic-ctcss-rx-on').checked = !!s.ctcss_rx_on;
-    }
 
     // -- HF panel sync (Phase C) ----------------------------------------
     function setCheck(id, val) {
@@ -940,6 +995,17 @@ function pollStatus() {
     setActiveBtn('ic-agc-row',    'agc',    s.agc);
     setActiveBtn('ic-preamp-row', 'preamp', s.preamp);
     setActiveBtn('ic-filter-row', 'filter', s.filter);
+
+    // FM squelch type + DTCS
+    setActiveBtn('ic-sqltype-row', 'sqltype', s.squelch_type || 'noise');
+    var dcEl = document.getElementById('ic-dtcs-code');
+    if (dcEl && document.activeElement !== dcEl && typeof s.dtcs_code === 'number') {
+      dcEl.value = s.dtcs_code;
+    }
+    var dpEl = document.getElementById('ic-dtcs-pol');
+    if (dpEl && document.activeElement !== dpEl && typeof s.dtcs_polarity === 'number') {
+      dpEl.value = s.dtcs_polarity;
+    }
   });
 }
 
@@ -947,6 +1013,7 @@ function pollStatus() {
 buildBandRow();
 buildModeRow();
 buildStepRow();
+buildDtcsCodes();
 initFreqDisplay();
 initTypedFreq();
 initRitDisplay();

@@ -148,6 +148,49 @@ def _bcd_to_rit_offset(data: bytes) -> int:
     return -mag if data[2] == 0x01 else mag
 
 
+# DTCS (digital tone code squelch).
+# Standard 104-code list, octal-style numbers stored as plain ints.
+_DTCS_CODES = [
+    23, 25, 26, 31, 32, 36, 43, 47, 51, 53, 54, 65, 71, 72, 73, 74,
+    114, 115, 116, 122, 125, 131, 132, 134, 143, 145, 152, 155, 156, 162,
+    165, 172, 174, 205, 212, 223, 225, 226, 243, 244, 245, 246, 251, 252,
+    255, 261, 263, 265, 266, 271, 274, 306, 311, 315, 325, 331, 332, 343,
+    346, 351, 356, 364, 365, 371, 411, 412, 413, 423, 431, 432, 445, 446,
+    452, 454, 455, 462, 464, 465, 466, 503, 506, 516, 523, 526, 532, 546,
+    565, 606, 612, 624, 627, 631, 632, 654, 662, 664, 703, 712, 723, 731,
+    732, 734, 743, 754,
+]
+
+# DTCS polarity — IC-7100 0x1B 0x07 polarity byte. Index 0..3 maps to:
+#   0 = TX normal / RX normal
+#   1 = TX normal / RX reverse
+#   2 = TX reverse / RX normal
+#   3 = TX reverse / RX reverse
+_DTCS_POLARITY = [0x00, 0x01, 0x10, 0x11]
+
+
+def _dtcs_to_bytes(code: int, polarity: int) -> bytes:
+    """Encode DTCS as 3 bytes: polarity + 2 BCD code bytes (e.g. 754 → 07 54)."""
+    pol = _DTCS_POLARITY[max(0, min(3, int(polarity)))]
+    code = max(0, min(999, int(code)))
+    h = code // 100
+    t = (code % 100) // 10
+    u = code % 10
+    return bytes([pol, h, (t << 4) | u])
+
+
+def _bytes_to_dtcs(data: bytes):
+    """Decode 3-byte DTCS payload → (code:int, polarity:int 0..3)."""
+    if len(data) < 3:
+        return (23, 0)
+    try:
+        polarity = _DTCS_POLARITY.index(data[0])
+    except ValueError:
+        polarity = 0
+    code = (data[1] & 0x0f) * 100 + ((data[2] >> 4) & 0x0f) * 10 + (data[2] & 0x0f)
+    return (code, polarity)
+
+
 # ---------------------------------------------------------------------------
 # CIVController
 # ---------------------------------------------------------------------------
@@ -194,6 +237,9 @@ class CIVController:
         self.if_shift: int = 50   # 0..100, 50=center (no shift)
         self.squelch: int = 0     # 0..100 percent (0=open)
         self.squelch_open: bool = True   # current squelch condition
+        self.dtcs_on: bool = False       # digital tone code squelch enabled
+        self.dtcs_code: int = 23         # DTCS code (octal-style int)
+        self.dtcs_polarity: int = 0      # 0..3 — see _DTCS_POLARITY
 
     # -- Connection management --
 
@@ -557,6 +603,41 @@ class CIVController:
             return self.squelch_open
         return None
 
+    # DTCS enable — 0x16 0x4A. DTCS gates RX (and encodes TX) with a
+    # digital code instead of a CTCSS tone — the FM "digital squelch".
+    def set_dtcs_on(self, on: bool) -> bool:
+        resp = self._transact(self._build_frame(
+            0x16, subcmd=0x4a, data=bytes([0x01 if on else 0x00])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.dtcs_on = on
+        return ok
+
+    def get_dtcs_on(self) -> bool | None:
+        resp = self._transact(self._build_frame(0x16, subcmd=0x4a))
+        if resp and len(resp) >= 3 and resp[0] == 0x16 and resp[1] == 0x4a:
+            self.dtcs_on = bool(resp[2])
+            return self.dtcs_on
+        return None
+
+    # DTCS code + polarity — 0x1B 0x07.
+    def set_dtcs_code(self, code: int, polarity: int = 0) -> bool:
+        resp = self._transact(self._build_frame(
+            0x1b, subcmd=0x07, data=_dtcs_to_bytes(code, polarity)))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.dtcs_code = max(0, min(999, int(code)))
+            self.dtcs_polarity = max(0, min(3, int(polarity)))
+        return ok
+
+    def get_dtcs_code(self):
+        """Read DTCS code/polarity. Returns (code, polarity) or None."""
+        resp = self._transact(self._build_frame(0x1b, subcmd=0x07))
+        if resp and len(resp) >= 5 and resp[0] == 0x1b and resp[1] == 0x07:
+            self.dtcs_code, self.dtcs_polarity = _bytes_to_dtcs(resp[2:5])
+            return (self.dtcs_code, self.dtcs_polarity)
+        return None
+
     def send_raw(self, cmd_bytes: bytes) -> bytes | None:
         """Send a raw CI-V frame (for CAT passthrough). Returns response body."""
         return self._transact(cmd_bytes)
@@ -567,10 +648,12 @@ class CIVController:
         self.get_mode()
         self.get_ptt()
         self.get_ctcss()
-        # Best-effort: split state. Other HF feature reads are skipped on
-        # connect to keep first-poll fast; the GUI requests fresh values
-        # via `status` once the panel is open.
+        # Best-effort: split + DTCS state. Other HF feature reads are
+        # skipped on connect to keep first-poll fast; the GUI requests
+        # fresh values via `status` once the panel is open.
         self.get_split()
+        self.get_dtcs_on()
+        self.get_dtcs_code()
 
 
 # ---------------------------------------------------------------------------
@@ -1026,6 +1109,37 @@ class IC7100Plugin(RadioPlugin):
             ok = self._civ.set_squelch(pct)
             return {"ok": ok, "squelch": self._civ.squelch}
 
+        elif action == 'squelch_type':
+            # FM squelch gating: 'noise' (carrier), 'tsql' (CTCSS tone),
+            # or 'dtcs' (digital code). Orchestrates the RX-tone and
+            # DTCS enables so only one gating mode is active at a time.
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            stype = str(cmd.get('type', 'noise')).lower()
+            if stype not in ('noise', 'tsql', 'dtcs'):
+                return {"ok": False, "error": f"bad squelch type: {stype}"}
+            ok = True
+            ok &= self._civ.set_ctcss(rx_on=(stype == 'tsql'))
+            ok &= self._civ.set_dtcs_on(stype == 'dtcs')
+            return {"ok": ok, "squelch_type": stype}
+
+        elif action == 'dtcs':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            ok = True
+            if 'on' in cmd:
+                ok &= self._civ.set_dtcs_on(bool(cmd['on']))
+            if 'code' in cmd or 'polarity' in cmd:
+                code = int(cmd.get('code', self._civ.dtcs_code))
+                pol  = int(cmd.get('polarity', self._civ.dtcs_polarity))
+                ok &= self._civ.set_dtcs_code(code, pol)
+            return {
+                "ok": ok,
+                "dtcs_on":       self._civ.dtcs_on,
+                "dtcs_code":     self._civ.dtcs_code,
+                "dtcs_polarity": self._civ.dtcs_polarity,
+            }
+
         return {"ok": False, "error": f"unknown command: {action}"}
 
     # -- Status --
@@ -1059,6 +1173,13 @@ class IC7100Plugin(RadioPlugin):
                 "if_shift":         self._civ.if_shift,
                 "squelch":          self._civ.squelch,
                 "squelch_open":     self._civ.squelch_open,
+                "dtcs_on":          self._civ.dtcs_on,
+                "dtcs_code":        self._civ.dtcs_code,
+                "dtcs_polarity":    self._civ.dtcs_polarity,
+                # Derived FM squelch gating mode for the GUI selector
+                "squelch_type":     ('dtcs' if self._civ.dtcs_on
+                                     else 'tsql' if self._civ.ctcss_rx_on
+                                     else 'noise'),
             })
         status.update({
             "audio_device":  self._audio_device,

@@ -36,7 +36,8 @@ from ic7100_link_plugin import (
     _tone_to_bcd, _bcd_to_tone,
     _rit_offset_to_bcd, _bcd_to_rit_offset,
     _pct_to_bcd3, _bcd3_to_pct,
-    _CTCSS,
+    _dtcs_to_bytes, _bytes_to_dtcs,
+    _CTCSS, _DTCS_CODES,
 )
 
 
@@ -88,6 +89,9 @@ class CIVSimulator:
         self.if_shift = 0x80   # 0..255, 0x80=center
         self.squelch  = 0      # 0..255 squelch level
         self.squelch_open = True   # squelch condition
+        self.dtcs_on  = False
+        self.dtcs_code = 23        # octal-style int
+        self.dtcs_polarity = 0     # 0..3
 
         # Set up socket pair; expose one end as _sock_ctrl for the controller
         self._sock_radio, self._sock_ctrl = socket.socketpair()
@@ -231,6 +235,9 @@ class CIVSimulator:
                 elif sub == 0x40:
                     return self._make_resp(bytes([0x16, 0x40,
                                                   0x01 if self.nr_on else 0x00]))
+                elif sub == 0x4a:
+                    return self._make_resp(bytes([0x16, 0x4a,
+                                                  0x01 if self.dtcs_on else 0x00]))
                 elif sub == 0x42:
                     return self._make_resp(bytes([0x16, 0x42,
                                                   0x01 if self.ctcss_rx_on else 0x00]))
@@ -250,6 +257,9 @@ class CIVSimulator:
                 elif sub == 0x40:
                     self.nr_on = bool(payload[1])
                     return self._ok()
+                elif sub == 0x4a:
+                    self.dtcs_on = bool(payload[1])
+                    return self._ok()
                 elif sub == 0x42:
                     self.ctcss_rx_on = bool(payload[1])
                     return self._ok()
@@ -257,18 +267,26 @@ class CIVSimulator:
                     self.ctcss_tx_on = bool(payload[1])
                     return self._ok()
 
-        elif cmd == 0x1b:  # CTCSS tone freq
+        elif cmd == 0x1b:  # CTCSS tone freq / DTCS code
             if not payload:
                 return None
             sub = payload[0]
-            if len(payload) == 1:  # read
+            if sub == 0x07:  # DTCS code + polarity (3-byte payload)
+                if len(payload) == 1:  # read
+                    return self._make_resp(
+                        bytes([0x1b, 0x07])
+                        + _dtcs_to_bytes(self.dtcs_code, self.dtcs_polarity))
+                elif len(payload) >= 4:  # write
+                    self.dtcs_code, self.dtcs_polarity = _bytes_to_dtcs(payload[1:4])
+                    return self._ok()
+            elif len(payload) == 1:  # tone read
                 if sub == 0x00:
                     return self._make_resp(
                         bytes([0x1b, 0x00]) + _tone_to_bcd(self.ctcss_tx_hz))
                 elif sub == 0x01:
                     return self._make_resp(
                         bytes([0x1b, 0x00]) + _tone_to_bcd(self.ctcss_rx_hz))
-            elif len(payload) >= 3:  # write
+            elif len(payload) >= 3:  # tone write
                 hz = _bcd_to_tone(payload[1:3])
                 if sub == 0x00:
                     self.ctcss_tx_hz = hz
@@ -396,6 +414,9 @@ def _make_patched_controller(sim: CIVSimulator) -> CIVController:
     ctrl.if_shift = 50
     ctrl.squelch  = 0
     ctrl.squelch_open = True
+    ctrl.dtcs_on  = False
+    ctrl.dtcs_code = 23
+    ctrl.dtcs_polarity = 0
     ctrl._poll_state()
     return ctrl
 
@@ -666,6 +687,32 @@ class TestCIVController(unittest.TestCase):
         self.sim.squelch_open = False
         self.assertFalse(self.ctrl.get_squelch_status())
 
+    def test_dtcs_enable(self):
+        self.assertTrue(self.ctrl.set_dtcs_on(True))
+        self.assertTrue(self.sim.dtcs_on)
+        self.assertTrue(self.ctrl.get_dtcs_on())
+        self.assertTrue(self.ctrl.set_dtcs_on(False))
+        self.assertFalse(self.sim.dtcs_on)
+
+    def test_dtcs_code_set_get(self):
+        self.assertTrue(self.ctrl.set_dtcs_code(754, 0))
+        self.assertEqual(self.sim.dtcs_code, 754)
+        code, pol = self.ctrl.get_dtcs_code()
+        self.assertEqual(code, 754)
+        self.assertEqual(pol, 0)
+
+    def test_dtcs_code_polarity(self):
+        for pol in (0, 1, 2, 3):
+            self.assertTrue(self.ctrl.set_dtcs_code(23, pol))
+            code, gotpol = self.ctrl.get_dtcs_code()
+            self.assertEqual(code, 23)
+            self.assertEqual(gotpol, pol)
+
+    def test_dtcs_all_codes_roundtrip(self):
+        for code in _DTCS_CODES:
+            c, p = _bytes_to_dtcs(_dtcs_to_bytes(code, 0))
+            self.assertEqual(c, code, f"DTCS code roundtrip failed for {code}")
+
 
 class TestRITHelpers(unittest.TestCase):
 
@@ -851,6 +898,41 @@ class TestIC7100PluginExecute(unittest.TestCase):
         r = self.plugin.execute({'cmd': 'squelch', 'pct': 55})
         self.assertTrue(r['ok'])
         self.assertEqual(r['squelch'], 55)
+
+    def test_dispatch_squelch_type_noise(self):
+        r = self.plugin.execute({'cmd': 'squelch_type', 'type': 'noise'})
+        self.assertTrue(r['ok'])
+        self.assertFalse(self.sim.ctcss_rx_on)
+        self.assertFalse(self.sim.dtcs_on)
+
+    def test_dispatch_squelch_type_tsql(self):
+        r = self.plugin.execute({'cmd': 'squelch_type', 'type': 'tsql'})
+        self.assertTrue(r['ok'])
+        self.assertTrue(self.sim.ctcss_rx_on)
+        self.assertFalse(self.sim.dtcs_on)
+
+    def test_dispatch_squelch_type_dtcs(self):
+        r = self.plugin.execute({'cmd': 'squelch_type', 'type': 'dtcs'})
+        self.assertTrue(r['ok'])
+        self.assertFalse(self.sim.ctcss_rx_on)
+        self.assertTrue(self.sim.dtcs_on)
+
+    def test_dispatch_squelch_type_bad(self):
+        r = self.plugin.execute({'cmd': 'squelch_type', 'type': 'banana'})
+        self.assertFalse(r['ok'])
+
+    def test_dispatch_dtcs_code(self):
+        r = self.plugin.execute({'cmd': 'dtcs', 'code': 754, 'polarity': 2})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['dtcs_code'], 754)
+        self.assertEqual(r['dtcs_polarity'], 2)
+
+    def test_status_squelch_type_derived(self):
+        self.plugin.execute({'cmd': 'squelch_type', 'type': 'dtcs'})
+        s = self.plugin.execute({'cmd': 'status'})['status']
+        self.assertEqual(s['squelch_type'], 'dtcs')
+        for key in ['dtcs_on', 'dtcs_code', 'dtcs_polarity', 'squelch_type']:
+            self.assertIn(key, s)
 
     def test_status_includes_hf_state(self):
         self.plugin.execute({'cmd': 'split', 'on': True})
