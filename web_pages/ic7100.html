@@ -611,7 +611,7 @@ function _stepFreq(delta) {
       // Release tuning lock 250 ms after last send so poll can sync
       setTimeout(function() { _userTuning = false; }, 250);
     });
-  }, 60);
+  }, 50);   // IC-7100 CI-V @19200 sustains ~35-50 freq writes/s; revisit with hardware
 }
 
 function _moveActivePos(delta) {
@@ -758,7 +758,7 @@ function _sendRit() {
       if (!d.ok) icFeedback(d.error || 'RIT failed', true);
       setTimeout(function() { _ritUserTuning = false; }, 250);
     });
-  }, 60);
+  }, 50);   // matches the main freq spinner; revisit with hardware
 }
 
 function _stepRit(delta) {
