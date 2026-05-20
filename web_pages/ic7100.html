@@ -123,6 +123,9 @@
   }
   .ic-tx-badge.on { display: inline-block; }
 
+  /* PTT button dimmed when the current band's antenna port is interlocked */
+  .rb.blocked { opacity: 0.45; }
+
   /* Cards */
   .ic-card {
     background: var(--t-panel);
@@ -161,7 +164,6 @@
     font-size: var(--f-sm);
   }
   .ic-input.w-freq { width: 9em; }
-  .ic-input.w-tone { width: 5em; }
   .ic-input.w-cat  { flex: 1; font-family: var(--f-mono, monospace); }
 
   /* Offline state */
@@ -251,6 +253,18 @@
       <div class="ic-spacer"></div>
       <button class="rb" onclick="icCmd('ptt')" id="ic-ptt-btn" title="Toggle transmit">PTT</button>
     </div>
+    <div class="ic-row">
+      <span class="ic-label" style="min-width:60px"
+            title="Software safety interlock — enable the antenna port that is physically connected. TX is refused on a port that is not enabled.">TX safety:</span>
+      <label title="Allow transmit on the HF/50 MHz antenna connector (HF + 6 m)">
+        <input type="checkbox" id="ic-tx-hf"
+               onchange="icCmd('tx_interlock', {hf: this.checked})"> HF TX</label>
+      <label title="Allow transmit on the 144/430 MHz antenna connector (2 m / 70 cm)">
+        <input type="checkbox" id="ic-tx-vu"
+               onchange="icCmd('tx_interlock', {vu: this.checked})"> VHF/UHF TX</label>
+      <span id="ic-tx-port" class="ic-val dim"
+            title="Antenna port the current frequency would transmit on"></span>
+    </div>
     <div class="ic-row" style="margin-top: calc(-1 * var(--s-2));">
       <span class="ic-label" style="min-width:60px">Step:</span>
       <div class="ic-tune-steps" id="ic-tune-steps"></div>
@@ -300,15 +314,15 @@
       <div class="ic-card-title">CTCSS</div>
       <div class="ic-row">
         <label class="ic-label" style="min-width:80px">TX tone:</label>
-        <input id="ic-ctcss-tx" class="ic-input w-tone" type="number" step="0.1" min="0" max="254.1"
-               title="Encode tone in Hz (0 disables)">
+        <select id="ic-ctcss-tx" class="ic-select"
+                title="CTCSS encode tone (Hz)"></select>
         <label><input type="checkbox" id="ic-ctcss-tx-on"> on</label>
         <button class="rb rb-sm" onclick="icCtcssApply('tx')">Apply</button>
       </div>
       <div class="ic-row">
         <label class="ic-label" style="min-width:80px">RX tone:</label>
-        <input id="ic-ctcss-rx" class="ic-input w-tone" type="number" step="0.1" min="0" max="254.1"
-               title="TSQL tone in Hz — used when FM squelch type is TSQL">
+        <select id="ic-ctcss-rx" class="ic-select"
+                title="TSQL tone (Hz) — used when FM squelch type is TSQL"></select>
         <button class="rb rb-sm" onclick="icCtcssApply('rx')">Apply</button>
         <span class="ic-label" style="font-size:var(--f-xs)">TSQL on/off is set below</span>
       </div>
@@ -849,6 +863,27 @@ function icCtcssApply(which) {
   }
 }
 
+// CTCSS tone list (Hz) — mirrors _CTCSS in the plugin.
+var IC_CTCSS_TONES = [
+  67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5,
+  94.8, 97.4, 100.0, 103.5, 107.2, 110.9, 114.8, 118.8, 123.0, 127.3,
+  131.8, 136.5, 141.3, 146.2, 151.4, 156.7, 162.2, 167.9, 173.8, 179.9,
+  186.2, 192.8, 203.5, 206.5, 210.7, 218.1, 225.7, 229.1, 233.6, 241.8,
+  250.3, 254.1
+];
+function buildCtcssTones() {
+  ['ic-ctcss-tx', 'ic-ctcss-rx'].forEach(function(id) {
+    var sel = document.getElementById(id);
+    if (!sel) return;
+    IC_CTCSS_TONES.forEach(function(hz) {
+      var opt = document.createElement('option');
+      opt.value = hz.toFixed(1);
+      opt.textContent = hz.toFixed(1) + ' Hz';
+      sel.appendChild(opt);
+    });
+  });
+}
+
 // DTCS code list (octal-style) — mirrors _DTCS_CODES in the plugin.
 var IC_DTCS_CODES = [
   23,25,26,31,32,36,43,47,51,53,54,65,71,72,73,74,
@@ -930,6 +965,32 @@ function pollStatus() {
     var pttBtn = document.getElementById('ic-ptt-btn');
     pttBtn.classList.toggle('active', txOn);
 
+    // TX antenna-port safety interlock
+    function syncChk(id, val) {
+      var el = document.getElementById(id);
+      if (el && document.activeElement !== el) el.checked = !!val;
+    }
+    syncChk('ic-tx-hf', s.tx_allow_hf);
+    syncChk('ic-tx-vu', s.tx_allow_vu);
+    var portAllowed = (s.tx_port === 'vu') ? !!s.tx_allow_vu
+                    : (s.tx_port === 'hf') ? !!s.tx_allow_hf : true;
+    var portEl = document.getElementById('ic-tx-port');
+    if (portEl) {
+      if (s.tx_port === 'hf' || s.tx_port === 'vu') {
+        var label = s.tx_port === 'vu' ? 'VHF/UHF' : 'HF';
+        portEl.textContent = 'current band uses ' + label + ' port — TX ' +
+                             (portAllowed ? 'enabled' : 'BLOCKED');
+        portEl.className = 'ic-val ' + (portAllowed ? 'ok' : 'err');
+      } else {
+        portEl.textContent = '';
+      }
+    }
+    pttBtn.classList.toggle('blocked', !portAllowed);
+    pttBtn.title = portAllowed ? 'Toggle transmit'
+                 : 'TX blocked — enable the ' +
+                   (s.tx_port === 'vu' ? 'VHF/UHF' : 'HF') +
+                   ' TX safety checkbox';
+
     // Frequency + mode + filter
     if (typeof s.freq === 'number') setFreqDisplay(s.freq);
     document.getElementById('ic-mode-cur').textContent = s.mode || '—';
@@ -958,7 +1019,7 @@ function pollStatus() {
       document.getElementById('ic-tx-gain-val').textContent = (+s.tx_gain_db).toFixed(1) + ' dB';
     }
 
-    // CTCSS — only update if user isn't editing the input
+    // CTCSS — only update if user isn't editing the dropdown
     var ctxEls = {
       'ic-ctcss-tx':    s.ctcss_tx_hz,
       'ic-ctcss-rx':    s.ctcss_rx_hz,
@@ -967,7 +1028,8 @@ function pollStatus() {
       var el = document.getElementById(id);
       var v = ctxEls[id];
       if (document.activeElement !== el && typeof v === 'number') {
-        el.value = v;
+        // Match the canonical option value, e.g. 100 -> "100.0"
+        el.value = v.toFixed(1);
       }
     });
     if (document.activeElement !== document.getElementById('ic-ctcss-tx-on')) {
@@ -1031,6 +1093,7 @@ buildBandRow();
 buildModeRow();
 buildStepRow();
 buildDtcsCodes();
+buildCtcssTones();
 initFreqDisplay();
 initTypedFreq();
 initRitDisplay();

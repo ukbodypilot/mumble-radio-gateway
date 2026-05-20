@@ -748,6 +748,9 @@ class TestIC7100PluginExecute(unittest.TestCase):
         self.plugin._poll_thread = None
         self.plugin._rx_gain_db = 0.0
         self.plugin._tx_gain_db = 0.0
+        # Permissive baseline so existing TX tests are unaffected; the
+        # interlock tests below set this explicitly.
+        self.plugin._tx_allow = {'hf': True, 'vu': True}
         self.plugin._status_dirty = False
         self.plugin.status_interval = 2.0
         self.plugin._settings_file = '/tmp/ic7100-test-settings.json'
@@ -767,6 +770,56 @@ class TestIC7100PluginExecute(unittest.TestCase):
         r = self.plugin.execute({'cmd': 'ptt', 'state': False})
         self.assertTrue(r['ok'])
         self.assertFalse(self.sim.ptt)
+
+    # -- TX antenna-port safety interlock --
+
+    def test_tx_interlock_blocks_hf(self):
+        self.plugin.execute({'cmd': 'frequency', 'freq': 14.200})
+        self.plugin._tx_allow = {'hf': False, 'vu': True}
+        r = self.plugin.execute({'cmd': 'ptt', 'state': True})
+        self.assertFalse(r['ok'])
+        self.assertIn('HF', r['error'])
+        self.assertFalse(self.sim.ptt)
+
+    def test_tx_interlock_blocks_vu(self):
+        self.plugin.execute({'cmd': 'frequency', 'freq': 144.200})
+        self.plugin._tx_allow = {'hf': True, 'vu': False}
+        r = self.plugin.execute({'cmd': 'ptt', 'state': True})
+        self.assertFalse(r['ok'])
+        self.assertIn('VHF/UHF', r['error'])
+        self.assertFalse(self.sim.ptt)
+
+    def test_tx_interlock_allows_when_enabled(self):
+        self.plugin.execute({'cmd': 'frequency', 'freq': 144.200})
+        self.plugin._tx_allow = {'hf': False, 'vu': True}
+        r = self.plugin.execute({'cmd': 'ptt', 'state': True})
+        self.assertTrue(r['ok'])
+        self.assertTrue(self.sim.ptt)
+
+    def test_tx_interlock_command_sets_flags(self):
+        self.plugin._tx_allow = {'hf': False, 'vu': False}
+        r = self.plugin.execute({'cmd': 'tx_interlock', 'hf': True})
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['tx_allow_hf'])
+        self.assertFalse(r['tx_allow_vu'])
+        self.assertTrue(self.plugin._tx_allow['hf'])
+
+    def test_tx_interlock_drops_live_ptt(self):
+        self.plugin.execute({'cmd': 'frequency', 'freq': 14.200})
+        self.plugin._tx_allow = {'hf': True, 'vu': True}
+        self.assertTrue(self.plugin.execute({'cmd': 'ptt', 'state': True})['ok'])
+        self.assertTrue(self.sim.ptt)
+        # Disabling the port we are keyed on must un-key immediately.
+        self.plugin.execute({'cmd': 'tx_interlock', 'hf': False})
+        self.assertFalse(self.sim.ptt)
+
+    def test_status_exposes_interlock(self):
+        self.plugin.execute({'cmd': 'frequency', 'freq': 144.200})
+        self.plugin._tx_allow = {'hf': True, 'vu': False}
+        s = self.plugin.execute({'cmd': 'status'})['status']
+        self.assertTrue(s['tx_allow_hf'])
+        self.assertFalse(s['tx_allow_vu'])
+        self.assertEqual(s['tx_port'], 'vu')
 
     def test_frequency(self):
         r = self.plugin.execute({'cmd': 'frequency', 'freq': 144.200})

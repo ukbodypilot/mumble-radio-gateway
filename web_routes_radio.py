@@ -12,6 +12,15 @@ from audio_sources import generate_cw_pcm
 from cat_client import RadioCATClient
 
 
+# IC-7100 HF / DSP / FM-squelch panel commands (Phase C). The /ic7100 page
+# sends a well-formed JSON payload for each, so handle_ic7100cmd forwards
+# them verbatim to the endpoint, which validates in IC7100Plugin.execute().
+_IC7100_HF_CMDS = frozenset({
+    'split', 'rit', 'xit', 'agc', 'nb', 'nr', 'preamp', 'atten',
+    'if_shift', 'filter', 'squelch', 'squelch_type', 'dtcs',
+})
+
+
 def handle_d75cmd(handler, parent):
     """POST /d75cmd"""
     length = int(handler.headers.get('Content-Length', 0))
@@ -148,6 +157,14 @@ def handle_ic7100cmd(handler, parent):
                     _payload[_k] = data[_k]
             _link.send_command_to(_ep, _payload)
             result = {'ok': True}
+        elif cmd == 'tx_interlock':
+            # TX antenna-port safety interlock — enable/disable per port.
+            _payload = {'cmd': 'tx_interlock'}
+            for _k in ('hf', 'vu'):
+                if _k in data:
+                    _payload[_k] = bool(data[_k])
+            _link.send_command_to(_ep, _payload)
+            result = {'ok': True}
         elif cmd in ('rx_gain', 'tx_gain'):
             try:
                 _db = float(data.get('db', args))
@@ -170,6 +187,12 @@ def handle_ic7100cmd(handler, parent):
         elif cmd == 'status':
             _link.send_command_to(_ep, {'cmd': 'status'})
             result = {'ok': True, 'response': 'status requested'}
+        elif cmd in _IC7100_HF_CMDS:
+            # HF / DSP / FM-squelch panel — the GUI payload already carries
+            # the right keys (on/hz/mode/level/stage/idx/pct/type/code/...);
+            # forward it verbatim. IC7100Plugin.execute() reads what it needs.
+            _link.send_command_to(_ep, data)
+            result = {'ok': True}
         else:
             result = {'ok': False, 'error': f'unknown cmd: {cmd}'}
     except Exception as e:

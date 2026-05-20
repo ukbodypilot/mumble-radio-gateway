@@ -192,6 +192,28 @@ def _bytes_to_dtcs(data: bytes):
 
 
 # ---------------------------------------------------------------------------
+# TX antenna-port safety interlock
+# ---------------------------------------------------------------------------
+
+# The IC-7100 has two antenna connectors: [HF/50MHz] (HF + 6 m) and
+# [144/430MHz] (2 m / 70 cm). Which one carries TX is fixed by the operating
+# band. The interlock is a software safety catch — the operator enables the
+# port whose antenna is physically connected, and TX is refused on the other
+# port, preventing transmits into a disconnected/wrong antenna (high SWR,
+# PA damage).
+#
+# 73 MHz is the HF/VU split point. No amateur TX band falls between 54 and
+# 144 MHz, so the exact threshold only matters for deliberate out-of-band
+# raw-CAT use.
+_VU_PORT_MIN_HZ = 73_000_000
+
+
+def _antenna_port(hz: int) -> str:
+    """Return which antenna connector a frequency uses: 'hf' or 'vu'."""
+    return 'vu' if hz >= _VU_PORT_MIN_HZ else 'hf'
+
+
+# ---------------------------------------------------------------------------
 # CIVController
 # ---------------------------------------------------------------------------
 
@@ -865,6 +887,11 @@ class IC7100Plugin(RadioPlugin):
         self._poll_thread = None
         self._rx_gain_db = 0.0
         self._tx_gain_db = 0.0
+        # TX antenna-port safety interlock. Both ports start blocked
+        # (fail-safe) — the operator must confirm the connected antenna each
+        # session. Deliberately NOT persisted: a stale "enabled" flag could
+        # outlive the physical antenna being disconnected.
+        self._tx_allow = {'hf': False, 'vu': False}
         self._status_dirty = False
         self.status_interval = 2.0
         self._settings_file = os.path.expanduser(
@@ -958,10 +985,35 @@ class IC7100Plugin(RadioPlugin):
             state = bool(cmd.get('state', False))
             if not self._civ or not self._civ.connected:
                 return {"ok": False, "error": "CI-V not connected"}
+            if state:
+                # Safety interlock — refuse TX if the antenna port for the
+                # current frequency has not been enabled by the operator.
+                port = _antenna_port(self._civ.freq_hz)
+                if not self._tx_allow[port]:
+                    label = 'HF' if port == 'hf' else 'VHF/UHF'
+                    return {"ok": False,
+                            "error": f"TX blocked — {label} antenna not "
+                                     f"enabled (safety interlock)"}
             ok = self._civ.set_ptt(state)
             if ok:
                 self._status_dirty = True
             return {"ok": ok, "ptt": state}
+
+        elif action == 'tx_interlock':
+            # Enable/disable TX per antenna port. Keys: 'hf', 'vu' (bool).
+            if 'hf' in cmd:
+                self._tx_allow['hf'] = bool(cmd['hf'])
+            if 'vu' in cmd:
+                self._tx_allow['vu'] = bool(cmd['vu'])
+            # If the operator disables the port we are currently keyed on,
+            # drop PTT immediately — the interlock must act, not just warn.
+            if (self._civ and self._civ.connected and self._civ.transmitting
+                    and not self._tx_allow[_antenna_port(self._civ.freq_hz)]):
+                self._civ.set_ptt(False)
+            self._status_dirty = True
+            return {"ok": True,
+                    "tx_allow_hf": self._tx_allow['hf'],
+                    "tx_allow_vu": self._tx_allow['vu']}
 
         elif action == 'frequency':
             freq = cmd.get('freq')
@@ -1180,9 +1232,14 @@ class IC7100Plugin(RadioPlugin):
                 "squelch_type":     ('dtcs' if self._civ.dtcs_on
                                      else 'tsql' if self._civ.ctcss_rx_on
                                      else 'noise'),
+                # Antenna port the current frequency would TX on
+                "tx_port":          _antenna_port(self._civ.freq_hz),
             })
         status.update({
             "audio_device":  self._audio_device,
+            # TX antenna-port safety interlock
+            "tx_allow_hf":   self._tx_allow['hf'],
+            "tx_allow_vu":   self._tx_allow['vu'],
             "audio_rx":      self._capture is not None,
             "audio_tx":      self._playback is not None,
             "input_active":  self._capture is not None,
