@@ -525,7 +525,7 @@ function buildBandRow() {
       // Update the display immediately for snappy UX, then send freq
       // and the band's conventional mode (one-shot — user can override
       // with the mode buttons right after).
-      _freqHz = Math.round(b[1] * 1e6);
+      _freqHz = _clampFreq(b[1] * 1e6);
       _userTuning = true;
       _renderFreq();
       icPost({cmd:'freq', args: String(b[1])}).then(function() {
@@ -557,10 +557,19 @@ function buildModeRow() {
 // fast spin batches into a few CI-V writes.
 
 var IC_FREQ_DIGITS = 10;        // 10 GHz .. 1 Hz
+// IC-7100 (USA) general-coverage receive envelope. The tuner is clamped
+// to this range — it spans well beyond the ham TX bands so SWL/scanner
+// use still works, it just blocks nonsense values.
+var IC_FREQ_MIN_HZ = 30000;        // 0.030 MHz
+var IC_FREQ_MAX_HZ = 470000000;    // 470 MHz
 var _freqHz = 14200000;         // current display value in Hz
 var _activePos = 3;             // 0=1Hz, 3=1kHz default
 var _sendDebounce = null;
 var _userTuning = false;        // suppress poll-overwrite while interacting
+
+function _clampFreq(hz) {
+  return Math.max(IC_FREQ_MIN_HZ, Math.min(IC_FREQ_MAX_HZ, Math.round(hz)));
+}
 
 function _renderFreq() {
   var el = document.getElementById('ic-freq');
@@ -588,7 +597,11 @@ function _renderFreq() {
 }
 
 function _stepFreq(delta) {
-  _freqHz = Math.max(0, _freqHz + delta);
+  var want = _freqHz + delta;
+  _freqHz = _clampFreq(want);
+  if (_freqHz !== Math.round(want)) {
+    icFeedback(_freqHz === IC_FREQ_MIN_HZ ? 'min 0.030 MHz' : 'max 470 MHz', true);
+  }
   _userTuning = true;
   _renderFreq();
   if (_sendDebounce) clearTimeout(_sendDebounce);
@@ -675,10 +688,14 @@ function applyTypedFreq() {
   if (isNaN(n)) { icFeedback('not a number', true); return; }
   // Heuristic: numbers <= 3000 are MHz, larger are kHz
   var mhz = (n > 3000) ? (n / 1000) : n;
-  _freqHz = Math.round(mhz * 1e6);
+  var want = Math.round(mhz * 1e6);
+  _freqHz = _clampFreq(want);
+  if (_freqHz !== want) {
+    icFeedback('clamped to ' + (_freqHz / 1e6).toFixed(3) + ' MHz (IC-7100 RX range)', true);
+  }
   _userTuning = true;
   _renderFreq();
-  icPost({cmd:'freq', args: String(mhz)}).then(function(d) {
+  icPost({cmd:'freq', args: String(_freqHz / 1e6)}).then(function(d) {
     if (!d.ok) icFeedback(d.error || 'tune failed', true);
     setTimeout(function() { _userTuning = false; }, 500);
   });
@@ -699,7 +716,7 @@ function setFreqDisplay(mhz) {
   // connected, or status pre-poll). Never a valid operating frequency —
   // ignore it so a band preset / manual entry isn't clobbered.
   if (!mhz || +mhz <= 0) return;
-  _freqHz = Math.round((+mhz) * 1e6);
+  _freqHz = _clampFreq((+mhz) * 1e6);
   _renderFreq();
 }
 
