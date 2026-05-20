@@ -634,6 +634,10 @@ function initTypedFreq() {
 
 function setFreqDisplay(mhz) {
   if (_userTuning) return;
+  // freq 0 means the radio hasn't reported a real reading yet (CI-V not
+  // connected, or status pre-poll). Never a valid operating frequency —
+  // ignore it so a band preset / manual entry isn't clobbered.
+  if (!mhz || +mhz <= 0) return;
   _freqHz = Math.round((+mhz) * 1e6);
   _renderFreq();
 }
