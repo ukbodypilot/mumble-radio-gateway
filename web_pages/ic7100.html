@@ -234,6 +234,10 @@
     <span class="ic-label">Audio:</span> <span id="ic-audio-state" class="ic-val">&mdash;</span>
     <span class="sep">|</span>
     <span class="ic-label">Mute:</span> <span id="ic-mute-state" class="ic-val">no</span>
+    <span class="sep">|</span>
+    <span class="ic-label">Interlock:</span>
+    <span id="ic-il-hf" class="dot pending" title="HF antenna TX interlock">&#x25cf;</span><span class="ic-label">HF</span>
+    <span id="ic-il-vu" class="dot pending" title="VHF/UHF antenna TX interlock">&#x25cf;</span><span class="ic-label">VHF/UHF</span>
     <span class="ic-spacer"></span>
     <span id="ic-tx-badge" class="ic-tx-badge">TX</span>
     <span id="ic-feedback" class="ic-val dim"></span>
@@ -255,13 +259,13 @@
     </div>
     <div class="ic-row">
       <span class="ic-label" style="min-width:60px"
-            title="Software safety interlock — enable the antenna port that is physically connected. TX is refused on a port that is not enabled.">TX safety:</span>
+            title="Software safety interlock — enable the antenna port that is physically connected. TX is refused on a port that is not enabled. The two ports are independent: enable neither, either, or both.">TX Enable:</span>
       <label title="Allow transmit on the HF/50 MHz antenna connector (HF + 6 m)">
         <input type="checkbox" id="ic-tx-hf"
-               onchange="icCmd('tx_interlock', {hf: this.checked})"> HF TX</label>
+               onchange="icCmd('tx_interlock', {hf: this.checked})"> HF</label>
       <label title="Allow transmit on the 144/430 MHz antenna connector (2 m / 70 cm)">
         <input type="checkbox" id="ic-tx-vu"
-               onchange="icCmd('tx_interlock', {vu: this.checked})"> VHF/UHF TX</label>
+               onchange="icCmd('tx_interlock', {vu: this.checked})"> VHF/UHF</label>
       <span id="ic-tx-port" class="ic-val dim"
             title="Antenna port the current frequency would transmit on"></span>
     </div>
@@ -965,13 +969,28 @@ function pollStatus() {
     var pttBtn = document.getElementById('ic-ptt-btn');
     pttBtn.classList.toggle('active', txOn);
 
-    // TX antenna-port safety interlock
+    // TX antenna-port safety interlock. The two checkboxes are fully
+    // independent — never mutually exclusive. Only mirror a checkbox when
+    // the backend actually reports a boolean; if the key is absent (old
+    // endpoint plugin, or command not delivered) leave the box untouched
+    // rather than forcing it off — forcing it off is what made the boxes
+    // appear to toggle each other.
     function syncChk(id, val) {
+      if (typeof val !== 'boolean') return;
       var el = document.getElementById(id);
-      if (el && document.activeElement !== el) el.checked = !!val;
+      if (el && document.activeElement !== el) el.checked = val;
     }
     syncChk('ic-tx-hf', s.tx_allow_hf);
     syncChk('ic-tx-vu', s.tx_allow_vu);
+    // Status-bar indicators — green = TX enabled, red = disabled,
+    // grey = backend has not reported interlock state.
+    function setDot(id, val) {
+      var el = document.getElementById(id);
+      if (el) el.className = 'dot ' +
+        (val === true ? 'ok' : val === false ? 'err' : 'pending');
+    }
+    setDot('ic-il-hf', s.tx_allow_hf);
+    setDot('ic-il-vu', s.tx_allow_vu);
     var portAllowed = (s.tx_port === 'vu') ? !!s.tx_allow_vu
                     : (s.tx_port === 'hf') ? !!s.tx_allow_hf : true;
     var portEl = document.getElementById('ic-tx-port');
