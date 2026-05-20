@@ -425,11 +425,14 @@
 
 <script>
 // ── Static data ─────────────────────────────────────────────────────────
+// USA national calling frequencies (MHz). HF bands use the common SSB
+// calling freq; 30m has no phone allocation so it uses the QRP CW
+// calling freq; 2m / 70cm use the FM simplex national calling freqs.
 var IC_BANDS = [
-  ['160m', 1.900],  ['80m', 3.750],  ['40m', 7.150],
-  ['30m', 10.125],  ['20m', 14.200], ['17m', 18.118],
-  ['15m', 21.300],  ['12m', 24.940], ['10m', 28.400],
-  ['6m', 50.150],   ['2m', 144.200], ['70cm', 432.100],
+  ['160m', 1.910],   ['80m', 3.985],   ['40m', 7.285],
+  ['30m', 10.116],   ['20m', 14.285],  ['17m', 18.130],
+  ['15m', 21.385],   ['12m', 24.950],  ['10m', 28.400],
+  ['6m', 50.125],    ['2m', 146.520],  ['70cm', 446.000],
 ];
 var IC_MODES = ['LSB', 'USB', 'AM', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'FM', 'DV'];
 
