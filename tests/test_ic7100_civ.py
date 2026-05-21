@@ -88,6 +88,11 @@ class CIVSimulator:
         self.atten    = 0x00   # 0x00 off, 0x20 on
         self.if_shift = 0x80   # 0..255, 0x80=center
         self.squelch  = 0      # 0..255 squelch level
+        self.rf_power = 0      # 0..255 TX RF output power
+        self.mic_gain = 128    # 0..255 TX mic gain (~50%)
+        self.po       = 0      # 0..255 TX power meter
+        self.swr      = 0      # 0..255 SWR meter
+        self.alc      = 0      # 0..255 ALC meter
         self.squelch_open = True   # squelch condition
         self.dtcs_on  = False
         self.dtcs_code = 23        # octal-style int
@@ -213,12 +218,15 @@ class CIVSimulator:
                 # Squelch condition: 0=closed, 1=open
                 return self._make_resp(
                     bytes([0x15, 0x01, 0x01 if self.squelch_open else 0x00]))
-            if payload and payload[0] == 0x02:
-                # S-meter: encode smeter (0-255) as 2 BCD bytes (3 digits)
-                v = min(255, max(0, self.smeter))
+            if payload and payload[0] in (0x02, 0x11, 0x12, 0x13):
+                # S-meter (0x02) and the TX meters Po/SWR/ALC (0x11/12/13)
+                # share the same 2-BCD 0000–0255 encoding.
+                _meter = {0x02: self.smeter, 0x11: self.po,
+                          0x12: self.swr, 0x13: self.alc}[payload[0]]
+                v = min(255, max(0, _meter))
                 b0 = (v // 100) | ((v % 100 // 10) << 4)
                 b1 = (v % 10)
-                return self._make_resp(bytes([0x15, 0x02, b0, b1]))
+                return self._make_resp(bytes([0x15, payload[0], b0, b1]))
 
         elif cmd == 0x16:  # set/get func
             if not payload:
@@ -285,7 +293,7 @@ class CIVSimulator:
                         bytes([0x1b, 0x00]) + _tone_to_bcd(self.ctcss_tx_hz))
                 elif sub == 0x01:
                     return self._make_resp(
-                        bytes([0x1b, 0x00]) + _tone_to_bcd(self.ctcss_rx_hz))
+                        bytes([0x1b, 0x01]) + _tone_to_bcd(self.ctcss_rx_hz))
             elif len(payload) >= 3:  # tone write
                 hz = _bcd_to_tone(payload[1:3])
                 if sub == 0x00:
@@ -360,6 +368,18 @@ class CIVSimulator:
                 elif len(payload) >= 3:
                     self.nr_level = _bcd3_to_pct(payload[1:3])
                     return self._ok()
+            elif sub == 0x0a:         # RF output power
+                if len(payload) == 1:
+                    return self._make_resp(bytes([0x14, 0x0a]) + _pct_to_bcd3(self.rf_power))
+                elif len(payload) >= 3:
+                    self.rf_power = _bcd3_to_pct(payload[1:3])
+                    return self._ok()
+            elif sub == 0x0b:         # Mic gain
+                if len(payload) == 1:
+                    return self._make_resp(bytes([0x14, 0x0b]) + _pct_to_bcd3(self.mic_gain))
+                elif len(payload) >= 3:
+                    self.mic_gain = _bcd3_to_pct(payload[1:3])
+                    return self._ok()
 
         elif cmd == 0x1c:  # PTT
             if not payload:
@@ -413,6 +433,11 @@ def _make_patched_controller(sim: CIVSimulator) -> CIVController:
     ctrl.atten    = False
     ctrl.if_shift = 50
     ctrl.squelch  = 0
+    ctrl.rf_power = 0
+    ctrl.mic_gain = 50
+    ctrl.po       = 0
+    ctrl.swr      = 0
+    ctrl.alc      = 0
     ctrl.squelch_open = True
     ctrl.dtcs_on  = False
     ctrl.dtcs_code = 23
@@ -712,6 +737,127 @@ class TestCIVController(unittest.TestCase):
         for code in _DTCS_CODES:
             c, p = _bytes_to_dtcs(_dtcs_to_bytes(code, 0))
             self.assertEqual(c, code, f"DTCS code roundtrip failed for {code}")
+
+
+class TestStateReadback(unittest.TestCase):
+    """Radio → cache sync: the IC-7100 is the source of truth — it has a
+    front panel and remembers its own setup — so the plugin must pull the
+    radio's current state into its cache, letting the GUI slave to the
+    radio rather than the other way round."""
+
+    def setUp(self):
+        self.sim = CIVSimulator()
+        self.ctrl = _make_patched_controller(self.sim)
+
+    def tearDown(self):
+        self.ctrl.disconnect()
+        self.sim.stop()
+
+    # -- Individual readback getters --
+
+    def test_get_rit_on(self):
+        self.sim.rit_on = True
+        self.assertTrue(self.ctrl.get_rit_on())
+        self.assertTrue(self.ctrl.rit_on)
+
+    def test_get_xit_on(self):
+        self.sim.xit_on = True
+        self.assertTrue(self.ctrl.get_xit_on())
+        self.assertTrue(self.ctrl.xit_on)
+
+    def test_get_agc(self):
+        for raw, name in ((0x01, 'fast'), (0x02, 'mid'), (0x03, 'slow')):
+            self.sim.agc = raw
+            self.assertEqual(self.ctrl.get_agc(), name)
+
+    def test_get_nb(self):
+        self.sim.nb_on, self.sim.nb_level = True, 255
+        on, level = self.ctrl.get_nb()
+        self.assertTrue(on)
+        self.assertEqual(level, 100)
+
+    def test_get_nr(self):
+        self.sim.nr_on, self.sim.nr_level = True, 128
+        on, level = self.ctrl.get_nr()
+        self.assertTrue(on)
+        self.assertEqual(level, 50)
+
+    def test_get_preamp(self):
+        self.sim.preamp = 2
+        self.assertEqual(self.ctrl.get_preamp(), 2)
+
+    def test_get_atten(self):
+        self.sim.atten = 0x20
+        self.assertTrue(self.ctrl.get_atten())
+        self.sim.atten = 0x00
+        self.assertFalse(self.ctrl.get_atten())
+
+    def test_get_if_shift(self):
+        self.sim.if_shift = 255
+        self.assertEqual(self.ctrl.get_if_shift(), 100)
+
+    def test_get_squelch(self):
+        self.sim.squelch = 191
+        self.assertEqual(self.ctrl.get_squelch(), 75)
+
+    def test_get_rf_power(self):
+        self.sim.rf_power = 255
+        self.assertEqual(self.ctrl.get_rf_power(), 100)
+
+    def test_get_mic_gain(self):
+        self.sim.mic_gain = 128
+        self.assertEqual(self.ctrl.get_mic_gain(), 50)
+
+    def test_level_setter_getter_roundtrip(self):
+        # A value set through the plugin must read back unchanged via the
+        # getter (%→raw→% round-trip through the radio).
+        for pct in (0, 25, 50, 75, 100):
+            self.assertTrue(self.ctrl.set_rf_power(pct))
+            self.assertEqual(self.ctrl.get_rf_power(), pct)
+
+    def test_rx_ctcss_readback(self):
+        # 0x1B 0x01 read — regression: the response echoes subcmd 0x01,
+        # not 0x00. A mismatched check silently dropped the RX tone.
+        self.sim.ctcss_rx_hz = 136.5
+        self.ctrl.get_ctcss()
+        self.assertAlmostEqual(self.ctrl.ctcss_rx_hz, 136.5, places=1)
+
+    # -- Whole-radio sync --
+
+    def test_poll_settings_pulls_front_panel_change(self):
+        # Simulate the operator changing things on the radio itself, then
+        # confirm a poll brings the cache in line with the radio.
+        self.sim.agc = 0x03
+        self.sim.nb_on = True
+        self.sim.preamp = 1
+        self.sim.atten = 0x20
+        self.sim.split = True
+        self.sim.rit_on = True
+        self.sim.rf_power = 255
+        self.sim.mic_gain = 0
+        self.sim.dtcs_on = True
+        self.ctrl.poll_settings()
+        self.assertEqual(self.ctrl.agc, 'slow')
+        self.assertTrue(self.ctrl.nb_on)
+        self.assertEqual(self.ctrl.preamp, 1)
+        self.assertTrue(self.ctrl.atten)
+        self.assertTrue(self.ctrl.split)
+        self.assertTrue(self.ctrl.rit_on)
+        self.assertEqual(self.ctrl.rf_power, 100)
+        self.assertEqual(self.ctrl.mic_gain, 0)
+        self.assertTrue(self.ctrl.dtcs_on)
+
+    def test_connect_snapshot_is_full(self):
+        # _poll_state (run on every connect) must capture the settings
+        # group, not just freq/mode — so the GUI matches the radio from
+        # the first status frame.
+        self.sim.freq_hz = 7_100_000
+        self.sim.agc = 0x01
+        self.sim.rf_power = 128
+        self.ctrl._poll_state()
+        self.assertEqual(self.ctrl.freq_hz, 7_100_000)
+        self.assertEqual(self.ctrl.agc, 'fast')
+        self.assertEqual(self.ctrl.rf_power, 50)
 
 
 class TestRITHelpers(unittest.TestCase):

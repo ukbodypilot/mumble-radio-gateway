@@ -1,5 +1,18 @@
 # Bug History — Radio Gateway
 
+## IC-7100 RX-CTCSS tone readback silently dropped — subcmd echo mismatch (2026-05-21)
+**Symptom:** `get_ctcss()` never updated `ctcss_rx_hz` from the radio — the RX tone-squelch frequency always stayed at its cached default, so the GUI couldn't mirror an RX tone set on the radio's front panel.
+**Root cause:** A read of `0x1B 0x01` (RX/TSQL tone) gets a response that echoes subcommand `0x01`. `CIVController.get_ctcss()` checked `r_rx[1] == 0x00` (copy-pasted from the TX-tone branch), so the response never matched and the decode was skipped. The `CIVSimulator` had the *same* copy-paste bug in reverse — it answered an `0x01` read with a frame echoing `0x1b, 0x00` — so the two bugs cancelled and no test caught it.
+**Fix:** Plugin checks `r_rx[1] == 0x01`; simulator responds with `bytes([0x1b, 0x01])`. Added `test_rx_ctcss_readback`.
+**Files:** `tools/ic7100_link_plugin.py` (`get_ctcss`), `tests/test_ic7100_civ.py` (`CIVSimulator._handle`).
+**Pattern / how to avoid:** When a simulator is hand-written to mirror a device, a matched bug on both sides is invisible to tests. Cross-check sim responses against the CI-V manual, not just against the controller code.
+
+## IC-7100 test helper missing meter fields — 4 pre-existing suite errors (2026-05-21)
+**Symptom:** `test_status*` (×4) errored with `AttributeError: 'CIVController' object has no attribute 'po'`.
+**Root cause:** `_make_patched_controller()` builds the controller with `__new__` and sets every attribute by hand. When the TX-meter feature (commit b8faaa5) added `po`/`swr`/`alc`/`rf_power`/`mic_gain` to `CIVController.__init__`, the helper was not updated, so any test reaching `get_status()` blew up. Shipped broken on `main`.
+**Fix:** Added the five fields to `_make_patched_controller`.
+**Pattern / how to avoid:** A test helper that re-implements `__init__` by hand silently rots whenever the real `__init__` gains a field. Run the suite before committing.
+
 ## Endpoint command acks discarded from the status cache — web knobs snapped back (2026-05-20)
 **Symptom:** On `/ic7100`, dragging the Squelch knob (or any link-routed control) snapped it back to the old value ~1 s later. Volume never did — it is gateway-side.
 **Root cause:** `gateway_setup.py:on_ack` merged only `status` and `rx_gain`/`tx_gain` acks into `_link_last_status`; every other command ack (squelch, rf_power, rit, agc, ...) was discarded. The cache therefore refreshed only on the endpoint's periodic full-status push (IC-7100 `_POLL_INTERVAL` = 5 s). Between a command and that push, `/ic7100status` served the stale value and the 1 Hz web poll reverted the control.

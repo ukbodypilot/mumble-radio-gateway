@@ -436,7 +436,7 @@ class CIVController:
 
         # RX tone squelch frequency (0x1B 0x01)
         r_rx = self._transact(self._build_frame(0x1b, subcmd=0x01))
-        if r_rx and len(r_rx) >= 4 and r_rx[0] == 0x1b and r_rx[1] == 0x00:
+        if r_rx and len(r_rx) >= 4 and r_rx[0] == 0x1b and r_rx[1] == 0x01:
             self.ctcss_rx_hz = _bcd_to_tone(r_rx[2:4])
 
         # TX tone encode enable (0x16 0x43)
@@ -719,18 +719,145 @@ class CIVController:
         """Send a raw CI-V frame (for CAT passthrough). Returns response body."""
         return self._transact(cmd_bytes)
 
-    def _poll_state(self):
-        """Query freq, mode, PTT, S-meter, CTCSS on first connect."""
-        self.get_freq()
-        self.get_mode()
-        self.get_ptt()
-        self.get_ctcss()
-        # Best-effort: split + DTCS state. Other HF feature reads are
-        # skipped on connect to keep first-poll fast; the GUI requests
-        # fresh values via `status` once the panel is open.
+    # -- State readback (radio → cache sync) ---------------------------
+    # The IC-7100 keeps its own setup in NVRAM and has a full front panel —
+    # the operator can change anything on the radio directly. These reads
+    # pull the radio's current state into the cache so the GUI slaves to
+    # the radio. Read opcodes mirror the setters above (a read is the same
+    # command with no data byte). Unverified against hardware — see the
+    # Phase C note above.
+
+    def _read_flag(self, subcmd: int) -> bool | None:
+        """Read a 0x16-family on/off setting. Returns bool or None."""
+        resp = self._transact(self._build_frame(0x16, subcmd=subcmd))
+        if resp and len(resp) >= 3 and resp[0] == 0x16 and resp[1] == subcmd:
+            return bool(resp[2])
+        return None
+
+    def _read_level_pct(self, subcmd: int) -> int | None:
+        """Read a 0x14-family level control (3-BCD 0..255) as 0..100%."""
+        resp = self._transact(self._build_frame(0x14, subcmd=subcmd))
+        if resp and len(resp) >= 4 and resp[0] == 0x14 and resp[1] == subcmd:
+            raw = _bcd3_to_pct(resp[2:4])
+            return max(0, min(100, round(raw * 100 / 255)))
+        return None
+
+    def get_rit_on(self) -> bool | None:
+        resp = self._transact(self._build_frame(0x21, subcmd=0x01))
+        if resp and len(resp) >= 3 and resp[0] == 0x21 and resp[1] == 0x01:
+            self.rit_on = bool(resp[2])
+            return self.rit_on
+        return None
+
+    def get_xit_on(self) -> bool | None:
+        resp = self._transact(self._build_frame(0x21, subcmd=0x02))
+        if resp and len(resp) >= 3 and resp[0] == 0x21 and resp[1] == 0x02:
+            self.xit_on = bool(resp[2])
+            return self.xit_on
+        return None
+
+    def get_agc(self) -> str | None:
+        resp = self._transact(self._build_frame(0x16, subcmd=0x12))
+        if resp and len(resp) >= 3 and resp[0] == 0x16 and resp[1] == 0x12:
+            self.agc = self._AGC_RMAP.get(resp[2], self.agc)
+            return self.agc
+        return None
+
+    def get_nb(self):
+        """Read Noise Blanker on/off + level. Returns (on, level)."""
+        on = self._read_flag(0x22)
+        if on is not None:
+            self.nb_on = on
+        lvl = self._read_level_pct(0x12)
+        if lvl is not None:
+            self.nb_level = lvl
+        return (self.nb_on, self.nb_level)
+
+    def get_nr(self):
+        """Read Noise Reduction on/off + level. Returns (on, level)."""
+        on = self._read_flag(0x40)
+        if on is not None:
+            self.nr_on = on
+        lvl = self._read_level_pct(0x06)
+        if lvl is not None:
+            self.nr_level = lvl
+        return (self.nr_on, self.nr_level)
+
+    def get_preamp(self) -> int | None:
+        resp = self._transact(self._build_frame(0x16, subcmd=0x02))
+        if resp and len(resp) >= 3 and resp[0] == 0x16 and resp[1] == 0x02:
+            self.preamp = max(0, min(2, resp[2]))
+            return self.preamp
+        return None
+
+    def get_atten(self) -> bool | None:
+        # 0x11 has no subcommand; data byte 0x00 = off, non-zero = on.
+        resp = self._transact(self._build_frame(0x11))
+        if resp and len(resp) >= 2 and resp[0] == 0x11:
+            self.atten = resp[1] != 0x00
+            return self.atten
+        return None
+
+    def get_if_shift(self) -> int | None:
+        v = self._read_level_pct(0x07)
+        if v is not None:
+            self.if_shift = v
+        return v
+
+    def get_squelch(self) -> int | None:
+        v = self._read_level_pct(0x03)
+        if v is not None:
+            self.squelch = v
+        return v
+
+    def get_rf_power(self) -> int | None:
+        v = self._read_level_pct(0x0A)
+        if v is not None:
+            self.rf_power = v
+        return v
+
+    def get_mic_gain(self) -> int | None:
+        v = self._read_level_pct(0x0B)
+        if v is not None:
+            self.mic_gain = v
+        return v
+
+    def poll_settings(self):
+        """Read every front-panel-adjustable setting into the cache. Run on
+        connect and periodically so a change the operator makes on the radio
+        itself propagates back to the GUI."""
         self.get_split()
+        self.get_rit_offset()
+        self.get_rit_on()
+        self.get_xit_on()
+        self.get_agc()
+        self.get_nb()
+        self.get_nr()
+        self.get_preamp()
+        self.get_atten()
+        self.get_if_shift()
+        self.get_squelch()
+        self.get_rf_power()
+        self.get_mic_gain()
+        self.get_ctcss()
         self.get_dtcs_on()
         self.get_dtcs_code()
+
+    def _poll_state(self):
+        """Full state snapshot, run on every (re)connect. The IC-7100 is the
+        source of truth — it remembers its own setup — so on connect we read
+        the radio and let the GUI slave to it. If the first read fails the
+        radio isn't actually responding (off, or wrong port); bail rather
+        than burn a 1 s timeout on every remaining command."""
+        if self.get_freq() is None:
+            print("[IC7100-CIV] No response to connect snapshot — "
+                  "radio off or wrong port?", flush=True)
+            return
+        self.get_mode()
+        self.get_ptt()
+        self.get_smeter()
+        self.get_squelch_status()
+        self.poll_settings()
 
 
 # ---------------------------------------------------------------------------
@@ -931,6 +1058,10 @@ class IC7100Plugin(RadioPlugin):
 
     _RECONNECT_DELAY = 10  # seconds between CI-V reconnect attempts
     _POLL_INTERVAL   = 5   # seconds between background state polls
+    # The settings group (AGC/NB/NR/preamp/atten/IF-shift/levels/CTCSS/DTCS)
+    # is read every Nth poll cycle — front-panel knob/menu changes are far
+    # rarer than tuning, and the group costs ~20 CI-V round-trips. 2 → ~10 s.
+    _SETTINGS_POLL_EVERY = 2
 
     def __init__(self):
         self._civ: CIVController | None = None
@@ -1345,22 +1476,56 @@ class IC7100Plugin(RadioPlugin):
                     time.sleep(self._RECONNECT_DELAY)
                 if self._civ.connected:
                     print("[IC7100] Watchdog: CI-V reconnected", flush=True)
+                    # connect() re-ran the full snapshot — push it promptly
+                    # so the GUI re-syncs to the radio without a poll wait.
+                    self._status_dirty = True
 
     def _poll_loop(self):
-        """Periodically read freq, mode, smeter, PTT so status stays fresh."""
+        """Periodically read the radio so the cache — and therefore the GUI —
+        tracks the radio, including changes the operator makes on the radio's
+        own front panel. The fast group (freq/mode/PTT/meters) runs every
+        cycle; the heavier settings group every _SETTINGS_POLL_EVERY cycles.
+        Settings polling is skipped during TX so it never contends with the
+        meter loop. A user command from the GUI still goes straight to the
+        radio via execute() — this loop only pulls state the other way."""
+        cycle = 0
         while self._running:
             time.sleep(self._POLL_INTERVAL)
             if not self._running:
                 break
-            if self._civ and self._civ.connected:
-                try:
-                    self._civ.get_freq()
-                    self._civ.get_mode()
-                    self._civ.get_ptt()
-                    self._civ.get_smeter()
-                    self._civ.get_squelch_status()
-                except Exception as e:
-                    print(f"[IC7100] Poll error: {e}", flush=True)
+            if not (self._civ and self._civ.connected):
+                continue
+            try:
+                before = self._poll_signature()
+                self._civ.get_freq()
+                self._civ.get_mode()
+                self._civ.get_ptt()
+                self._civ.get_smeter()
+                self._civ.get_squelch_status()
+                if (cycle % self._SETTINGS_POLL_EVERY == 0
+                        and not self._civ.transmitting):
+                    self._civ.poll_settings()
+                # A changed signature means the radio moved under us (front
+                # panel) — push status now instead of waiting for the timer.
+                if self._poll_signature() != before:
+                    self._status_dirty = True
+            except Exception as e:
+                print(f"[IC7100] Poll error: {e}", flush=True)
+            cycle += 1
+
+    def _poll_signature(self):
+        """Tuple of cached radio state used to detect a front-panel change.
+        Fast-changing meters (S-meter, Po/SWR/ALC) are deliberately excluded
+        — those ride the regular status interval, not the dirty flag."""
+        c = self._civ
+        if not c:
+            return ()
+        return (c.freq_hz, c.mode, c.filter_idx, c.transmitting,
+                c.squelch_open, c.ctcss_tx_hz, c.ctcss_rx_hz,
+                c.ctcss_tx_on, c.ctcss_rx_on, c.split, c.rit_hz, c.rit_on,
+                c.xit_on, c.agc, c.nb_on, c.nb_level, c.nr_on, c.nr_level,
+                c.preamp, c.atten, c.if_shift, c.squelch, c.rf_power,
+                c.mic_gain, c.dtcs_on, c.dtcs_code, c.dtcs_polarity)
 
     def _meter_loop(self):
         """While transmitting, read the Po / SWR / ALC meters fast so the
