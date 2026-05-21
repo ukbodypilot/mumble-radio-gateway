@@ -372,18 +372,24 @@ def _make_link_callbacks(gw):
     def on_ack(name, ack):
         cmd = ack.get('cmd', '')
         result = ack.get('result', {})
-        if cmd == 'ptt' and isinstance(result, dict):
+        if not isinstance(result, dict):
+            return
+        if cmd == 'ptt':
             gw._link_ptt_active[name] = result.get('ptt', False)
-        elif cmd == 'status' and isinstance(result, dict):
-            if name not in gw._link_last_status:
-                gw._link_last_status[name] = {}
+            return
+        if name not in gw._link_last_status:
+            gw._link_last_status[name] = {}
+        if cmd == 'status':
             gw._link_last_status[name].update(result.get('status', result))
-        elif cmd in ('rx_gain', 'tx_gain') and isinstance(result, dict):
-            if name not in gw._link_last_status:
-                gw._link_last_status[name] = {}
-            for k in ('rx_gain_db', 'tx_gain_db'):
-                if k in result:
-                    gw._link_last_status[name][k] = result[k]
+            return
+        # Any other command — merge its result fields (squelch, rf_power,
+        # rit_hz, agc, rx_gain_db, ...) straight into the cached endpoint
+        # status. Without this the cache only refreshes on the endpoint's
+        # periodic status push (up to _POLL_INTERVAL seconds away), so a
+        # web knob/slider snaps back to the stale value in the meantime.
+        gw._link_last_status[name].update(
+            {k: v for k, v in result.items()
+             if k not in ('ok', 'error', 'response')})
 
     def on_endpoint_status(name, status):
         if not isinstance(status, dict) or status.get('type') == 'heartbeat':
