@@ -110,6 +110,21 @@
     opacity: 0.4;
   }
 
+  /* TX meter bars (Po / ALC / SWR). The gradient is anchored to the full
+     track and revealed with clip-path, so zone colours stay meaningful
+     (red only shows when the bar actually reaches the red zone). */
+  .ic-txm-fill {
+    position: absolute; inset: 0;
+    clip-path: inset(0 100% 0 0);
+    transition: clip-path 0.12s linear;
+  }
+  .ic-txm-fill.po  { background: linear-gradient(90deg,
+      var(--t-ok) 0 55%, var(--t-warn) 80%, var(--t-err) 100%); }
+  .ic-txm-fill.alc { background: linear-gradient(90deg,
+      var(--t-ok) 0 50%, var(--t-warn) 78%, var(--t-err) 100%); }
+  .ic-txm-fill.swr { background: linear-gradient(90deg,
+      var(--t-ok) 0 30%, var(--t-warn) 55%, var(--t-err) 75%); }
+
   /* TX badge */
   .ic-tx-badge {
     display: none;
@@ -197,6 +212,188 @@
     color: var(--t-text-dim);
     white-space: pre-wrap;
   }
+
+  /* ── Tuning knobs ───────────────────────────────────────────────────
+     Realistic VFO-style knobs. Drag the disc to spin it — a slow spin
+     tunes fine, a fast spin accelerates (see makeTuningKnob). The dial
+     is layered: a static tick ring + cyan index, the rotating knurled
+     disc, and a static specular gloss so the knob reads as a lit object. */
+  .knob-wrap {
+    display: flex; flex-direction: column;
+    align-items: center; gap: var(--s-1);
+    flex: 0 0 auto; user-select: none;
+  }
+  .knob-dial {
+    --knob-size: 152px;
+    position: relative;
+    width: var(--knob-size); height: var(--knob-size);
+  }
+  .knob-wrap.sm .knob-dial { --knob-size: 76px; }
+
+  /* Static base — recessed well, tick ring, fixed cyan index mark */
+  .knob-base {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: radial-gradient(circle at 50% 50%,
+      var(--t-panel-hi) 0 60%, var(--t-bg) 62% 100%);
+    box-shadow: inset 0 2px 7px rgba(0,0,0,0.75),
+                0 1px 0 rgba(255,255,255,0.04);
+  }
+  .knob-base::before {            /* tick ring just outside the knob rim */
+    content: ''; position: absolute; inset: 3%; border-radius: 50%;
+    background: repeating-conic-gradient(from -1deg,
+      var(--t-border-hi) 0deg 1.6deg, transparent 1.6deg 9deg);
+    -webkit-mask: radial-gradient(circle, transparent 0 78%,
+                   #000 79% 92%, transparent 93%);
+            mask: radial-gradient(circle, transparent 0 78%,
+                   #000 79% 92%, transparent 93%);
+    opacity: 0.55;
+  }
+  .knob-base::after {             /* fixed index mark at 12 o'clock */
+    content: ''; position: absolute; left: 50%; top: 1%;
+    width: 3px; height: 11%; transform: translateX(-50%);
+    background: var(--t-accent); border-radius: 2px;
+    box-shadow: 0 0 7px var(--t-accent);
+  }
+
+  /* Rotating knurled disc */
+  .knob {
+    --spin: 0;
+    position: absolute; inset: 11%; border-radius: 50%;
+    cursor: grab; touch-action: none;
+    background: repeating-conic-gradient(from 0deg,
+      #3c4654 0deg 4deg, #1f252e 4deg 8deg);
+    box-shadow:
+      0 7px 15px rgba(0,0,0,0.65),
+      0 0 0 1px rgba(0,0,0,0.7),
+      0 0 calc(7px + var(--spin) * 28px)
+        rgba(79,214,230, calc(var(--spin) * 0.75));
+    transition: box-shadow 0.1s linear;
+  }
+  .knob:active, .knob.spinning { cursor: grabbing; }
+  .knob::before {                 /* domed metal face */
+    content: ''; position: absolute; inset: 14%; border-radius: 50%;
+    background: radial-gradient(circle at 50% 42%,
+      #2b323d 0%, #181d25 68%, #0e1217 100%);
+    box-shadow: inset 0 -7px 13px rgba(0,0,0,0.6),
+                inset 0 2px 3px rgba(255,255,255,0.06);
+  }
+  .knob::after {                  /* finger dimple (spinner depression) */
+    content: ''; position: absolute; left: 50%; top: 15%;
+    width: 20%; height: 20%; transform: translateX(-50%);
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 32%,
+      #090b0e 0%, #1b212a 62%, #404b5a 100%);
+    box-shadow: inset 0 3px 7px rgba(0,0,0,0.9),
+                0 1px 0 rgba(255,255,255,0.09);
+  }
+
+  /* Static specular gloss — does not rotate, so the knob looks lit */
+  .knob-gloss {
+    position: absolute; inset: 11%; border-radius: 50%;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 58% 42% at 35% 26%,
+        rgba(255,255,255,0.20) 0%, rgba(255,255,255,0) 62%),
+      radial-gradient(circle at 50% 118%,
+        rgba(0,0,0,0.5) 0%, rgba(0,0,0,0) 52%);
+  }
+
+  .knob-cap {
+    font-size: var(--f-xs); color: var(--t-text-dim);
+    letter-spacing: 0.07em; text-transform: uppercase;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Knob sizes + side-by-side cluster */
+  .knob-wrap.md .knob-dial { --knob-size: 96px; }
+  .knob-cluster { display: flex; align-items: center; gap: var(--s-3); }
+
+  /* ── Pot knobs ────────────────────────────────────────────────────────
+     Bounded, linear rotary controls (volume / squelch). Reuse the knob
+     disc but swap the finger dimple for a pointer, drop the tick ring,
+     and add a 270° arc that fills to the current value (--val on the
+     dial, 0..1). No acceleration — rotation maps straight to value. */
+  .knob-wrap.pot .knob-base::before,
+  .knob-wrap.pot .knob-base::after { display: none; }
+
+  .knob-arc { position: absolute; inset: 0; border-radius: 50%; pointer-events: none; }
+  .knob-arc::before, .knob-arc::after {
+    content: ''; position: absolute; inset: 1%; border-radius: 50%;
+    -webkit-mask: radial-gradient(circle, transparent 0 82%,
+                   #000 84% 95%, transparent 97%);
+            mask: radial-gradient(circle, transparent 0 82%,
+                   #000 84% 95%, transparent 97%);
+  }
+  .knob-arc::before {            /* full 270° track groove */
+    background: conic-gradient(from 225deg,
+      var(--t-border-hi) 0deg 270deg, transparent 270deg 360deg);
+    opacity: 0.7;
+  }
+  .knob-arc::after {             /* filled portion up to --val */
+    background: conic-gradient(from 225deg,
+      var(--t-accent) 0deg calc(var(--val, 0) * 270deg), transparent 0deg);
+    filter: drop-shadow(0 0 3px rgba(79,214,230,0.7));
+  }
+
+  .knob.pot::after {             /* pointer marker (replaces the dimple) */
+    content: ''; position: absolute;
+    left: 50%; top: 11%;
+    width: 4px; height: 23%;
+    transform: translateX(-50%);
+    border-radius: 2px;
+    background: linear-gradient(var(--t-accent), rgba(79,214,230,0.12));
+    box-shadow: 0 0 6px var(--t-accent);
+  }
+
+  /* Centre LED — a status lamp in the middle of a pot knob. Off = a dark
+     recessed lens; .led-green / .led-red light it. Static (doesn't spin). */
+  .knob-led {
+    position: absolute; left: 50%; top: 50%;
+    width: 15%; height: 15%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    pointer-events: none;
+    background: radial-gradient(circle at 50% 38%,
+      #1a1f26 0%, #0a0d11 70%, #05070a 100%);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.9),
+                inset 0 -1px 1px rgba(255,255,255,0.04);
+    transition: background 0.18s ease, box-shadow 0.18s ease;
+  }
+  .knob-led.led-green {
+    background: radial-gradient(circle at 50% 38%,
+      #d6ffe4 0%, #5dc47a 36%, #2f8049 76%, #1c5733 100%);
+    box-shadow: 0 0 6px 1px rgba(93,196,122,0.85),
+                0 0 15px 3px rgba(93,196,122,0.5),
+                inset 0 -1px 2px rgba(0,0,0,0.4),
+                inset 0 1px 2px rgba(255,255,255,0.5);
+  }
+  .knob-led.led-red {
+    background: radial-gradient(circle at 50% 38%,
+      #ffdbd6 0%, #e04848 36%, #962f2f 76%, #5c1c1c 100%);
+    box-shadow: 0 0 6px 1px rgba(224,72,72,0.9),
+                0 0 17px 4px rgba(224,72,72,0.55),
+                inset 0 -1px 2px rgba(0,0,0,0.4),
+                inset 0 1px 2px rgba(255,255,255,0.45);
+  }
+  /* TX heartbeat — the RF Power LED throbs while transmitting. */
+  .knob-led.led-pulse { animation: led-tx-pulse 1.1s ease-in-out infinite; }
+  @keyframes led-tx-pulse {
+    0%, 100% {
+      box-shadow: 0 0 6px 1px rgba(224,72,72,0.9),
+                  0 0 17px 4px rgba(224,72,72,0.55),
+                  inset 0 -1px 2px rgba(0,0,0,0.4),
+                  inset 0 1px 2px rgba(255,255,255,0.45);
+    }
+    50% {
+      box-shadow: 0 0 10px 2px rgba(224,72,72,1),
+                  0 0 28px 9px rgba(224,72,72,0.85),
+                  inset 0 -1px 2px rgba(0,0,0,0.4),
+                  inset 0 1px 2px rgba(255,255,255,0.6);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .knob-led.led-pulse { animation: none; }   /* steady red instead */
+  }
 </style>
 </head><body>
 
@@ -254,6 +451,27 @@
         <div><span class="ic-label">Mode:</span> <span id="ic-mode-cur" class="ic-val">&mdash;</span></div>
         <div><span class="ic-label">Filter:</span> <span id="ic-filter-cur" class="ic-val">&mdash;</span></div>
       </div>
+      <!-- Tuning cluster: main VFO knob + RIT offset knob side by side -->
+      <div class="knob-cluster">
+        <div class="knob-wrap"
+             title="VFO tuning knob — drag to spin. Spin slow for fine steps, fast to cover ground (pointer-style acceleration). One detent = the highlighted frequency digit.">
+          <div class="knob-dial">
+            <div class="knob-base"></div>
+            <div id="ic-vfo-knob" class="knob"></div>
+            <div class="knob-gloss"></div>
+          </div>
+          <div id="ic-vfo-knob-cap" class="knob-cap">VFO</div>
+        </div>
+        <div class="knob-wrap sm"
+             title="RIT offset knob — drag to spin. Gentle profile; one detent = the highlighted RIT digit.">
+          <div class="knob-dial">
+            <div class="knob-base"></div>
+            <div id="ic-rit-knob" class="knob"></div>
+            <div class="knob-gloss"></div>
+          </div>
+          <div id="ic-rit-knob-cap" class="knob-cap">RIT</div>
+        </div>
+      </div>
       <div class="ic-spacer"></div>
       <button class="rb" onclick="icCmd('ptt')" id="ic-ptt-btn" title="Toggle transmit">PTT</button>
     </div>
@@ -298,24 +516,78 @@
       </div>
       <span id="ic-smeter-val" class="ic-val" style="min-width:3em;text-align:right">0</span>
     </div>
+    <!-- TX meters — live only while transmitting (fast-polled, see plugin) -->
     <div class="ic-row">
-      <span class="ic-label">Volume:</span>
-      <input id="ic-vol" class="ic-slider" type="range" min="0" max="500" step="1" value="100"
-             style="max-width:240px"
-             oninput="document.getElementById('ic-vol-val').textContent = this.value + '%'"
-             onchange="icCmd('vol', {value: +this.value})"
-             title="RX listening volume — audio boost, 100% = unity">
-      <span id="ic-vol-val" class="ic-slider-val">100%</span>
+      <span class="ic-label" title="TX power output">Po:</span>
+      <div class="ic-smeter-wrap" title="TX power output">
+        <div id="ic-po-fill" class="ic-txm-fill po"></div>
+        <div class="ic-smeter-ticks"></div>
+      </div>
+      <span id="ic-po-val" class="ic-val" style="min-width:3.5em;text-align:right">0%</span>
     </div>
     <div class="ic-row">
-      <span class="ic-label">Squelch:</span>
-      <input id="ic-squelch" class="ic-slider" type="range" min="0" max="100" step="1" value="0"
-             style="max-width:240px"
-             oninput="document.getElementById('ic-squelch-val').textContent = this.value + '%'"
-             onchange="icCmd('squelch', {pct: +this.value})"
-             title="Squelch threshold — 0 = open. Mainly used on FM.">
-      <span id="ic-squelch-val" class="ic-slider-val">0%</span>
-      <span id="ic-sql-state" class="ic-val ok" title="Squelch condition">OPEN</span>
+      <span class="ic-label" title="ALC — keep out of the red when setting SSB drive">ALC:</span>
+      <div class="ic-smeter-wrap" title="ALC level">
+        <div id="ic-alc-fill" class="ic-txm-fill alc"></div>
+        <div class="ic-smeter-ticks"></div>
+      </div>
+      <span id="ic-alc-val" class="ic-val" style="min-width:3.5em;text-align:right">0%</span>
+    </div>
+    <div class="ic-row">
+      <span class="ic-label" title="Antenna SWR — measured while transmitting">SWR:</span>
+      <div class="ic-smeter-wrap" title="SWR — measured while transmitting">
+        <div id="ic-swr-fill" class="ic-txm-fill swr"></div>
+        <div class="ic-smeter-ticks"></div>
+      </div>
+      <span id="ic-swr-val" class="ic-val" style="min-width:3.5em;text-align:right">&mdash;</span>
+    </div>
+    <div class="ic-row">
+      <div class="knob-cluster" style="gap: var(--s-5);">
+        <!-- Volume + Squelch — bounded pot knobs, 270° linear sweep -->
+        <div class="knob-wrap md pot"
+             title="RX listening volume, 0–100%. Drag to set; double-click to mute. Mouse-wheel to nudge.">
+          <div class="knob-dial">
+            <div class="knob-base"></div>
+            <div class="knob-arc"></div>
+            <div id="ic-vol-knob" class="knob pot"></div>
+            <div class="knob-gloss"></div>
+            <div id="ic-vol-led" class="knob-led" title="Red when muted"></div>
+          </div>
+          <div id="ic-vol-knob-cap" class="knob-cap">Vol 100%</div>
+        </div>
+        <div class="knob-wrap md pot"
+             title="Squelch threshold, 0–100% (0 = open, mainly FM). Drag to set; double-click for 20%. Centre LED lights green while squelch is open.">
+          <div class="knob-dial">
+            <div class="knob-base"></div>
+            <div class="knob-arc"></div>
+            <div id="ic-squelch-knob" class="knob pot"></div>
+            <div class="knob-gloss"></div>
+            <div id="ic-squelch-led" class="knob-led" title="Green when squelch open"></div>
+          </div>
+          <div id="ic-squelch-knob-cap" class="knob-cap">Sql 0%</div>
+        </div>
+        <div class="knob-wrap md pot"
+             title="TX RF output power, 0–100%. Drag to set; double-click to zero.">
+          <div class="knob-dial">
+            <div class="knob-base"></div>
+            <div class="knob-arc"></div>
+            <div id="ic-pwr-knob" class="knob pot"></div>
+            <div class="knob-gloss"></div>
+            <div id="ic-pwr-led" class="knob-led" title="Red while transmitting"></div>
+          </div>
+          <div id="ic-pwr-knob-cap" class="knob-cap">PWR 0%</div>
+        </div>
+        <div class="knob-wrap md pot"
+             title="TX microphone gain, 0–100%. Drag to set. Watch the ALC meter when setting SSB drive.">
+          <div class="knob-dial">
+            <div class="knob-base"></div>
+            <div class="knob-arc"></div>
+            <div id="ic-mic-knob" class="knob pot"></div>
+            <div class="knob-gloss"></div>
+          </div>
+          <div id="ic-mic-knob-cap" class="knob-cap">MIC 50%</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -596,6 +868,8 @@ function _renderFreq() {
   }
   html += '<span class="ic-freq-unit">MHz</span>';
   el.innerHTML = html;
+  var kc = document.getElementById('ic-vfo-knob-cap');
+  if (kc) kc.textContent = 'VFO · ' + _fmtStep(Math.pow(10, _activePos));
 }
 
 function _stepFreq(delta) {
@@ -751,6 +1025,8 @@ function _renderRit() {
           + digit + '</span>';
   }
   el.innerHTML = html;
+  var rkc = document.getElementById('ic-rit-knob-cap');
+  if (rkc) rkc.textContent = 'RIT · ' + _fmtStep(Math.pow(10, _ritActivePos));
 }
 
 function _sendRit() {
@@ -837,6 +1113,300 @@ function setRitDisplay(hz) {
   _renderRit();
 }
 
+// ── Tuning knobs — drag-to-spin VFO / RIT controls ─────────────────────
+// A knob mimics a real optical-encoder tuning knob. Dragging the disc
+// rotates it and crosses virtual detents; detents integrate into tuning
+// steps. An acceleration curve makes a slow drag tune fine and a fast
+// spin cover ground quickly — pointer-acceleration applied to tuning.
+//
+// One detent = one "highlighted digit" step (Math.pow(10, activePos)),
+// so clicking a digit on the display also sets the knob's resolution.
+//
+// Each knob carries its own feel profile. To make a knob LESS sensitive:
+// raise degPerDetent (more rotation per step), raise accelKnee (more
+// turn speed before acceleration starts), and/or lower accelMax. The
+// RIT knob uses a deliberately gentle profile — it barely accelerates.
+
+// Feel profiles. Pointer speed below is angular speed in deg/sec.
+//   degPerDetent — degrees of rotation per step at 1× (bigger = finer)
+//   accelKnee    — deg/sec below which tuning stays 1× (no acceleration)
+//   accelSpan    — deg/sec above the knee that shapes the ramp
+//   accelMax     — hard cap on the step multiplier
+//   accelExp     — ramp curvature (>1 = gentle start, steeper top)
+var KNOB_VFO = {degPerDetent: 5,   accelKnee: 220, accelSpan: 1200, accelMax: 8, accelExp: 1.7};
+var KNOB_RIT = {degPerDetent: 7.2, accelKnee: 280, accelSpan: 1700, accelMax: 3, accelExp: 1.6};
+
+function _fmtStep(hz) {
+  if (hz >= 1e6) return (hz / 1e6) + ' MHz';
+  if (hz >= 1e3) return (hz / 1e3) + ' kHz';
+  return hz + ' Hz';
+}
+
+// Map angular speed (deg/sec) to a step multiplier. Flat 1× up to the
+// knee, then a power-curve ramp to the profile's capped maximum.
+function _knobAccelGain(speed, p) {
+  if (speed <= p.accelKnee) return 1;
+  var g = 1 + Math.pow((speed - p.accelKnee) / p.accelSpan,
+                       p.accelExp) * (p.accelMax - 1);
+  return Math.min(p.accelMax, g);
+}
+
+// opts: {el, profile, baseStep:fn->Hz, onStep:fn(deltaHz)}
+function makeTuningKnob(opts) {
+  var el = opts.el;
+  if (!el) return;
+  var p = opts.profile;
+  var rotation = 0;     // visual rotation in degrees
+  var dragging = false;
+  var prevAngle = 0;    // last pointer angle about the knob centre
+  var prevT = 0;
+  var emaSpeed = 0;     // smoothed deg/sec — kills per-event jitter
+  var accum = 0;        // fractional detents not yet emitted as steps
+  var wheelT = 0;
+
+  function centre() {
+    var r = el.getBoundingClientRect();
+    return {x: r.left + r.width / 2, y: r.top + r.height / 2};
+  }
+  function angleAt(e, c) {
+    return Math.atan2(e.clientY - c.y, e.clientX - c.x) * 180 / Math.PI;
+  }
+  // Drive the CSS accel glow (0..1) from the current multiplier.
+  function spinGlow(gain) {
+    el.style.setProperty('--spin',
+      Math.min(1, (gain - 1) / (p.accelMax - 1)).toFixed(3));
+  }
+
+  el.addEventListener('pointerdown', function(e) {
+    dragging = true;
+    el.classList.add('spinning');
+    try { el.setPointerCapture(e.pointerId); } catch (_) {}
+    prevAngle = angleAt(e, centre());
+    prevT = performance.now();
+    emaSpeed = 0; accum = 0;
+    e.preventDefault();
+  });
+
+  el.addEventListener('pointermove', function(e) {
+    if (!dragging) return;
+    var ang = angleAt(e, centre());
+    var dAng = ang - prevAngle;
+    if (dAng > 180) dAng -= 360;          // unwrap across the ±180° seam
+    else if (dAng < -180) dAng += 360;
+    prevAngle = ang;
+
+    var now = performance.now();
+    var dt = Math.max((now - prevT) / 1000, 0.001);
+    prevT = now;
+
+    rotation += dAng;
+    el.style.transform = 'rotate(' + rotation.toFixed(2) + 'deg)';
+
+    var speed = Math.abs(dAng) / dt;              // instantaneous deg/sec
+    emaSpeed = emaSpeed * 0.6 + speed * 0.4;      // smooth the jitter
+
+    var gain = _knobAccelGain(emaSpeed, p);
+    spinGlow(gain);
+    // Accumulate accelerated detents; emit whole steps, keep the remainder
+    // so the integral stays exact across many small moves.
+    accum += (dAng / p.degPerDetent) * gain;
+    var whole = Math.trunc(accum);
+    if (whole !== 0) {
+      accum -= whole;
+      opts.onStep(whole * opts.baseStep());
+    }
+  });
+
+  function release(e) {
+    if (!dragging) return;
+    dragging = false;
+    el.classList.remove('spinning');
+    spinGlow(1);
+    try { el.releasePointerCapture(e.pointerId); } catch (_) {}
+  }
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', release);
+
+  // Mouse wheel over the knob = discrete detents, with the same accel
+  // curve estimated from how fast the notches arrive.
+  el.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var now = performance.now();
+    var dt = Math.max((now - wheelT) / 1000, 0.001);
+    wheelT = now;
+    var dir = e.deltaY < 0 ? 1 : -1;
+    emaSpeed = emaSpeed * 0.5 + (p.degPerDetent / dt) * 0.5;
+    var gain = _knobAccelGain(emaSpeed, p);
+    var mult = Math.max(1, Math.round(gain));
+    rotation += dir * p.degPerDetent * mult;
+    el.style.transform = 'rotate(' + rotation.toFixed(2) + 'deg)';
+    spinGlow(gain);
+    opts.onStep(dir * mult * opts.baseStep());
+    clearTimeout(el._wheelGlow);
+    el._wheelGlow = setTimeout(function() { spinGlow(1); }, 180);
+  }, {passive: false});
+}
+
+function initTuningKnobs() {
+  // VFO knob steps the highlighted main-display digit.
+  makeTuningKnob({
+    el: document.getElementById('ic-vfo-knob'),
+    profile: KNOB_VFO,
+    baseStep: function() { return Math.pow(10, _activePos); },
+    onStep: function(d) { _stepFreq(d); }});
+  // RIT knob steps the highlighted RIT digit — gentler profile.
+  makeTuningKnob({
+    el: document.getElementById('ic-rit-knob'),
+    profile: KNOB_RIT,
+    baseStep: function() { return Math.pow(10, _ritActivePos); },
+    onStep: function(d) { _stepRit(d); }});
+}
+
+// ── Pot knobs — bounded, linear rotary controls (volume / squelch) ─────
+// Unlike the VFO/RIT knobs these have a fixed range and NO acceleration:
+// rotation maps linearly to a value in [min,max] over a 270° sweep, like
+// a real potentiometer with end stops. The dial's --val (0..1) drives
+// the fill arc. Sends are debounced; poll updates are ignored briefly
+// after a user interaction so the knob doesn't fight the radio readback.
+//
+// opts: {el, min, max, value, sweep?, wheelStep?, onChange:fn(v), onRender?:fn(v)}
+function makePotKnob(opts) {
+  var el = opts.el;
+  if (!el) return null;
+  var min = opts.min, max = opts.max, sweep = opts.sweep || 270;
+  var dial = el.closest('.knob-dial');
+  var value = Math.max(min, Math.min(max, opts.value != null ? opts.value : min));
+  var dragging = false, prevAngle = 0, sendT = null, pending = null;
+  var moved = 0, lastTapT = 0;   // for double-click (tap-tap) reset
+
+  function centre() {
+    var r = el.getBoundingClientRect();
+    return {x: r.left + r.width / 2, y: r.top + r.height / 2};
+  }
+  function angleAt(e, c) {
+    return Math.atan2(e.clientY - c.y, e.clientX - c.x) * 180 / Math.PI;
+  }
+  function render() {
+    var frac = (value - min) / (max - min);                 // 0..1
+    el.style.transform = 'rotate(' + (-sweep / 2 + frac * sweep).toFixed(2) + 'deg)';
+    if (dial) dial.style.setProperty('--val', frac.toFixed(4));
+    if (opts.onRender) opts.onRender(Math.round(value));
+  }
+  function commit() {
+    // Hold the value we're sending until the radio's status echoes it
+    // back (see `set` below). Without this a poll snaps the knob back
+    // whenever the command is slow to round-trip — or never takes at
+    // all, e.g. CI-V offline, where the endpoint rejects it outright.
+    pending = Math.round(value);
+    if (sendT) clearTimeout(sendT);
+    sendT = setTimeout(function() {
+      pending = Math.round(value);
+      opts.onChange(pending);
+    }, 150);
+  }
+  function setValue(v) {
+    value = Math.max(min, Math.min(max, v));
+    render();
+    commit();
+  }
+
+  el.addEventListener('pointerdown', function(e) {
+    dragging = true;
+    moved = 0;
+    el.classList.add('spinning');
+    try { el.setPointerCapture(e.pointerId); } catch (_) {}
+    prevAngle = angleAt(e, centre());
+    e.preventDefault();
+  });
+  el.addEventListener('pointermove', function(e) {
+    if (!dragging) return;
+    var ang = angleAt(e, centre());
+    var dAng = ang - prevAngle;
+    if (dAng > 180) dAng -= 360;          // unwrap across the ±180° seam
+    else if (dAng < -180) dAng += 360;
+    prevAngle = ang;
+    moved += Math.abs(dAng);
+    // Linear: rotation maps straight to value — no acceleration.
+    setValue(value + (dAng / sweep) * (max - min));
+  });
+  function release(e) {
+    if (!dragging) return;
+    dragging = false;
+    el.classList.remove('spinning');
+    try { el.releasePointerCapture(e.pointerId); } catch (_) {}
+    // A tap that didn't turn the knob; a second tap within 350 ms is a
+    // double-click → snap to the reset value (mute / default).
+    if (moved < 3 && opts.resetValue != null) {
+      var now = performance.now();
+      if (now - lastTapT < 350) { setValue(opts.resetValue); lastTapT = 0; }
+      else { lastTapT = now; }
+    }
+  }
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', release);
+
+  el.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var step = opts.wheelStep || Math.max(1, Math.round((max - min) / 50));
+    setValue(value + (e.deltaY < 0 ? step : -step));
+  }, {passive: false});
+
+  render();
+  return {
+    // Poll-sync setter. While a change is pending confirmation, accept the
+    // poll only once the radio echoes back (within 1) what we sent — so the
+    // knob holds the user's value instead of snapping back to a stale one.
+    set: function(v) {
+      if (typeof v !== 'number' || dragging) return;
+      v = Math.max(min, Math.min(max, v));
+      if (pending !== null) {
+        if (Math.abs(v - pending) <= 1) pending = null;   // radio confirmed
+        else return;                                       // still stale
+      }
+      value = v;
+      render();
+    }
+  };
+}
+
+var _volKnob = null, _sqlKnob = null, _pwrKnob = null, _micKnob = null;
+function initPotKnobs() {
+  _volKnob = makePotKnob({
+    el: document.getElementById('ic-vol-knob'),
+    min: 0, max: 100, value: 100, wheelStep: 5, resetValue: 0,
+    onRender: function(v) {
+      var c = document.getElementById('ic-vol-knob-cap');
+      if (c) c.textContent = 'Vol ' + v + '%';
+      var led = document.getElementById('ic-vol-led');
+      if (led) led.classList.toggle('led-red', v === 0);   // red = muted
+    },
+    onChange: function(v) { icCmd('vol', {value: v}); }});
+  _sqlKnob = makePotKnob({
+    el: document.getElementById('ic-squelch-knob'),
+    min: 0, max: 100, value: 0, wheelStep: 2, resetValue: 20,
+    onRender: function(v) {
+      var c = document.getElementById('ic-squelch-knob-cap');
+      if (c) c.textContent = 'Sql ' + v + '%';
+    },
+    onChange: function(v) { icCmd('squelch', {pct: v}); }});
+  _pwrKnob = makePotKnob({
+    el: document.getElementById('ic-pwr-knob'),
+    min: 0, max: 100, value: 0, wheelStep: 5, resetValue: 0,
+    onRender: function(v) {
+      var c = document.getElementById('ic-pwr-knob-cap');
+      if (c) c.textContent = 'PWR ' + v + '%';
+    },
+    onChange: function(v) { icCmd('power', {pct: v}); }});
+  _micKnob = makePotKnob({
+    el: document.getElementById('ic-mic-knob'),
+    min: 0, max: 100, value: 50, wheelStep: 5,
+    onRender: function(v) {
+      var c = document.getElementById('ic-mic-knob-cap');
+      if (c) c.textContent = 'MIC ' + v + '%';
+    },
+    onChange: function(v) { icCmd('mic_gain', {pct: v}); }});
+}
+
 // ── CTCSS ───────────────────────────────────────────────────────────────
 function icCtcssApply(which) {
   if (which === 'tx') {
@@ -921,6 +1491,27 @@ function setOfflineFlags(connected, civ, audio) {
   apply('audio', connected ? audio : null, audio ? 'streaming' : (connected ? 'waiting (check USB audio device)' : 'pending link'));
 }
 
+// SWR meter raw (0–255) → VSWR ratio. IC-7100 meter breakpoints:
+// 0→1.0, 48→1.5, 80→2.0, 120→3.0; piecewise-linear between them.
+function swrRatio(raw) {
+  var pts = [[0, 1.0], [48, 1.5], [80, 2.0], [120, 3.0], [255, 5.0]];
+  for (var i = 1; i < pts.length; i++) {
+    if (raw <= pts[i][0]) {
+      var a = pts[i - 1], b = pts[i];
+      return a[1] + (b[1] - a[1]) * (raw - a[0]) / (b[0] - a[0]);
+    }
+  }
+  return 5.0;
+}
+
+// Adaptive status polling — fast while transmitting so the TX meters stay
+// live, relaxed on receive.
+var _txActive = false, _pollTimer = null;
+function _schedulePoll() {
+  if (_pollTimer) clearInterval(_pollTimer);
+  _pollTimer = setInterval(pollStatus, _txActive ? 200 : 1000);
+}
+
 function pollStatus() {
   icGet('/ic7100status').then(function(s) {
     var offline = document.getElementById('ic-offline');
@@ -948,10 +1539,17 @@ function pollStatus() {
 
     // TX badge + PTT button
     var txOn = !!(s.transmitting || s.ptt_active);
+    if (txOn !== _txActive) { _txActive = txOn; _schedulePoll(); }
     var badge = document.getElementById('ic-tx-badge');
     badge.classList.toggle('on', txOn);
     var pttBtn = document.getElementById('ic-ptt-btn');
     pttBtn.classList.toggle('active', txOn);
+    // RF Power knob centre LED — pulsing red while transmitting.
+    var pwrLed = document.getElementById('ic-pwr-led');
+    if (pwrLed) {
+      pwrLed.classList.toggle('led-red', txOn);
+      pwrLed.classList.toggle('led-pulse', txOn);
+    }
 
     // TX antenna-port safety interlock. The two checkboxes are fully
     // independent — never mutually exclusive. Only mirror a checkbox when
@@ -999,6 +1597,23 @@ function pollStatus() {
     document.getElementById('ic-smeter-fill').style.width = smPct.toFixed(0) + '%';
     document.getElementById('ic-smeter-val').textContent = smRaw;
 
+    // TX meters (raw 0–255). Po/ALC as % of scale; SWR mapped to a ratio
+    // and only meaningful while transmitting.
+    function _txMeter(fillId, valId, raw, text) {
+      var pct = Math.max(0, Math.min(100, raw * 100 / 255));
+      var f = document.getElementById(fillId);
+      if (f) f.style.clipPath = 'inset(0 ' + (100 - pct).toFixed(1) + '% 0 0)';
+      var v = document.getElementById(valId);
+      if (v) v.textContent = text;
+    }
+    var poRaw  = (typeof s.po  === 'number') ? s.po  : 0;
+    var alcRaw = (typeof s.alc === 'number') ? s.alc : 0;
+    var swrRaw = (typeof s.swr === 'number') ? s.swr : 0;
+    _txMeter('ic-po-fill',  'ic-po-val',  poRaw,  Math.round(poRaw * 100 / 255) + '%');
+    _txMeter('ic-alc-fill', 'ic-alc-val', alcRaw, Math.round(alcRaw * 100 / 255) + '%');
+    _txMeter('ic-swr-fill', 'ic-swr-val', swrRaw,
+             txOn ? swrRatio(swrRaw).toFixed(1) + ':1' : '—');
+
     // CTCSS — only update if user isn't editing the dropdown
     var ctxEls = {
       'ic-ctcss-tx':    s.ctcss_tx_hz,
@@ -1044,14 +1659,13 @@ function pollStatus() {
     setRange('ic-nb-level',  'ic-nb-level-val',  s.nb_level,  '%');
     setRange('ic-nr-level',  'ic-nr-level-val',  s.nr_level,  '%');
     setRange('ic-ifshift',   'ic-ifshift-val',   s.if_shift,  '%');
-    setRange('ic-vol',       'ic-vol-val',       s.rx_boost_pct, '%');
-    setRange('ic-squelch',   'ic-squelch-val',   s.squelch,   '%');
-    var sqlEl = document.getElementById('ic-sql-state');
-    if (sqlEl) {
-      var open = (s.squelch_open !== false);
-      sqlEl.textContent = open ? 'OPEN' : 'MUTED';
-      sqlEl.className = 'ic-val ' + (open ? 'ok' : 'dim');
-    }
+    if (_volKnob) _volKnob.set(s.rx_boost_pct);
+    if (_sqlKnob) _sqlKnob.set(s.squelch);
+    if (_pwrKnob) _pwrKnob.set(s.rf_power);
+    if (_micKnob) _micKnob.set(s.mic_gain);
+    // Squelch-open state — green centre LED while audio is passing.
+    var sqlLed = document.getElementById('ic-squelch-led');
+    if (sqlLed) sqlLed.classList.toggle('led-green', s.squelch_open !== false);
     setActiveBtn('ic-agc-row',    'agc',    s.agc);
     setActiveBtn('ic-preamp-row', 'preamp', s.preamp);
     setActiveBtn('ic-filter-row', 'filter', s.filter);
@@ -1078,9 +1692,11 @@ buildCtcssTones();
 initFreqDisplay();
 initTypedFreq();
 initRitDisplay();
+initTuningKnobs();
+initPotKnobs();
 _renderFreq();
 _renderRit();
 pollStatus();
-setInterval(pollStatus, 1000);
+_schedulePoll();
 </script>
 </body></html>

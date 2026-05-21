@@ -17,7 +17,8 @@ from cat_client import RadioCATClient
 # them verbatim to the endpoint, which validates in IC7100Plugin.execute().
 _IC7100_HF_CMDS = frozenset({
     'split', 'rit', 'xit', 'agc', 'nb', 'nr', 'preamp', 'atten',
-    'if_shift', 'filter', 'squelch', 'squelch_type', 'dtcs',
+    'if_shift', 'filter', 'squelch', 'squelch_type', 'dtcs', 'power',
+    'mic_gain',
 })
 
 

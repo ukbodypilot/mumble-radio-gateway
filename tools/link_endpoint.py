@@ -158,10 +158,13 @@ class StatusReporter:
             self._thread.join(timeout=3)
 
     def _run(self):
-        # Poll at 250ms intervals, send status when dirty or interval elapsed
+        # Poll at 100ms intervals, send status when dirty or interval elapsed.
+        # 100ms (vs 250) lets fast-changing state — e.g. the IC-7100 TX power
+        # meters — reach the gateway promptly; idle endpoints still only send
+        # on dirty/interval, so the extra wakeups cost nothing meaningful.
         _last_send = 0
         while not self._stop.is_set():
-            self._stop.wait(0.25)
+            self._stop.wait(0.1)
             if self._stop.is_set():
                 break
             _dirty = getattr(self._plugin, '_status_dirty', False)

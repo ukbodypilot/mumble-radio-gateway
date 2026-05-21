@@ -258,6 +258,11 @@ class CIVController:
         self.atten: bool = False  # 20 dB attenuator
         self.if_shift: int = 50   # 0..100, 50=center (no shift)
         self.squelch: int = 0     # 0..100 percent (0=open)
+        self.rf_power: int = 0    # 0..100 percent — TX RF output power
+        self.mic_gain: int = 50   # 0..100 percent — TX mic gain
+        self.po: int = 0          # TX power meter — raw 0..255
+        self.swr: int = 0         # SWR meter — raw 0..255
+        self.alc: int = 0         # ALC meter — raw 0..255
         self.squelch_open: bool = True   # current squelch condition
         self.dtcs_on: bool = False       # digital tone code squelch enabled
         self.dtcs_code: int = 23         # DTCS code (octal-style int)
@@ -379,6 +384,33 @@ class CIVController:
             self.smeter = val
             return val
         return None
+
+    # TX meters — all 0x15 reads, 2-BCD 0000–0255, same decode as the
+    # S-meter. Meaningful only while transmitting.
+    def _read_meter(self, subcmd: int) -> int | None:
+        resp = self._transact(self._build_frame(0x15, subcmd=subcmd))
+        if resp and len(resp) >= 4 and resp[0] == 0x15 and resp[1] == subcmd:
+            return ((resp[2] & 0x0f) * 100
+                    + ((resp[3] >> 4) & 0x0f) * 10 + (resp[3] & 0x0f))
+        return None
+
+    def get_po(self) -> int | None:
+        v = self._read_meter(0x11)        # RF power meter
+        if v is not None:
+            self.po = v
+        return v
+
+    def get_swr(self) -> int | None:
+        v = self._read_meter(0x12)        # SWR meter
+        if v is not None:
+            self.swr = v
+        return v
+
+    def get_alc(self) -> int | None:
+        v = self._read_meter(0x13)        # ALC meter
+        if v is not None:
+            self.alc = v
+        return v
 
     def set_ptt(self, on: bool) -> bool:
         resp = self._transact(
@@ -615,6 +647,29 @@ class CIVController:
         ok = resp is not None and resp[0:1] == _OK
         if ok:
             self.squelch = pct
+        return ok
+
+    # RF output power — 0x14 0x0A (0..255). Maps 0..100% TX power. Same
+    # level-control family as squelch/NB/NR/IF-shift above.
+    def set_rf_power(self, pct: int) -> bool:
+        pct = max(0, min(100, int(pct)))
+        scaled = round(pct * 255 / 100)
+        resp = self._transact(self._build_frame(
+            0x14, subcmd=0x0A, data=_pct_to_bcd3(scaled)))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.rf_power = pct
+        return ok
+
+    # Mic gain — 0x14 0x0B (0..255). Maps 0..100% TX microphone gain.
+    def set_mic_gain(self, pct: int) -> bool:
+        pct = max(0, min(100, int(pct)))
+        scaled = round(pct * 255 / 100)
+        resp = self._transact(self._build_frame(
+            0x14, subcmd=0x0B, data=_pct_to_bcd3(scaled)))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.mic_gain = pct
         return ok
 
     # Squelch condition — 0x15 0x01 (0=closed/muted, 1=open/audio passing).
@@ -863,7 +918,7 @@ class IC7100Plugin(RadioPlugin):
         "ptt":       True,
         "frequency": True,
         "ctcss":     True,
-        "power":     False,
+        "power":     True,
         "rx_gain":   True,
         "tx_gain":   True,
         "smeter":    True,
@@ -945,6 +1000,10 @@ class IC7100Plugin(RadioPlugin):
         self._poll_thread = threading.Thread(
             target=self._poll_loop, daemon=True, name='IC7100-Poll')
         self._poll_thread.start()
+
+        self._meter_thread = threading.Thread(
+            target=self._meter_loop, daemon=True, name='IC7100-Meter')
+        self._meter_thread.start()
 
     def teardown(self):
         self._running = False
@@ -1161,6 +1220,20 @@ class IC7100Plugin(RadioPlugin):
             ok = self._civ.set_squelch(pct)
             return {"ok": ok, "squelch": self._civ.squelch}
 
+        elif action == 'power':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            pct = int(cmd.get('pct', 0))
+            ok = self._civ.set_rf_power(pct)
+            return {"ok": ok, "rf_power": self._civ.rf_power}
+
+        elif action == 'mic_gain':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            pct = int(cmd.get('pct', 0))
+            ok = self._civ.set_mic_gain(pct)
+            return {"ok": ok, "mic_gain": self._civ.mic_gain}
+
         elif action == 'squelch_type':
             # FM squelch gating: 'noise' (carrier), 'tsql' (CTCSS tone),
             # or 'dtcs' (digital code). Orchestrates the RX-tone and
@@ -1206,6 +1279,9 @@ class IC7100Plugin(RadioPlugin):
                 "filter":           self._civ.filter_idx,
                 "transmitting":     self._civ.transmitting,
                 "smeter":           self._civ.smeter,
+                "po":               self._civ.po,
+                "swr":              self._civ.swr,
+                "alc":              self._civ.alc,
                 "ctcss_tx_hz":      self._civ.ctcss_tx_hz,
                 "ctcss_rx_hz":      self._civ.ctcss_rx_hz,
                 "ctcss_tx_on":      self._civ.ctcss_tx_on,
@@ -1224,6 +1300,8 @@ class IC7100Plugin(RadioPlugin):
                 "atten":            self._civ.atten,
                 "if_shift":         self._civ.if_shift,
                 "squelch":          self._civ.squelch,
+                "rf_power":         self._civ.rf_power,
+                "mic_gain":         self._civ.mic_gain,
                 "squelch_open":     self._civ.squelch_open,
                 "dtcs_on":          self._civ.dtcs_on,
                 "dtcs_code":        self._civ.dtcs_code,
@@ -1283,6 +1361,29 @@ class IC7100Plugin(RadioPlugin):
                     self._civ.get_squelch_status()
                 except Exception as e:
                     print(f"[IC7100] Poll error: {e}", flush=True)
+
+    def _meter_loop(self):
+        """While transmitting, read the Po / SWR / ALC meters fast so the
+        web TX meters track SSB drive in near-real-time. Idle on RX."""
+        while self._running:
+            tx = bool(self._civ and self._civ.connected
+                      and self._civ.transmitting)
+            if tx:
+                try:
+                    self._civ.get_po()
+                    self._civ.get_swr()
+                    self._civ.get_alc()
+                    self._status_dirty = True
+                except Exception as e:
+                    print(f"[IC7100] Meter poll error: {e}", flush=True)
+                time.sleep(0.08)
+            else:
+                # RX — the meters mean nothing; zero them once, then idle.
+                if self._civ and (self._civ.po or self._civ.swr
+                                   or self._civ.alc):
+                    self._civ.po = self._civ.swr = self._civ.alc = 0
+                    self._status_dirty = True
+                time.sleep(0.3)
 
     # -- Settings persistence --
 
