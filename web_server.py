@@ -701,6 +701,7 @@ class WebConfigServer:
                 '/packet': 'packet.html',
                 '/gdrive': 'gdrive.html',
                 '/manager': 'manager.html',
+                '/test': 'test.html',
             }
 
             def do_GET(self):
