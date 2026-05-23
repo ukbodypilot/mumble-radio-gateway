@@ -193,13 +193,14 @@ class GatewayLinkServer:
 
     def __init__(self, port=9700, on_command=None,
                  on_register=None, on_disconnect=None, on_ack=None,
-                 on_endpoint_status=None):
+                 on_endpoint_status=None, supervisor=None):
         self._port = port
         self._on_command = on_command
         self._on_register = on_register
         self._on_disconnect = on_disconnect
         self._on_ack = on_ack
         self._on_endpoint_status = on_endpoint_status
+        self._supervisor = supervisor
 
         self._server_sock = None
         self._stop = threading.Event()
@@ -234,16 +235,21 @@ class GatewayLinkServer:
                                                   name="LinkHeartbeat", daemon=True)
         self._heartbeat_thread.start()
 
-        # Publish mDNS service for auto-discovery
-        self._mdns_proc = None
-        try:
-            import subprocess
-            self._mdns_proc = subprocess.Popen(
-                ['avahi-publish-service', 'RadioGateway', '_radiogateway._tcp', str(self._port)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"  [Link] mDNS: published _radiogateway._tcp on port {self._port}")
-        except Exception as e:
-            print(f"  [Link] mDNS: publish failed ({e}) — endpoints must use --server")
+        # Publish mDNS service for auto-discovery via the gateway's
+        # ProcessSupervisor (attached after init by setup_gateway_link).
+        if self._supervisor is not None:
+            try:
+                self._supervisor.add(
+                    'mdns-radiogateway',
+                    ['avahi-publish-service', 'RadioGateway',
+                     '_radiogateway._tcp', str(self._port)],
+                    restart=True, backoff=(5, 60),
+                )
+                print(f"  [Link] mDNS: published _radiogateway._tcp on port {self._port}")
+            except ValueError:
+                pass  # already registered (server restarted)
+            except Exception as e:
+                print(f"  [Link] mDNS: publish failed ({e}) — endpoints must use --server")
 
     def stop(self):
         """Shut down server, close all connections."""
@@ -258,13 +264,8 @@ class GatewayLinkServer:
                 self._server_sock.close()
             except OSError:
                 pass
-        if self._mdns_proc:
-            try:
-                self._mdns_proc.terminate()
-            except Exception:
-                pass
-            self._mdns_proc = None
-            self._server_sock = None
+        # mDNS publisher is owned by ProcessSupervisor; gateway shutdown
+        # reaps it via supervisor.shutdown_all().
         if self._accept_thread:
             self._accept_thread.join(timeout=3)
         if self._heartbeat_thread:
@@ -1849,12 +1850,11 @@ class AIOCPlugin(AudioPlugin):
         self._ptt_timeout = 60  # seconds — safety auto-unkey
         self._ptt_timer = None
         self._ptt_timer_lock = threading.Lock()
-        # Data mode (Direwolf TNC)
+        # Data mode (Direwolf TNC) — TNC runs on the gateway now
+        # (packet_tnc.py). AIOCPlugin's job is to release ALSA when the
+        # mode is 'data' so direwolf can claim hw:N,0 exclusively.
         self._mode_lock = threading.Lock()   # serialise _set_mode calls
         self._mode = 'audio'             # 'audio' or 'data'
-        self._direwolf_proc = None
-        self._direwolf_conf_path = '/tmp/direwolf_endpoint.conf'
-        self._direwolf_path = '/usr/bin/direwolf'
         self._dw_callsign = 'N0CALL'
         self._dw_modem = 1200
         self._dw_kiss_port = 8001
@@ -1910,11 +1910,14 @@ class AIOCPlugin(AudioPlugin):
         super().setup(config)
 
     def teardown(self):
-        """Unkey PTT, cancel safety timer, stop Direwolf, and close HID + audio."""
+        """Unkey PTT, cancel safety timer, and close HID + audio.
+
+        Direwolf is gateway-side now (packet_tnc.py) — gateway shutdown reaps
+        it via ProcessSupervisor.shutdown_all().
+        """
         self._cancel_ptt_timer()
         if self._ptt_on:
             self._set_ptt(False)
-        self._stop_direwolf()
         if self._hid:
             try:
                 self._hid.close()
@@ -1950,7 +1953,10 @@ class AIOCPlugin(AudioPlugin):
             "audio_input": self._in_stream is not None,
             "audio_output": self._out_stream is not None,
             "mode": self._mode,
-            "direwolf_running": self._direwolf_proc is not None and self._direwolf_proc.poll() is None,
+            # direwolf_running now reflects the gateway-side TNC; endpoints
+            # report False for compatibility, gateway-side packet_radio.py
+            # surfaces the real state via gw.packet_tnc.status().
+            "direwolf_running": False,
             "direwolf_kiss_port": self._dw_kiss_port if self._mode == 'data' else None,
         })
         return status
@@ -1971,13 +1977,10 @@ class AIOCPlugin(AudioPlugin):
             return self._set_mode_locked(cmd, new_mode)
 
     def _set_mode_locked(self, cmd, new_mode):
-        # Same-mode: only skip for audio; for data, skip if Direwolf is already healthy
+        # Same-mode is a no-op; the gateway-side TNC owns direwolf health,
+        # so there's no plugin-local "is direwolf still running?" check.
         if new_mode == self._mode:
-            if new_mode == 'audio':
-                return {"ok": True, "mode": self._mode}
-            if new_mode == 'data' and self._direwolf_proc and self._direwolf_proc.poll() is None:
-                # Direwolf is running — don't disrupt it with a redundant restart
-                return {"ok": True, "mode": self._mode}
+            return {"ok": True, "mode": self._mode}
 
         # Read optional TNC config from command
         if 'callsign' in cmd:
@@ -1999,9 +2002,9 @@ class AIOCPlugin(AudioPlugin):
         self._mode = new_mode
 
         if new_mode == 'data':
-            # Kill any existing Direwolf first (handles same-mode restart)
-            self._stop_direwolf()
-            # Stop arecord/aplay subprocesses — Direwolf needs exclusive ALSA access.
+            # Release ALSA so the gateway-side direwolf can claim exclusive
+            # access to hw:N,0. Same goes for the HID — direwolf uses CM108
+            # GPIO PTT via /dev/hidraw, which collides with libusb.
             self._rx_running = False
             if self._in_stream:
                 try:
@@ -2018,8 +2021,6 @@ class AIOCPlugin(AudioPlugin):
                 except Exception:
                     pass
                 self._out_stream = None
-            # Close HID device (libusb backend holds exclusive access).
-            # Rebind usbhid so Direwolf can use /dev/hidraw for CM108 PTT.
             if self._hid:
                 try:
                     self._hid.close()
@@ -2028,15 +2029,8 @@ class AIOCPlugin(AudioPlugin):
                 self._hid = None
                 self._rebind_usbhid()
             time.sleep(0.5)
-            # Start Direwolf
-            ok = self._start_direwolf()
-            if not ok:
-                # Reopen audio on failure
-                self.reopen_audio()
-                return {"ok": False, "error": "failed to start direwolf"}
         else:
-            # Stop Direwolf, restart arecord/aplay and reopen HID
-            self._stop_direwolf()
+            # Re-acquire ALSA + HID for voice mode.
             time.sleep(0.5)
             self._rx_running = True
             if self._last_config:
@@ -2109,133 +2103,10 @@ class AIOCPlugin(AudioPlugin):
         except Exception as e:
             print(f'  [Link] AIOCPlugin: usbhid bind error: {e}', flush=True)
 
-    def _start_direwolf(self):
-        """Start Direwolf as a subprocess reading directly from AIOC."""
-        import subprocess as _sp, signal as _sig
-        # Find AIOC ALSA device — use hw: (not plughw:) to match aplay behaviour
-        aioc_dev = self._aioc_hw
-        if not aioc_dev:
-            try:
-                with open('/proc/asound/cards') as f:
-                    for line in f:
-                        if 'AllInOneCable' in line or 'All-In-One' in line:
-                            aioc_dev = f'hw:{line.strip().split()[0]},0'
-                            break
-            except Exception:
-                pass
-        if not aioc_dev:
-            print("  [Link] AIOCPlugin: AIOC device not found for Direwolf", flush=True)
-            return False
-        # Normalise to hw: — plughw: caused silent TX output on Debian/AIOC
-        if aioc_dev.startswith('plughw:'):
-            aioc_dev = aioc_dev.replace('plughw:', 'hw:', 1)
-
-        # Auto-detect AIOC HID for CM108 PTT (VID 1209 = AIOC)
-        _ptt_line = ''
-        try:
-            import os as _os
-            for hid in sorted(_os.listdir('/sys/class/hidraw')):
-                uevent = f'/sys/class/hidraw/{hid}/device/uevent'
-                if _os.path.exists(uevent):
-                    with open(uevent) as _f:
-                        if '00001209' in _f.read():
-                            _hid_path = f'/dev/{hid}'
-                            _gpio = self._ptt_channel  # AIOC channel maps directly to CM108 GPIO
-                            _ptt_line = f'PTT CM108 {_hid_path} {_gpio}\n'
-                            print(f'  [Link] Direwolf PTT: CM108 {_hid_path} GPIO {_gpio}', flush=True)
-                            break
-        except Exception:
-            pass
-
-        # Generate config — TX audio + PTT + AGW for Winlink connected mode
-        conf = (
-            f"ADEVICE {aioc_dev} {aioc_dev}\n"
-            f"ARATE 48000\n"
-            f"ACHANNELS 1\n\n"
-            f"CHANNEL 0\n"
-            f"MYCALL {self._dw_callsign}\n"
-            f"MODEM {self._dw_modem}\n\n"
-            f"{_ptt_line}"
-            f"FIX_BITS 1\n\n"
-            f"KISSPORT {self._dw_kiss_port}\n"
-            f"AGWPORT 8010\n\n"
-            f"DIGIPEAT 0 0 ^WIDE[3-7]-[1-7]$|^TEST$ ^WIDE[12]-[12]$\n"
-        )
-        try:
-            with open(self._direwolf_conf_path, 'w') as f:
-                f.write(conf)
-        except Exception as e:
-            print(f"  [Link] AIOCPlugin: config write error: {e}", flush=True)
-            return False
-
-        # Spawn Direwolf
-        try:
-            self._direwolf_proc = _sp.Popen(
-                [self._direwolf_path, '-c', self._direwolf_conf_path, '-t', '0'],
-                stdout=_sp.PIPE, stderr=_sp.STDOUT, bufsize=0,
-            )
-            print(f"  [Link] AIOCPlugin: Direwolf started (PID {self._direwolf_proc.pid}, "
-                  f"KISS port {self._dw_kiss_port})", flush=True)
-            # Start log reader thread
-            threading.Thread(target=self._direwolf_log_reader, daemon=True,
-                             name="DirewolfLog").start()
-            return True
-        except Exception as e:
-            print(f"  [Link] AIOCPlugin: Direwolf start error: {e}", flush=True)
-            return False
-
-    def _stop_direwolf(self):
-        """Stop Direwolf subprocess if running.
-        Also kills any orphaned direwolf processes from previous sessions."""
-        import signal as _sig, subprocess as _sp
-        if self._direwolf_proc:
-            try:
-                self._direwolf_proc.send_signal(_sig.SIGTERM)
-                self._direwolf_proc.wait(timeout=5)
-            except Exception:
-                try:
-                    self._direwolf_proc.kill()
-                    self._direwolf_proc.wait(timeout=2)
-                except Exception:
-                    pass
-            print(f"  [Link] AIOCPlugin: Direwolf stopped", flush=True)
-            self._direwolf_proc = None
-        # Kill any orphaned direwolf processes (e.g. from previous endpoint restart)
-        try:
-            _sp.run(['pkill', '-x', 'direwolf'], capture_output=True)
-        except Exception:
-            pass
-
-    def _direwolf_log_reader(self):
-        """Read Direwolf stdout, print locally, and forward to gateway.
-        When Direwolf exits unexpectedly (crash/hang) while still in data mode,
-        restart it automatically."""
-        proc = self._direwolf_proc
-        if not proc or not proc.stdout:
-            return
-        try:
-            for line in iter(proc.stdout.readline, b''):
-                if not line:
-                    break
-                text = line.decode('utf-8', errors='replace').rstrip()
-                if text:
-                    print(f"  [Direwolf] {text}", flush=True)
-                    client = getattr(self, '_link_client', None)
-                    if client and client.connected:
-                        try:
-                            client.send_status({"type": "direwolf_log", "line": text})
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-
-        # If we are still in data mode, Direwolf exited unexpectedly — restart it
-        if self._mode == 'data' and self._direwolf_proc is proc:
-            print("  [Link] AIOCPlugin: Direwolf exited unexpectedly — restarting", flush=True)
-            self._direwolf_proc = None
-            time.sleep(2)
-            if self._mode == 'data':   # check again after sleep
-                self._start_direwolf()
+    # Direwolf launch/teardown moved to gateway-side packet_tnc.py. AIOCPlugin
+    # still releases its ALSA streams when entering 'data' mode so direwolf
+    # (running on the gateway) has exclusive device access; orchestration is
+    # owned by packet_radio.py.
 
     def _set_ptt(self, state_on):
         """Key or unkey the radio via AIOC HID GPIO."""

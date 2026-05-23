@@ -699,6 +699,7 @@ class WebConfigServer:
                 '/voice': 'voice.html',
                 '/routing': 'routing.html',
                 '/packet': 'packet.html',
+                '/processes': 'processes.html',
                 '/gdrive': 'gdrive.html',
                 '/manager': 'manager.html',
                 '/test': 'test.html',
@@ -761,6 +762,8 @@ class WebConfigServer:
                     _rg.handle_ic7100status(self, parent)
                 elif self.path == '/kv4pstatus':
                     _rg.handle_kv4pstatus(self, parent)
+                elif self.path == '/api/processes':
+                    _rg.handle_api_processes(self, parent)
                 elif self.path == '/d75memlist':
                     _rg.handle_d75memlist(self, parent)
                 elif self.path == '/sdrstatus':
@@ -1458,9 +1461,9 @@ class WebConfigServer:
                     # Fallback: plugin has no captures yet
                     sources.append({**{'id': 'sdr', 'name': 'SDR [RX]', 'enabled': True,
                                     'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(_sdr)})
-            if gw.kv4p_plugin:
-                sources.append({**{'id': 'kv4p', 'name': 'KV4P [RX]', 'enabled': True,
-                                'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(gw.kv4p_plugin)})
+            # kv4p endpoints register themselves via the link-endpoints loop
+            # below as 'kv4p_vhf' / 'kv4p_uhf' — no legacy bare-'kv4p' source
+            # any more (would re-inject a phantom node into the routing UI).
             if getattr(gw, 'th9800_plugin', None):
                 sources.append({**{'id': 'aioc', 'name': 'TH-9800 [RX]', 'enabled': True,
                                 'can_rx': True, 'can_tx': False, 'can_ptt': False}, **_src_info(gw.th9800_plugin)})
@@ -1523,8 +1526,8 @@ class WebConfigServer:
                           'enabled': bool(gw.remote_audio_server.connected)})
         # TX-capable radios as destinations
         if gw:
-            if gw.kv4p_plugin:
-                sinks.append({**{'id': 'kv4p_tx', 'name': 'KV4P [TX]', 'type': 'Radio TX', 'enabled': True}, **_tx_sink_info(gw.kv4p_plugin)})
+            # kv4p TX sinks come from the link-endpoints loop below as
+            # 'kv4p_vhf_tx' / 'kv4p_uhf_tx'. Bare 'kv4p_tx' is gone.
             if getattr(gw, 'th9800_plugin', None):
                 sinks.append({**{'id': 'aioc_tx', 'name': 'TH-9800 [TX]', 'type': 'Radio TX', 'enabled': True}, **_tx_sink_info(gw.th9800_plugin)})
             # Link endpoint TX sinks — all dynamic, using pre-computed sink_id
@@ -1951,8 +1954,8 @@ class WebConfigServer:
             'sdr': _sdr,
             'sdr1': getattr(_sdr, '_tuner1', None) if _sdr else None,
             'sdr2': getattr(_sdr, '_tuner2', None) if _sdr else None,
-            'kv4p': gw.kv4p_plugin,
-            'kv4p_tx': gw.kv4p_plugin,
+            # kv4p endpoints are looked up via gw.link_endpoints (kv4p_vhf,
+            # kv4p_uhf, ...) — the legacy bare 'kv4p' id is gone.
             'aioc': getattr(gw, 'th9800_plugin', None),
             'aioc_tx': getattr(gw, 'th9800_plugin', None),
             'playback': getattr(gw, 'playback_source', None),

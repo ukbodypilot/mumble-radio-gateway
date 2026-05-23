@@ -376,8 +376,31 @@ class RadioGateway:
         # TH-9800 CAT control
         self.cat_client = None  # RadioCATClient instance
 
-        # KV4P HT Radio
-        self.kv4p_plugin = None           # KV4PPlugin instance
+        # Shared supervisor for long-running child processes (kv4p loopback
+        # endpoints, cloudflared, pat, mDNS, direwolf, etc.)
+        from process_supervisor import ProcessSupervisor
+        self.process_supervisor = ProcessSupervisor()
+
+        # KV4P endpoints — live entries arrive in self.link_endpoints as the
+        # supervised loopback endpoints connect. gw.kv4p_plugin below is a
+        # live proxy that quacks like the old in-core KV4PPlugin and routes
+        # to the first connected kv4p endpoint; legacy callers can keep
+        # using it. New code should use the helpers in kv4p_endpoints.py.
+        from kv4p_endpoints import install_proxy as _install_kv4p_proxy
+        _install_kv4p_proxy(self)
+
+        # Stub processor object for web_routes_audio.py which still asks
+        # for `gw.kv4p_processor.get_active_list()`. Processing is now
+        # owned by the endpoint plugin, so the gateway-side view is empty.
+        class _NullProc:
+            def get_active_list(self): return []
+        self.kv4p_processor = _NullProc()
+
+        # PacketTNC owns direwolf via the ProcessSupervisor. Constructed
+        # here so packet_radio.py / web handlers can reach it via gw.packet_tnc.
+        from packet_tnc import PacketTNC
+        self.packet_tnc = PacketTNC(self.process_supervisor)
+
         self.packet_plugin = None         # PacketRadioPlugin instance
         self.bus_manager = None           # BusManager (created in _setup_routing)
         self._bus_sinks = {}              # {bus_id: set(sink_ids)} — populated by _setup_routing
@@ -385,8 +408,6 @@ class RadioGateway:
         self._listen_bus_id = 'listen'    # Primary listen bus ID — set by _setup_routing
         self._listen_bus_muted = False    # Primary listen bus mute — set by _setup_routing
         self._muted_sinks = set()         # Set of muted sink IDs
-        self.kv4p_muted = False        # KV4P audio mute toggle
-        self.kv4p_processor = AudioProcessor("kv4p", config)
 
         # Mumble Server instances (local mumble-server/murmurd)
         self.mumble_server_1 = None  # MumbleServerManager instance
@@ -564,12 +585,8 @@ class RadioGateway:
 
     # D75 processing is handled by the link endpoint — no local sync needed
 
-    def _sync_kv4p_plugin_processor(self):
-        """Sync KV4P processing config into the KV4PPlugin's processor."""
-        if self.kv4p_plugin and self.kv4p_plugin._processor:
-            self.kv4p_plugin._sync_processor()
-
-    # process_audio_for_kv4p removed — KV4PPlugin handles processing internally
+    # KV4P processor sync: gone. The endpoint plugin reads its own
+    # processing flags from the [kv4p.<instance>] section at startup.
 
     def process_audio_for_mumble(self, pcm_data):
         """Apply all enabled audio processing to clean up radio audio before sending to Mumble.
@@ -759,8 +776,14 @@ class RadioGateway:
     def set_ptt_state(self, state_on):
         """Control PTT — routes to the configured TX radio plugin."""
         tx_radio = str(getattr(self.config, 'TX_RADIO', 'th9800')).lower()
-        if tx_radio == 'kv4p' and self.kv4p_plugin:
-            self.kv4p_plugin.execute({'cmd': 'ptt', 'state': state_on})
+        # kv4p TX_RADIO values accepted: bare 'kv4p' (first connected kv4p
+        # endpoint) or specific 'kv4p-vhf' / 'kv4p-uhf'. Dispatch via the
+        # kv4p_endpoints helper so the call goes to the right loopback.
+        if tx_radio == 'kv4p' or tx_radio.startswith('kv4p-'):
+            from kv4p_endpoints import execute as _kv4p_execute
+            instance = None if tx_radio == 'kv4p' else tx_radio[len('kv4p-'):]
+            _kv4p_execute(self, {'cmd': 'ptt', 'state': state_on},
+                          instance=instance)
         elif self.th9800_plugin:
             self.th9800_plugin.execute({'cmd': 'ptt', 'state': state_on})
         self.ptt_active = state_on
@@ -844,32 +867,8 @@ class RadioGateway:
             self.notify(f"PTT failed: {e}")
     
     # D75 PTT is handled by the link endpoint — no local PTT code needed
-
-    _kv4p_ptt_on = False  # Track KV4P PTT state
-
-    def _ptt_kv4p(self, state_on):
-        """PTT via KV4P HT serial — direct ptt_on/ptt_off."""
-        cat = getattr(self, 'kv4p_plugin', None)
-        if not cat:
-            if state_on:
-                self.notify("PTT failed: KV4P not connected")
-            return
-        if state_on == self._kv4p_ptt_on:
-            return
-        try:
-            if state_on:
-                cat.ptt_on()
-            else:
-                cat.ptt_off()
-                # Discard any partial Opus frame so it doesn't bleed into next TX
-                if self.kv4p_plugin:
-                    self.kv4p_plugin._tx_buf = b''
-            self._kv4p_ptt_on = state_on
-            if self.config.VERBOSE_LOGGING:
-                print(f"\n[PTT] {'KEYING' if state_on else 'UNKEYING'} radio (KV4P)")
-        except Exception as e:
-            print(f"\n[PTT] KV4P ptt error: {e}")
-            self.notify(f"PTT failed: {e}")
+    # KV4P PTT is also endpoint-hosted now: set_ptt_state() dispatches via
+    # kv4p_endpoints.execute() when TX_RADIO is 'kv4p' / 'kv4p-vhf' / 'kv4p-uhf'.
 
     def sound_received_handler(self, user, soundchunk):
         """Called when audio is received from Mumble server"""
@@ -1261,15 +1260,18 @@ class RadioGateway:
             gs.setup_remote_audio(self)
             gs.setup_announce_input(self)
             gs.setup_web_audio(self)
-            gs.setup_kv4p(self)
-            gs.setup_packet(self)
+            # setup_gateway_link must run BEFORE kv4p loopback endpoints —
+            # the endpoints connect to the link server at 127.0.0.1:9700.
             gs.setup_gateway_link(self)
+            gs.setup_kv4p_loopback_endpoints(self)
+            gs.setup_packet(self)
             gs.setup_mumble_servers(self)
             gs.setup_smart_announce(self)
             gs.setup_web_config(self)
             gs.setup_manager_engine(self)
             gs.setup_ddns(self)
             gs.setup_cloudflare_tunnel(self)
+            gs.setup_supervised_streamers(self)
             gs.setup_email(self)
             gs.setup_gdrive(self)
             gs.setup_gps(self)
@@ -1759,7 +1761,11 @@ class RadioGateway:
                     _aioc_sb_after = -1
                     _aioc_cb_ovf = 0
                     _aioc_cb_drop = 0
-                    _kv4p_snap = self.kv4p_plugin.get_trace_snapshot() if self.kv4p_plugin else {}
+                    # KV4P trace counters used to be filled by the in-core
+                    # plugin's per-tick instrumentation. The endpoint plugin
+                    # no longer reports these to the gateway, so the columns
+                    # stay zero — keep the slot to preserve the CSV layout.
+                    _kv4p_snap = {}
 
                     _trace.append((
                         _tick_start - self._audio_trace_t0,  # 0: time (s)
@@ -1812,7 +1818,10 @@ class RadioGateway:
                         _kv4p_snap.get('tx_dropped', 0),      # 44: PCM bytes dropped (partial-frame remainder)
                         _kv4p_snap.get('tx_input_rms', 0.0),  # 45: RMS of PCM fed to encoder
                         _kv4p_snap.get('tx_errors', 0),       # 46: encoder exceptions
-                        self.announcement_delay_active and not (str(getattr(self.config, 'TX_RADIO', '')).lower() == 'kv4p' and bool(self.kv4p_plugin)),  # 47: TX to KV4P silenced by PTT settle delay (False when TX_RADIO=kv4p, fix in place)
+                        self.announcement_delay_active and not (
+                            (str(getattr(self.config, 'TX_RADIO', '')).lower() == 'kv4p'
+                             or str(getattr(self.config, 'TX_RADIO', '')).lower().startswith('kv4p-'))
+                            and bool(self.kv4p_plugin)),  # 47: TX to KV4P silenced by PTT settle delay (False when TX_RADIO=kv4p*, fix in place)
                         0.0,  # 48: SDR2 sample discontinuity (abs delta)
                         -1,  # 49: SDR2 sub-buffer bytes after serve
                         # === Audio quality diagnostics (50+) ===
@@ -1841,6 +1850,17 @@ class RadioGateway:
         from stream_stats import get_darkice_stats_cached
         return get_darkice_stats_cached(self)
     def _restart_darkice(self):
+        # If supervised, delegate to the supervisor (which respawns the
+        # process itself). Otherwise fall back to the legacy spawn-and-pray
+        # implementation used by external systemd users.
+        if bool(getattr(self.config, 'SUPERVISE_DARKICE', False)) \
+                and self.process_supervisor:
+            try:
+                self.process_supervisor.restart('darkice')
+                self._darkice_restart_count += 1
+                return
+            except KeyError:
+                pass
         from stream_stats import restart_darkice
         restart_darkice(self)
 
@@ -2094,7 +2114,7 @@ class RadioGateway:
                 'hpf':   'KV4P_PROC_ENABLE_HPF',
                 'lpf':   'KV4P_PROC_ENABLE_LPF',
                 'notch': 'KV4P_PROC_ENABLE_NOTCH',
-            }, '_sync_kv4p_plugin_processor'),
+            }, None),  # link endpoint manages its own processing (kv4p is endpoint-hosted)
         }
         entry = _source_map.get(source)
         if not entry:
@@ -2231,7 +2251,11 @@ class RadioGateway:
             'radio_proc': proc,
             'sdr_proc': sdr_proc,
             'd75_proc': self.d75_processor.get_active_list(),
-            'kv4p_proc': self.kv4p_processor.get_active_list(),
+            # kv4p_proc empty: processing moved to endpoint plugins, which
+            # apply their own filters internally. Web UI checkboxes for kv4p
+            # filters still toggle config keys but no longer reflect live
+            # state until the endpoint is restarted.
+            'kv4p_proc': [],
             'smart_countdowns': sa_countdowns,
             'smart_activity': self.smart_announce.get_activity() if self.smart_announce and hasattr(self.smart_announce, 'get_activity') else {},
             'ddns': ddns_status,
@@ -2257,10 +2281,10 @@ class RadioGateway:
             'd75_mode': 'link_endpoint' if _d75_link else 'disabled',
             'd75_level': _d75_link.audio_level if _d75_link else 0,
             'd75_muted': getattr(_d75_link, 'muted', False) if _d75_link else False,
-            'kv4p_enabled': bool(self.kv4p_plugin),
-            'kv4p_level': self.kv4p_plugin.audio_level if self.kv4p_plugin else 0,
-            'kv4p_tx_level': getattr(self.kv4p_plugin, 'tx_audio_level', 0) if self.kv4p_plugin else 0,
-            'kv4p_muted': getattr(self, 'kv4p_muted', False),
+            # kv4p_* aggregate fields reflect the first connected kv4p
+            # endpoint (back-compat with single-instance consumers). For
+            # multi-instance data see status['kv4p_endpoints'] below.
+            **__import__('kv4p_endpoints').aggregate_status(self),
             'gps_enabled': bool(self.gps_manager),
             'repeater_db_enabled': bool(self.repeater_manager),
             'adsb_enabled': getattr(self.config, 'ENABLE_ADSB', False),
@@ -2680,6 +2704,14 @@ class RadioGateway:
         return dump_audio_trace(self)
     def cleanup(self):
         """Clean up resources"""
+        # Reap supervised child processes first (respects per-entry
+        # persist_across_restart so cloudflared stays running)
+        try:
+            if hasattr(self, 'process_supervisor') and self.process_supervisor:
+                self.process_supervisor.shutdown_all(timeout=5.0)
+        except Exception as _e:
+            print(f"\n  [Warning] ProcessSupervisor shutdown error: {_e}")
+
         # Restore terminal settings (keyboard thread is daemon and may not
         # reach its own finally block before the process exits)
         if hasattr(self, '_terminal_settings'):

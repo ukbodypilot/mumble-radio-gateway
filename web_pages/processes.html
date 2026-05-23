@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Processes</title>
+<link rel="stylesheet" href="/pages/common.css">
+<style>
+  table.proc { width: 100%; border-collapse: collapse; font-size: var(--f-sm); }
+  table.proc th, table.proc td {
+    padding: var(--s-1) var(--s-2);
+    border-bottom: 1px solid var(--t-border);
+    text-align: left;
+  }
+  table.proc th { color: var(--t-text-dim); font-weight: 600; text-transform: uppercase; font-size: var(--f-xs); }
+  .state-running   { color: #6c6; }
+  .state-stopped   { color: var(--t-text-dim); }
+  .state-failed    { color: #f66; }
+  .state-pending   { color: #fc6; }
+  .adopted-tag {
+    display: inline-block; padding: 1px 6px; border-radius: var(--r-sm);
+    background: var(--t-btn); color: var(--t-text-dim);
+    font-size: var(--f-xs); margin-left: var(--s-1);
+  }
+  .empty { padding: var(--s-4); text-align: center; color: var(--t-text-dim); }
+  .meta  { color: var(--t-text-dim); font-size: var(--f-xs); margin-top: var(--s-2); }
+</style>
+</head>
+<body class="theme-dark">
+<div class="container">
+  <h2>Supervised Processes</h2>
+  <p class="meta">Auto-refresh every 5s. Source: /api/processes</p>
+  <table class="proc">
+    <thead>
+      <tr>
+        <th>Name</th><th>State</th><th>PID</th>
+        <th>Uptime</th><th>Restarts</th><th>Last exit</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div id="empty" class="empty" style="display:none">
+    No ProcessSupervisor attached — nothing to show.
+  </div>
+</div>
+<script>
+function fmtUptime(s) {
+  if (!s) return '–';
+  if (s < 60) return s.toFixed(0) + 's';
+  if (s < 3600) return (s / 60).toFixed(1) + 'm';
+  if (s < 86400) return (s / 3600).toFixed(1) + 'h';
+  return (s / 86400).toFixed(1) + 'd';
+}
+async function refresh() {
+  let data;
+  try {
+    const r = await fetch('/api/processes', { cache: 'no-store' });
+    data = await r.json();
+  } catch (e) {
+    return;
+  }
+  const tbody = document.getElementById('rows');
+  const empty = document.getElementById('empty');
+  const procs = data.processes || {};
+  const names = Object.keys(procs).sort();
+  if (!data.supervisor || names.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    empty.textContent = data.supervisor
+      ? 'No processes registered.'
+      : 'No ProcessSupervisor attached — nothing to show.';
+    return;
+  }
+  empty.style.display = 'none';
+  const rows = names.map(name => {
+    const p = procs[name];
+    const stateClass = 'state-' + (p.state || 'pending');
+    const adopted = p.adopted ? '<span class="adopted-tag">adopted</span>' : '';
+    return `<tr>
+      <td><code>${name}</code>${adopted}</td>
+      <td class="${stateClass}">${p.state || ''}</td>
+      <td>${p.pid || '–'}</td>
+      <td>${fmtUptime(p.uptime)}</td>
+      <td>${p.restart_count || 0}</td>
+      <td>${p.last_exit === null ? '–' : p.last_exit}</td>
+    </tr>`;
+  });
+  tbody.innerHTML = rows.join('');
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

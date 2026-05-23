@@ -171,18 +171,24 @@ def _resolve_freq_tag(gateway, source_id):
                         return f'{khz / 1000:.3f}'
                     except ValueError:
                         return text
-        if source_id == 'kv4p':
-            kv = getattr(gateway, 'kv4p_plugin', None)
-            if kv:
-                return f'{kv._frequency:.3f}'
+        # kv4p endpoints are caught by the generic link endpoint loop below
+        # (their source_id is 'kv4p_vhf' etc. and frequency is in the cached
+        # status dict). No special-case kv4p branch needed any more.
         for name, _ep_src in getattr(gateway, 'link_endpoints', {}).items():
             if getattr(_ep_src, 'source_id', None) == source_id:
-                    status = getattr(gateway, '_link_last_status', {}).get(name, {})
-                    bands = status.get('band', [])
-                    if bands:
-                        freq = bands[0].get('frequency', '')
-                        if freq:
-                            return str(freq)
+                status = getattr(gateway, '_link_last_status', {}).get(name, {})
+                bands = status.get('band', [])
+                if bands:
+                    freq = bands[0].get('frequency', '')
+                    if freq:
+                        return str(freq)
+                # Flat 'frequency' field (kv4p endpoint emits this)
+                freq = status.get('frequency', '')
+                if freq:
+                    try:
+                        return f'{float(freq):.3f}'
+                    except (TypeError, ValueError):
+                        return str(freq)
     except Exception:
         pass
     return ''

@@ -236,28 +236,77 @@ def setup_web_audio(gw):
             gw.web_monitor_source = None
 
 
-# ── Phase 8: KV4P plugin ───────────────────────────────────────────────────
+# ── Phase 8: KV4P loopback endpoints ───────────────────────────────────────
 
-def setup_kv4p(gw):
-    gw.kv4p_plugin = None
-    if not getattr(gw.config, 'ENABLE_KV4P', False):
-        return
+import os
+
+
+def setup_kv4p_loopback_endpoints(gw):
+    """Spawn one supervised link_endpoint.py child per [kv4p.*] section.
+
+    Each child connects to the gateway's own link server at 127.0.0.1:LINK_PORT
+    and appears in BusManager / web routing identically to a remote endpoint —
+    so multiple kv4ps (VHF + UHF + ...) are independently routable.
+
+    Legacy [kv4p] config blocks are migrated in place to [kv4p.vhf] on first
+    run; a one-time backup is written to gateway_config.txt.legacy_kv4p.bak.
+    """
+    import os
+    import sys
+    from endpoints_state import migrate_legacy_kv4p_block, read_sections
+
+    # Convert any legacy single-instance config block. Idempotent.
     try:
-        from kv4p_plugin import KV4PPlugin
-        print(f"Initializing KV4P plugin...")
-        gw.kv4p_plugin = KV4PPlugin()
-        if gw.kv4p_plugin.setup(gw.config):
-            gw.kv4p_plugin._stream_trace = gw._stream_trace
-            print("✓ KV4P plugin initialized (routed via bus manager)")
-        else:
-            print("⚠ Warning: KV4P plugin setup failed")
-            gw.kv4p_plugin = None
+        if migrate_legacy_kv4p_block():
+            print("  [KV4P] Migrated legacy [kv4p] block → [kv4p.vhf] "
+                  "(backup: gateway_config.txt.legacy_kv4p.bak)")
     except Exception as e:
-        print(f"⚠ KV4P plugin error: {e}")
-        traceback.print_exc()
-        gw.kv4p_plugin = None
-    if gw.kv4p_plugin and gw.kv4p_plugin._processor:
-        gw.kv4p_processor = gw.kv4p_plugin._processor
+        print(f"  [KV4P] Legacy migration error: {e}")
+
+    sections = read_sections('kv4p')
+    if not sections:
+        return
+
+    link_port = int(getattr(gw.config, 'LINK_PORT', 9700))
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    endpoint_script = os.path.join(repo_root, 'tools', 'link_endpoint.py')
+
+    spawned = 0
+    for instance, cfg in sections.items():
+        if not cfg.get('enable', True):
+            continue
+        name = f'kv4p-{instance}'
+        port_path = cfg.get('port') or cfg.get('device') or '/dev/ttyUSB0'
+
+        # Pass the whole section as JSON so the plugin gets per-instance
+        # knobs (default_freq, ctcss, processing flags, etc.) without
+        # bloating the link_endpoint CLI.
+        import json as _json
+        cfg_json = _json.dumps({k: v for k, v in cfg.items()
+                                if k not in ('enable',)})
+        argv = [
+            sys.executable, endpoint_script,
+            '--server', f'127.0.0.1:{link_port}',
+            '--name', name,
+            '--plugin', 'kv4p',
+            '--device', str(port_path),
+            '--plugin-config-json', cfg_json,
+            '--no-update',
+        ]
+        try:
+            gw.process_supervisor.add(
+                name, argv,
+                cwd=repo_root,
+                restart=True, backoff=(2, 30),
+            )
+            spawned += 1
+            print(f"  [KV4P] Loopback endpoint '{name}' supervised "
+                  f"(port={port_path})")
+        except Exception as e:
+            print(f"  [KV4P] Failed to spawn '{name}': {e}")
+
+    if spawned:
+        print(f"✓ KV4P: {spawned} loopback endpoint(s) spawned")
 
 
 # ── Phase 9: Packet radio (Direwolf TNC) ───────────────────────────────────
@@ -294,6 +343,36 @@ def _make_link_callbacks(gw):
     polluting the module namespace.
     """
     from audio_sources import LinkAudioSource
+    from endpoints_state import (build_restore_commands, extract_state_from_status,
+                                 get_endpoint as _get_saved,
+                                 update_endpoint as _save_state)
+
+    def _is_kv4p(name):
+        return isinstance(name, str) and name.startswith('kv4p-')
+
+    def _push_restore(name):
+        """Send last-known freq/CTCSS/power to a kv4p endpoint after it connects."""
+        saved = _get_saved(name)
+        cmds = build_restore_commands(saved)
+        if not cmds:
+            return
+        # Brief delay so the endpoint-side plugin has finished setup()
+        # before commands start arriving.
+        def _send():
+            time.sleep(1.5)
+            srv = getattr(gw, 'link_server', None)
+            if not srv:
+                return
+            for c in cmds:
+                try:
+                    srv.send_command_to(name, c)
+                    time.sleep(0.2)
+                except Exception as e:
+                    print(f"  [Link] restore '{c.get('cmd')}' "
+                          f"to {name} failed: {e}")
+            print(f"  [Link] Restored {len(cmds)} settings on {name}")
+        threading.Thread(target=_send, daemon=True,
+                         name=f'restore-{name}').start()
 
     def on_register(info):
         name = info.get('name', '')
@@ -308,6 +387,10 @@ def _make_link_callbacks(gw):
         # when the plugin type would collide with a builtin.
         _plugin = info.get('plugin', 'audio')
         src.plugin_type = _plugin
+        # 'kv4p' stays in the set despite there being no in-core kv4p source:
+        # forces every kv4p endpoint to use a sanitized name as routing id
+        # ('kv4p_vhf', 'kv4p_uhf') so they don't fight over the bare 'kv4p'
+        # id. Bus manager + web routing assume this naming.
         _builtin_ids = {
             'aioc', 'kv4p', 'sdr', 'sdr1', 'sdr2',
             'playback', 'loop_playback', 'webmic',
@@ -342,6 +425,8 @@ def _make_link_callbacks(gw):
         gw._link_ptt_active[name] = False
         gw._link_last_status[name] = {}
         gw._link_tx_levels[name] = 0
+        if _is_kv4p(name):
+            _push_restore(name)
         if hasattr(gw, 'bus_manager') and gw.bus_manager:
             try:
                 gw.bus_manager.reload()
@@ -381,6 +466,8 @@ def _make_link_callbacks(gw):
             gw._link_last_status[name] = {}
         if cmd == 'status':
             gw._link_last_status[name].update(result.get('status', result))
+            if _is_kv4p(name):
+                _persist_kv4p(name, result.get('status', result))
             return
         # Any other command — merge its result fields (squelch, rf_power,
         # rit_hz, agc, rx_gain_db, ...) straight into the cached endpoint
@@ -395,19 +482,24 @@ def _make_link_callbacks(gw):
         if not isinstance(status, dict) or status.get('type') == 'heartbeat':
             return
         # Forward Direwolf log lines to packet plugin
-        if status.get('type') == 'direwolf_log' and gw.packet_plugin:
-            gw.packet_plugin._direwolf_log.append(status.get('line', ''))
-            line = status.get('line', '')
-            if 'audio level' in line:
-                m = re.search(r'audio level\s*=\s*(\d+)', line)
-                if m:
-                    gw.packet_plugin._dw_audio_level = int(m.group(1))
-            return
+        # direwolf_log status frames are no longer sent — direwolf is a
+        # gateway-side process now (packet_tnc.py captures its stdout).
         if name not in gw._link_last_status:
             gw._link_last_status[name] = {}
         gw._link_last_status[name].update(status)
         if 'ptt_active' in status:
             gw._link_ptt_active[name] = status['ptt_active']
+        if _is_kv4p(name):
+            _persist_kv4p(name, status)
+
+    def _persist_kv4p(name, status):
+        """Extract persistable fields from a status dict and update state JSON."""
+        try:
+            fields = extract_state_from_status(status)
+            if fields:
+                _save_state(name, fields)
+        except Exception as e:
+            print(f"  [Link] persist {name} state error: {e}")
 
     return on_register, on_disconnect, on_ack, on_endpoint_status
 
@@ -430,6 +522,7 @@ def setup_gateway_link(gw):
             on_disconnect=on_disconnect,
             on_ack=on_ack,
             on_endpoint_status=on_endpoint_status,
+            supervisor=gw.process_supervisor,
         )
         gw.link_server.start()
         print(f"  Gateway Link listening on port {link_port}")
@@ -515,13 +608,76 @@ def setup_ddns(gw):
         print(f"  [DDNS] Init error: {e}")
 
 
+def setup_supervised_streamers(gw):
+    """Register darkice / mumble-server with ProcessSupervisor when opted in.
+
+    Defaults are off — both services keep their existing systemd-managed
+    behaviour. When SUPERVISE_DARKICE=true (or SUPERVISE_MUMBLE=true), the
+    gateway becomes the supervisor, restarts the service on death, and the
+    auto-restart loops in stream_stats.py / monitor code stop firing.
+    """
+    sup = getattr(gw, 'process_supervisor', None)
+    if not sup:
+        return
+
+    if bool(getattr(gw.config, 'SUPERVISE_DARKICE', False)):
+        try:
+            sup.add(
+                'darkice',
+                ['darkice', '-c', '/etc/darkice.cfg'],
+                restart=True, backoff=(5, 60),
+            )
+            print("  [Stream] darkice supervised (auto-restart on death)")
+        except ValueError:
+            pass
+        except Exception as e:
+            print(f"  [Stream] darkice supervisor add failed: {e}")
+
+    if bool(getattr(gw.config, 'SUPERVISE_MUMBLE', False)):
+        # mumble-server-gw1.service / -gw2 are still defined; flipping this
+        # flag tells the supervisor to spawn murmurd directly so the gateway
+        # owns the process. Requires running as root or with sudoers entries.
+        import shutil
+        murmurd = (shutil.which('murmurd') or shutil.which('mumble-server')
+                   or '/usr/bin/mumble-server')
+        for n in (1, 2):
+            cfg = f'/etc/mumble-server-gw{n}.ini'
+            if not os.path.exists(cfg):
+                continue
+            try:
+                sup.add(
+                    f'mumble-gw{n}',
+                    [murmurd, '-fg', '-ini', cfg],
+                    restart=True, backoff=(5, 60),
+                    run_as_user='_mumble-server',  # falls back to 'mumble-server'
+                )
+                print(f"  [Stream] mumble-gw{n} supervised")
+            except ValueError as e:
+                if 'unknown user' in str(e):
+                    try:
+                        sup.add(
+                            f'mumble-gw{n}',
+                            [murmurd, '-fg', '-ini', cfg],
+                            restart=True, backoff=(5, 60),
+                            run_as_user='mumble-server',
+                        )
+                        print(f"  [Stream] mumble-gw{n} supervised "
+                              f"(as 'mumble-server')")
+                    except Exception as e2:
+                        print(f"  [Stream] mumble-gw{n} supervisor add failed: {e2}")
+            except Exception as e:
+                print(f"  [Stream] mumble-gw{n} supervisor add failed: {e}")
+
+
 def setup_cloudflare_tunnel(gw):
     if not getattr(gw.config, 'ENABLE_CLOUDFLARE_TUNNEL', False):
         return
     try:
         from gateway_utils import CloudflareTunnel
         gw.cloudflare_tunnel = CloudflareTunnel(
-            gw.config, on_url_changed=gw._on_tunnel_url_changed)
+            gw.config,
+            on_url_changed=gw._on_tunnel_url_changed,
+            supervisor=gw.process_supervisor)
         gw.cloudflare_tunnel.start()
     except Exception as e:
         print(f"  [Tunnel] Init error: {e}")

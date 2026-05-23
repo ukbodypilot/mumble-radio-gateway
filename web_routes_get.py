@@ -452,15 +452,45 @@ def handle_ic7100status(handler, parent):
         pass
 
 
+def handle_api_processes(handler, parent):
+    """GET /api/processes — every ProcessSupervisor entry's state."""
+    data = {'supervisor': False, 'processes': {}}
+    gw = parent.gateway
+    if gw and getattr(gw, 'process_supervisor', None):
+        data['supervisor'] = True
+        try:
+            data['processes'] = gw.process_supervisor.status_all()
+        except Exception as e:
+            data['error'] = str(e)
+    try:
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Cache-Control', 'no-cache')
+        handler.end_headers()
+        handler.wfile.write(json_mod.dumps(data, indent=2).encode('utf-8'))
+    except BrokenPipeError:
+        pass
+
+
 def handle_kv4pstatus(handler, parent):
-    """GET /kv4pstatus"""
-    # KV4P status JSON endpoint — served by KV4PPlugin
+    """GET /kv4pstatus[?instance=vhf]"""
+    # Cached status from a specific kv4p endpoint (or the first connected).
+    import urllib.parse as _up
     data = {'connected': False, 'kv4p_enabled': False}
-    if parent.gateway:
-        data['kv4p_enabled'] = getattr(parent.gateway.config, 'ENABLE_KV4P', False)
-        _kv4p_p = getattr(parent.gateway, 'kv4p_plugin', None)
-        if _kv4p_p:
-            data.update(_kv4p_p.get_status())
+    gw = parent.gateway
+    if gw:
+        from kv4p_endpoints import find_endpoint, first_endpoint_name, list_endpoints
+        qs = _up.urlparse(handler.path).query
+        instance = _up.parse_qs(qs).get('instance', [''])[0]
+        ep = find_endpoint(gw, instance) if instance else find_endpoint(gw, None)
+        data['kv4p_enabled'] = bool(list_endpoints(gw))
+        if ep is not None:
+            ep_name = (f'kv4p-{instance}' if instance else first_endpoint_name(gw))
+            cached = (getattr(gw, '_link_last_status', {}) or {}).get(ep_name, {})
+            data.update(cached)
+            data['connected'] = bool(getattr(ep, 'server_connected', False))
+            data['instance'] = (instance or
+                                (ep_name[len('kv4p-'):] if ep_name and ep_name.startswith('kv4p-') else ''))
     try:
         handler.send_response(200)
         handler.send_header('Content-Type', 'application/json')

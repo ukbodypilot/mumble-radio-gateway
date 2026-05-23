@@ -422,6 +422,11 @@ class Config:
             'SDR_INTERNAL_AUTOSTART': True,    # Auto-start internal SDR (rtl_airband) on gateway startup
             'SDR_INTERNAL_AUTOSTART_CHANNEL': 1,   # Channel slot to recall on autostart (-1 = use last settings)
             'ENABLE_CLOUDFLARE_TUNNEL': False,
+            # ProcessSupervisor opt-ins. Default false → existing systemd /
+            # manual handling stays in charge. Setting true makes the gateway
+            # supervise the service: respawn on death, status in /processes.
+            'SUPERVISE_DARKICE': False,
+            'SUPERVISE_MUMBLE': False,
             # Email notifications (Gmail SMTP)
             'ENABLE_EMAIL': False,
             'EMAIL_ADDRESS': '',          # Gmail address (sender)

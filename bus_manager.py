@@ -47,6 +47,9 @@ class TickContext:
     link_server: object
     web_config_server: object
     th9800_plugin: object
+    # kv4p_plugin retained as a proxy field for any in-tick code still
+    # calling .audio_level / .execute(). Real per-endpoint TX/RX access
+    # goes through link_endpoints below.
     kv4p_plugin: object
     # Routing snapshot (frozenset / dict copy — caller mustn't mutate)
     muted_sinks: frozenset
@@ -562,10 +565,10 @@ class BusManager:
                 source_map['sdr'] = (_sdr, 11, getattr(gw.config, 'SDR_DUCK', True))
         if getattr(gw, 'th9800_plugin', None):
             source_map['aioc'] = (gw.th9800_plugin, 1, False)
-        if gw.kv4p_plugin:
-            source_map['kv4p'] = (gw.kv4p_plugin,
-                                  int(getattr(gw.config, 'KV4P_AUDIO_PRIORITY', 2)) + 10,
-                                  getattr(gw.config, 'KV4P_AUDIO_DUCK', True))
+        # kv4p has no in-core source any more — each kv4p endpoint registers
+        # itself via gw.link_endpoints below and gets a routing id like
+        # 'kv4p_vhf' / 'kv4p_uhf' from the generic endpoint loop. The legacy
+        # bare 'kv4p' source id is gone.
         if getattr(gw, 'playback_source', None):
             source_map['playback'] = (gw.playback_source, 0, False)
         if getattr(gw, 'loop_playback_source', None):
@@ -976,15 +979,12 @@ class BusManager:
             print(f"  [BusManager] Created {bus_type} bus: {bus_name}")
 
     def _get_radio_plugin(self, sink_id):
-        """Get a radio plugin by its sink ID (e.g. 'kv4p_tx' → kv4p_plugin)."""
+        """Get a radio plugin by its sink ID (e.g. 'kv4p_vhf_tx' → endpoint)."""
         gw = self.gateway
-        if sink_id == 'kv4p_tx' and gw.kv4p_plugin:
-            return gw.kv4p_plugin
-        elif sink_id in ('aioc_tx', 'aioc') and getattr(gw, 'th9800_plugin', None):
+        if sink_id in ('aioc_tx', 'aioc') and getattr(gw, 'th9800_plugin', None):
             return gw.th9800_plugin
-        elif sink_id == 'kv4p' and gw.kv4p_plugin:
-            return gw.kv4p_plugin
-        # Link endpoint lookup by source_id or sink_id
+        # Link endpoint lookup by source_id or sink_id (covers all kv4p
+        # endpoints as kv4p_vhf / kv4p_vhf_tx / kv4p_uhf / kv4p_uhf_tx)
         for name, src in gw.link_endpoints.items():
             if getattr(src, 'sink_id', None) == sink_id:
                 return src
@@ -1004,8 +1004,9 @@ class BusManager:
             if getattr(gw.sdr_plugin, '_tuner1', None):
                 return gw.sdr_plugin._tuner1
             return gw.sdr_plugin
-        elif source_id == 'kv4p' and gw.kv4p_plugin:
-            return gw.kv4p_plugin
+        # 'kv4p' as a bare source_id no longer exists — kv4p endpoints
+        # appear as 'kv4p_vhf' / 'kv4p_uhf' and are handled by the link
+        # endpoint loop below.
         elif source_id == 'aioc' and getattr(gw, 'th9800_plugin', None):
             return gw.th9800_plugin
         elif source_id == 'playback' and getattr(gw, 'playback_source', None):
@@ -1174,7 +1175,7 @@ class BusManager:
             # Radio TX sinks — SoloBus Phase 3 already calls put_audio(),
             # so here we only track TX level for the routing page display.
             # Listen bus: actually send audio to link endpoints via link_server.
-            elif sink_id in ('kv4p_tx', 'aioc_tx') or self._get_radio_plugin(sink_id):
+            elif sink_id == 'aioc_tx' or self._get_radio_plugin(sink_id):
                 for _eln, _els in ctx.link_endpoints.items():
                     if getattr(_els, 'sink_id', None) == sink_id:
                         # Send audio to link endpoint for TX
@@ -1519,9 +1520,12 @@ class BusManager:
             if _tick_num % 4 == 0:
                 for _ln in list(self._link_tx_meters):
                     self._link_tx_meters[_ln] = max(0, int(self._link_tx_meters[_ln] * 0.8))
-                if gw.kv4p_plugin:
-                    gw.kv4p_plugin.tx_audio_level = max(
-                        0, int(getattr(gw.kv4p_plugin, 'tx_audio_level', 0) * 0.8))
+                # Decay each link endpoint's own tx_audio_level (covers all
+                # kv4p endpoints + any other endpoint-hosted radio).
+                for _src in (getattr(gw, 'link_endpoints', {}) or {}).values():
+                    _cur = getattr(_src, 'tx_audio_level', 0)
+                    if _cur:
+                        _src.tx_audio_level = max(0, int(_cur * 0.8))
                 if getattr(gw, 'th9800_plugin', None):
                     gw.th9800_plugin.tx_audio_level = max(
                         0, int(getattr(gw.th9800_plugin, 'tx_audio_level', 0) * 0.8))

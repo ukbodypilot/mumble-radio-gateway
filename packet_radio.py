@@ -55,7 +55,7 @@ class PacketRadioPlugin:
         self._config = None
         self._gateway = None
         self._mode = 'idle'           # idle / aprs / winlink / bbs
-        self._direwolf_log = collections.deque(maxlen=200)
+        # direwolf log lives in gateway.packet_tnc.log_tail now.
         self._running = False
 
         # KISS connection to remote Direwolf
@@ -63,7 +63,8 @@ class PacketRadioPlugin:
         self._kiss_connected = False
 
         # Pat Winlink client subprocess
-        self._pat_proc = None
+        # pat lifecycle is owned by gateway's ProcessSupervisor under
+        # name 'pat'. self._pat_proc is no longer used.
 
         # Packet data
         self._decoded_packets = collections.deque(maxlen=500)
@@ -77,8 +78,7 @@ class PacketRadioPlugin:
         self._start_time = None
 
         # Config values (set in setup)
-        self._dw_audio_level = 0        # Direwolf's reported audio level
-        self._dw_audio_peak = ''
+        # direwolf audio_level/peak live in gateway.packet_tnc now.
         self._callsign = 'N0CALL'
         self._ssid = 0
         self._modem_rate = 1200
@@ -407,38 +407,63 @@ class PacketRadioPlugin:
         }
 
     def _start_pat(self):
-        """Start Pat Winlink client as a subprocess."""
-        import subprocess, shutil
+        """Start Pat Winlink client via the gateway's ProcessSupervisor."""
+        import shutil
         pat_bin = shutil.which('pat')
         if not pat_bin:
             print("  [Packet] Pat not found — install from https://getpat.io/")
             return False
-        if self._pat_proc and self._pat_proc.poll() is None:
-            return True  # already running
+        sup = getattr(self._gateway, 'process_supervisor', None) if self._gateway else None
+        if not sup:
+            print("  [Packet] No process supervisor — cannot start pat")
+            return False
         try:
-            self._pat_proc = subprocess.Popen(
-                [pat_bin, 'http'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"  [Packet] Pat started (PID {self._pat_proc.pid}, web UI on port {self._pat_port})")
+            sup.add('pat', [pat_bin, 'http'], restart=True, backoff=(2, 30))
+            print(f"  [Packet] Pat supervised (web UI on port {self._pat_port})")
+            return True
+        except ValueError:
+            sup.restart('pat')
             return True
         except Exception as e:
             print(f"  [Packet] Pat start failed: {e}")
             return False
 
     def _stop_pat(self):
-        """Stop Pat subprocess."""
-        if self._pat_proc:
-            try:
-                self._pat_proc.terminate()
-                self._pat_proc.wait(timeout=5)
-            except Exception:
-                try:
-                    self._pat_proc.kill()
-                    self._pat_proc.wait(timeout=2)
-                except Exception:
-                    pass
-            print(f"  [Packet] Pat stopped")
-            self._pat_proc = None
+        """Stop the supervised pat process (gateway shutdown also reaps it)."""
+        sup = getattr(self._gateway, 'process_supervisor', None) if self._gateway else None
+        if not sup:
+            return
+        try:
+            sup.stop('pat')
+            print("  [Packet] Pat stopped")
+        except KeyError:
+            pass
+        except Exception as e:
+            print(f"  [Packet] Pat stop error: {e}")
+
+    def _tnc_status_fields(self):
+        """Pull direwolf state from gateway.packet_tnc for status dicts."""
+        tnc = getattr(self._gateway, 'packet_tnc', None) if self._gateway else None
+        if not tnc:
+            return {"dw_audio_level": 0, "dw_audio_peak": 0, "log_tail": []}
+        s = tnc.status()
+        return {
+            "dw_audio_level": s.get('audio_level', 0),
+            "dw_audio_peak": s.get('audio_peak', 0),
+            "log_tail": s.get('log_tail', []),
+        }
+
+    def _is_pat_running(self):
+        """Ask the supervisor whether pat is alive."""
+        sup = getattr(self._gateway, 'process_supervisor', None) if self._gateway else None
+        if not sup:
+            return False
+        try:
+            return bool(sup.status('pat').get('pid'))
+        except KeyError:
+            return False
+        except Exception:
+            return False
 
     def teardown(self):
         """Stop everything and clean up."""
@@ -507,11 +532,10 @@ class PacketRadioPlugin:
             "uptime": round(time.monotonic() - self._start_time, 1) if self._start_time else 0,
             "rx_audio_level": 0,
             "tx_audio_level": 0,
-            "dw_audio_level": self._dw_audio_level,
-            "dw_audio_peak": self._dw_audio_peak,
+            # Direwolf state pulled live from gateway-side packet_tnc
+            **self._tnc_status_fields(),
             "pat_port": self._pat_port,
-            "pat_running": self._pat_proc is not None and self._pat_proc.poll() is None,
-            "log_tail": list(self._direwolf_log)[-15:],
+            "pat_running": self._is_pat_running(),
             "endpoint": ep,
             "endpoint_active": self._find_endpoint(),
             "endpoint_pref": self._endpoint_pref,
@@ -535,6 +559,12 @@ class PacketRadioPlugin:
 
         if mode == 'idle':
             self._stop_pat()
+            # Stop gateway-side direwolf before releasing the endpoint's
+            # ALSA — the order matters so direwolf doesn't briefly clutch
+            # at a soon-to-be-shared device.
+            tnc = getattr(self._gateway, 'packet_tnc', None)
+            if tnc:
+                tnc.stop()
             if not self._send_endpoint_mode('audio'):
                 return {"ok": False, "mode": "idle",
                         "warning": "mode set to idle but failed to send audio command to endpoint"}
@@ -544,10 +574,16 @@ class PacketRadioPlugin:
             self._mode = 'idle'
             return {"ok": False, "error": "No AIOC endpoint connected for packet radio"}
 
-        # Tell endpoint to switch to data mode (starts Direwolf)
+        # Tell endpoint to release its ALSA stream (data mode = no arecord/aplay)
         if not self._send_endpoint_mode('data'):
             self._mode = 'idle'
             return {"ok": False, "error": "failed to send data mode command to endpoint"}
+        # Then start gateway-side direwolf against the AIOC device.
+        tnc = getattr(self._gateway, 'packet_tnc', None)
+        if tnc:
+            tnc.start(callsign=self._callsign, ssid=self._ssid,
+                      modem=self._modem_rate, kiss_port=self._kiss_port,
+                      ptt_channel=int(getattr(self._config, 'AIOC_PTT_CHANNEL', 3)))
         # Connect KISS TCP to remote Direwolf
         threading.Thread(target=self._kiss_connect_loop, daemon=True,
                          name="KISSConnect").start()
@@ -562,7 +598,7 @@ class PacketRadioPlugin:
         Tests the remote KISS port (not the local AGWPE proxy) to avoid
         opening a spurious AGWPE session that would trigger a Direwolf restart."""
         import socket as _sock
-        if self._pat_proc and self._pat_proc.poll() is None:
+        if self._is_pat_running():
             return  # already running
         ep_ip = self._get_endpoint_ip()
         if ep_ip:
@@ -713,7 +749,9 @@ class PacketRadioPlugin:
 
             self._decoded_packets.append(pkt)
         except Exception as e:
-            self._direwolf_log.append(f"[parse-err] {e}")
+            tnc = getattr(self._gateway, 'packet_tnc', None) if self._gateway else None
+            if tnc:
+                tnc._log_tail.append(f"[parse-err] {e}")
 
     # ── APRS handling ─────────────────────────────────────────────────
 

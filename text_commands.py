@@ -680,9 +680,10 @@ def handle_key(gw, char):
             gw._trace_events.append((time.monotonic(), 'spk_mute', 'on' if gw.speaker_muted else 'off'))
     elif char == 'y':
         if gw.kv4p_plugin:
-            gw.kv4p_muted = not gw.kv4p_muted
-            gw.kv4p_plugin.muted = gw.kv4p_muted
-            gw._trace_events.append((time.monotonic(), 'kv4p_mute', 'on' if gw.kv4p_muted else 'off'))
+            # Toggle mute on the first connected kv4p endpoint via the proxy
+            new_state = not gw.kv4p_plugin.muted
+            gw.kv4p_plugin.muted = new_state
+            gw._trace_events.append((time.monotonic(), 'kv4p_mute', 'on' if new_state else 'off'))
     elif char == 'l':
         if gw.cat_client:
             def _send_cat_config():

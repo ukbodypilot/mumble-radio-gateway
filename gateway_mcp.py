@@ -858,21 +858,27 @@ def d75_frequency(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def kv4p_status() -> str:
+def kv4p_status(instance: str = '') -> str:
     """
     Get KV4P HT radio status: USB connection state, frequency, squelch,
     CTCSS tones, power level, bandwidth, and audio levels.
+
+    Args:
+        instance: which kv4p endpoint to query (e.g. 'vhf', 'uhf'). Empty
+                  returns the first connected kv4p endpoint.
     """
-    return json.dumps(_get('/kv4pstatus'), indent=2)
+    qs = f'?instance={instance}' if instance else ''
+    return json.dumps(_get(f'/kv4pstatus{qs}'), indent=2)
 
 
 @mcp.tool()
 def kv4p_command(
     cmd: str,
     args: str = '',
+    instance: str = '',
 ) -> str:
     """
-    Send a command to the KV4P HT radio.
+    Send a command to a KV4P HT radio.
 
     Args:
         cmd:  Command name — one of:
@@ -886,13 +892,18 @@ def kv4p_command(
               'vol'       — Set audio boost 0-500%
               'reconnect' — Reconnect USB device
         args: Value for the command.
+        instance: which kv4p endpoint to target (e.g. 'vhf', 'uhf'). Empty
+                  routes to the first connected kv4p endpoint.
     """
     cmd = cmd.lower().strip()
     valid = ('freq', 'txfreq', 'squelch', 'ctcss', 'bandwidth', 'power',
              'ptt', 'vol', 'reconnect')
     if cmd not in valid:
         return f"Error: cmd must be one of: {', '.join(valid)}"
-    result = _post('/kv4pcmd', {'cmd': cmd, 'args': args}, timeout=10)
+    payload = {'cmd': cmd, 'args': args}
+    if instance:
+        payload['instance'] = instance
+    result = _post('/kv4pcmd', payload, timeout=10)
     if result.get('ok'):
         resp = result.get('response', '')
         return f"KV4P {cmd} OK" + (f': {resp}' if resp else '')

@@ -229,17 +229,50 @@ def handle_kv4pcmd(handler, parent):
     result = {'ok': False, 'error': 'KV4P plugin not available'}
     try:
         data = json_mod.loads(body)
-        _kv4p_p = getattr(parent.gateway, 'kv4p_plugin', None) if parent.gateway else None
-        if _kv4p_p:
+        gw = parent.gateway
+        from kv4p_endpoints import execute as _kv4p_execute, find_endpoint, first_endpoint_name
+        instance = data.get('instance') or ''
+        ep_name = (f'kv4p-{instance}' if instance else first_endpoint_name(gw))
+        _ep_src = find_endpoint(gw, instance) if instance else find_endpoint(gw, None)
+        cached_status = (getattr(gw, '_link_last_status', {}) or {}).get(ep_name, {}) if ep_name else {}
+
+        def _send(payload):
+            return _kv4p_execute(gw, payload, instance=instance or None)
+
+        if _ep_src:
             cmd = data.get('cmd', '')
             args = data.get('args', '')
+
+            def _as_float(s, field):
+                if s is None or str(s).strip() == '':
+                    raise ValueError(f"{field} required (got empty value)")
+                try:
+                    return float(str(s).strip())
+                except ValueError:
+                    raise ValueError(f"{field} must be a number (use dot decimal, e.g. 147.500)")
+
+            def _as_int(s, field):
+                if s is None or str(s).strip() == '':
+                    raise ValueError(f"{field} required (got empty value)")
+                try:
+                    return int(float(str(s).strip()))
+                except ValueError:
+                    raise ValueError(f"{field} must be an integer")
+
             # Map web UI command format to plugin execute format
             if cmd == 'freq':
-                result = _kv4p_p.execute({'cmd': 'freq', 'frequency': float(args)})
+                result = _send({'cmd': 'freq',
+                                'frequency': _as_float(args, 'frequency')})
             elif cmd == 'txfreq':
-                result = _kv4p_p.execute({'cmd': 'freq', 'frequency': _kv4p_p._frequency, 'tx_frequency': float(args)})
+                try:
+                    current_rx = float(cached_status.get('frequency', 0))
+                except (TypeError, ValueError):
+                    current_rx = 0.0
+                result = _send({'cmd': 'freq', 'frequency': current_rx,
+                                'tx_frequency': _as_float(args, 'tx_frequency')})
             elif cmd == 'squelch':
-                result = _kv4p_p.execute({'cmd': 'squelch', 'level': int(args)})
+                result = _send({'cmd': 'squelch',
+                                'level': _as_int(args, 'squelch level')})
             elif cmd == 'ctcss':
                 _ctcss_hz = ["67.0","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
                     "91.5","94.8","97.4","100.0","103.5","107.2","110.9","114.8","118.8","123.0",
@@ -256,37 +289,46 @@ def handle_kv4pcmd(handler, parent):
                 parts = str(args).split()
                 tx = _hz_to_code(parts[0]) if len(parts) > 0 else 0
                 rx = _hz_to_code(parts[1]) if len(parts) > 1 else tx
-                result = _kv4p_p.execute({'cmd': 'ctcss', 'tx': tx, 'rx': rx})
+                result = _send({'cmd': 'ctcss', 'tx': tx, 'rx': rx})
             elif cmd == 'bandwidth':
-                result = _kv4p_p.execute({'cmd': 'bandwidth', 'wide': str(args).lower() in ('1', 'wide', 'true')})
+                result = _send({'cmd': 'bandwidth',
+                                'wide': str(args).lower() in ('1', 'wide', 'true')})
             elif cmd == 'power':
-                result = _kv4p_p.execute({'cmd': 'power', 'high': str(args).lower() in ('1', 'high', 'true', 'h')})
+                result = _send({'cmd': 'power',
+                                'high': str(args).lower() in ('1', 'high', 'true', 'h')})
             elif cmd == 'ptt':
-                result = _kv4p_p.execute({'cmd': 'ptt', 'state': not _kv4p_p._transmitting})
+                current_tx = bool(cached_status.get('transmitting', False))
+                result = _send({'cmd': 'ptt', 'state': not current_tx})
             elif cmd == 'smeter':
-                if _kv4p_p._radio:
-                    _kv4p_p._radio.enable_smeter(str(args).lower() in ('1', 'true', 'on', ''))
-                result = {'ok': True}
+                # smeter toggle now lives in plugin.execute()
+                result = _send({'cmd': 'status'})  # forces a status refresh
             elif cmd == 'vol':
-                result = _kv4p_p.execute({'cmd': 'boost', 'value': int(args) / 100.0})
+                result = _send({'cmd': 'boost',
+                                'value': _as_int(args, 'volume') / 100.0})
             elif cmd == 'testtone':
-                result = _kv4p_p.execute({'cmd': 'testtone', 'frequency': float(args) if args else 440})
+                result = _send({'cmd': 'testtone',
+                                'frequency': float(args) if args else 440})
             elif cmd == 'record':
-                result = _kv4p_p.execute({'cmd': 'capture'})
+                result = _send({'cmd': 'capture'})
             elif cmd == 'reconnect':
-                result = _kv4p_p.execute({'cmd': 'reconnect'})
+                result = _send({'cmd': 'reconnect'})
             else:
-                result = _kv4p_p.execute(data)
+                result = _send(data)
         elif data.get('cmd') == 'reconnect' and parent.gateway:
-            # Reconnect even when plugin is None — recreate it
+            # KV4P is endpoint-hosted now — to force a reconnect, restart the
+            # supervised loopback endpoint. The supervisor will respawn it
+            # and the plugin will re-open the USB serial port.
             try:
-                from kv4p_plugin import KV4PPlugin
-                parent.gateway.kv4p_plugin = KV4PPlugin()
-                if parent.gateway.kv4p_plugin.setup(parent.gateway.config):
-                    result = {'ok': True, 'response': 'Reconnected'}
+                gw = parent.gateway
+                from kv4p_endpoints import first_endpoint_name as _firstname
+                name = _firstname(gw)
+                if not name:
+                    name = 'kv4p-vhf'  # default instance name
+                if gw.process_supervisor:
+                    gw.process_supervisor.restart(name)
+                    result = {'ok': True, 'response': f'Restarted endpoint {name}'}
                 else:
-                    parent.gateway.kv4p_plugin = None
-                    result = {'ok': False, 'error': 'Reconnect failed'}
+                    result = {'ok': False, 'error': 'process supervisor not available'}
             except Exception as e:
                 result = {'ok': False, 'error': str(e)}
     except Exception as e:

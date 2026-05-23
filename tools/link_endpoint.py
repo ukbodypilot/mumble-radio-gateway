@@ -65,9 +65,14 @@ def _load_ic7100():
     from ic7100_link_plugin import IC7100Plugin
     return IC7100Plugin
 
+def _load_kv4p():
+    from kv4p_link_plugin import KV4PPlugin
+    return KV4PPlugin
+
 _LAZY_PLUGINS = {
     'd75':    _load_d75,
     'ic7100': _load_ic7100,
+    'kv4p':   _load_kv4p,
 }
 
 
@@ -328,6 +333,10 @@ def main():
                         help='Sample rate in Hz (default: 48000)')
     parser.add_argument('--gain', type=float, default=1.0,
                         help='Input gain multiplier (default: 1.0)')
+    parser.add_argument('--plugin-config-json', default='',
+                        help='Extra plugin config as JSON (merged into plugin_config dict). '
+                             'Used by kv4p/ic7100/etc. for per-instance knobs '
+                             '(e.g. \'{"default_freq":147.435,"squelch":2}\')')
     parser.add_argument('--status-interval', type=float, default=10.0,
                         help='Status report interval in seconds (default: 10)')
     parser.add_argument('--tunnel-url',
@@ -445,6 +454,16 @@ def main():
         'rate': args.rate,
         'gain': args.gain,
     }
+    if args.plugin_config_json:
+        import json as _json
+        try:
+            extra = _json.loads(args.plugin_config_json)
+            if not isinstance(extra, dict):
+                raise ValueError('--plugin-config-json must decode to a JSON object')
+            plugin_config.update(extra)
+        except Exception as _e:
+            print(f"[Endpoint] --plugin-config-json parse error: {_e}")
+            sys.exit(1)
 
     # Try plugin setup — if it fails, retry in background thread
     _plugin_ready = threading.Event()
