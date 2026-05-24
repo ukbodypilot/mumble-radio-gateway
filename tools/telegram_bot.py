@@ -88,6 +88,11 @@ def _load_config() -> dict:
             k = k.strip(); v = v.strip()
             if k not in cfg:
                 continue
+            # Empty string overrides are almost always a Save-wipe bug
+            # (e.g. web Save dropping unknown keys to blank). Treat as
+            # "unset" so the default still applies.
+            if v == '':
+                continue
             default = cfg[k]
             if isinstance(default, bool):
                 cfg[k] = v.lower() in ('true', '1', 'yes')
@@ -304,7 +309,12 @@ def _inject(session: str, message: str, suffix: str) -> bool:
         # Use tmux load-buffer then paste-buffer for reliable injection
         subprocess.run(['tmux', 'load-buffer', tmp], check=True, timeout=3)
         subprocess.run(['tmux', 'paste-buffer', '-t', session], check=True, timeout=3)
-        subprocess.run(['tmux', 'send-keys', '-t', session, '', 'Enter'], check=True, timeout=3)
+        # paste-buffer wraps the text in bracketed-paste escapes. Claude Code's
+        # TUI needs a moment to leave paste-receiving mode before the Enter
+        # gets interpreted as a submit (otherwise it lands inside the paste
+        # and the prompt sits there waiting for ENTER).
+        time.sleep(0.3)
+        subprocess.run(['tmux', 'send-keys', '-t', session, 'Enter'], check=True, timeout=3)
         return True
     except Exception as e:
         print(f'[telegram] tmux inject error: {e}', flush=True)

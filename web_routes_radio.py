@@ -202,6 +202,15 @@ def handle_ic7100cmd(handler, parent):
         elif cmd == 'status':
             _link.send_command_to(_ep, {'cmd': 'status'})
             result = {'ok': True, 'response': 'status requested'}
+        elif cmd in ('vfo', 'vfo_swap', 'vfo_equalize', 'band',
+                     'memory_mode', 'memory_select', 'call_channel',
+                     'memory_write', 'memory_clear', 'memory_to_vfo',
+                     'memory_read'):
+            # Forward verbatim — the plugin's execute() reads the right keys
+            # (vfo, band, channel, on, ...). Web caller passes whichever
+            # fields apply to the chosen subcommand.
+            _link.send_command_to(_ep, data)
+            result = {'ok': True, 'response': f'{cmd} sent'}
         elif cmd in _IC7100_HF_CMDS:
             # HF / DSP / FM-squelch panel — the GUI payload already carries
             # the right keys (on/hz/mode/level/stage/idx/pct/type/code/...);

@@ -80,6 +80,8 @@ def _load_telegram_config() -> dict:
                 continue
             k, _, v = line.partition('=')
             k = k.strip(); v = v.strip()
+            if v == '':
+                continue  # empty value → leave the default in place
             if k == 'TELEGRAM_BOT_TOKEN':
                 cfg['token'] = v
             elif k == 'TELEGRAM_CHAT_ID':
@@ -908,6 +910,240 @@ def kv4p_command(
         resp = result.get('response', '')
         return f"KV4P {cmd} OK" + (f': {resp}' if resp else '')
     return f"KV4P {cmd} failed: {result.get('error', 'unknown')}"
+
+
+# ---------------------------------------------------------------------------
+# Tools — IC-7100 HF/VHF/UHF Radio
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def ic7100_status() -> str:
+    """
+    Get IC-7100 status: link-endpoint connection, frequency, mode, S-meter,
+    TX/RX state, RF/mic gain, CTCSS, TX antenna-port interlocks, audio levels.
+    """
+    return json.dumps(_get('/ic7100status'), indent=2)
+
+
+@mcp.tool()
+def ic7100_command(cmd: str, args: str = '') -> str:
+    """
+    Send a command to the IC-7100. The radio runs as a link endpoint on MX
+    (192.168.2.134); this tool forwards via the gateway's link server.
+
+    Args:
+        cmd: one of:
+          'ptt'           — toggle PTT (or send state via panel UI)
+          'freq'          — tune RX/TX frequency in MHz (put MHz in args, e.g. '14.234')
+          'mode'          — set mode (args: 'USB' / 'LSB' / 'CW' / 'CW-R' / 'AM' / 'FM' / 'WFM' / 'RTTY' / 'RTTY-R' / 'DV')
+          'ctcss'         — set CTCSS tones (panel format — use ic7100_command via JSON for advanced)
+          'tx_interlock'  — toggle TX antenna-port safety interlocks (hf/vu)
+          'rx_gain'       — set RX gain in dB (put dB in args)
+          'tx_gain'       — set TX gain / mic gain in dB (put dB in args)
+          'mute'          — toggle RX mute
+          'vol'           — set RX listening volume 0-500% (put percent in args)
+          'cat'           — raw CI-V hex passthrough (put hex string in args)
+          'status'        — request a fresh status push
+        args: value for the command (frequency, gain, hex bytes, etc.).
+    """
+    cmd = cmd.lower().strip()
+    valid = ('ptt', 'freq', 'mode', 'ctcss', 'tx_interlock', 'rx_gain',
+             'tx_gain', 'mute', 'vol', 'cat', 'status')
+    if cmd not in valid:
+        return f"Error: cmd must be one of: {', '.join(valid)}"
+    payload = {'cmd': cmd, 'args': args}
+    # Many of the IC-7100 commands expect typed fields in the JSON payload
+    # rather than a string 'args'. Map the common ones for convenience.
+    if cmd == 'freq':
+        # already handled server-side via 'args' parsing
+        pass
+    elif cmd == 'mode':
+        payload['mode'] = args
+    elif cmd in ('rx_gain', 'tx_gain'):
+        try:
+            payload['db'] = float(args)
+        except (TypeError, ValueError):
+            return f"Error: {cmd} needs a number in dB"
+    elif cmd == 'vol':
+        try:
+            payload['value'] = int(args)
+        except (TypeError, ValueError):
+            return "Error: vol needs an integer 0-500"
+    result = _post('/ic7100cmd', payload, timeout=10)
+    if result.get('ok'):
+        resp = result.get('response', '')
+        return f"IC-7100 {cmd} OK" + (f': {resp}' if resp else '')
+    return f"IC-7100 {cmd} failed: {result.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def ic7100_frequency(freq_mhz: float, mode: str = '') -> str:
+    """
+    Tune the IC-7100 to a specific frequency.
+
+    Args:
+        freq_mhz: frequency in MHz (e.g. 14.234, 146.520, 446.000).
+        mode:     optional mode (USB/LSB/CW/CW-R/AM/FM/WFM/RTTY/RTTY-R/DV).
+                  Default: leave mode unchanged. Common bands:
+                    HF SSB phone   — USB above 10 MHz, LSB below
+                    2m/70cm voice  — FM
+                    digital voice  — DV
+    """
+    r = _post('/ic7100cmd', {'cmd': 'freq', 'args': str(freq_mhz)}, timeout=10)
+    if not r.get('ok'):
+        return f"IC-7100 tune failed: {r.get('error', 'unknown')}"
+    out = f"IC-7100 tuned to {freq_mhz:.4f} MHz"
+    if mode:
+        m = _post('/ic7100cmd', {'cmd': 'mode', 'mode': mode.upper(),
+                                 'args': mode.upper()}, timeout=10)
+        if m.get('ok'):
+            out += f" ({mode.upper()})"
+        else:
+            out += f" — mode change failed: {m.get('error', 'unknown')}"
+    return out
+
+
+@mcp.tool()
+def ic7100_vfo(action: str = 'select', vfo: str = 'A') -> str:
+    """
+    VFO control on the IC-7100.
+
+    Args:
+        action: 'select' | 'swap' | 'equalize'
+                  - select: switch to VFO A or B (also leaves memory mode)
+                  - swap:   exchange A <-> B
+                  - equalize: copy active VFO to inactive (A=B)
+        vfo:    'A' or 'B' (used only when action='select').
+    """
+    action = action.lower().strip()
+    if action == 'select':
+        payload = {'cmd': 'vfo', 'vfo': vfo.upper().strip()}
+    elif action == 'swap':
+        payload = {'cmd': 'vfo_swap'}
+    elif action == 'equalize':
+        payload = {'cmd': 'vfo_equalize'}
+    else:
+        return "Error: action must be one of: select, swap, equalize"
+    r = _post('/ic7100cmd', payload, timeout=10)
+    if r.get('ok'):
+        return f"IC-7100 VFO {action} OK (active={r.get('active_vfo', '?')})"
+    return f"IC-7100 VFO {action} failed: {r.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def ic7100_band(band: str) -> str:
+    """
+    Select Main or Sub band on the IC-7100's dual-receive panel.
+
+    Args:
+        band: 'Main' or 'Sub'.
+    """
+    r = _post('/ic7100cmd', {'cmd': 'band', 'band': band}, timeout=10)
+    if r.get('ok'):
+        return f"IC-7100 active band = {r.get('active_band', band)}"
+    return f"IC-7100 band select failed: {r.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def ic7100_memory_recall(channel: int) -> str:
+    """
+    Switch the IC-7100 to memory mode and recall channel (1..99).
+    The radio retunes to whatever is stored in that channel.
+    """
+    r = _post('/ic7100cmd', {'cmd': 'memory_select', 'channel': int(channel)},
+              timeout=10)
+    if r.get('ok'):
+        return f"IC-7100 recalled memory channel {channel}"
+    return f"IC-7100 memory recall failed: {r.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def ic7100_memory_mode(on: bool = True) -> str:
+    """
+    Switch the IC-7100 between VFO mode (on=False) and memory mode (on=True).
+    Memory mode recalls whatever channel was last selected.
+    """
+    r = _post('/ic7100cmd', {'cmd': 'memory_mode', 'on': bool(on)}, timeout=10)
+    if r.get('ok'):
+        return f"IC-7100 memory_mode={r.get('memory_mode', on)}"
+    return f"IC-7100 memory_mode failed: {r.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def ic7100_call_channel() -> str:
+    """Select the IC-7100 Call channel (the dedicated CALL memory)."""
+    r = _post('/ic7100cmd', {'cmd': 'call_channel'}, timeout=10)
+    if r.get('ok'):
+        return "IC-7100 Call channel selected"
+    return f"IC-7100 call channel failed: {r.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def ic7100_memory_store() -> str:
+    """
+    Write the IC-7100's current VFO contents into the currently-selected
+    memory channel. DESTRUCTIVE — overwrites whatever was in that channel.
+    Use ic7100_memory_recall first to select the target channel, then
+    ic7100_vfo+ic7100_frequency to set the contents to write, then this.
+    """
+    r = _post('/ic7100cmd', {'cmd': 'memory_write'}, timeout=10)
+    if r.get('ok'):
+        return "IC-7100 wrote VFO into current memory channel"
+    return f"IC-7100 memory write failed: {r.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def ic7100_memory_clear() -> str:
+    """Clear the IC-7100's currently-selected memory channel. DESTRUCTIVE."""
+    r = _post('/ic7100cmd', {'cmd': 'memory_clear'}, timeout=10)
+    if r.get('ok'):
+        return "IC-7100 cleared current memory channel"
+    return f"IC-7100 memory clear failed: {r.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def ic7100_memory_to_vfo() -> str:
+    """
+    Copy the IC-7100's current memory channel contents into the active VFO,
+    so you can edit and (optionally) write back into the same or another slot.
+    """
+    r = _post('/ic7100cmd', {'cmd': 'memory_to_vfo'}, timeout=10)
+    if r.get('ok'):
+        return "IC-7100 memory copied to VFO"
+    return f"IC-7100 memory_to_vfo failed: {r.get('error', 'unknown')}"
+
+
+@mcp.tool()
+def ic7100_memory_read(channel: int) -> str:
+    """
+    Read raw contents of an IC-7100 memory channel (1..99) without
+    switching to it. Returns a hex blob of the channel data — split flag,
+    mode, filter, frequency, tone settings, name. Decoding is up to the
+    caller; the byte layout is the IC-7100 manual's memory-data format.
+    """
+    r = _post('/ic7100cmd',
+              {'cmd': 'memory_read', 'channel': int(channel)}, timeout=10)
+    if not r.get('ok'):
+        return f"IC-7100 memory_read failed: {r.get('error', 'unknown')}"
+    raw = r.get('raw_hex', '')
+    if not raw:
+        return f"Channel {channel}: empty / not allocated"
+    return f"Channel {channel}: raw={raw}"
+
+
+# ---------------------------------------------------------------------------
+# Tools — Process Supervisor (gateway-side daemons)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def processes_status() -> str:
+    """
+    List every long-running process supervised by the gateway: kv4p loopback
+    endpoints, cloudflared, pat, mDNS publisher, direwolf (when packet is in
+    data mode), darkice/mumble (if SUPERVISE_* opt-ins are on). Each entry
+    has state/pid/uptime/restart_count/last_exit/adopted.
+    """
+    return json.dumps(_get('/api/processes'), indent=2)
 
 
 # ---------------------------------------------------------------------------

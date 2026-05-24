@@ -152,7 +152,7 @@ def handle_winlink_api(handler, parent):
         except Exception as e:
             _pkt_json(handler, {"ok": False, "error": str(e)})
     elif path == '/packet/winlink/log':
-        from web_routes_post import _winlink_log
+        from web_routes_radio import _winlink_log
         _pkt_json(handler, {"ok": True, "log": _winlink_log})
 
     elif path == '/packet/winlink/gateways':
@@ -197,7 +197,8 @@ def handle_packet_bbs_buffer(handler, parent):
 def handle_packet_log(handler, parent):
     """GET /packet/log"""
     gw = parent.gateway if parent else None
-    if gw and gw.packet_plugin:
-        _pkt_json(handler, {"lines": list(gw.packet_plugin._direwolf_log)})
+    tnc = getattr(gw, 'packet_tnc', None) if gw else None
+    if tnc:
+        _pkt_json(handler, {"lines": list(tnc.log_tail)})
     else:
         _pkt_json(handler, {"lines": []})

@@ -268,6 +268,18 @@ class CIVController:
         self.dtcs_code: int = 23         # DTCS code (octal-style int)
         self.dtcs_polarity: int = 0      # 0..3 — see _DTCS_POLARITY
 
+        # VFO / memory state. UNVERIFIED against hardware as of 2026-05-23 —
+        # opcodes taken from the IC-7100 CI-V reference but not bench-tested.
+        # The radio doesn't currently echo VFO/band/memory state in any of
+        # the periodically-polled commands, so we track what we set rather
+        # than reading it back; first hardware verification should confirm
+        # whether reads work and we can poll for changes the operator made
+        # from the front panel.
+        self.active_vfo: str = 'A'       # 'A' or 'B'
+        self.active_band: str = 'Main'   # 'Main' or 'Sub' (dual-receive panel)
+        self.memory_mode: bool = False
+        self.memory_channel: int = 1     # 1..99 (per band)
+
     # -- Connection management --
 
     def connect(self) -> bool:
@@ -718,6 +730,137 @@ class CIVController:
     def send_raw(self, cmd_bytes: bytes) -> bytes | None:
         """Send a raw CI-V frame (for CAT passthrough). Returns response body."""
         return self._transact(cmd_bytes)
+
+    # -- VFO / memory commands -----------------------------------------
+    # IC-7100 CI-V family — opcodes from the published manual but not yet
+    # bench-validated against the radio. Update / correct as we test.
+
+    @staticmethod
+    def _ch_to_bcd(ch: int) -> bytes:
+        """Encode memory channel 1..99 (or larger banks) as 2-byte BCD."""
+        ch = max(0, min(999, int(ch)))
+        hi = ch // 100
+        rest = ch % 100
+        b1 = ((hi & 0x0F) << 4) | ((rest // 10) & 0x0F)
+        b2 = ((rest % 10) & 0x0F)
+        # Actually IC-7100 uses straight 2-byte BCD: high nybbles + low.
+        # ch 23  -> 0x00 0x23 ; ch 99 -> 0x00 0x99 ; ch 100 -> 0x01 0x00.
+        hi_b = (ch // 100) & 0xFF
+        lo = ch % 100
+        lo_b = ((lo // 10) << 4) | (lo % 10)
+        return bytes([hi_b, lo_b])
+
+    def select_vfo(self, vfo: str) -> bool:
+        """Select VFO A or B (CI-V 0x07 0x00 / 0x01)."""
+        v = (vfo or '').strip().upper()
+        if v not in ('A', 'B'):
+            return False
+        sub = 0x00 if v == 'A' else 0x01
+        resp = self._transact(self._build_frame(0x07, subcmd=sub))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.active_vfo = v
+            self.memory_mode = False
+        return ok
+
+    def swap_vfo(self) -> bool:
+        """Exchange VFO A <-> B (CI-V 0x07 0xB0)."""
+        resp = self._transact(self._build_frame(0x07, subcmd=0xB0))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.active_vfo = 'B' if self.active_vfo == 'A' else 'A'
+        return ok
+
+    def equalize_vfo(self) -> bool:
+        """Copy active VFO to inactive (A=B). CI-V 0x07 0xA0."""
+        resp = self._transact(self._build_frame(0x07, subcmd=0xA0))
+        return resp is not None and resp[0:1] == _OK
+
+    def select_band(self, band: str) -> bool:
+        """Select Main or Sub band on the dual-receive panel.
+        CI-V 0x07 0xD0 = Main, 0x07 0xD1 = Sub."""
+        b = (band or '').strip().capitalize()
+        if b not in ('Main', 'Sub'):
+            return False
+        sub = 0xD0 if b == 'Main' else 0xD1
+        resp = self._transact(self._build_frame(0x07, subcmd=sub))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.active_band = b
+        return ok
+
+    def enter_vfo_mode(self) -> bool:
+        """Leave memory mode, return to VFO (CI-V 0x07 with no subcmd
+        re-selects current VFO and switches to VFO mode)."""
+        # 0x07 0x00 also leaves memory mode by selecting VFO A.
+        resp = self._transact(self._build_frame(0x07, subcmd=0x00))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.memory_mode = False
+        return ok
+
+    def enter_memory_mode(self) -> bool:
+        """Switch to memory mode (CI-V 0x08, no data — selects last channel)."""
+        resp = self._transact(self._build_frame(0x08))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.memory_mode = True
+        return ok
+
+    def select_memory(self, ch: int) -> bool:
+        """Switch to memory mode and select channel ch (1..99 typical).
+        CI-V 0x08 [hi_bcd] [lo_bcd]."""
+        ch = int(ch)
+        if ch < 1:
+            return False
+        resp = self._transact(
+            self._build_frame(0x08, data=self._ch_to_bcd(ch)))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.memory_mode = True
+            self.memory_channel = ch
+        return ok
+
+    def select_call_channel(self) -> bool:
+        """Select the Call channel (CI-V 0x08 0xA0)."""
+        resp = self._transact(self._build_frame(0x08, subcmd=0xA0))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.memory_mode = True
+        return ok
+
+    def write_memory(self) -> bool:
+        """Write current VFO contents into the currently-selected memory
+        channel (CI-V 0x09). Destructive — overwrites the channel."""
+        resp = self._transact(self._build_frame(0x09))
+        return resp is not None and resp[0:1] == _OK
+
+    def clear_memory(self) -> bool:
+        """Clear the currently-selected memory channel (CI-V 0x0A)."""
+        resp = self._transact(self._build_frame(0x0a))
+        return resp is not None and resp[0:1] == _OK
+
+    def memory_to_vfo(self) -> bool:
+        """Copy current memory contents into the VFO (CI-V 0x0B)."""
+        resp = self._transact(self._build_frame(0x0b))
+        return resp is not None and resp[0:1] == _OK
+
+    def read_memory(self, ch: int) -> bytes | None:
+        """Read raw memory channel contents (CI-V 0x1A 0x00 [hi] [lo]).
+        Returns the raw payload bytes for the caller to decode. Channel
+        format is radio-model-specific; on the IC-7100 the response
+        includes split flag, mode, filter, freq, tone settings, name."""
+        ch = int(ch)
+        if ch < 1:
+            return None
+        resp = self._transact(
+            self._build_frame(0x1a, subcmd=0x00, data=self._ch_to_bcd(ch)))
+        if not resp:
+            return None
+        # Expect: 0x1a 0x00 [hi_bcd] [lo_bcd] <channel-data...>
+        if len(resp) >= 4 and resp[0] == 0x1a and resp[1] == 0x00:
+            return resp[4:]
+        return None
 
     # -- State readback (radio → cache sync) ---------------------------
     # The IC-7100 keeps its own setup in NVRAM and has a full front panel —
@@ -1268,6 +1411,96 @@ class IC7100Plugin(RadioPlugin):
         elif action == 'status':
             return {"ok": True, "status": self.get_status()}
 
+        # -- VFO / memory commands -----------------------------------------
+        elif action == 'vfo':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            which = cmd.get('vfo', cmd.get('which', ''))
+            ok = self._civ.select_vfo(which)
+            if ok:
+                self._status_dirty = True
+            return {"ok": ok, "active_vfo": self._civ.active_vfo,
+                    "memory_mode": self._civ.memory_mode}
+
+        elif action == 'vfo_swap':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            ok = self._civ.swap_vfo()
+            if ok:
+                self._status_dirty = True
+            return {"ok": ok, "active_vfo": self._civ.active_vfo}
+
+        elif action == 'vfo_equalize':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            ok = self._civ.equalize_vfo()
+            return {"ok": ok}
+
+        elif action == 'band':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            ok = self._civ.select_band(cmd.get('band', ''))
+            if ok:
+                self._status_dirty = True
+            return {"ok": ok, "active_band": self._civ.active_band}
+
+        elif action == 'memory_mode':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            on = bool(cmd.get('on', True))
+            ok = (self._civ.enter_memory_mode() if on
+                  else self._civ.enter_vfo_mode())
+            if ok:
+                self._status_dirty = True
+            return {"ok": ok, "memory_mode": self._civ.memory_mode}
+
+        elif action == 'memory_select':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            try:
+                ch = int(cmd.get('channel', cmd.get('ch', 0)))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "channel must be int"}
+            ok = self._civ.select_memory(ch)
+            if ok:
+                self._status_dirty = True
+            return {"ok": ok, "memory_channel": self._civ.memory_channel,
+                    "memory_mode": self._civ.memory_mode}
+
+        elif action == 'call_channel':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            ok = self._civ.select_call_channel()
+            if ok:
+                self._status_dirty = True
+            return {"ok": ok, "memory_mode": self._civ.memory_mode}
+
+        elif action == 'memory_write':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            return {"ok": self._civ.write_memory()}
+
+        elif action == 'memory_clear':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            return {"ok": self._civ.clear_memory()}
+
+        elif action == 'memory_to_vfo':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            return {"ok": self._civ.memory_to_vfo()}
+
+        elif action == 'memory_read':
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            try:
+                ch = int(cmd.get('channel', cmd.get('ch', 0)))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "channel must be int"}
+            raw = self._civ.read_memory(ch)
+            return {"ok": raw is not None, "channel": ch,
+                    "raw_hex": raw.hex() if raw else None}
+
         # -- HF feature commands (Phase C) ---------------------------------
         elif action == 'split':
             if not self._civ or not self._civ.connected:
@@ -1443,6 +1676,11 @@ class IC7100Plugin(RadioPlugin):
                                      else 'noise'),
                 # Antenna port the current frequency would TX on
                 "tx_port":          _antenna_port(self._civ.freq_hz),
+                # VFO / memory — locally tracked (set-only, not read-back yet)
+                "active_vfo":       self._civ.active_vfo,
+                "active_band":      self._civ.active_band,
+                "memory_mode":      self._civ.memory_mode,
+                "memory_channel":   self._civ.memory_channel,
             })
         status.update({
             "audio_device":  self._audio_device,

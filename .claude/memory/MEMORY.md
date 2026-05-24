@@ -12,8 +12,11 @@ For full structure see `README.md`'s "Repository layout" section and `docs/index
 
 - `gateway_core.py` orchestrates `setup_audio()` via `gateway_setup.py` (extracted v3.7).
 - `bus_manager.py` + `audio_bus.py` — bus mixer (Listen/Solo/Duplex/Simplex).
-- Radio plugins: `th9800_plugin.py`, `kv4p_plugin.py`, `sdr_plugin.py`.
-- Link endpoint plugins (run on remote Pis): `tools/d75_link_plugin.py`, `tools/ic7100_link_plugin.py`. Generic `tools/link_endpoint.py` is the runner. **CRITICAL** (see bugs_2026_05_19): sys.path must put `run/` before parent dir or stale copies of plugins shadow new deploys.
+- Radio plugins: `th9800_plugin.py`, `sdr_plugin.py`.
+- Link endpoint plugins (run on remote Pis OR on the gateway as loopback): `tools/d75_link_plugin.py`, `tools/ic7100_link_plugin.py`, `tools/kv4p_link_plugin.py`. Generic `tools/link_endpoint.py` is the runner. **CRITICAL** (see bugs_2026_05_19): sys.path must put `run/` before parent dir or stale copies of plugins shadow new deploys.
+- **`process_supervisor.py`** owns every long-running child (kv4p loopbacks, cloudflared, pat, mDNS, direwolf via `packet_tnc.py`). `/processes` page is the dashboard. See [project_kv4p_endpoints.md](project_kv4p_endpoints.md).
+- **`packet_tnc.py`** owns direwolf (moved out of AIOCPlugin in 2026-05-23 refactor).
+- Multi-instance kv4p: `[kv4p.vhf]` / `[kv4p.uhf]` config sections; live state in gitignored `endpoints_state.json`.
 - Transcription: `transcriber.py` (VAD + dispatcher) + `transcribe_engine.py` (Local + Remote engines) + `tools/transcribe_worker.py` (remote HTTP worker).
 - Web: `web_server.py` + `web_routes_post.py` (shim re-exporting 8 per-domain modules: web_routes_transcribe/radio/audio/text/system/voice/manager/automation).
 
@@ -87,4 +90,4 @@ Multi-machine via `transcribe_engine.py`. Mode is `pool`: local Moonshine engine
 **Bug history:** bugs.md, bugs_2026_03_30.md, bugs_2026_04_01.md, bugs_2026_04_05.md, bugs_2026_04_13.md
 **Feedback (active rules):** feedback_config_safety.md, feedback_single_source_config.md, feedback_no_gateway_restart.md, feedback_instrument_not_guess.md, feedback_host_cpu_traps.md, feedback_no_self_scheduling.md
 **References:** reference_host_tweaks.md, reference_gdrive_backup.md
-**Project notes (load when touching that area):** project_audio_quality.md, project_ftm150_endpoint.md, project_packet_radio.md, project_listen_bus_unify.md, project_loop_recorder.md, project_sdr_single_mode.md, project_internet_endpoints.md, project_d75_cleanup.md, project_rust_audio_core.md (deferred)
+**Project notes (load when touching that area):** project_kv4p_endpoints.md (2026-05-23 kv4p→endpoint refactor + ProcessSupervisor), project_ic7100_vfo_memory.md (2026-05-23 IC-7100 VFO+memory CI-V surface, UNVERIFIED against hardware), project_audio_quality.md, project_ftm150_endpoint.md, project_packet_radio.md, project_listen_bus_unify.md, project_loop_recorder.md, project_sdr_single_mode.md, project_internet_endpoints.md, project_d75_cleanup.md, project_rust_audio_core.md (deferred)
