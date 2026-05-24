@@ -61,10 +61,20 @@ class CloudflareTunnel:
         port = int(getattr(self.config, 'WEB_CONFIG_PORT', 8080))
 
         # Seed the cached URL from the file/log so callers see something
-        # immediately, even before adoption settles.
-        self._url = self._read_cached_url() or self._scan_log_for_url()
-        if self._url:
-            print(f"  [Tunnel] Cached URL: {self._url}")
+        # immediately, even before adoption settles. But only if cloudflared
+        # is actually running — otherwise the cache is from a previous, dead
+        # process and is stale; using it races the fresh URL we're about to
+        # capture from stdout and can clobber GDrive with the old value.
+        if pgrep_first('cloudflared'):
+            self._url = self._read_cached_url() or self._scan_log_for_url()
+            if self._url:
+                print(f"  [Tunnel] Cached URL: {self._url}")
+        else:
+            self._url = None
+            try:
+                os.unlink(self.URL_FILE)
+            except OSError:
+                pass
 
         # systemd-run --user --scope puts cloudflared in a sibling cgroup
         # so it survives gateway restarts. Fall back to plain cloudflared

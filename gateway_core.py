@@ -3003,6 +3003,10 @@ class RadioGateway:
         if not url:
             print("  [GDrive] No tunnel URL to publish")
             return
+        # Dedupe: two callers (one-shot in setup_gdrive + on_url_changed
+        # callback) can race; skip if the URL on GDrive is already this one.
+        if getattr(self, '_last_published_tunnel_url', None) == url:
+            return
         import datetime
         data = {
             'url': url,
@@ -3011,6 +3015,7 @@ class RadioGateway:
         }
         try:
             self.gdrive.write_json(data, 'tunnel_url.json')
+            self._last_published_tunnel_url = url
             print(f"  [GDrive] Published tunnel URL: {url}")
         except Exception as e:
             print(f"  [GDrive] Failed to publish tunnel URL: {e}")
