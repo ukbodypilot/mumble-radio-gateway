@@ -84,6 +84,9 @@
   .ic-btn-row button.active {
     background: var(--t-accent); color: var(--t-bg); border-color: var(--t-accent);
   }
+  /* Memory destructive buttons (Write / Clear) */
+  .ic-mem-danger { border-color: var(--t-err); color: var(--t-err); }
+  .ic-mem-danger:hover { background: var(--t-err); color: var(--t-bg); }
 
   /* S-meter bar */
   .ic-smeter-wrap {
@@ -435,6 +438,10 @@
     <span class="ic-label">Interlock:</span>
     <span id="ic-il-hf" class="dot pending" title="HF antenna TX interlock">&#x25cf;</span><span class="ic-label">HF</span>
     <span id="ic-il-vu" class="dot pending" title="VHF/UHF antenna TX interlock">&#x25cf;</span><span class="ic-label">VHF/UHF</span>
+    <span class="sep">|</span>
+    <span class="ic-label">VFO:</span> <span id="ic-vfo-pill" class="ic-val">&mdash;</span>
+    <span class="sep">|</span>
+    <span class="ic-label">Band:</span> <span id="ic-band-pill" class="ic-val">&mdash;</span>
     <span class="ic-spacer"></span>
     <span id="ic-tx-badge" class="ic-tx-badge">TX</span>
     <span id="ic-feedback" class="ic-val dim"></span>
@@ -442,6 +449,34 @@
 
   <!-- VFO card: big freq display + band shortcuts + mode buttons + meter + PTT -->
   <div class="ic-card">
+    <div class="ic-row">
+      <span class="ic-label" style="min-width:60px">VFO:</span>
+      <div class="ic-btn-row" id="ic-vfo-row">
+        <button class="rb rb-sm" data-vfo="A" onclick="icCmd('vfo', {vfo:'A'})" title="Select VFO A">VFO A</button>
+        <button class="rb rb-sm" data-vfo="B" onclick="icCmd('vfo', {vfo:'B'})" title="Select VFO B">VFO B</button>
+        <button class="rb rb-sm" onclick="icCmd('vfo_swap')" title="Exchange VFO A and B">Swap</button>
+        <button class="rb rb-sm" onclick="icCmd('vfo_equalize')" title="Copy active VFO to inactive (A=B)">A=B</button>
+      </div>
+      <span class="sep">|</span>
+      <span class="ic-label">Band:</span>
+      <div class="ic-btn-row" id="ic-mainsub-row">
+        <button class="rb rb-sm" data-mainsub="Main" onclick="icCmd('band', {band:'Main'})" title="Dual-RX Main band">Main</button>
+        <button class="rb rb-sm" data-mainsub="Sub"  onclick="icCmd('band', {band:'Sub'})"  title="Dual-RX Sub band">Sub</button>
+      </div>
+    </div>
+    <div class="ic-row">
+      <span class="ic-label" style="min-width:60px">Memory:</span>
+      <button class="rb rb-sm" id="ic-mem-toggle" onclick="toggleMemoryMode()" title="Toggle VFO / Memory mode">MEM</button>
+      <span class="ic-label">Ch:</span>
+      <input id="ic-mem-ch" class="ic-input" type="number" min="1" max="99" step="1" value="1"
+             style="width:5em" title="Memory channel 1–99"
+             onchange="selectMemoryChannel()">
+      <button class="rb rb-sm" onclick="icCmd('call_channel')" title="Select dedicated CALL channel">CALL</button>
+      <button class="rb rb-sm" onclick="icCmd('memory_to_vfo')" title="Copy memory channel to VFO">M&rarr;V</button>
+      <span class="ic-spacer"></span>
+      <button class="rb rb-sm ic-mem-danger" onclick="writeMemory()" title="Overwrite memory channel with current VFO">Write</button>
+      <button class="rb rb-sm ic-mem-danger" onclick="clearMemory()" title="Clear memory channel">Clear</button>
+    </div>
     <div class="ic-row">
       <!-- Digit-by-digit freq display: 1 GHz down to 1 Hz, populated by JS.
            Click a digit to make it active, wheel/arrows step that decade. -->
@@ -785,6 +820,39 @@ function icCmd(cmd, extra) {
     return d;
   });
 }
+
+// ── Memory helpers ─────────────────────────────────────────────────────
+// Memory mode is reflected by the radio in `memory_mode`; the toggle button
+// flips whichever state we last saw. _memMode mirrors that for the click.
+var _memMode = false;
+function toggleMemoryMode() {
+  if (_memMode) {
+    // Leaving memory mode → switch back to the active VFO (radio API has
+    // no "exit memory" opcode of its own; selecting a VFO does it).
+    icCmd('vfo', {vfo: _activeVfo || 'A'});
+  } else {
+    icCmd('memory_mode', {on: true});
+  }
+}
+function selectMemoryChannel() {
+  var el = document.getElementById('ic-mem-ch');
+  var n = parseInt(el.value, 10);
+  if (isNaN(n) || n < 1) n = 1;
+  if (n > 99) n = 99;
+  el.value = n;
+  icCmd('memory_select', {channel: n});
+}
+function writeMemory() {
+  var ch = parseInt(document.getElementById('ic-mem-ch').value, 10) || 0;
+  if (!window.confirm('Overwrite memory channel ' + ch + ' with current VFO?')) return;
+  icCmd('memory_write');
+}
+function clearMemory() {
+  var ch = parseInt(document.getElementById('ic-mem-ch').value, 10) || 0;
+  if (!window.confirm('Clear memory channel ' + ch + '?')) return;
+  icCmd('memory_clear');
+}
+var _activeVfo = null;
 
 // ── Band + mode row population ─────────────────────────────────────────
 function buildBandRow() {
@@ -1669,6 +1737,29 @@ function pollStatus() {
     setActiveBtn('ic-agc-row',    'agc',    s.agc);
     setActiveBtn('ic-preamp-row', 'preamp', s.preamp);
     setActiveBtn('ic-filter-row', 'filter', s.filter);
+
+    // VFO / Main-Sub / Memory state
+    if (s.active_vfo === 'A' || s.active_vfo === 'B') _activeVfo = s.active_vfo;
+    setActiveBtn('ic-vfo-row',     'vfo',     s.active_vfo);
+    setActiveBtn('ic-mainsub-row', 'mainsub', s.active_band);
+    _memMode = !!s.memory_mode;
+    var memBtn = document.getElementById('ic-mem-toggle');
+    if (memBtn) memBtn.classList.toggle('active', _memMode);
+    var memCh = document.getElementById('ic-mem-ch');
+    if (memCh && document.activeElement !== memCh && typeof s.memory_channel === 'number') {
+      memCh.value = s.memory_channel;
+    }
+    var vfoPill = document.getElementById('ic-vfo-pill');
+    if (vfoPill) {
+      if (_memMode) {
+        var n = (typeof s.memory_channel === 'number') ? String(s.memory_channel).padStart(2, '0') : '--';
+        vfoPill.textContent = 'MEM ' + n;
+      } else {
+        vfoPill.textContent = s.active_vfo || '—';
+      }
+    }
+    var bandPill = document.getElementById('ic-band-pill');
+    if (bandPill) bandPill.textContent = s.active_band || '—';
 
     // FM squelch type + DTCS
     setActiveBtn('ic-sqltype-row', 'sqltype', s.squelch_type || 'noise');
