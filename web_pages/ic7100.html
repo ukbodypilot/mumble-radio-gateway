@@ -955,9 +955,18 @@ function _kickFreqSend() {
   }).finally(function() {
     setTimeout(function() {
       _freqSendInFlight = false;
-      _kickFreqSend();    // chase if user moved further during the send
-      // Release tuning lock so the periodic status poll can sync back
-      setTimeout(function() { _userTuning = false; }, 250);
+      if (_freqHz !== _freqLastSentHz) {
+        // User moved further during the send — chase. Keep _userTuning=true
+        // so the poll doesn't paint intermediate radio values over the
+        // display between chase iterations.
+        _kickFreqSend();
+      } else {
+        // Chain terminated — release tuning lock after a brief grace so
+        // the radio has time to settle internally before the poll reads
+        // back. _stepFreq() will re-arm _userTuning if the user spins
+        // again.
+        setTimeout(function() { _userTuning = false; }, 250);
+      }
     }, _freqSettleMs);
   });
 }
