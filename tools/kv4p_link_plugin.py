@@ -32,6 +32,11 @@ from gateway_link import RadioPlugin                       # noqa: E402
 _FREQ_RANGES = {
     'SA818_VHF': (134.0, 174.0),
     'SA818_UHF': (400.0, 480.0),
+    # No detection AND no config override — allow anything and let the
+    # radio decide. Avoids the silent-fallback bug where a missing
+    # handshake masquerades as a positive VHF detection and blocks UHF
+    # commands.
+    'UNKNOWN':   (0.0, 99999.0),
 }
 
 
@@ -85,7 +90,8 @@ class KV4PPlugin(RadioPlugin):
         self._signal = 0
         self._transmitting = False
         self._firmware_version = 0
-        self._rf_module = 'VHF'
+        self._rf_module = 'UNKNOWN'   # until handshake or config override
+        self._rf_module_override = None  # populated in setup() from config
         self._smeter_enabled = False
         self._ptt_on_state = False
 
@@ -162,6 +168,18 @@ class KV4PPlugin(RadioPlugin):
         self._ctcss_tx = int(_cfg(cfg_dict, 'ctcss_tx', 0))
         self._ctcss_rx = int(_cfg(cfg_dict, 'ctcss_rx', 0))
         self._high_power = bool(_cfg(cfg_dict, 'high_power', True))
+
+        # Optional config override for the RF module. Use when the firmware
+        # handshake doesn't reply (e.g. KV4P-HT v2.0e UHF boards) so we
+        # don't get stuck in the 'UNKNOWN' fallback. Recognised values:
+        # 'SA818_VHF', 'SA818_UHF'. Sets _rf_module immediately so freq
+        # validation works before the radio is even connected.
+        _ovr = str(_cfg(cfg_dict, 'rf_module', '') or '').strip().upper()
+        if _ovr in _FREQ_RANGES and _ovr != 'UNKNOWN':
+            self._rf_module_override = _ovr
+            self._rf_module = _ovr
+            print(f"  [KV4P] rf_module override from config: {_ovr}",
+                  flush=True)
 
         # Reuse the gateway audio processing chain — the AudioProcessor class
         # is plain library code and works equally well endpoint-side.
@@ -391,10 +409,24 @@ class KV4PPlugin(RadioPlugin):
             self._connected = True
             self._serial_connected = True
 
-            if ver:
+            # Three sources for _rf_module, in priority order:
+            #   1. Config override (rf_module = SA818_UHF/VHF) — always wins
+            #      so a known-good UHF board with a silent firmware still works
+            #   2. Real handshake response (ver.is_valid True)
+            #   3. Fallback 'UNKNOWN' — _validate_freq then allows anything
+            #      and we let the radio accept/reject. Better than silently
+            #      pretending we detected SA818_VHF.
+            if ver and getattr(ver, 'is_valid', False):
                 self._firmware_version = ver.firmware_version
-                self._rf_module = (ver.rf_module_type.name
-                                   if hasattr(ver.rf_module_type, 'name') else 'VHF')
+                if not self._rf_module_override:
+                    self._rf_module = (ver.rf_module_type.name
+                                       if hasattr(ver.rf_module_type, 'name')
+                                       else 'UNKNOWN')
+            else:
+                # No real handshake. Keep firmware_version=0 honestly.
+                # _rf_module stays at the override (if any) or 'UNKNOWN'.
+                print(f"  [KV4P] No VERSION handshake; rf_module={self._rf_module} "
+                      f"(override={self._rf_module_override!r})", flush=True)
 
             for _label, _f in [('RX', self._frequency), ('TX', self._tx_frequency)]:
                 _err = self._validate_freq(_f)
