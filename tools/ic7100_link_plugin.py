@@ -1613,6 +1613,12 @@ class IC7100Plugin(RadioPlugin):
             ok = True
             if 'hz' in cmd:
                 ok &= self._civ.set_rit_offset(int(cmd['hz']))
+                # Auto-engage RIT when the GUI sets an offset — treats the
+                # knob/display as a "use RIT" intent so the user doesn't
+                # have to click the RIT checkbox first. Explicit on=False
+                # below still wins.
+                if 'on' not in cmd and not self._civ.rit_on:
+                    ok &= self._civ.set_rit_on(True)
             if 'on' in cmd:
                 ok &= self._civ.set_rit_on(bool(cmd['on']))
             return {"ok": ok, "rit_hz": self._civ.rit_hz, "rit_on": self._civ.rit_on}
