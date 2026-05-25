@@ -269,8 +269,14 @@ def handle_loop_post(handler, parent):
 def _loop_json(handler, data, status=200):
     """Helper to send JSON response for loop recorder endpoints."""
     body = json_mod.dumps(data).encode('utf-8')
-    handler.send_response(status)
-    handler.send_header('Content-Type', 'application/json')
-    handler.send_header('Content-Length', str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.send_response(status)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Content-Length', str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        # Client (browser) went away before we finished — benign, common
+        # whenever a tab is closed mid-fetch. The HTTP server's default
+        # exception handler would dump a 15-line traceback otherwise.
+        pass

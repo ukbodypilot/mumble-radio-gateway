@@ -972,6 +972,19 @@ class WebConfigServer:
             allow_reuse_address = True
             request_queue_size = 32  # default 5 is too low for concurrent dashboard clients
 
+            def handle_error(self, request, client_address):
+                # Default socketserver.handle_error dumps a 20-line stack
+                # trace to stderr for any uncaught exception in a handler.
+                # The single most common one is BrokenPipeError when a
+                # browser closes the tab mid-response — benign, but
+                # unreadable noise. Swallow that one; defer everything
+                # else to the base implementation.
+                import sys
+                _et, _ev, _ = sys.exc_info()
+                if isinstance(_ev, (BrokenPipeError, ConnectionResetError)):
+                    return
+                super().handle_error(request, client_address)
+
         try:
             self._server = ThreadedServer(('0.0.0.0', port), Handler)
 
