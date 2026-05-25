@@ -1225,7 +1225,11 @@ function setRitDisplay(hz) {
 //   accelSpan    — deg/sec above the knee that shapes the ramp
 //   accelMax     — hard cap on the step multiplier
 //   accelExp     — ramp curvature (>1 = gentle start, steeper top)
-var KNOB_VFO = {degPerDetent: 5,   accelKnee: 220, accelSpan: 1200, accelMax: 8, accelExp: 1.7};
+// degPerDetent was 5; bumped to 7 to make slow rotation less twitchy at
+// the user's request. Acceleration profile (knee/span/max/exp) unchanged
+// so fast spins still ramp up exactly the same way — only the 1× base
+// rate is gentler.
+var KNOB_VFO = {degPerDetent: 7,   accelKnee: 220, accelSpan: 1200, accelMax: 8, accelExp: 1.7};
 var KNOB_RIT = {degPerDetent: 7.2, accelKnee: 280, accelSpan: 1700, accelMax: 3, accelExp: 1.6};
 
 function _fmtStep(hz) {
