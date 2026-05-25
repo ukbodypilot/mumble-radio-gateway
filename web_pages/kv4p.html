@@ -436,16 +436,17 @@ Kv4pCtrl.prototype._update = function(d) {
   }
 };
 
-// ── Bootstrap: discover instances from /kv4pinstances or render hardcoded
-// VHF + UHF pair. The status endpoint will gracefully tell us if either
-// is disabled/disconnected.
+// ── Bootstrap. The multi-panel infra is intact (buildPanel + Kv4pCtrl,
+// scoped DOM, per-instance polling); add another entry to PANELS to bring
+// a new radio online. UHF panel was removed 2026-05-25 after the v2.0e
+// board was returned — add it back here when a working unit arrives.
 (function init() {
   var grid = document.getElementById('kv-grid');
-  var panels = [
+  var PANELS = [
     {instance: 'vhf', label: 'KV4P VHF', sub: '/dev/kv4p-vhf'},
-    {instance: 'uhf', label: 'KV4P UHF', sub: '/dev/kv4p-uhf'},
+    // {instance: 'uhf', label: 'KV4P UHF', sub: '/dev/kv4p-uhf'},
   ];
-  panels.forEach(function(p) {
+  PANELS.forEach(function(p) {
     var root = buildPanel(p.instance, p.label, p.sub);
     grid.appendChild(root);
     new Kv4pCtrl(root, p.instance);
