@@ -760,7 +760,8 @@ class WebConfigServer:
                     _rg.handle_d75status(self, parent)
                 elif self.path == '/ic7100status':
                     _rg.handle_ic7100status(self, parent)
-                elif self.path == '/kv4pstatus':
+                elif self.path == '/kv4pstatus' or self.path.startswith('/kv4pstatus?'):
+                    # Accept ?instance=vhf|uhf for multi-radio routing.
                     _rg.handle_kv4pstatus(self, parent)
                 elif self.path == '/api/processes':
                     _rg.handle_api_processes(self, parent)
@@ -848,6 +849,18 @@ class WebConfigServer:
                     _rg.handle_manager_view(self, parent)
                 elif self.path.startswith('/manager/edit'):
                     _rg.handle_manager_edit(self, parent)
+                else:
+                    # Unmatched GET — send 404 so the browser doesn't hang
+                    # waiting for a response that never comes. Most route
+                    # checks above use exact == so a stray query string
+                    # used to land here and silently never respond.
+                    try:
+                        self.send_response(404)
+                        self.send_header('Content-Type', 'text/plain')
+                        self.end_headers()
+                        self.wfile.write(b'Not Found')
+                    except Exception:
+                        pass
 
             def do_POST(self):
                 if not self._check_auth():
