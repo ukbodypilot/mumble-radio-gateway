@@ -230,6 +230,13 @@ class CIVController:
         self._baud = baud
         self._addr = civ_addr
         self._timeout = timeout
+        # Shorter timeout used by the periodic poll thread so a single NG/no-
+        # response opcode (which can hold the lock for the full default
+        # timeout while a user freq/PTT cmd is waiting) doesn't pin the GUI.
+        # 0.25 s is long enough for any real CI-V response from the IC-7100
+        # (typical 50–150 ms) but short enough that the user feels snappy.
+        self._poll_timeout = 0.25
+        self._tls = threading.local()    # set by poll thread, read by _transact
         self._serial = None
         self._lock = threading.Lock()
         self.connected = False
@@ -317,22 +324,41 @@ class CIVController:
         body += data
         return _PREAMBLE + body + _END
 
-    def _transact(self, frame: bytes) -> bytes | None:
-        """Send *frame*, read until FD, return response body or None on error."""
+    def _transact(self, frame: bytes, timeout: float | None = None) -> bytes | None:
+        """Send *frame*, read until FD, return response body or None on error.
+
+        *timeout* overrides the controller's default per-call. Poll reads
+        pass a short (e.g. 250 ms) timeout so an NG opcode doesn't pin the
+        serial lock for a full second while a user command (knob spin, PTT)
+        is waiting. User-initiated commands keep the longer default for
+        cases where the radio is genuinely slow."""
         if not self._serial or not self.connected:
             return None
+        if timeout is not None:
+            _to = float(timeout)
+        elif getattr(self._tls, 'in_poll', False):
+            # Poll thread — use the short timeout so an NG opcode doesn't
+            # hold the lock for a full second while a user cmd is waiting.
+            _to = self._poll_timeout
+        else:
+            _to = self._timeout
         with self._lock:
             try:
                 self._serial.reset_input_buffer()
                 self._serial.write(frame)
-                # Read back echo + response, collect bytes until FD
+                # Read response. Old code did self._serial.read(64) with the
+                # serial-level timeout, which made pyserial wait for the
+                # FULL timeout even after the real ~13-byte response arrived
+                # (because it kept waiting for the remaining 51 bytes of the
+                # 64 requested). That floored every CI-V cmd at the full
+                # timeout. Now: poll in_waiting, read available bytes,
+                # return the moment a valid response frame is parsed.
                 buf = b''
-                deadline = time.monotonic() + self._timeout
+                deadline = time.monotonic() + _to
                 while time.monotonic() < deadline:
-                    chunk = self._serial.read(64)
-                    if chunk:
-                        buf += chunk
-                        # Strip leading preamble echo; find response frame
+                    avail = self._serial.in_waiting
+                    if avail:
+                        buf += self._serial.read(avail)
                         # Response pattern: FE FE E0 <addr> <data...> FD
                         idx = 0
                         while idx < len(buf) - 5:
@@ -342,8 +368,8 @@ class CIVController:
                                 if end != -1:
                                     return buf[idx+4:end]
                             idx += 1
-                    elif time.monotonic() >= deadline:
-                        break
+                    else:
+                        time.sleep(0.005)   # 5 ms idle wait — cheap
                 print(f"[IC7100-CIV] Timeout on cmd 0x{frame[4]:02x}", flush=True)
                 return None
             except Exception as e:
@@ -978,7 +1004,7 @@ class CIVController:
             self.mic_gain = v
         return v
 
-    def poll_settings(self):
+    def poll_settings(self, abort=None):
         """Read every front-panel-adjustable setting into the cache. Run on
         connect and periodically so a change the operator makes on the radio
         itself propagates back to the GUI.
@@ -987,12 +1013,19 @@ class CIVController:
         (e.g. PTT) waiting on _transact can preempt — otherwise this thread
         re-grabs the lock instantly and a 5 s settings poll blocks the user
         cmd for the full poll duration (worst case on a mode where several
-        opcodes hit 1 s CI-V timeouts)."""
+        opcodes hit 1 s CI-V timeouts).
+
+        If *abort* (a threading.Event) is set partway through, return
+        immediately so the user command isn't blocked behind the remaining
+        reads. The partial cache is fine — the next settings poll will fill
+        it in completely."""
         for _get in (self.get_split, self.get_rit_offset, self.get_rit_on,
                      self.get_xit_on, self.get_agc, self.get_nb, self.get_nr,
                      self.get_preamp, self.get_atten, self.get_if_shift,
                      self.get_squelch, self.get_rf_power, self.get_mic_gain,
                      self.get_ctcss, self.get_dtcs_on, self.get_dtcs_code):
+            if abort is not None and abort.is_set():
+                return
             _get()
             time.sleep(0.002)
 
@@ -1232,6 +1265,12 @@ class IC7100Plugin(RadioPlugin):
         # outlive the physical antenna being disconnected.
         self._tx_allow = {'hf': False, 'vu': False}
         self._status_dirty = False
+        # Set whenever execute() is processing a user command. The poll loop
+        # checks this between each get_*() so it can abort an in-progress
+        # poll cycle and release the serial lock for the user. Without this,
+        # rapid GUI knob spins waited up to ~3 s for the lock behind a
+        # settings-poll-in-progress, even with the 2 ms yield in poll_settings.
+        self._user_cmd_pending = threading.Event()
         self.status_interval = 2.0
         self._settings_file = os.path.expanduser(
             '~/.config/link-endpoint/ic7100-settings.json')
@@ -1322,6 +1361,16 @@ class IC7100Plugin(RadioPlugin):
     def execute(self, cmd):
         if not isinstance(cmd, dict):
             return {"ok": False, "error": "invalid command"}
+        # Signal the poll loop to abort any in-progress poll and yield the
+        # serial lock. Cleared in finally so an exception in dispatch can't
+        # strand the flag.
+        self._user_cmd_pending.set()
+        try:
+            return self._execute_inner(cmd)
+        finally:
+            self._user_cmd_pending.clear()
+
+    def _execute_inner(self, cmd):
         action = cmd.get('cmd', '')
 
         if action == 'ptt':
@@ -1736,6 +1785,11 @@ class IC7100Plugin(RadioPlugin):
                     self._status_dirty = True
 
     def _poll_loop(self):
+        # Mark this thread as the poll thread so every _transact() it makes
+        # uses the short timeout. User-command transacts run on the endpoint
+        # reader thread and aren't tagged, so they keep the longer default.
+        if self._civ:
+            self._civ._tls.in_poll = True
         """Periodically read the radio so the cache — and therefore the GUI —
         tracks the radio, including changes the operator makes on the radio's
         own front panel. The fast group (freq/mode/PTT/meters) runs every
@@ -1754,14 +1808,20 @@ class IC7100Plugin(RadioPlugin):
                 before = self._poll_signature()
                 # 2 ms yield between each read so user commands can preempt
                 # this back-to-back read chain — see poll_settings() comment.
+                # Additional abort: if execute() has set _user_cmd_pending,
+                # bail out of the poll cycle entirely so the user gets the
+                # serial lock now instead of waiting for ~16 reads to finish.
                 for _get in (self._civ.get_freq, self._civ.get_mode,
                              self._civ.get_ptt, self._civ.get_smeter,
                              self._civ.get_squelch_status):
+                    if self._user_cmd_pending.is_set():
+                        break
                     _get()
                     time.sleep(0.002)
                 if (cycle % self._SETTINGS_POLL_EVERY == 0
-                        and not self._civ.transmitting):
-                    self._civ.poll_settings()
+                        and not self._civ.transmitting
+                        and not self._user_cmd_pending.is_set()):
+                    self._civ.poll_settings(abort=self._user_cmd_pending)
                 # A changed signature means the radio moved under us (front
                 # panel) — push status now instead of waiting for the timer.
                 if self._poll_signature() != before:
