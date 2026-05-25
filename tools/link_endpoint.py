@@ -56,6 +56,17 @@ _PLUGINS = {
     'aioc': AIOCPlugin,
 }
 
+# Commands whose "OK" result we DO want to log even on success — typically
+# one-shots a human triggered (mode change, reconnect, write-to-memory) or
+# state transitions worth a breadcrumb. Everything else (knob chase, status
+# polls, etc.) only logs when it FAILS, so the log stays readable.
+_LOUD_OK_CMDS = {
+    'mode', 'reconnect', 'memory_write', 'memory_clear', 'memory_to_vfo',
+    'call_channel', 'vfo', 'vfo_swap', 'vfo_equalize',
+    'tx_interlock', 'ptt', 'cat',
+}
+
+
 # Lazy-load optional plugins that have extra dependencies
 def _load_d75():
     from d75_link_plugin import D75Plugin
@@ -526,7 +537,12 @@ def main():
 
         result = plugin.execute(cmd)
         ok = result.get('ok', False) if isinstance(result, dict) else False
-        print(f"[Endpoint] Command: {cmd_str} -> {'OK' if ok else result}")
+        # High-volume routine commands (knob chase, periodic status)
+        # flood the log if every OK is printed. Print only failures and
+        # a small whitelist of "interesting" one-shots so the log stays
+        # readable during normal GUI interaction.
+        if not ok or cmd_str in _LOUD_OK_CMDS:
+            print(f"[Endpoint] Command: {cmd_str} -> {'OK' if ok else result}")
         # Send ACK back to master with the result
         try:
             client.send_ack(cmd_str,

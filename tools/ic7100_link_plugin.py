@@ -1495,11 +1495,9 @@ class IC7100Plugin(RadioPlugin):
             if not self._civ or not self._civ.connected:
                 return {"ok": False, "error": "CI-V not connected"}
             resp = self._civ.send_raw(raw)
-            # Log the round-trip so opcode-probing from the GUI / curl is
-            # visible in the endpoint journal. response=FA means radio NG'd,
-            # response=FB means OK, anything else is the read payload body.
-            print(f"[IC7100-CAT] {raw.hex()} -> {resp.hex() if resp else 'TIMEOUT'}",
-                  flush=True)
+            # CAT is opcode-probing only — caller already gets the response
+            # in the ACK. Don't dump every byte to the journal (was useful
+            # during initial bring-up; noise otherwise).
             return {"ok": True, "response": resp.hex() if resp else None}
 
         elif action == 'rx_gain':

@@ -22,6 +22,19 @@ log = logging.getLogger("GatewayLink")
 
 
 # ---------------------------------------------------------------------------
+# Commands whose successful ACKs are worth logging — usually one-shot
+# user actions (mode change, PTT toggle, memory ops). High-volume routine
+# commands (knob chase: freq/squelch/vol/af_level/mic_gain/power) only log
+# when they FAILED, so the log stays readable during normal GUI use.
+# Failures of any command are always logged. Mirrors _LOUD_OK_CMDS in
+# tools/link_endpoint.py so endpoint + gateway emit a consistent picture.
+_LOUD_OK_CMDS = {
+    'mode', 'reconnect', 'memory_write', 'memory_clear', 'memory_to_vfo',
+    'call_channel', 'vfo', 'vfo_swap', 'vfo_equalize',
+    'tx_interlock', 'ptt', 'cat',
+}
+
+
 # Protocol
 # ---------------------------------------------------------------------------
 
@@ -550,7 +563,13 @@ class GatewayLinkServer:
                         if cmd_name == 'ping' and ep._ping_sent > 0:
                             ep.ping_ms = round((time.monotonic() - ep._ping_sent) * 1000, 1)
                         elif cmd_name not in ('status', 'ping'):
-                            print(f"  [Link] ACK received from {ep_name}: cmd={cmd_name} ok={ok}")
+                            # Suppress per-cmd ACK lines for high-volume
+                            # routine commands (knob chase, periodic state)
+                            # unless they failed. _LOUD_OK_CMDS get logged
+                            # even on success so one-shot user actions
+                            # leave a breadcrumb.
+                            if (not ok) or cmd_name in _LOUD_OK_CMDS:
+                                print(f"  [Link] ACK received from {ep_name}: cmd={cmd_name} ok={ok}")
                         if self._on_ack:
                             try:
                                 self._on_ack(ep_name, ack)
