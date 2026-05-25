@@ -1507,44 +1507,51 @@ function makePotKnob(opts) {
 
 var _volKnob = null, _sqlKnob = null, _pwrKnob = null, _micKnob = null, _afKnob = null;
 function initPotKnobs() {
+  // All pot knobs use chase:true so the radio (or gateway) tracks the
+  // knob live. onChange returns the icCmd Promise so the chase loop
+  // can wait for each round-trip before firing the next.
   _volKnob = makePotKnob({
     el: document.getElementById('ic-vol-knob'),
     min: 0, max: 100, value: 100, wheelStep: 5, resetValue: 0,
+    chase: true,
     onRender: function(v) {
       var c = document.getElementById('ic-vol-knob-cap');
       if (c) c.textContent = 'Vol ' + v + '%';
       var led = document.getElementById('ic-vol-led');
       if (led) led.classList.toggle('led-red', v === 0);   // red = muted
     },
-    onChange: function(v) { icCmd('vol', {value: v}); }});
+    onChange: function(v) { return icCmd('vol', {value: v}); }});
   _sqlKnob = makePotKnob({
     el: document.getElementById('ic-squelch-knob'),
     min: 0, max: 100, value: 0, wheelStep: 2, resetValue: 20,
+    chase: true,
     onRender: function(v) {
       var c = document.getElementById('ic-squelch-knob-cap');
       if (c) c.textContent = 'Sql ' + v + '%';
     },
-    onChange: function(v) { icCmd('squelch', {pct: v}); }});
+    onChange: function(v) { return icCmd('squelch', {pct: v}); }});
   _pwrKnob = makePotKnob({
     el: document.getElementById('ic-pwr-knob'),
     min: 0, max: 100, value: 0, wheelStep: 5, resetValue: 0,
+    chase: true,
     onRender: function(v) {
       var c = document.getElementById('ic-pwr-knob-cap');
       if (c) c.textContent = 'PWR ' + v + '%';
     },
-    onChange: function(v) { icCmd('power', {pct: v}); }});
+    onChange: function(v) { return icCmd('power', {pct: v}); }});
   _micKnob = makePotKnob({
     el: document.getElementById('ic-mic-knob'),
     min: 0, max: 100, value: 50, wheelStep: 5,
+    chase: true,
     onRender: function(v) {
       var c = document.getElementById('ic-mic-knob-cap');
       if (c) c.textContent = 'MIC ' + v + '%';
     },
-    onChange: function(v) { icCmd('mic_gain', {pct: v}); }});
+    onChange: function(v) { return icCmd('mic_gain', {pct: v}); }});
   _afKnob = makePotKnob({
     el: document.getElementById('ic-af-knob'),
     min: 0, max: 100, value: 50, wheelStep: 5,
-    chase: true,           // live chase like the VFO knob — hear it move
+    chase: true,
     onRender: function(v) {
       var c = document.getElementById('ic-af-knob-cap');
       if (c) c.textContent = 'AF ' + v + '%';
