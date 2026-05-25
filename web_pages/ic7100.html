@@ -614,6 +614,16 @@
           </div>
           <div id="ic-mic-knob-cap" class="knob-cap">MIC 50%</div>
         </div>
+        <div class="knob-wrap md pot"
+             title="Radio front-panel AF (volume) knob, 0–100%. This is the physical speaker volume on the IC-7100. Independent of the GUI 'Vol' knob, which only scales the captured RX audio on the gateway side.">
+          <div class="knob-dial">
+            <div class="knob-base"></div>
+            <div class="knob-arc"></div>
+            <div id="ic-af-knob" class="knob pot"></div>
+            <div class="knob-gloss"></div>
+          </div>
+          <div id="ic-af-knob-cap" class="knob-cap">AF 50%</div>
+        </div>
       </div>
     </div>
   </div>
@@ -1465,7 +1475,7 @@ function makePotKnob(opts) {
   };
 }
 
-var _volKnob = null, _sqlKnob = null, _pwrKnob = null, _micKnob = null;
+var _volKnob = null, _sqlKnob = null, _pwrKnob = null, _micKnob = null, _afKnob = null;
 function initPotKnobs() {
   _volKnob = makePotKnob({
     el: document.getElementById('ic-vol-knob'),
@@ -1501,6 +1511,14 @@ function initPotKnobs() {
       if (c) c.textContent = 'MIC ' + v + '%';
     },
     onChange: function(v) { icCmd('mic_gain', {pct: v}); }});
+  _afKnob = makePotKnob({
+    el: document.getElementById('ic-af-knob'),
+    min: 0, max: 100, value: 50, wheelStep: 5,
+    onRender: function(v) {
+      var c = document.getElementById('ic-af-knob-cap');
+      if (c) c.textContent = 'AF ' + v + '%';
+    },
+    onChange: function(v) { icCmd('af_level', {pct: v}); }});
 }
 
 // ── CTCSS ───────────────────────────────────────────────────────────────
@@ -1759,6 +1777,7 @@ function pollStatus() {
     if (_sqlKnob) _sqlKnob.set(s.squelch);
     if (_pwrKnob) _pwrKnob.set(s.rf_power);
     if (_micKnob) _micKnob.set(s.mic_gain);
+    if (_afKnob && typeof s.af_level === 'number') _afKnob.set(s.af_level);
     // Squelch-open state — green centre LED while audio is passing.
     var sqlLed = document.getElementById('ic-squelch-led');
     if (sqlLed) sqlLed.classList.toggle('led-green', s.squelch_open !== false);

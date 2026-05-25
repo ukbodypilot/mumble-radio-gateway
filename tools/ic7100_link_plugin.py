@@ -267,6 +267,7 @@ class CIVController:
         self.squelch: int = 0     # 0..100 percent (0=open)
         self.rf_power: int = 0    # 0..100 percent — TX RF output power
         self.mic_gain: int = 50   # 0..100 percent — TX mic gain
+        self.af_level: int = 50   # 0..100 percent — radio AF (volume) knob
         self.po: int = 0          # TX power meter — raw 0..255
         self.swr: int = 0         # SWR meter — raw 0..255
         self.alc: int = 0         # ALC meter — raw 0..255
@@ -703,6 +704,20 @@ class CIVController:
             self.rf_power = pct
         return ok
 
+    # AF level (front-panel volume / AF GAIN knob) — 0x14 0x01 (0..255).
+    # Lets the GUI drive the physical radio speaker volume. Independent of
+    # the gateway-side audio_boost (which scales the captured RX stream
+    # AFTER it leaves the radio).
+    def set_af_level(self, pct: int) -> bool:
+        pct = max(0, min(100, int(pct)))
+        scaled = round(pct * 255 / 100)
+        resp = self._transact(self._build_frame(
+            0x14, subcmd=0x01, data=_pct_to_bcd3(scaled)))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.af_level = pct
+        return ok
+
     # Mic gain — 0x14 0x0B (0..255). Maps 0..100% TX microphone gain.
     def set_mic_gain(self, pct: int) -> bool:
         pct = max(0, min(100, int(pct)))
@@ -998,6 +1013,12 @@ class CIVController:
             self.rf_power = v
         return v
 
+    def get_af_level(self) -> int | None:
+        v = self._read_level_pct(0x01)
+        if v is not None:
+            self.af_level = v
+        return v
+
     def get_mic_gain(self) -> int | None:
         v = self._read_level_pct(0x0B)
         if v is not None:
@@ -1027,7 +1048,7 @@ class CIVController:
                      self.get_xit_on, self.get_agc, self.get_nb, self.get_nr,
                      self.get_preamp, self.get_atten, self.get_if_shift,
                      self.get_squelch, self.get_rf_power, self.get_mic_gain,
-                     self.get_ctcss, self.get_dtcs_on):
+                     self.get_af_level, self.get_ctcss, self.get_dtcs_on):
             if abort is not None and abort.is_set():
                 return
             _get()
@@ -1675,6 +1696,17 @@ class IC7100Plugin(RadioPlugin):
             ok = self._civ.set_mic_gain(pct)
             return {"ok": ok, "mic_gain": self._civ.mic_gain}
 
+        elif action == 'af_level':
+            # Radio front-panel AF (volume) knob. Separate from the
+            # gateway-side audio_boost slider.
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            pct = int(cmd.get('pct', 0))
+            ok = self._civ.set_af_level(pct)
+            if ok:
+                self._status_dirty = True
+            return {"ok": ok, "af_level": self._civ.af_level}
+
         elif action == 'squelch_type':
             # FM squelch gating: 'noise' (carrier), 'tsql' (CTCSS tone),
             # or 'dtcs' (digital code). Orchestrates the RX-tone and
@@ -1747,6 +1779,7 @@ class IC7100Plugin(RadioPlugin):
                 "squelch":          self._civ.squelch,
                 "rf_power":         self._civ.rf_power,
                 "mic_gain":         self._civ.mic_gain,
+                "af_level":         self._civ.af_level,
                 "squelch_open":     self._civ.squelch_open,
                 "dtcs_on":          self._civ.dtcs_on,
                 "dtcs_code":        self._civ.dtcs_code,
@@ -1856,7 +1889,7 @@ class IC7100Plugin(RadioPlugin):
                 c.ctcss_tx_on, c.ctcss_rx_on, c.split, c.rit_hz, c.rit_on,
                 c.xit_on, c.agc, c.nb_on, c.nb_level, c.nr_on, c.nr_level,
                 c.preamp, c.atten, c.if_shift, c.squelch, c.rf_power,
-                c.mic_gain, c.dtcs_on, c.dtcs_code, c.dtcs_polarity)
+                c.mic_gain, c.af_level, c.dtcs_on, c.dtcs_code, c.dtcs_polarity)
 
     def _meter_loop(self):
         """While transmitting, read the Po / SWR / ALC meters fast so the
