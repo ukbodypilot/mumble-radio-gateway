@@ -369,7 +369,7 @@ class CIVController:
                                     return buf[idx+4:end]
                             idx += 1
                     else:
-                        time.sleep(0.005)   # 5 ms idle wait — cheap
+                        time.sleep(0.002)   # 2 ms idle wait — cheap
                 print(f"[IC7100-CIV] Timeout on cmd 0x{frame[4]:02x}", flush=True)
                 return None
             except Exception as e:
@@ -1019,11 +1019,15 @@ class CIVController:
         immediately so the user command isn't blocked behind the remaining
         reads. The partial cache is fine — the next settings poll will fill
         it in completely."""
+        # DTCS code & polarity excluded: rarely changed by the operator and
+        # cost a CI-V round-trip each cycle. Read once at connect via
+        # _poll_state(); subsequent changes come back through the regular
+        # set/get path when the user touches them.
         for _get in (self.get_split, self.get_rit_offset, self.get_rit_on,
                      self.get_xit_on, self.get_agc, self.get_nb, self.get_nr,
                      self.get_preamp, self.get_atten, self.get_if_shift,
                      self.get_squelch, self.get_rf_power, self.get_mic_gain,
-                     self.get_ctcss, self.get_dtcs_on, self.get_dtcs_code):
+                     self.get_ctcss, self.get_dtcs_on):
             if abort is not None and abort.is_set():
                 return
             _get()
@@ -1044,6 +1048,10 @@ class CIVController:
         self.get_smeter()
         self.get_squelch_status()
         self.poll_settings()
+        # DTCS code/polarity excluded from periodic poll for latency reasons;
+        # grab them once here so the GUI shows the right values on connect.
+        # (get_dtcs_code returns both code and polarity in one frame.)
+        self.get_dtcs_code()
 
 
 # ---------------------------------------------------------------------------
@@ -1281,6 +1289,12 @@ class IC7100Plugin(RadioPlugin):
     def setup(self, config):
         port       = config.get('device', '/dev/ttyUSB0')
         civ_addr   = int(str(config.get('civ_addr', '0x88')), 16)
+        # IC-7100 CI-V baud — radio MENU > Set > Connectors > CI-V > CI-V Baud.
+        # Default is "Auto" which negotiates to 19200; the radio also supports
+        # explicit 4800/9600/19200. Higher than 19200 is not documented on
+        # IC-7100. Configurable here so the user can experiment with the
+        # radio's "Auto" mode at the link layer if they set the menu to one.
+        civ_baud   = int(config.get('civ_baud', 19200))
         audio_hint = config.get('audio_in') or config.get('audio_device')
 
         saved = self._load_settings()
@@ -1303,7 +1317,7 @@ class IC7100Plugin(RadioPlugin):
                       flush=True)
 
         # CI-V connection
-        self._civ = CIVController(port, civ_addr=civ_addr)
+        self._civ = CIVController(port, baud=civ_baud, civ_addr=civ_addr)
         self._running = True
         if not self._civ.connect():
             print(f"[IC7100] Initial CI-V connect failed — watchdog will retry", flush=True)

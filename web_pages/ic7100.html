@@ -940,7 +940,7 @@ function _renderFreq() {
 // commands up because typical knob detents arrive every 100-200 ms.
 var _freqSendInFlight = false;
 var _freqLastSentHz = null;
-var _freqSettleMs = 80;        // gap between sends so the radio breathes
+var _freqSettleMs = 20;        // gap between sends so the radio breathes
 
 function _kickFreqSend() {
   if (_freqSendInFlight) return;
