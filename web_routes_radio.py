@@ -202,7 +202,7 @@ def handle_ic7100cmd(handler, parent):
         elif cmd == 'status':
             _link.send_command_to(_ep, {'cmd': 'status'})
             result = {'ok': True, 'response': 'status requested'}
-        elif cmd in ('vfo', 'vfo_swap', 'vfo_equalize', 'band',
+        elif cmd in ('vfo', 'vfo_swap', 'vfo_equalize',
                      'memory_mode', 'memory_select', 'call_channel',
                      'memory_write', 'memory_clear', 'memory_to_vfo',
                      'memory_read'):

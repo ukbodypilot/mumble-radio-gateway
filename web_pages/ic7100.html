@@ -440,8 +440,6 @@
     <span id="ic-il-vu" class="dot pending" title="VHF/UHF antenna TX interlock">&#x25cf;</span><span class="ic-label">VHF/UHF</span>
     <span class="sep">|</span>
     <span class="ic-label">VFO:</span> <span id="ic-vfo-pill" class="ic-val">&mdash;</span>
-    <span class="sep">|</span>
-    <span class="ic-label">Band:</span> <span id="ic-band-pill" class="ic-val">&mdash;</span>
     <span class="ic-spacer"></span>
     <span id="ic-tx-badge" class="ic-tx-badge">TX</span>
     <span id="ic-feedback" class="ic-val dim"></span>
@@ -456,12 +454,6 @@
         <button class="rb rb-sm" data-vfo="B" onclick="icCmd('vfo', {vfo:'B'})" title="Select VFO B">VFO B</button>
         <button class="rb rb-sm" onclick="icCmd('vfo_swap')" title="Exchange VFO A and B">Swap</button>
         <button class="rb rb-sm" onclick="icCmd('vfo_equalize')" title="Copy active VFO to inactive (A=B)">A=B</button>
-      </div>
-      <span class="sep">|</span>
-      <span class="ic-label">Band:</span>
-      <div class="ic-btn-row" id="ic-mainsub-row">
-        <button class="rb rb-sm" data-mainsub="Main" onclick="icCmd('band', {band:'Main'})" title="Dual-RX Main band">Main</button>
-        <button class="rb rb-sm" data-mainsub="Sub"  onclick="icCmd('band', {band:'Sub'})"  title="Dual-RX Sub band">Sub</button>
       </div>
     </div>
     <div class="ic-row">
@@ -1738,10 +1730,9 @@ function pollStatus() {
     setActiveBtn('ic-preamp-row', 'preamp', s.preamp);
     setActiveBtn('ic-filter-row', 'filter', s.filter);
 
-    // VFO / Main-Sub / Memory state
+    // VFO / Memory state (IC-7100 is single-receiver; no Main/Sub)
     if (s.active_vfo === 'A' || s.active_vfo === 'B') _activeVfo = s.active_vfo;
-    setActiveBtn('ic-vfo-row',     'vfo',     s.active_vfo);
-    setActiveBtn('ic-mainsub-row', 'mainsub', s.active_band);
+    setActiveBtn('ic-vfo-row', 'vfo', s.active_vfo);
     _memMode = !!s.memory_mode;
     var memBtn = document.getElementById('ic-mem-toggle');
     if (memBtn) memBtn.classList.toggle('active', _memMode);
@@ -1758,8 +1749,6 @@ function pollStatus() {
         vfoPill.textContent = s.active_vfo || '—';
       }
     }
-    var bandPill = document.getElementById('ic-band-pill');
-    if (bandPill) bandPill.textContent = s.active_band || '—';
 
     // FM squelch type + DTCS
     setActiveBtn('ic-sqltype-row', 'sqltype', s.squelch_type || 'noise');

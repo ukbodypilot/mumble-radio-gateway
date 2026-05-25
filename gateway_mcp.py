@@ -1031,20 +1031,6 @@ def ic7100_vfo(action: str = 'select', vfo: str = 'A') -> str:
 
 
 @mcp.tool()
-def ic7100_band(band: str) -> str:
-    """
-    Select Main or Sub band on the IC-7100's dual-receive panel.
-
-    Args:
-        band: 'Main' or 'Sub'.
-    """
-    r = _post('/ic7100cmd', {'cmd': 'band', 'band': band}, timeout=10)
-    if r.get('ok'):
-        return f"IC-7100 active band = {r.get('active_band', band)}"
-    return f"IC-7100 band select failed: {r.get('error', 'unknown')}"
-
-
-@mcp.tool()
 def ic7100_memory_recall(channel: int) -> str:
     """
     Switch the IC-7100 to memory mode and recall channel (1..99).
@@ -1070,11 +1056,18 @@ def ic7100_memory_mode(on: bool = True) -> str:
 
 
 @mcp.tool()
-def ic7100_call_channel() -> str:
-    """Select the IC-7100 Call channel (the dedicated CALL memory)."""
-    r = _post('/ic7100cmd', {'cmd': 'call_channel'}, timeout=10)
+def ic7100_call_channel(which: str = '') -> str:
+    """Select an IC-7100 CALL channel. The IC-7100 has FOUR call channels:
+    144-C1, 144-C2, 430-C1, 430-C2 (two per VU band).
+
+    Args:
+        which: '144-C1', '144-C2', '430-C1', or '430-C2'. Empty/omitted
+               picks the band-1 call channel for the current frequency
+               (144-C1 on V/U below 300 MHz, 430-C1 above).
+    """
+    r = _post('/ic7100cmd', {'cmd': 'call_channel', 'which': which}, timeout=10)
     if r.get('ok'):
-        return "IC-7100 Call channel selected"
+        return f"IC-7100 CALL channel selected (mem={r.get('memory_channel')})"
     return f"IC-7100 call channel failed: {r.get('error', 'unknown')}"
 
 
