@@ -349,7 +349,13 @@ class KV4PPlugin(RadioPlugin):
             self._status_dirty = True
             return {"ok": True}
         if action == 'ptt':
-            return self._set_ptt(bool(cmd.get('state', False)))
+            # Explicit state if provided; otherwise toggle from current TX
+            # state. The web GUI's PTT button sends a bare {cmd:'ptt'} and
+            # expects toggle — defaulting to False made every click mean
+            # "PTT off" so the radio never actually keyed.
+            if 'state' in cmd:
+                return self._set_ptt(bool(cmd['state']))
+            return self._set_ptt(not self._ptt_on_state)
         if action == 'mute':
             self.muted = not self.muted
             return {"ok": True, "muted": self.muted}
