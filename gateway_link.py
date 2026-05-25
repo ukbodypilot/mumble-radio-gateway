@@ -308,13 +308,19 @@ class GatewayLinkServer:
         self._send_to(name, GatewayLinkProtocol.COMMAND,
                       json.dumps(cmd).encode('utf-8'))
 
-    def send_command_to_and_wait(self, name, cmd, timeout=2.0):
+    def send_command_to_and_wait(self, name, cmd, timeout=5.0):
         """Send a command and wait up to *timeout* seconds for the endpoint's
         ACK. Returns the endpoint's result dict, or a {'ok': False, 'error':
         ...} dict on timeout / unknown endpoint. The cmd is decorated with a
         unique _cmd_id; the endpoint must echo it in the ACK for correlation.
         Endpoints that don't echo cmd_id will simply time out — the caller
-        gets {'ok': False, 'error': 'timeout'} and the command still went."""
+        gets {'ok': False, 'error': 'timeout'} and the command still went.
+
+        Default timeout is 5 s because the CIVController can hold its serial
+        lock for several seconds at a stretch (settings poll across ~16 CI-V
+        reads, each up to 1 s on a no-response opcode). Commands queue behind
+        the poll and need that headroom; 2 s defaulted falsely-timed-out under
+        normal load. Callers can override for known-fast commands."""
         cmd_id = next(self._cmd_id_counter)
         cmd = dict(cmd)
         cmd['_cmd_id'] = cmd_id
