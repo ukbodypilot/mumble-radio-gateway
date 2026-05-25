@@ -968,23 +968,20 @@ class CIVController:
     def poll_settings(self):
         """Read every front-panel-adjustable setting into the cache. Run on
         connect and periodically so a change the operator makes on the radio
-        itself propagates back to the GUI."""
-        self.get_split()
-        self.get_rit_offset()
-        self.get_rit_on()
-        self.get_xit_on()
-        self.get_agc()
-        self.get_nb()
-        self.get_nr()
-        self.get_preamp()
-        self.get_atten()
-        self.get_if_shift()
-        self.get_squelch()
-        self.get_rf_power()
-        self.get_mic_gain()
-        self.get_ctcss()
-        self.get_dtcs_on()
-        self.get_dtcs_code()
+        itself propagates back to the GUI.
+
+        Each read sleeps 2 ms after releasing the lock so a user command
+        (e.g. PTT) waiting on _transact can preempt — otherwise this thread
+        re-grabs the lock instantly and a 5 s settings poll blocks the user
+        cmd for the full poll duration (worst case on a mode where several
+        opcodes hit 1 s CI-V timeouts)."""
+        for _get in (self.get_split, self.get_rit_offset, self.get_rit_on,
+                     self.get_xit_on, self.get_agc, self.get_nb, self.get_nr,
+                     self.get_preamp, self.get_atten, self.get_if_shift,
+                     self.get_squelch, self.get_rf_power, self.get_mic_gain,
+                     self.get_ctcss, self.get_dtcs_on, self.get_dtcs_code):
+            _get()
+            time.sleep(0.002)
 
     def _poll_state(self):
         """Full state snapshot, run on every (re)connect. The IC-7100 is the
@@ -1315,9 +1312,14 @@ class IC7100Plugin(RadioPlugin):
         action = cmd.get('cmd', '')
 
         if action == 'ptt':
-            state = bool(cmd.get('state', False))
             if not self._civ or not self._civ.connected:
                 return {"ok": False, "error": "CI-V not connected"}
+            # Explicit state if provided; otherwise toggle current TX state.
+            # The web GUI button sends a bare {cmd:'ptt'} and expects toggle.
+            if 'state' in cmd:
+                state = bool(cmd['state'])
+            else:
+                state = not bool(self._civ.transmitting)
             if state:
                 # Safety interlock — refuse TX if the antenna port for the
                 # current frequency has not been enabled by the operator.
@@ -1735,11 +1737,13 @@ class IC7100Plugin(RadioPlugin):
                 continue
             try:
                 before = self._poll_signature()
-                self._civ.get_freq()
-                self._civ.get_mode()
-                self._civ.get_ptt()
-                self._civ.get_smeter()
-                self._civ.get_squelch_status()
+                # 2 ms yield between each read so user commands can preempt
+                # this back-to-back read chain — see poll_settings() comment.
+                for _get in (self._civ.get_freq, self._civ.get_mode,
+                             self._civ.get_ptt, self._civ.get_smeter,
+                             self._civ.get_squelch_status):
+                    _get()
+                    time.sleep(0.002)
                 if (cycle % self._SETTINGS_POLL_EVERY == 0
                         and not self._civ.transmitting):
                     self._civ.poll_settings()
