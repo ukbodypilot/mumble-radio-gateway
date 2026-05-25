@@ -1907,11 +1907,23 @@ class IC7100Plugin(RadioPlugin):
                     print(f"[IC7100] Meter poll error: {e}", flush=True)
                 time.sleep(0.08)
             else:
-                # RX — the meters mean nothing; zero them once, then idle.
+                # RX — the TX meters mean nothing; zero them once. Also
+                # piggyback a squelch_status read so the GUI's squelch LED
+                # tracks open/close in near-real time (~3 Hz) instead of
+                # waiting for the 5 s fast-poll group. Cheap CI-V read.
                 if self._civ and (self._civ.po or self._civ.swr
                                    or self._civ.alc):
                     self._civ.po = self._civ.swr = self._civ.alc = 0
                     self._status_dirty = True
+                if self._civ and self._civ.connected \
+                        and not self._user_cmd_pending.is_set():
+                    prev = self._civ.squelch_open
+                    try:
+                        self._civ.get_squelch_status()
+                    except Exception:
+                        pass
+                    if self._civ.squelch_open != prev:
+                        self._status_dirty = True
                 time.sleep(0.3)
 
     # -- Settings persistence --

@@ -1661,7 +1661,10 @@ function swrRatio(raw) {
 var _txActive = false, _pollTimer = null;
 function _schedulePoll() {
   if (_pollTimer) clearInterval(_pollTimer);
-  _pollTimer = setInterval(pollStatus, _txActive ? 200 : 1000);
+  // 300 ms on RX matches the plugin's meter-loop cadence on RX, which
+  // now also reads squelch_status — so the squelch LED, S-meter, and
+  // any other RX-side state propagate end-to-end in ~300 ms.
+  _pollTimer = setInterval(pollStatus, _txActive ? 200 : 300);
 }
 
 function pollStatus() {
