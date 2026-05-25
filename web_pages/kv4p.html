@@ -2,352 +2,454 @@
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dell - Radio Gateway - KV4P Control</title>
+<title>KV4P — Radio Gateway</title>
 <link rel="stylesheet" href="/pages/common.css">
 <style>
-  /* KV4P-specific layout. Theme vars come from common.css. */
-  .kv-freq {
-    color: var(--t-ok);
-    font-size: 28px;
-    text-align: center;
-    letter-spacing: 2px;
-    margin: var(--s-2) 0;
+  /* Two KV4P panels side-by-side on wide screens, stack on narrow.
+     Each panel is self-contained and scopes its DOM lookups via class
+     selectors inside the panel root, so the markup can be duplicated
+     per instance without ID collisions. */
+  .kv-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: var(--s-3);
+    align-items: start;
   }
-  .kv-freq.tx { color: var(--t-warn); font-size: 20px; }
-  .kv-row { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-1); }
-  .kv-label { color: var(--t-text-dim); font-size: var(--f-sm); }
-  .kv-val { color: var(--t-text); }
+  .kv-panel-root { display: flex; flex-direction: column; gap: var(--s-2); }
+
+  /* Title strip for each radio */
+  .kv-title-bar {
+    display: flex; align-items: baseline; gap: var(--s-2);
+    padding: var(--s-1) var(--s-2);
+    border-bottom: 1px solid var(--t-border);
+    margin-bottom: var(--s-2);
+  }
+  .kv-title-bar .kv-instance {
+    font-weight: 600; font-size: var(--f-md);
+    color: var(--t-accent); letter-spacing: 0.06em;
+  }
+  .kv-title-bar .kv-instance-sub {
+    font-size: var(--f-xs); color: var(--t-text-dim);
+  }
+
+  /* Status row */
+  .kv-meta { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2);
+             font-size: var(--f-sm); }
+  .kv-meta .sep { color: var(--t-border); }
+  .kv-label { color: var(--t-text-dim); }
+  .kv-val   { color: var(--t-text); }
   .kv-val.ok  { color: var(--t-ok); }
   .kv-val.err { color: var(--t-err); }
+  .kv-val.warn{ color: var(--t-warn); }
 
-  .kv-meter {
-    flex: 1;
-    background: var(--t-bg);
-    border: 1px solid var(--t-border);
-    border-radius: var(--r-sm);
-    height: 14px;
-    position: relative;
-    overflow: hidden;
-  }
-  .kv-meter-fill {
-    height: 100%;
-    width: 0%;
-    transition: width 0.2s;
-    background: var(--t-ok);
-  }
-  .kv-meter.warn .kv-meter-fill { background: var(--t-warn); }
-  .kv-meter.err  .kv-meter-fill { background: var(--t-err); }
-  .kv-meter-text {
-    position: absolute;
-    left: 50%; top: 50%;
-    transform: translate(-50%, -50%);
-    font-size: var(--f-xs);
-    color: var(--t-text);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .kv-input {
-    background: var(--t-btn);
-    border: 1px solid var(--t-border);
-    color: var(--t-ok);
-    padding: var(--s-1) var(--s-2);
-    border-radius: var(--r-sm);
-    font-family: inherit;
-    font-size: var(--f-md);
-    width: 140px;
-    text-align: center;
-  }
-  .kv-select {
-    background: var(--t-btn);
-    border: 1px solid var(--t-border);
-    color: var(--t-text);
-    padding: var(--s-1) var(--s-2);
-    border-radius: var(--r-sm);
-    font-family: inherit;
-    font-size: var(--f-sm);
-  }
-
-  /* TX-active state on freq box */
-  #kv-freq-box.tx-active {
-    background: color-mix(in srgb, var(--t-err) 18%, var(--t-panel));
-    border-color: var(--t-err);
-  }
-
-  .kv-sep { color: var(--t-border); }
   .kv-tx-badge {
-    display: none;
-    background: var(--t-err);
-    color: var(--t-bg);
-    padding: 2px var(--s-2);
-    border-radius: var(--r-sm);
-    font-weight: 700;
-    font-size: var(--f-xs);
-    letter-spacing: 0.08em;
+    display: none; background: var(--t-err); color: var(--t-bg);
+    padding: 1px var(--s-1); border-radius: var(--r-sm);
+    font-weight: 700; font-size: var(--f-xs); letter-spacing: 0.08em;
   }
   .kv-tx-badge.on { display: inline-block; }
 
-  .kv-ctrl-group { display: flex; flex-direction: column; gap: 2px; }
-  .kv-ctrl-row { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-top: var(--s-2); }
+  /* Frequency display — compact for side-by-side */
+  .kv-freq-box { text-align: center; padding: var(--s-2) 0; }
+  .kv-freq-box.tx-active {
+    background: color-mix(in srgb, var(--t-err) 18%, var(--t-panel));
+    border-radius: var(--r-md);
+  }
+  .kv-freq {
+    color: var(--t-ok); font-size: 24px; letter-spacing: 1px;
+    font-variant-numeric: tabular-nums;
+  }
+  .kv-freq.tx { color: var(--t-warn); font-size: 16px; }
+  .kv-freq-row { display: flex; align-items: baseline; justify-content: center; gap: var(--s-2); }
+  .kv-freq-row.split { margin-top: 2px; }
 
-  .kv-feedback { font-size: var(--f-sm); min-width: 120px; font-variant-numeric: tabular-nums; }
+  /* Meters */
+  .kv-meter-row { display: flex; align-items: center; gap: var(--s-2); margin: 2px 0; }
+  .kv-meter-row .kv-label.w { min-width: 50px; font-size: var(--f-xs); }
+  .kv-meter {
+    flex: 1; background: var(--t-bg);
+    border: 1px solid var(--t-border); border-radius: var(--r-sm);
+    height: 12px; position: relative; overflow: hidden;
+  }
+  .kv-meter-fill {
+    height: 100%; width: 0%; transition: width 0.2s; background: var(--t-ok);
+  }
+  .kv-meter.accent .kv-meter-fill { background: var(--t-accent); }
+  .kv-meter-text {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    font-size: var(--f-xs); color: var(--t-text); font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
 
-  /* Utility helpers */
-  .kv-spacer     { flex: 1; }
-  .kv-inline     { display: flex; gap: var(--s-2); align-items: center; }
-  .kv-cluster    { display: flex; gap: var(--s-1); }
-  .kv-row-center { justify-content: center; }
-  .kv-row.mt-3   { margin-top: var(--s-3); }
-  .kv-val.bold   { font-weight: 600; }
-  .kv-label.w-meter { min-width: 55px; }
-  .kv-label.ml-3 { margin-left: var(--s-3); }
-  .kv-btn-ml-3   { margin-left: var(--s-3); }
-  .kv-slider-120 { width: 120px; }
-  .kv-meter-fill.accent { background: var(--t-accent); }
-  .kv-ctrl-row.ai-end { align-items: flex-end; }
-  .conn-bar { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+  /* Compact controls grid — 2 cols inside each panel */
+  .kv-ctrl-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-2) var(--s-3);
+    align-items: end;
+  }
+  .kv-ctrl { display: flex; flex-direction: column; gap: 2px; }
+  .kv-ctrl > .kv-label { font-size: var(--f-xs); }
+  .kv-ctrl-inline { display: flex; gap: var(--s-1); align-items: center; }
+  .kv-ctrl-inline input[type="range"] { flex: 1; min-width: 0; }
+  .kv-input {
+    background: var(--t-btn); border: 1px solid var(--t-border);
+    color: var(--t-ok); padding: 2px var(--s-1); border-radius: var(--r-sm);
+    font-family: inherit; font-size: var(--f-sm);
+    width: 100%; min-width: 0; text-align: center;
+  }
+  .kv-select {
+    background: var(--t-btn); border: 1px solid var(--t-border);
+    color: var(--t-text); padding: 2px var(--s-1); border-radius: var(--r-sm);
+    font-family: inherit; font-size: var(--f-sm); width: 100%; min-width: 0;
+  }
+  .kv-row-buttons { display: flex; gap: var(--s-1); flex-wrap: wrap; }
+  .kv-feedback { font-size: var(--f-xs); min-width: 4em; }
+
+  /* Hide TX freq row by default */
+  .kv-tx-freq-row { display: none; }
+  .kv-tx-freq-row.shown { display: flex; }
 </style>
 </head><body>
 
-<div id="kv-offline" class="panel" style="display:none;">
-  <span class="kv-val err bold">KV4P HT Not Connected</span>
-  <span id="kv-status-detail" class="kv-label ml-3"></span>
-  <button class="rb rb-sm kv-btn-ml-3" onclick="kvCmd('reconnect')">Reconnect</button>
-</div>
-
-<div id="kv-panel" style="display:none;">
-
-  <!-- Status bar -->
-  <div class="panel conn-bar">
-    <span class="kv-label">FW:</span> <span id="kv-fw" class="kv-val">&mdash;</span>
-    <span class="kv-sep">|</span>
-    <span class="kv-label">Module:</span> <span id="kv-module" class="kv-val">&mdash;</span>
-    <span class="kv-sep">|</span>
-    <span class="kv-label">Audio:</span> <span id="kv-audio-status" class="kv-val">&mdash;</span>
-    <span class="kv-spacer"></span>
-    <span id="kv-tx-badge" class="kv-tx-badge">TX</span>
-    <span class="kv-spacer"></span>
-    <span id="kv-feedback" class="kv-feedback"></span>
-    <button class="rb rb-sm" onclick="kvCmd('ptt')" id="kv-ptt-btn">PTT</button>
-    <button class="rb rb-sm" onclick="kvCmd('testtone','400')">Test 400Hz</button>
-    <button class="rb rb-sm" onclick="kvCmd('testtone','1000')">Test 1kHz</button>
-    <button class="rb rb-sm" onclick="kvCmd('testtone')">Stop Tone</button>
-    <button class="rb rb-sm" onclick="kvCmd('reconnect')">Reconnect</button>
-  </div>
-
-  <!-- Frequency + meters -->
-  <div class="panel" id="kv-freq-box">
-    <div class="kv-row kv-row-center">
-      <span id="kv-rx-label" class="kv-label">RX</span>
-      <span id="kv-rx-freq" class="kv-freq">&mdash;</span>
-      <span class="kv-label">MHz</span>
-    </div>
-    <div id="kv-tx-freq-row" class="kv-row kv-row-center" style="display:none;">
-      <span id="kv-tx-label" class="kv-label">TX</span>
-      <span id="kv-tx-freq" class="kv-freq tx">&mdash;</span>
-      <span class="kv-label">MHz</span>
-    </div>
-
-    <div class="kv-row mt-3">
-      <span class="kv-label w-meter">S-meter</span>
-      <div id="kv-sig-meter" class="kv-meter vu">
-        <div id="kv-meter-fill" class="kv-meter-fill"></div>
-        <div id="kv-meter-text" class="kv-meter-text">S0</div>
-      </div>
-    </div>
-
-    <div class="kv-row">
-      <span class="kv-label w-meter">Audio</span>
-      <div class="kv-meter vu">
-        <div id="kv-audio-fill" class="kv-meter-fill accent"></div>
-        <div id="kv-audio-text" class="kv-meter-text">0%</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Controls -->
-  <div class="panel">
-    <div class="kv-ctrl-row">
-      <div class="kv-ctrl-group">
-        <span class="kv-label">Frequency (MHz)</span>
-        <div class="kv-cluster">
-          <input id="kv-freq-input" class="kv-input" type="text" placeholder="146.520" onfocus="_ctrlEditUntil=Date.now()+5000">
-          <button class="rb rb-sm" onclick="kvCmd('freq',document.getElementById('kv-freq-input').value)">Set</button>
-        </div>
-      </div>
-      <div class="kv-ctrl-group">
-        <span class="kv-label">TX Freq (0=same)</span>
-        <div class="kv-cluster">
-          <input id="kv-txfreq-input" class="kv-input" type="text" placeholder="0" onfocus="_ctrlEditUntil=Date.now()+5000">
-          <button class="rb rb-sm" onclick="kvCmd('txfreq',document.getElementById('kv-txfreq-input').value)">Set</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="kv-ctrl-row">
-      <div class="kv-ctrl-group">
-        <span class="kv-label">Squelch (0-8)</span>
-        <div class="kv-inline">
-          <input id="kv-squelch" type="range" min="0" max="8" value="4" class="kv-slider-120"
-            oninput="_ctrlEditUntil=Date.now()+3000;document.getElementById('kv-sq-val').textContent=this.value"
-            onchange="_ctrlEditUntil=Date.now()+3000;kvCmd('squelch',this.value)">
-          <span id="kv-sq-val" class="kv-val">4</span>
-        </div>
-      </div>
-      <div class="kv-ctrl-group">
-        <span class="kv-label">Volume (0-500%)</span>
-        <div class="kv-inline">
-          <input id="kv-vol" type="range" min="0" max="500" value="100" class="kv-slider-120"
-            oninput="_ctrlEditUntil=Date.now()+3000;document.getElementById('kv-vol-val').textContent=this.value+'%'"
-            onchange="_ctrlEditUntil=Date.now()+3000;kvCmd('vol',this.value)">
-          <span id="kv-vol-val" class="kv-val">100%</span>
-        </div>
-      </div>
-      <div class="kv-ctrl-group">
-        <span class="kv-label">Power</span>
-        <select id="kv-power" class="kv-select" onfocus="_ctrlEditUntil=Date.now()+5000" onchange="_ctrlEditUntil=Date.now()+3000;kvCmd('power',this.value)">
-          <option value="high">High</option><option value="low">Low</option>
-        </select>
-      </div>
-      <div class="kv-ctrl-group">
-        <span class="kv-label">Bandwidth</span>
-        <select id="kv-bw" class="kv-select" onfocus="_ctrlEditUntil=Date.now()+5000" onchange="_ctrlEditUntil=Date.now()+3000;kvCmd('bandwidth',this.value)">
-          <option value="wide">Wide (25kHz)</option><option value="narrow">Narrow (12.5kHz)</option>
-        </select>
-      </div>
-    </div>
-
-    <div class="kv-ctrl-row ai-end">
-      <div class="kv-ctrl-group">
-        <span class="kv-label">CTCSS TX</span>
-        <select id="kv-ctcss-tx" class="kv-select" onfocus="_ctrlEditUntil=Date.now()+30000">
-          <option value="0">None</option>
-          <option value="67.0">67.0 Hz</option><option value="71.9">71.9 Hz</option><option value="74.4">74.4 Hz</option><option value="77.0">77.0 Hz</option><option value="79.7">79.7 Hz</option><option value="82.5">82.5 Hz</option><option value="85.4">85.4 Hz</option><option value="88.5">88.5 Hz</option><option value="91.5">91.5 Hz</option><option value="94.8">94.8 Hz</option><option value="97.4">97.4 Hz</option><option value="100.0">100.0 Hz</option><option value="103.5">103.5 Hz</option><option value="107.2">107.2 Hz</option><option value="110.9">110.9 Hz</option><option value="114.8">114.8 Hz</option><option value="118.8">118.8 Hz</option><option value="123.0">123.0 Hz</option><option value="127.3">127.3 Hz</option><option value="131.8">131.8 Hz</option><option value="136.5">136.5 Hz</option><option value="141.3">141.3 Hz</option><option value="146.2">146.2 Hz</option><option value="151.4">151.4 Hz</option><option value="156.7">156.7 Hz</option><option value="162.2">162.2 Hz</option><option value="167.9">167.9 Hz</option><option value="173.8">173.8 Hz</option><option value="179.9">179.9 Hz</option><option value="186.2">186.2 Hz</option><option value="192.8">192.8 Hz</option><option value="203.5">203.5 Hz</option><option value="210.7">210.7 Hz</option><option value="218.1">218.1 Hz</option><option value="225.7">225.7 Hz</option><option value="233.6">233.6 Hz</option><option value="241.8">241.8 Hz</option><option value="250.3">250.3 Hz</option>
-        </select>
-      </div>
-      <div class="kv-ctrl-group">
-        <span class="kv-label">CTCSS RX</span>
-        <select id="kv-ctcss-rx" class="kv-select" onfocus="_ctrlEditUntil=Date.now()+30000">
-          <option value="0">None</option>
-          <option value="67.0">67.0 Hz</option><option value="71.9">71.9 Hz</option><option value="74.4">74.4 Hz</option><option value="77.0">77.0 Hz</option><option value="79.7">79.7 Hz</option><option value="82.5">82.5 Hz</option><option value="85.4">85.4 Hz</option><option value="88.5">88.5 Hz</option><option value="91.5">91.5 Hz</option><option value="94.8">94.8 Hz</option><option value="97.4">97.4 Hz</option><option value="100.0">100.0 Hz</option><option value="103.5">103.5 Hz</option><option value="107.2">107.2 Hz</option><option value="110.9">110.9 Hz</option><option value="114.8">114.8 Hz</option><option value="118.8">118.8 Hz</option><option value="123.0">123.0 Hz</option><option value="127.3">127.3 Hz</option><option value="131.8">131.8 Hz</option><option value="136.5">136.5 Hz</option><option value="141.3">141.3 Hz</option><option value="146.2">146.2 Hz</option><option value="151.4">151.4 Hz</option><option value="156.7">156.7 Hz</option><option value="162.2">162.2 Hz</option><option value="167.9">167.9 Hz</option><option value="173.8">173.8 Hz</option><option value="179.9">179.9 Hz</option><option value="186.2">186.2 Hz</option><option value="192.8">192.8 Hz</option><option value="203.5">203.5 Hz</option><option value="210.7">210.7 Hz</option><option value="218.1">218.1 Hz</option><option value="225.7">225.7 Hz</option><option value="233.6">233.6 Hz</option><option value="241.8">241.8 Hz</option><option value="250.3">250.3 Hz</option>
-        </select>
-      </div>
-      <button class="rb rb-sm" onclick="kvCmd('ctcss',document.getElementById('kv-ctcss-tx').value+' '+document.getElementById('kv-ctcss-rx').value)">Set CTCSS</button>
-    </div>
-  </div>
-
-</div><!-- end kv-panel -->
+<div id="kv-grid" class="kv-grid"></div>
 
 <script src="/pages/common.js"></script>
 <script>
-var _ctrlEditUntil = 0;
-var _ctcss_tones = ["67.0","71.9","74.4","77.0","79.7","82.5","85.4","88.5","91.5","94.8","97.4","100.0","103.5","107.2","110.9","114.8","118.8","123.0","127.3","131.8","136.5","141.3","146.2","151.4","156.7","162.2","167.9","173.8","179.9","186.2","192.8","203.5","210.7","218.1","225.7","233.6","241.8","250.3"];
+// ── Per-instance KV4P panel controller ──────────────────────────────────
+// Each radio gets its own DOM root (built from buildPanel) and its own
+// poller + command sender. All DOM lookups are scoped to the panel root
+// so VHF and UHF don't collide on IDs/classes.
+
+var KV4P_CTCSS = ["67.0","71.9","74.4","77.0","79.7","82.5","85.4","88.5",
+  "91.5","94.8","97.4","100.0","103.5","107.2","110.9","114.8","118.8",
+  "123.0","127.3","131.8","136.5","141.3","146.2","151.4","156.7","162.2",
+  "167.9","173.8","179.9","186.2","192.8","203.5","210.7","218.1","225.7",
+  "233.6","241.8","250.3"];
+
 function _ctcssCode2Hz(code) {
   if (!code || code <= 0) return '0';
-  var t = _ctcss_tones[code - 1];
+  var t = KV4P_CTCSS[code - 1];
   return t !== undefined ? t : '0';
 }
-function kvCmd(cmd, args) {
-  var body = {cmd: cmd};
+
+function _ctcssOpts(selected) {
+  var html = '<option value="0">None</option>';
+  for (var i = 0; i < KV4P_CTCSS.length; i++) {
+    html += '<option value="' + KV4P_CTCSS[i] + '">' + KV4P_CTCSS[i] + ' Hz</option>';
+  }
+  return html;
+}
+
+// Build a single panel for an instance ('vhf', 'uhf', ...). Returns the
+// panel root element (caller appends to .kv-grid). All interactive bits
+// are class-tagged so panel.querySelector('.<class>') finds them.
+function buildPanel(instance, label, sublabel) {
+  var root = document.createElement('div');
+  root.className = 'kv-panel-root';
+  root.dataset.instance = instance;
+  root.innerHTML = `
+    <div class="panel">
+      <div class="kv-title-bar">
+        <span class="kv-instance">${label}</span>
+        <span class="kv-instance-sub">${sublabel}</span>
+        <span style="flex:1"></span>
+        <span class="kv-tx-badge">TX</span>
+      </div>
+
+      <div class="kv-offline" style="display:none;">
+        <span class="kv-val err" style="font-weight:600">Not Connected</span>
+        <span class="kv-status-detail kv-label" style="margin-left:var(--s-2)"></span>
+        <button class="rb rb-sm" style="margin-left:var(--s-2)" data-cmd="reconnect">Reconnect</button>
+      </div>
+
+      <div class="kv-body" style="display:none;">
+        <div class="kv-meta">
+          <span class="kv-label">FW:</span> <span class="kv-fw kv-val">—</span>
+          <span class="sep">|</span>
+          <span class="kv-label">Module:</span> <span class="kv-module kv-val">—</span>
+          <span class="sep">|</span>
+          <span class="kv-label">Audio:</span> <span class="kv-audio-status kv-val">—</span>
+          <span style="flex:1"></span>
+          <span class="kv-feedback"></span>
+        </div>
+
+        <div class="kv-freq-box">
+          <div class="kv-freq-row">
+            <span class="kv-rx-label kv-label">RX</span>
+            <span class="kv-rx-freq kv-freq">—</span>
+            <span class="kv-label">MHz</span>
+          </div>
+          <div class="kv-tx-freq-row kv-freq-row split">
+            <span class="kv-tx-label kv-label">TX</span>
+            <span class="kv-tx-freq kv-freq tx">—</span>
+            <span class="kv-label">MHz</span>
+          </div>
+        </div>
+
+        <div class="kv-meter-row">
+          <span class="kv-label w">S-meter</span>
+          <div class="kv-sig-meter kv-meter">
+            <div class="kv-meter-fill"></div>
+            <div class="kv-meter-text">S0</div>
+          </div>
+        </div>
+        <div class="kv-meter-row">
+          <span class="kv-label w">Audio</span>
+          <div class="kv-audio-meter kv-meter accent">
+            <div class="kv-meter-fill"></div>
+            <div class="kv-meter-text">0%</div>
+          </div>
+        </div>
+
+        <div class="kv-row-buttons" style="margin-top:var(--s-2)">
+          <button class="rb rb-sm kv-ptt-btn" data-cmd="ptt">PTT</button>
+          <button class="rb rb-sm" data-cmd="testtone" data-args="400">Tone 400</button>
+          <button class="rb rb-sm" data-cmd="testtone" data-args="1000">Tone 1k</button>
+          <button class="rb rb-sm" data-cmd="testtone">Stop</button>
+          <span style="flex:1"></span>
+          <button class="rb rb-sm" data-cmd="reconnect">Reconnect</button>
+        </div>
+
+        <div class="kv-ctrl-grid" style="margin-top:var(--s-2)">
+          <div class="kv-ctrl">
+            <span class="kv-label">RX Freq (MHz)</span>
+            <div class="kv-ctrl-inline">
+              <input class="kv-freq-input kv-input" type="text" placeholder="147.435">
+              <button class="rb rb-sm" data-set="freq" data-from=".kv-freq-input">Set</button>
+            </div>
+          </div>
+          <div class="kv-ctrl">
+            <span class="kv-label">TX Freq (0=same)</span>
+            <div class="kv-ctrl-inline">
+              <input class="kv-txfreq-input kv-input" type="text" placeholder="0">
+              <button class="rb rb-sm" data-set="txfreq" data-from=".kv-txfreq-input">Set</button>
+            </div>
+          </div>
+
+          <div class="kv-ctrl">
+            <span class="kv-label">Squelch (0–8) <span class="kv-sq-val">4</span></span>
+            <input class="kv-squelch" type="range" min="0" max="8" value="4">
+          </div>
+          <div class="kv-ctrl">
+            <span class="kv-label">Volume <span class="kv-vol-val">100%</span></span>
+            <input class="kv-vol" type="range" min="0" max="500" value="100">
+          </div>
+
+          <div class="kv-ctrl">
+            <span class="kv-label">Power</span>
+            <select class="kv-power kv-select">
+              <option value="high">High</option><option value="low">Low</option>
+            </select>
+          </div>
+          <div class="kv-ctrl">
+            <span class="kv-label">Bandwidth</span>
+            <select class="kv-bw kv-select">
+              <option value="wide">Wide 25k</option><option value="narrow">Narrow 12.5k</option>
+            </select>
+          </div>
+
+          <div class="kv-ctrl">
+            <span class="kv-label">CTCSS TX</span>
+            <select class="kv-ctcss-tx kv-select">${_ctcssOpts()}</select>
+          </div>
+          <div class="kv-ctrl">
+            <span class="kv-label">CTCSS RX</span>
+            <select class="kv-ctcss-rx kv-select">${_ctcssOpts()}</select>
+          </div>
+          <div class="kv-ctrl" style="grid-column:1/-1">
+            <button class="rb rb-sm" data-set="ctcss-pair">Set CTCSS pair</button>
+          </div>
+        </div>
+      </div><!-- /kv-body -->
+    </div><!-- /panel -->
+  `;
+  return root;
+}
+
+// Per-instance controller — wires up DOM events scoped to root, polls
+// /kv4pstatus?instance=X, posts commands with instance in the body.
+function Kv4pCtrl(root, instance) {
+  this.root = root;
+  this.instance = instance;
+  this._editUntil = 0;
+  this._setupHandlers();
+  this._poller = createPoller('/kv4pstatus?instance=' + encodeURIComponent(instance),
+                              1500, this._update.bind(this));
+}
+
+Kv4pCtrl.prototype._q = function(sel) { return this.root.querySelector(sel); };
+
+Kv4pCtrl.prototype.cmd = function(cmd, args) {
+  var self = this;
+  var body = {cmd: cmd, instance: this.instance};
   if (args !== undefined) body.args = String(args);
-  postJson('/kv4pcmd', body)
-    .then(function(d){
-      var fb = document.getElementById('kv-feedback');
-      fb.classList.remove('ok', 'err');
-      if (d.ok) {
-        fb.className = 'kv-feedback kv-val ok';
-        fb.textContent = d.response || 'OK';
-      } else {
-        fb.className = 'kv-feedback kv-val err';
-        fb.textContent = d.error || 'Error';
-      }
-      setTimeout(function(){ fb.textContent = ''; fb.className = 'kv-feedback'; }, 4000);
-    });
-}
-
-function kvUpdate(d) {
-    var offline = document.getElementById('kv-offline');
-    var panel = document.getElementById('kv-panel');
-
-    if (!d.kv4p_enabled) {
-      offline.style.display = 'block';
-      panel.style.display = 'none';
-      document.getElementById('kv-status-detail').textContent = 'KV4P disabled in config';
-      return;
-    }
-    if (!d.connected) {
-      offline.style.display = 'block';
-      panel.style.display = 'none';
-      document.getElementById('kv-status-detail').textContent = 'Not connected — check USB';
-      return;
-    }
-
-    offline.style.display = 'none';
-    panel.style.display = 'block';
-
-    // Status bar
-    document.getElementById('kv-fw').textContent = 'v' + (d.firmware_version || '?');
-    document.getElementById('kv-module').textContent = d.rf_module || '?';
-    document.getElementById('kv-audio-status').textContent = d.audio_connected ? 'Connected' : 'No codec';
-    document.getElementById('kv-tx-badge').classList.toggle('on', !!d.transmitting);
-
-    // TX overlay on freq display via class, not inline style
-    document.getElementById('kv-freq-box').classList.toggle('tx-active', !!d.transmitting);
-
-    // Frequency — show TX freq as primary when transmitting on a split
-    var rxf = d.frequency || '0.000000';
-    var txf = d.tx_frequency || rxf;
-    var isSplit = (txf !== rxf);
-
-    if (d.transmitting && isSplit) {
-      document.getElementById('kv-rx-label').textContent = 'TX';
-      document.getElementById('kv-rx-freq').textContent = parseFloat(txf).toFixed(4);
-      document.getElementById('kv-tx-freq-row').style.display = 'flex';
-      document.getElementById('kv-tx-label').textContent = 'RX';
-      document.getElementById('kv-tx-freq').textContent = parseFloat(rxf).toFixed(4);
-    } else if (isSplit) {
-      document.getElementById('kv-rx-label').textContent = 'RX';
-      document.getElementById('kv-rx-freq').textContent = parseFloat(rxf).toFixed(4);
-      document.getElementById('kv-tx-freq-row').style.display = 'flex';
-      document.getElementById('kv-tx-label').textContent = 'TX';
-      document.getElementById('kv-tx-freq').textContent = parseFloat(txf).toFixed(4);
+  return postJson('/kv4pcmd', body).then(function(d) {
+    var fb = self._q('.kv-feedback');
+    if (d.ok) {
+      fb.className = 'kv-feedback kv-val ok';
+      fb.textContent = d.response || 'OK';
     } else {
-      document.getElementById('kv-rx-label').textContent = 'RX';
-      document.getElementById('kv-rx-freq').textContent = parseFloat(rxf).toFixed(4);
-      document.getElementById('kv-tx-freq-row').style.display = 'none';
+      fb.className = 'kv-feedback kv-val err';
+      fb.textContent = d.error || 'Error';
     }
+    setTimeout(function() {
+      fb.textContent = ''; fb.className = 'kv-feedback';
+    }, 4000);
+    return d;
+  });
+};
 
-    // S-meter: raw 0-255 → S0-S9; color shifts warn/err above thresholds.
-    var raw = d.signal || 0;
-    var s = Math.round(raw * 9 / 255);
-    var pct = Math.min(100, Math.round(raw * 100 / 255));
-    if (window.RG && RG.vu) RG.vu.set(document.getElementById('kv-sig-meter'), pct);
-    else document.getElementById('kv-meter-fill').style.width = pct + '%';
-    document.getElementById('kv-meter-text').textContent = 'S' + s + ' (' + raw + ')';
+Kv4pCtrl.prototype._editLock = function(ms) {
+  this._editUntil = Date.now() + (ms || 3000);
+};
 
-    // Audio level
-    var aLvl = Math.round(d.audio_level || 0);
-    if (window.RG && RG.vu) RG.vu.set(document.getElementById('kv-audio-fill').parentElement, Math.min(100, aLvl));
-    else document.getElementById('kv-audio-fill').style.width = Math.min(100, aLvl) + '%';
-    document.getElementById('kv-audio-text').textContent = aLvl + '%';
-
-    // Update controls — skip any field the user currently has focused
-    var _af = document.activeElement ? document.activeElement.id : '';
-    function _kvset(id, val) { if (id !== _af) document.getElementById(id).value = val; }
-    if (Date.now() > _ctrlEditUntil) {
-      _kvset('kv-squelch', d.squelch || 4);
-      document.getElementById('kv-sq-val').textContent = d.squelch || 4;
-      _kvset('kv-power', d.high_power ? 'high' : 'low');
-      _kvset('kv-bw', (d.bandwidth === 0) ? 'narrow' : 'wide');
-      _kvset('kv-ctcss-tx', _ctcssCode2Hz(d.ctcss_tx));
-      _kvset('kv-ctcss-rx', _ctcssCode2Hz(d.ctcss_rx));
-      if (d.audio_boost !== undefined) {
-        _kvset('kv-vol', d.audio_boost);
-        document.getElementById('kv-vol-val').textContent = d.audio_boost + '%';
+Kv4pCtrl.prototype._setupHandlers = function() {
+  var self = this;
+  // Buttons with data-cmd fire kvCmd(cmd, args)
+  this.root.querySelectorAll('[data-cmd]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      self.cmd(btn.dataset.cmd, btn.dataset.args);
+    });
+  });
+  // "Set" buttons that read from a sibling input
+  this.root.querySelectorAll('[data-set]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var kind = btn.dataset.set;
+      if (kind === 'ctcss-pair') {
+        var tx = self._q('.kv-ctcss-tx').value;
+        var rx = self._q('.kv-ctcss-rx').value;
+        self.cmd('ctcss', tx + ' ' + rx);
+      } else if (btn.dataset.from) {
+        var input = self._q(btn.dataset.from);
+        self.cmd(kind, input ? input.value : '');
       }
-    }
-}
+    });
+  });
+  // Inputs that should lock the field briefly so the next poll doesn't
+  // yank a value the user is mid-edit on.
+  this.root.querySelectorAll('input, select').forEach(function(el) {
+    el.addEventListener('focus', function() { self._editLock(5000); });
+  });
+  // Sliders / dropdowns that POST on change
+  var sq = this._q('.kv-squelch');
+  sq.addEventListener('input', function() {
+    self._editLock(3000); self._q('.kv-sq-val').textContent = sq.value;
+  });
+  sq.addEventListener('change', function() {
+    self._editLock(3000); self.cmd('squelch', sq.value);
+  });
+  var vol = this._q('.kv-vol');
+  vol.addEventListener('input', function() {
+    self._editLock(3000); self._q('.kv-vol-val').textContent = vol.value + '%';
+  });
+  vol.addEventListener('change', function() {
+    self._editLock(3000); self.cmd('vol', vol.value);
+  });
+  this._q('.kv-power').addEventListener('change', function() {
+    self._editLock(3000); self.cmd('power', this.value);
+  });
+  this._q('.kv-bw').addEventListener('change', function() {
+    self._editLock(3000); self.cmd('bandwidth', this.value);
+  });
+};
 
-createPoller('/kv4pstatus', 1500, kvUpdate);
+Kv4pCtrl.prototype._update = function(d) {
+  var offline = this._q('.kv-offline');
+  var body = this._q('.kv-body');
+  if (!d.kv4p_enabled || !d.connected) {
+    offline.style.display = 'block';
+    body.style.display = 'none';
+    this._q('.kv-status-detail').textContent = !d.kv4p_enabled
+      ? 'KV4P disabled in config'
+      : 'Not connected — check USB';
+    return;
+  }
+  offline.style.display = 'none';
+  body.style.display = 'block';
+
+  this._q('.kv-fw').textContent = 'v' + (d.firmware_version || '?');
+  this._q('.kv-module').textContent = d.rf_module || '?';
+  this._q('.kv-audio-status').textContent = d.audio_connected ? 'Connected' : 'No codec';
+  var tx = !!d.transmitting;
+  this.root.querySelector('.kv-tx-badge').classList.toggle('on', tx);
+  this._q('.kv-freq-box').classList.toggle('tx-active', tx);
+
+  // Frequency display (same split-aware logic as before)
+  var rxf = d.frequency || '0.000000';
+  var txf = d.tx_frequency || rxf;
+  var isSplit = (txf !== rxf);
+  var txFreqRow = this._q('.kv-tx-freq-row');
+  if (tx && isSplit) {
+    this._q('.kv-rx-label').textContent = 'TX';
+    this._q('.kv-rx-freq').textContent = parseFloat(txf).toFixed(4);
+    txFreqRow.classList.add('shown');
+    this._q('.kv-tx-label').textContent = 'RX';
+    this._q('.kv-tx-freq').textContent = parseFloat(rxf).toFixed(4);
+  } else if (isSplit) {
+    this._q('.kv-rx-label').textContent = 'RX';
+    this._q('.kv-rx-freq').textContent = parseFloat(rxf).toFixed(4);
+    txFreqRow.classList.add('shown');
+    this._q('.kv-tx-label').textContent = 'TX';
+    this._q('.kv-tx-freq').textContent = parseFloat(txf).toFixed(4);
+  } else {
+    this._q('.kv-rx-label').textContent = 'RX';
+    this._q('.kv-rx-freq').textContent = parseFloat(rxf).toFixed(4);
+    txFreqRow.classList.remove('shown');
+  }
+
+  // S-meter
+  var raw = d.signal || 0;
+  var s = Math.round(raw * 9 / 255);
+  var pct = Math.min(100, Math.round(raw * 100 / 255));
+  var sigMeter = this._q('.kv-sig-meter');
+  if (window.RG && RG.vu) RG.vu.set(sigMeter, pct);
+  else sigMeter.querySelector('.kv-meter-fill').style.width = pct + '%';
+  sigMeter.querySelector('.kv-meter-text').textContent = 'S' + s + ' (' + raw + ')';
+
+  // Audio meter
+  var aLvl = Math.round(d.audio_level || 0);
+  var aMeter = this._q('.kv-audio-meter');
+  if (window.RG && RG.vu) RG.vu.set(aMeter, Math.min(100, aLvl));
+  else aMeter.querySelector('.kv-meter-fill').style.width = Math.min(100, aLvl) + '%';
+  aMeter.querySelector('.kv-meter-text').textContent = aLvl + '%';
+
+  // Editable controls — skip if user is actively editing
+  if (Date.now() > this._editUntil) {
+    var af = document.activeElement;
+    var skip = function(el) { return el === af; };
+    var set = function(sel, val) {
+      var el = this._q(sel);
+      if (el && !skip(el)) el.value = val;
+    }.bind(this);
+    set('.kv-squelch', d.squelch || 4);
+    this._q('.kv-sq-val').textContent = d.squelch || 4;
+    set('.kv-power', d.high_power ? 'high' : 'low');
+    set('.kv-bw', (d.bandwidth === 0) ? 'narrow' : 'wide');
+    set('.kv-ctcss-tx', _ctcssCode2Hz(d.ctcss_tx));
+    set('.kv-ctcss-rx', _ctcssCode2Hz(d.ctcss_rx));
+    if (d.audio_boost !== undefined) {
+      set('.kv-vol', d.audio_boost);
+      this._q('.kv-vol-val').textContent = d.audio_boost + '%';
+    }
+  }
+};
+
+// ── Bootstrap: discover instances from /kv4pinstances or render hardcoded
+// VHF + UHF pair. The status endpoint will gracefully tell us if either
+// is disabled/disconnected.
+(function init() {
+  var grid = document.getElementById('kv-grid');
+  var panels = [
+    {instance: 'vhf', label: 'KV4P VHF', sub: '/dev/kv4p-vhf'},
+    {instance: 'uhf', label: 'KV4P UHF', sub: '/dev/kv4p-uhf'},
+  ];
+  panels.forEach(function(p) {
+    var root = buildPanel(p.instance, p.label, p.sub);
+    grid.appendChild(root);
+    new Kv4pCtrl(root, p.instance);
+  });
+})();
 </script>
 </body></html>
