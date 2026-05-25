@@ -47,6 +47,8 @@ class CloudflareTunnel:
         self._on_url_changed = on_url_changed
         self._supervisor = supervisor          # set via attach_supervisor() if None
         self._health_thread = None
+        self._tail_thread = None
+        self._tail_stop = threading.Event()
 
     def attach_supervisor(self, supervisor):
         """Set the ProcessSupervisor after construction (gateway init order)."""
@@ -90,13 +92,25 @@ class CloudflareTunnel:
                     '--url', f'http://localhost:{port}']
 
         try:
+            # No stdout_handler — if we passed one, ProcessSupervisor would
+            # use subprocess.PIPE to capture lines for live filtering. With
+            # PIPE, the gateway holds the read end; when the gateway is
+            # SIGKILL'd, the pipe closes from cloudflared's side and the
+            # next log write inside cloudflared raises SIGPIPE → cloudflared
+            # dies, even though it's in a separate (sibling) cgroup that
+            # the gateway's cgroup-kill doesn't reach. Pre-d2b3714 the
+            # tunnel module redirected stdout straight to LOG_FILE for
+            # exactly this reason; folding it into ProcessSupervisor lost
+            # that. Restoring it: omit stdout_handler so the supervisor
+            # uses Popen(stdout=log_f) (file FD, no pipe, no SIGPIPE on
+            # parent death), and parse URLs from the log file separately
+            # via _tail_log_for_urls below.
             self._supervisor.add(
                 self.SUPERVISOR_NAME, argv,
                 restart=True,
                 backoff=(5, 60),
                 persist_across_restart=True,
                 adopt_existing=lambda: pgrep_first('cloudflared'),
-                stdout_handler=self._on_log_line,
                 log_file=self.LOG_FILE,
             )
             print(f"  [Tunnel] Cloudflare tunnel supervised for port {port}")
@@ -105,6 +119,7 @@ class CloudflareTunnel:
             self._supervisor.restart(self.SUPERVISOR_NAME)
 
         self._start_health_check()
+        self._start_log_tail()
 
     def stop(self):
         # Intentional no-op: persist_across_restart=True keeps the tunnel
@@ -117,6 +132,59 @@ class CloudflareTunnel:
             return self._url
         self._url = self._read_cached_url()
         return self._url
+
+    # ── Log-file tail thread (replaces the old stdout pipe handler) ──
+
+    def _start_log_tail(self):
+        if self._tail_thread and self._tail_thread.is_alive():
+            return
+        self._tail_stop.clear()
+        self._tail_thread = threading.Thread(
+            target=self._tail_log_for_urls, daemon=True, name="cf-tail")
+        self._tail_thread.start()
+
+    def _tail_log_for_urls(self):
+        """Tail LOG_FILE and feed each new line to _on_log_line so URL
+        changes are captured. Same effect as the old stdout pipe handler
+        but without holding a pipe FD that would SIGPIPE-kill cloudflared
+        when the gateway is SIGKILL'd. Restarts on the cloudflared side
+        rotate / truncate the file; we handle that by seeking back to 0
+        when the file shrinks."""
+        try:
+            # Wait briefly for the file to exist (cloudflared just spawned)
+            for _ in range(60):
+                if self._tail_stop.is_set():
+                    return
+                if os.path.exists(self.LOG_FILE):
+                    break
+                time.sleep(0.5)
+            else:
+                return
+            with open(self.LOG_FILE, 'r') as f:
+                # Seek to end — we already scanned for the cached URL via
+                # _scan_log_for_url() in start(); only NEW lines matter here.
+                f.seek(0, os.SEEK_END)
+                last_size = f.tell()
+                while not self._tail_stop.is_set():
+                    line = f.readline()
+                    if line:
+                        try:
+                            self._on_log_line(line.rstrip('\n'))
+                        except Exception as e:
+                            print(f"  [Tunnel] URL parse error: {e}",
+                                  flush=True)
+                        continue
+                    # No new data — check if the file was rotated/truncated
+                    try:
+                        cur_size = os.path.getsize(self.LOG_FILE)
+                    except OSError:
+                        cur_size = last_size
+                    if cur_size < last_size:
+                        f.seek(0)
+                    last_size = cur_size
+                    time.sleep(0.3)
+        except Exception as e:
+            print(f"  [Tunnel] Log tail error: {e}", flush=True)
 
     # ── stdout handler — URL capture ────────────────────────────────
 
