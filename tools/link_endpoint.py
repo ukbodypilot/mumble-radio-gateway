@@ -637,6 +637,8 @@ def main():
     _diag_max_read = 0.0
     _diag_max_send = 0.0
     _DIAG_INTERVAL = 10.0
+    _DIAG_HEARTBEAT_EVERY = 30          # print every Nth interval = ~5 min
+    _diag_silent_intervals = 0          # count consecutive nominal intervals
 
     try:
         while not shutdown_requested.is_set():
@@ -670,10 +672,25 @@ def main():
 
             _now = time.monotonic()
             if _now - _diag_time >= _DIAG_INTERVAL:
-                print(f"[Endpoint-DIAG] {_DIAG_INTERVAL:.0f}s: "
-                      f"reads={_diag_reads} nulls={_diag_nulls} sends={_diag_sends} "
-                      f"slow_read={_diag_slow_reads} (max={_diag_max_read:.0f}ms) "
-                      f"slow_send={_diag_slow_sends} (max={_diag_max_send:.0f}ms)")
+                # Only print the DIAG line when something is worth noticing:
+                # a slow read/send happened, or every Nth interval as a
+                # liveness heartbeat. Default nominal state ("all reads were
+                # null, no sends") was spamming the log every 10 s with no
+                # actionable info. Slow events + ~5 min heartbeat is plenty
+                # to confirm the loop is alive and surface any anomaly.
+                _anomaly = (_diag_slow_reads or _diag_slow_sends or
+                            _diag_max_read > 50 or _diag_max_send > 50)
+                _diag_silent_intervals += 1
+                _heartbeat = (_diag_silent_intervals >= _DIAG_HEARTBEAT_EVERY)
+                if _anomaly or _heartbeat:
+                    _silent = _diag_silent_intervals - (0 if _anomaly else 1)
+                    _tag = ' (heartbeat)' if (_heartbeat and not _anomaly) else ''
+                    print(f"[Endpoint-DIAG] {_DIAG_INTERVAL:.0f}s: "
+                          f"reads={_diag_reads} nulls={_diag_nulls} sends={_diag_sends} "
+                          f"slow_read={_diag_slow_reads} (max={_diag_max_read:.0f}ms) "
+                          f"slow_send={_diag_slow_sends} (max={_diag_max_send:.0f}ms)"
+                          f"{_tag}")
+                    _diag_silent_intervals = 0
                 _diag_time = _now
                 _diag_reads = _diag_nulls = _diag_sends = 0
                 _diag_slow_reads = _diag_slow_sends = 0
