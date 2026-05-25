@@ -617,10 +617,12 @@ class CIVController:
             self.preamp = stage
         return ok
 
-    # Attenuator — 0x11 (0x00=off, 0x20=20 dB).
+    # Attenuator — 0x11 (0x00=off, 0x01=on). Many Icoms (IC-7300, IC-7610)
+    # use 0x20 to encode "20 dB", but the IC-7100 attenuator is a fixed
+    # 20 dB pad and the radio rejects anything but a plain on/off flag.
     def set_atten(self, on: bool) -> bool:
         resp = self._transact(self._build_frame(
-            0x11, data=bytes([0x20 if on else 0x00])))
+            0x11, data=bytes([0x01 if on else 0x00])))
         ok = resp is not None and resp[0:1] == _OK
         if ok:
             self.atten = on
@@ -1644,6 +1646,10 @@ class IC7100Plugin(RadioPlugin):
                 "mode":             self._civ.mode,
                 "filter":           self._civ.filter_idx,
                 "transmitting":     self._civ.transmitting,
+                # Mirror to ptt_active so the gateway's status-push handler
+                # (which keys on 'ptt_active') keeps _link_ptt_active fresh
+                # for front-panel PTT changes too — not just ACK-driven ones.
+                "ptt_active":       self._civ.transmitting,
                 "smeter":           self._civ.smeter,
                 "po":               self._civ.po,
                 "swr":              self._civ.swr,

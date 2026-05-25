@@ -498,12 +498,15 @@ def main():
     def on_command_from_master(cmd):
         """Called from reader thread when master sends a command."""
         cmd_str = cmd.get('cmd', str(cmd)) if isinstance(cmd, dict) else str(cmd)
+        # Server-side waiter correlation: if the gateway tagged this cmd with
+        # an _cmd_id, echo it back in the ACK so it can match up.
+        cmd_id = cmd.get('_cmd_id') if isinstance(cmd, dict) else None
 
         # Restart command — ACK then os.execv
         if cmd_str == 'restart':
             print(f"[Endpoint] Restart requested by gateway")
             try:
-                client.send_ack('restart', {"ok": True})
+                client.send_ack('restart', {"ok": True}, cmd_id=cmd_id)
             except Exception:
                 pass
             time.sleep(0.5)
@@ -513,7 +516,7 @@ def main():
         if cmd_str == 'reboot_host':
             print(f"[Endpoint] Host reboot requested by gateway")
             try:
-                client.send_ack('reboot_host', {"ok": True})
+                client.send_ack('reboot_host', {"ok": True}, cmd_id=cmd_id)
             except Exception:
                 pass
             time.sleep(0.5)
@@ -526,7 +529,9 @@ def main():
         print(f"[Endpoint] Command: {cmd_str} -> {'OK' if ok else result}")
         # Send ACK back to master with the result
         try:
-            client.send_ack(cmd_str, result if isinstance(result, dict) else {"ok": False})
+            client.send_ack(cmd_str,
+                            result if isinstance(result, dict) else {"ok": False},
+                            cmd_id=cmd_id)
         except Exception as e:
             print(f"[Endpoint] ACK send error: {e}")
 

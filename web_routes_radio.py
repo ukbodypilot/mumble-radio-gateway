@@ -207,16 +207,14 @@ def handle_ic7100cmd(handler, parent):
                      'memory_write', 'memory_clear', 'memory_to_vfo',
                      'memory_read'):
             # Forward verbatim — the plugin's execute() reads the right keys
-            # (vfo, band, channel, on, ...). Web caller passes whichever
-            # fields apply to the chosen subcommand.
-            _link.send_command_to(_ep, data)
-            result = {'ok': True, 'response': f'{cmd} sent'}
+            # (vfo, band, channel, on, ...). Wait for the endpoint's actual
+            # result so callers see real ok/NG instead of optimistic ok:true.
+            result = _link.send_command_to_and_wait(_ep, data)
         elif cmd in _IC7100_HF_CMDS:
             # HF / DSP / FM-squelch panel — the GUI payload already carries
             # the right keys (on/hz/mode/level/stage/idx/pct/type/code/...);
-            # forward it verbatim. IC7100Plugin.execute() reads what it needs.
-            _link.send_command_to(_ep, data)
-            result = {'ok': True}
+            # forward it verbatim. Wait for the endpoint's actual result.
+            result = _link.send_command_to_and_wait(_ep, data)
         else:
             result = {'ok': False, 'error': f'unknown cmd: {cmd}'}
     except Exception as e:

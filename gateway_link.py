@@ -215,6 +215,16 @@ class GatewayLinkServer:
         self._accept_thread = None
         self._heartbeat_thread = None
 
+        # Pending-ACK correlation for send_command_to_and_wait().
+        # cmd_id is monotonically increasing per server instance; the endpoint
+        # echoes it back inside the ACK frame and we fulfill the matching Event.
+        # Older endpoints that don't echo cmd_id simply time out the waiter,
+        # which then falls through to the fire-and-forget behaviour.
+        import itertools as _it
+        self._cmd_id_counter = _it.count(1)
+        self._pending_acks = {}      # cmd_id -> (threading.Event, result_holder)
+        self._pending_acks_lock = threading.Lock()
+
     # -- public API ---------------------------------------------------------
 
     def start(self):
@@ -294,9 +304,32 @@ class GatewayLinkServer:
         self._send_to(name, GatewayLinkProtocol.AUDIO, pcm)
 
     def send_command_to(self, name, cmd):
-        """Send a command dict to a specific endpoint by name."""
+        """Send a command dict to a specific endpoint by name (fire-and-forget)."""
         self._send_to(name, GatewayLinkProtocol.COMMAND,
                       json.dumps(cmd).encode('utf-8'))
+
+    def send_command_to_and_wait(self, name, cmd, timeout=2.0):
+        """Send a command and wait up to *timeout* seconds for the endpoint's
+        ACK. Returns the endpoint's result dict, or a {'ok': False, 'error':
+        ...} dict on timeout / unknown endpoint. The cmd is decorated with a
+        unique _cmd_id; the endpoint must echo it in the ACK for correlation.
+        Endpoints that don't echo cmd_id will simply time out — the caller
+        gets {'ok': False, 'error': 'timeout'} and the command still went."""
+        cmd_id = next(self._cmd_id_counter)
+        cmd = dict(cmd)
+        cmd['_cmd_id'] = cmd_id
+        ev = threading.Event()
+        holder = [None]
+        with self._pending_acks_lock:
+            self._pending_acks[cmd_id] = (ev, holder)
+        try:
+            self.send_command_to(name, cmd)
+            if ev.wait(timeout):
+                return holder[0] if holder[0] is not None else {'ok': False, 'error': 'empty ACK'}
+            return {'ok': False, 'error': f'no ACK from {name} within {timeout}s'}
+        finally:
+            with self._pending_acks_lock:
+                self._pending_acks.pop(cmd_id, None)
 
     def send_status_to(self, name, status):
         """Send a status dict to a specific endpoint by name."""
@@ -498,6 +531,16 @@ class GatewayLinkServer:
                         ack = json.loads(payload)
                         cmd_name = ack.get('cmd', ack.get('cmd_id', '?'))
                         ok = ack.get('ok', False)
+                        # Fulfill any pending send_command_to_and_wait() waiter
+                        # before invoking on_ack — the HTTP caller is blocked.
+                        _cid = ack.get('_cmd_id')
+                        if _cid is not None:
+                            with self._pending_acks_lock:
+                                _waiter = self._pending_acks.get(_cid)
+                            if _waiter is not None:
+                                _ev, _holder = _waiter
+                                _holder[0] = ack.get('result', {})
+                                _ev.set()
                         if cmd_name == 'ping' and ep._ping_sent > 0:
                             ep.ping_ms = round((time.monotonic() - ep._ping_sent) * 1000, 1)
                         elif cmd_name not in ('status', 'ping'):
@@ -890,9 +933,13 @@ class GatewayLinkClient:
         self._send(GatewayLinkProtocol.STATUS,
                    json.dumps(status).encode('utf-8'))
 
-    def send_ack(self, cmd_name, result_dict):
-        """Send an ACK frame back to the server with command result."""
+    def send_ack(self, cmd_name, result_dict, cmd_id=None):
+        """Send an ACK frame back to the server with command result.
+        If *cmd_id* is provided it is echoed in the ACK so the server can
+        match it against a pending send_command_to_and_wait() waiter."""
         payload = {"cmd": cmd_name}
+        if cmd_id is not None:
+            payload["_cmd_id"] = cmd_id
         if isinstance(result_dict, dict):
             payload["ok"] = result_dict.get("ok", False)
             payload["result"] = result_dict
