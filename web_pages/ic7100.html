@@ -898,7 +898,7 @@ var IC_FREQ_MIN_HZ = 30000;        // 0.030 MHz
 var IC_FREQ_MAX_HZ = 470000000;    // 470 MHz
 var _freqHz = 14200000;         // current display value in Hz
 var _activePos = 3;             // 0=1Hz, 3=1kHz default
-var _sendDebounce = null;
+// (was _sendDebounce — replaced by the single-in-flight pattern below)
 var _userTuning = false;        // suppress poll-overwrite while interacting
 
 function _clampFreq(hz) {
@@ -932,6 +932,36 @@ function _renderFreq() {
   if (kc) kc.textContent = 'VFO · ' + _fmtStep(Math.pow(10, _activePos));
 }
 
+// Single-in-flight tuner: only one freq cmd at a time. When it completes,
+// if the user's displayed target has moved since, fire another for the new
+// target. This self-throttles to whatever rate the radio + serial link
+// actually sustain — measured ~1-3 cmd/s on real hardware (the old
+// "35-50/s" comment was optimistic). The old fixed 50 ms debounce piled
+// commands up because typical knob detents arrive every 100-200 ms.
+var _freqSendInFlight = false;
+var _freqLastSentHz = null;
+var _freqSettleMs = 80;        // gap between sends so the radio breathes
+
+function _kickFreqSend() {
+  if (_freqSendInFlight) return;
+  if (_freqHz === _freqLastSentHz) return;   // target already on the wire
+  _freqSendInFlight = true;
+  var target = _freqHz;
+  icPost({cmd:'freq', args: String(target / 1e6)}).then(function(d) {
+    if (!d.ok) icFeedback(d.error || 'tune failed', true);
+    _freqLastSentHz = target;
+  }).catch(function() {
+    /* ignore — let poll resync */
+  }).finally(function() {
+    setTimeout(function() {
+      _freqSendInFlight = false;
+      _kickFreqSend();    // chase if user moved further during the send
+      // Release tuning lock so the periodic status poll can sync back
+      setTimeout(function() { _userTuning = false; }, 250);
+    }, _freqSettleMs);
+  });
+}
+
 function _stepFreq(delta) {
   var want = _freqHz + delta;
   _freqHz = _clampFreq(want);
@@ -940,14 +970,7 @@ function _stepFreq(delta) {
   }
   _userTuning = true;
   _renderFreq();
-  if (_sendDebounce) clearTimeout(_sendDebounce);
-  _sendDebounce = setTimeout(function() {
-    icPost({cmd:'freq', args: String(_freqHz / 1e6)}).then(function(d) {
-      if (!d.ok) icFeedback(d.error || 'tune failed', true);
-      // Release tuning lock 250 ms after last send so poll can sync
-      setTimeout(function() { _userTuning = false; }, 250);
-    });
-  }, 50);   // IC-7100 CI-V @19200 sustains ~35-50 freq writes/s; revisit with hardware
+  _kickFreqSend();
 }
 
 function _moveActivePos(delta) {

@@ -141,8 +141,17 @@ def handle_ic7100cmd(handler, parent):
             except (TypeError, ValueError):
                 result = {'ok': False, 'error': 'freq must be a number (MHz)'}
             else:
-                _link.send_command_to(_ep, {'cmd': 'frequency', 'freq': _mhz})
-                result = {'ok': True, 'freq': _mhz}
+                # Wait for the endpoint ACK rather than fire-and-forget. The
+                # GUI's "single-in-flight" tuner pattern relies on the HTTP
+                # POST not resolving until the radio has actually accepted
+                # the freq — otherwise rapid knob spins pile up multi-second
+                # backlogs because the GUI thinks each send finished
+                # instantly. 3 s timeout is generous; a real CI-V freq write
+                # is ~150 ms but the poll loop can hold the lock longer.
+                result = _link.send_command_to_and_wait(
+                    _ep, {'cmd': 'frequency', 'freq': _mhz}, timeout=3.0)
+                if 'freq' not in result:
+                    result['freq'] = _mhz
         elif cmd == 'mode':
             _mode = data.get('mode', args)
             _filter = data.get('filter')
