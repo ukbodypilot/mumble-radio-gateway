@@ -1375,7 +1375,17 @@ function initTuningKnobs() {
 // the fill arc. Sends are debounced; poll updates are ignored briefly
 // after a user interaction so the knob doesn't fight the radio readback.
 //
-// opts: {el, min, max, value, sweep?, wheelStep?, onChange:fn(v), onRender?:fn(v)}
+// opts: {el, min, max, value, sweep?, wheelStep?, onChange:fn(v),
+//         onRender?:fn(v), chase?:bool}
+// If chase:true, the knob uses the same single-in-flight pattern as the
+// VFO frequency tuner — on every drag step it updates the "target" and
+// fires the next onChange the moment the previous one resolves. The user
+// hears/sees the radio chase the knob in real time. If chase:false (or
+// omitted, default), uses the original 150 ms debounce — fires once after
+// the user stops dragging. Use chase for controls where continuous
+// feedback matters (volume / AF). Use debounce for set-and-forget
+// controls (RF power, squelch) where rapid intermediate values waste
+// CI-V round-trips with no audible benefit.
 function makePotKnob(opts) {
   var el = opts.el;
   if (!el) return null;
@@ -1384,6 +1394,8 @@ function makePotKnob(opts) {
   var value = Math.max(min, Math.min(max, opts.value != null ? opts.value : min));
   var dragging = false, prevAngle = 0, sendT = null, pending = null;
   var moved = 0, lastTapT = 0;   // for double-click (tap-tap) reset
+  // Chase-pattern state — used only if opts.chase is truthy.
+  var chaseInFlight = false, chaseLastSent = null;
 
   function centre() {
     var r = el.getBoundingClientRect();
@@ -1398,12 +1410,30 @@ function makePotKnob(opts) {
     if (dial) dial.style.setProperty('--val', frac.toFixed(4));
     if (opts.onRender) opts.onRender(Math.round(value));
   }
+  function _kickChase() {
+    if (chaseInFlight) return;
+    var t = pending;
+    if (t === chaseLastSent) return;
+    chaseInFlight = true;
+    var ret = opts.onChange(t);
+    // onChange may or may not return a Promise; either way we want to
+    // know when the radio round-trip finished so we can chase further.
+    Promise.resolve(ret).finally(function() {
+      chaseLastSent = t;
+      chaseInFlight = false;
+      if (pending !== chaseLastSent) _kickChase();
+    });
+  }
   function commit() {
     // Hold the value we're sending until the radio's status echoes it
     // back (see `set` below). Without this a poll snaps the knob back
     // whenever the command is slow to round-trip — or never takes at
     // all, e.g. CI-V offline, where the endpoint rejects it outright.
     pending = Math.round(value);
+    if (opts.chase) {
+      _kickChase();
+      return;
+    }
     if (sendT) clearTimeout(sendT);
     sendT = setTimeout(function() {
       pending = Math.round(value);
@@ -1514,11 +1544,12 @@ function initPotKnobs() {
   _afKnob = makePotKnob({
     el: document.getElementById('ic-af-knob'),
     min: 0, max: 100, value: 50, wheelStep: 5,
+    chase: true,           // live chase like the VFO knob — hear it move
     onRender: function(v) {
       var c = document.getElementById('ic-af-knob-cap');
       if (c) c.textContent = 'AF ' + v + '%';
     },
-    onChange: function(v) { icCmd('af_level', {pct: v}); }});
+    onChange: function(v) { return icCmd('af_level', {pct: v}); }});
 }
 
 // ── CTCSS ───────────────────────────────────────────────────────────────
