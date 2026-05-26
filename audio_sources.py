@@ -1824,6 +1824,7 @@ class LinkAudioSource(AudioSource):
         self.server_connected = False
         self.muted = False
         self.audio_level = 0
+        self._audio_level_last_mono = 0.0
         self._chunk_bytes = int(getattr(config, 'AUDIO_RATE', 48000)) * 2 * int(getattr(config, 'AUDIO_CHANNELS', 1)) // 20  # 50ms
         # Jitter buffer. Single producer (link reader thread → push_audio)
         # and single consumer (bus tick → get_audio). deque's append/popleft
@@ -1861,8 +1862,18 @@ class LinkAudioSource(AudioSource):
             _st.record(f'{self.endpoint_name}_rx', 'push_audio', pcm, _qd, _extra)
         try:
             self.audio_level = pcm_level(pcm, self.audio_level)
+            self._audio_level_last_mono = time.monotonic()
         except Exception:
             pass
+
+    def meter_level(self):
+        # When this source is a sink-only endpoint (not a member of any bus),
+        # get_audio() is never called, so audio_level never decays. Return 0
+        # if no push_audio in the last 250 ms so the dashboard meter falls
+        # back to silence instead of freezing at the last pre-squelch value.
+        if time.monotonic() - getattr(self, '_audio_level_last_mono', 0) > 0.25:
+            return 0
+        return self.audio_level
 
     def get_audio(self, chunk_size):
         _st = getattr(self, '_stream_trace', None)

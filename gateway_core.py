@@ -2303,7 +2303,7 @@ class RadioGateway:
                     'source_id': getattr(src, 'source_id', ''),
                     'sink_id': getattr(src, 'sink_id', ''),
                     'capabilities': _ep_info.get('capabilities', {}),
-                    'level': src.audio_level,
+                    'level': src.meter_level() if hasattr(src, 'meter_level') else src.audio_level,
                     'rx_muted': src.muted,
                     'tx_muted': self.link_endpoint_settings.get(name, {}).get('tx_muted', False),
                     'ptt_active': self._link_ptt_active.get(name, False),
