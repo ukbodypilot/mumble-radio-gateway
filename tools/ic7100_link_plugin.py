@@ -1079,8 +1079,34 @@ class CIVController:
 # Audio helpers
 # ---------------------------------------------------------------------------
 
+# IC-7100's built-in USB audio is a TI PCM2901 (VID:PID 08bb:2901). The
+# chip is generic — ALSA only sees "USB Audio CODEC", no IC-7100/ICOM
+# string — so keyword-matching against arecord output finds nothing.
+# Match on USB VID:PID instead so we're specific to the radio's codec.
+_IC7100_AUDIO_USBIDS = ('08bb:2901',)
+
+
 def _find_alsa_card(keywords=('IC-7100', 'ICOM', 'icom', 'IC7100')) -> str | None:
-    """Return hw:N card spec for the IC-7100 USB audio device, or None."""
+    """Return hw:N card spec for the IC-7100 USB audio device, or None.
+
+    Tries USB VID:PID match first (specific to the IC-7100's PCM2901
+    codec). Falls back to keyword matching for radios whose codec
+    actually does identify itself as IC-7100/ICOM."""
+    # USB VID:PID via /proc/asound/cardN/usbid
+    try:
+        for card_dir in sorted(os.listdir('/proc/asound')):
+            if not card_dir.startswith('card'):
+                continue
+            try:
+                with open(f'/proc/asound/{card_dir}/usbid') as f:
+                    usbid = f.read().strip().lower()
+            except (FileNotFoundError, OSError):
+                continue
+            if usbid in _IC7100_AUDIO_USBIDS:
+                return f'hw:{card_dir[4:]},0'
+    except (FileNotFoundError, OSError):
+        pass
+    # Keyword fallback (for radios that DO have a recognisable name)
     try:
         out = subprocess.check_output(
             ['arecord', '-l'], stderr=subprocess.DEVNULL, timeout=5).decode()
