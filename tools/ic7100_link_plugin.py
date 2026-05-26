@@ -1502,6 +1502,15 @@ class IC7100Plugin(RadioPlugin):
     # -- Audio I/O --
 
     def get_audio(self, chunk_size=4800):
+        # The IC-7100's USB codec streams its receive audio unconditionally
+        # (no internal squelch gating like the kv4p/D75 do). Without this
+        # check the gateway's audio meters always show the noise floor for
+        # this radio while showing silence for the others. Gate on the
+        # cached squelch state so the dashboard / bus levels track the
+        # actual operator-relevant audio. squelch_open is polled at ~3 Hz
+        # via the meter loop so the latency is ~300 ms — fine for voice.
+        if self._civ and self._civ.connected and self._civ.squelch_open is False:
+            return None, False
         try:
             data = self._rx_queue.get_nowait()
             if self._rx_gain_db != 0.0:
@@ -2081,12 +2090,19 @@ class IC7100Plugin(RadioPlugin):
                     self._status_dirty = True
                 if self._civ and self._civ.connected \
                         and not self._user_cmd_pending.is_set():
-                    prev = self._civ.squelch_open
+                    prev_sq = self._civ.squelch_open
+                    prev_sm = self._civ.smeter
                     try:
                         self._civ.get_squelch_status()
+                        # Also piggyback the S-meter — same reason as
+                        # squelch_status. Without this the dashboard
+                        # S-meter only refreshes every 5 s (fast-poll
+                        # cycle). Cheap; runs at ~3 Hz on RX.
+                        self._civ.get_smeter()
                     except Exception:
                         pass
-                    if self._civ.squelch_open != prev:
+                    if self._civ.squelch_open != prev_sq \
+                            or self._civ.smeter != prev_sm:
                         self._status_dirty = True
                 time.sleep(0.3)
 
