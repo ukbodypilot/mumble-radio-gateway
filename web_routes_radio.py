@@ -132,8 +132,15 @@ def handle_ic7100cmd(handler, parent):
             else:
                 _ptt_now = getattr(gw, '_link_ptt_active', {}).get(_ep, False)
                 _new = not _ptt_now
-            _link.send_command_to(_ep, {'cmd': 'ptt', 'state': _new})
-            result = {'ok': True, 'ptt': _new}
+            # Wait for the endpoint ACK so the HTTP response reflects the
+            # real plugin result — including TX-interlock refusals, which
+            # used to come back as optimistic ok:true while the radio
+            # silently refused to key. 2 s is generous (the cmd is ~25 ms
+            # with the recent CI-V speedup).
+            result = _link.send_command_to_and_wait(
+                _ep, {'cmd': 'ptt', 'state': _new}, timeout=2.0)
+            if 'ptt' not in result:
+                result['ptt'] = _new
         elif cmd == 'freq':
             # Accept MHz as string or float
             try:

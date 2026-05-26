@@ -1314,10 +1314,12 @@ class IC7100Plugin(RadioPlugin):
         self._poll_thread = None
         self._rx_gain_db = 0.0
         self._tx_gain_db = 0.0
-        # TX antenna-port safety interlock. Both ports start blocked
-        # (fail-safe) — the operator must confirm the connected antenna each
-        # session. Deliberately NOT persisted: a stale "enabled" flag could
-        # outlive the physical antenna being disconnected.
+        # TX antenna-port safety interlock. Defaults to both OFF; setup()
+        # restores from the settings file if present (operator's previous
+        # choice survives endpoint restart so PTT works immediately). The
+        # restore prints a loud log line so the safety implication — a
+        # stale "enabled" flag could outlive the physical antenna being
+        # disconnected while we were down — isn't silent.
         self._tx_allow = {'hf': False, 'vu': False}
         self._status_dirty = False
         # Set whenever execute() is processing a user command. The poll loop
@@ -1350,6 +1352,19 @@ class IC7100Plugin(RadioPlugin):
             self._tx_gain_db = max(-20, min(20, float(saved.get('tx_gain_db', 0))))
             print(f"[IC7100] Restored gains RX={self._rx_gain_db:+.1f} dB "
                   f"TX={self._tx_gain_db:+.1f} dB", flush=True)
+            # TX interlock persistence — re-apply the last known operator
+            # choice so PTT works immediately after restart. Loud log so
+            # it's obvious which ports are "live" after a service bounce
+            # (and to flag the safety implication if the physical antenna
+            # was disconnected while we were down).
+            _hf = bool(saved.get('tx_allow_hf', False))
+            _vu = bool(saved.get('tx_allow_vu', False))
+            if _hf or _vu:
+                self._tx_allow['hf'] = _hf
+                self._tx_allow['vu'] = _vu
+                print(f"[IC7100] Restored TX interlocks: "
+                      f"HF={'ON' if _hf else 'off'} VU={'ON' if _vu else 'off'} "
+                      f"— verify the antenna is still connected!", flush=True)
 
         # Resolve ALSA device
         if audio_hint:
@@ -1469,6 +1484,7 @@ class IC7100Plugin(RadioPlugin):
                     and not self._tx_allow[_antenna_port(self._civ.freq_hz)]):
                 self._civ.set_ptt(False)
             self._status_dirty = True
+            self._save_settings()    # persist so it survives endpoint restart
             return {"ok": True,
                     "tx_allow_hf": self._tx_allow['hf'],
                     "tx_allow_vu": self._tx_allow['vu']}
@@ -1964,8 +1980,12 @@ class IC7100Plugin(RadioPlugin):
             if d:
                 os.makedirs(d, exist_ok=True)
             with open(self._settings_file, 'w') as f:
-                json.dump({"rx_gain_db": self._rx_gain_db,
-                           "tx_gain_db": self._tx_gain_db}, f)
+                json.dump({
+                    "rx_gain_db":   self._rx_gain_db,
+                    "tx_gain_db":   self._tx_gain_db,
+                    "tx_allow_hf":  self._tx_allow.get('hf', False),
+                    "tx_allow_vu":  self._tx_allow.get('vu', False),
+                }, f)
         except Exception as e:
             print(f"[IC7100] Failed to save settings: {e}", flush=True)
 
