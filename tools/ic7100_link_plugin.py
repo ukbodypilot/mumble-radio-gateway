@@ -34,6 +34,31 @@ sys.path.insert(0, _project_dir)
 
 from gateway_link import RadioPlugin
 
+
+def _pcm_peak_pct(pcm: bytes, prev: int = 0) -> int:
+    """Cheap S16_LE peak level estimator (0-100) with a fast-attack /
+    slow-decay smoothing. Inline so the endpoint side doesn't need the
+    gateway's audio_util module."""
+    if not pcm:
+        return max(0, int(prev * 0.85))   # decay to 0 when silent
+    try:
+        # Sample every Nth frame to keep CPU negligible
+        step = 16
+        peak = 0
+        for i in range(0, len(pcm) - 1, 2 * step):
+            v = (pcm[i] | (pcm[i + 1] << 8))
+            if v & 0x8000:
+                v -= 0x10000
+            if v < 0:
+                v = -v
+            if v > peak:
+                peak = v
+        pct = int(peak * 100 / 32768)
+    except Exception:
+        return prev
+    # Fast attack, slow decay
+    return pct if pct > prev else int(prev * 0.85 + pct * 0.15)
+
 # ---------------------------------------------------------------------------
 # CI-V protocol constants
 # ---------------------------------------------------------------------------
@@ -268,6 +293,17 @@ class CIVController:
         self.rf_power: int = 0    # 0..100 percent — TX RF output power
         self.mic_gain: int = 50   # 0..100 percent — TX mic gain
         self.af_level: int = 50   # 0..100 percent — radio AF (volume) knob
+        # DATA mode (USB-D / FM-D / etc.) flag — controls which MOD INPUT
+        # the radio uses on TX. With DATA OFF MOD = MIC and DATA MOD = USB
+        # on the radio, toggling this swaps between the operator's manual
+        # mic (data_mode=False) and the gateway-fed USB audio (True).
+        self.data_mode: bool = False
+        self.data_mode_filter: int = 1   # 1/2/3, only meaningful when on
+        # Tracks whether WE engaged data mode for a gateway-initiated TX
+        # cycle. set_ptt auto-engages data_mode on the way up and undoes
+        # it on the way down, but only if WE engaged it — never disturbs
+        # a user-engaged data mode (e.g., they're running RTTY manually).
+        self._we_set_data_mode: bool = False
         self.po: int = 0          # TX power meter — raw 0..255
         self.swr: int = 0         # SWR meter — raw 0..255
         self.alc: int = 0         # ALC meter — raw 0..255
@@ -453,11 +489,24 @@ class CIVController:
         return v
 
     def set_ptt(self, on: bool) -> bool:
+        # Auto-engage DATA mode around gateway-initiated PTT cycles so the
+        # USB codec is the modulation source on TX (per the operator's
+        # MOD INPUT config: DATA OFF MOD=MIC, DATA MOD=USB). Restore to
+        # DATA mode OFF on release so the manual hand mic works again
+        # for the operator's own non-gateway TX. Only undo if WE engaged
+        # it — leaves a user-engaged data mode (e.g., they were running
+        # RTTY) alone.
+        if on and not self.data_mode:
+            if self.set_data_mode(True):
+                self._we_set_data_mode = True
         resp = self._transact(
             self._build_frame(0x1c, subcmd=0x00, data=bytes([0x01 if on else 0x00])))
         ok = resp is not None and resp[0:1] == _OK
         if ok:
             self.transmitting = on
+        if not on and self._we_set_data_mode:
+            self.set_data_mode(False)
+            self._we_set_data_mode = False
         return ok
 
     def get_ptt(self) -> bool | None:
@@ -717,6 +766,33 @@ class CIVController:
         if ok:
             self.af_level = pct
         return ok
+
+    # DATA mode (USB-D / FM-D / etc) — 0x1A 0x06 [on] [filter].
+    # Per IC-7100 manual p20-14:
+    #   q (1 byte): 00 = data mode OFF, 01 = data mode ON
+    #   w (1 byte): 00 when off, else 01=FIL1 / 02=FIL2 / 03=FIL3
+    # With the operator's radio set to DATA OFF MOD=MIC and DATA MOD=USB,
+    # toggling this picks which audio source feeds the modulator: mic when
+    # off, USB codec (gateway audio) when on.
+    def set_data_mode(self, on: bool, filt: int = 1) -> bool:
+        flag = 0x01 if on else 0x00
+        filt = max(1, min(3, int(filt))) if on else 0
+        resp = self._transact(self._build_frame(
+            0x1a, subcmd=0x06, data=bytes([flag, filt])))
+        ok = resp is not None and resp[0:1] == _OK
+        if ok:
+            self.data_mode = bool(on)
+            self.data_mode_filter = filt if on else self.data_mode_filter
+        return ok
+
+    def get_data_mode(self) -> bool | None:
+        resp = self._transact(self._build_frame(0x1a, subcmd=0x06))
+        if resp and len(resp) >= 4 and resp[0] == 0x1a and resp[1] == 0x06:
+            self.data_mode = bool(resp[2])
+            if resp[2]:
+                self.data_mode_filter = int(resp[3]) or self.data_mode_filter
+            return self.data_mode
+        return None
 
     # Mic gain — 0x14 0x0B (0..255). Maps 0..100% TX microphone gain.
     def set_mic_gain(self, pct: int) -> bool:
@@ -1426,6 +1502,13 @@ class IC7100Plugin(RadioPlugin):
             return None, False
 
     def put_audio(self, pcm):
+        # Instrumentation: track each call so the GUI / diagnostics can
+        # tell whether the bus is actually feeding TX audio to us (vs no
+        # routing at all). Updated even when _playback is missing so a
+        # mis-configured audio sink still shows "yes, calls arriving".
+        self._tx_audio_calls = getattr(self, '_tx_audio_calls', 0) + 1
+        self._tx_audio_last_mono = time.monotonic()
+        self.tx_audio_level = _pcm_peak_pct(pcm, getattr(self, 'tx_audio_level', 0))
         if not self._playback:
             return
         if self._tx_gain_db != 0.0:
@@ -1753,6 +1836,21 @@ class IC7100Plugin(RadioPlugin):
                 self._status_dirty = True
             return {"ok": ok, "af_level": self._civ.af_level}
 
+        elif action == 'data_mode':
+            # Toggle the radio's DATA mode (USB-D / FM-D / ...) so the
+            # MOD INPUT chain swaps audio source per the operator's menu
+            # configuration. Typical use: DATA OFF MOD = MIC for the
+            # operator's hand mic, DATA MOD = USB for gateway-fed audio.
+            # Caller: {cmd:'data_mode', on: true|false} (filt optional).
+            if not self._civ or not self._civ.connected:
+                return {"ok": False, "error": "CI-V not connected"}
+            on = bool(cmd.get('on', not self._civ.data_mode))   # toggle if absent
+            filt = int(cmd.get('filt', self._civ.data_mode_filter))
+            ok = self._civ.set_data_mode(on, filt)
+            if ok:
+                self._status_dirty = True
+            return {"ok": ok, "data_mode": self._civ.data_mode}
+
         elif action == 'squelch_type':
             # FM squelch gating: 'noise' (carrier), 'tsql' (CTCSS tone),
             # or 'dtcs' (digital code). Orchestrates the RX-tone and
@@ -1826,6 +1924,17 @@ class IC7100Plugin(RadioPlugin):
                 "rf_power":         self._civ.rf_power,
                 "mic_gain":         self._civ.mic_gain,
                 "af_level":         self._civ.af_level,
+                "data_mode":        self._civ.data_mode,
+                "data_mode_filter": self._civ.data_mode_filter,
+                # TX audio path instrumentation — confirms whether the
+                # bus is actually feeding TX PCM to put_audio(). Zero =
+                # no audio reaching us (bus / routing problem). Non-zero
+                # but radio silent = downstream (USB MOD level, mode mod
+                # input). Counter increments on every put_audio call.
+                "tx_audio_calls":   getattr(self, '_tx_audio_calls', 0),
+                "tx_audio_level":   int(getattr(self, 'tx_audio_level', 0)),
+                "tx_audio_idle_s":  round(time.monotonic() -
+                    getattr(self, '_tx_audio_last_mono', time.monotonic() - 999), 1),
                 "squelch_open":     self._civ.squelch_open,
                 "dtcs_on":          self._civ.dtcs_on,
                 "dtcs_code":        self._civ.dtcs_code,
