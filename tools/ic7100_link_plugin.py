@@ -491,14 +491,20 @@ class CIVController:
     def set_ptt(self, on: bool) -> bool:
         # Auto-engage DATA mode around gateway-initiated PTT cycles so the
         # USB codec is the modulation source on TX (per the operator's
-        # MOD INPUT config: DATA OFF MOD=MIC, DATA MOD=USB). Restore to
-        # DATA mode OFF on release so the manual hand mic works again
-        # for the operator's own non-gateway TX. Only undo if WE engaged
-        # it — leaves a user-engaged data mode (e.g., they were running
-        # RTTY) alone.
+        # MOD INPUT config: DATA OFF MOD=MIC, DATA MOD=USB). Restore on
+        # release so the manual hand mic works again for the operator's
+        # own non-gateway TX. In SPLIT mode the radio's TX side is the
+        # inactive VFO — data mode is a per-VFO/mode attribute so we have
+        # to set it on BOTH sides before keying, and undo on BOTH after,
+        # else the swap-on-PTT exposes the still-non-data VFO and we end
+        # up with carrier+MIC. Only undo if WE engaged it.
         if on and not self.data_mode:
-            if self.set_data_mode(True):
+            self.set_data_mode(True)
+            if self.data_mode:           # only proceed if first set actually took
                 self._we_set_data_mode = True
+                if self.split and self.swap_vfo():
+                    self.set_data_mode(True)
+                    self.swap_vfo()      # back to original selection
         resp = self._transact(
             self._build_frame(0x1c, subcmd=0x00, data=bytes([0x01 if on else 0x00])))
         ok = resp is not None and resp[0:1] == _OK
@@ -506,6 +512,9 @@ class CIVController:
             self.transmitting = on
         if not on and self._we_set_data_mode:
             self.set_data_mode(False)
+            if self.split and self.swap_vfo():
+                self.set_data_mode(False)
+                self.swap_vfo()
             self._we_set_data_mode = False
         return ok
 
