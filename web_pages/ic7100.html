@@ -28,6 +28,12 @@
   .ic-val.err    { color: var(--t-err); }
   .ic-val.dim    { color: var(--t-text-dim); }
 
+  /* TX interlock status dots — orange = blocked (safety), blue = enabled.
+     Deliberately NOT green/red so the safety state reads as distinct
+     from the surrounding success/error vocabulary. */
+  .dot.interlock-off { color: var(--t-warn); }
+  .dot.interlock-on  { color: #4f9aef; }
+
   /* Big freq display — wfview top-center.
      Each digit is a clickable/scrollable span. Mouse wheel on a digit
      steps that decade; Up/Down arrows step the active digit; Left/Right
@@ -1719,12 +1725,16 @@ function pollStatus() {
     }
     syncChk('ic-tx-hf', s.tx_allow_hf);
     syncChk('ic-tx-vu', s.tx_allow_vu);
-    // Status-bar indicators — green = TX enabled, red = disabled,
-    // grey = backend has not reported interlock state.
+    // Status-bar indicators — blue = TX enabled, orange = blocked,
+    // grey = backend has not reported interlock state. Distinct from
+    // the surrounding green=ok / red=err / amber-warn vocabulary so
+    // the safety status reads at a glance without colour overload.
     function setDot(id, val) {
       var el = document.getElementById(id);
       if (el) el.className = 'dot ' +
-        (val === true ? 'ok' : val === false ? 'err' : 'pending');
+        (val === true ? 'interlock-on'
+         : val === false ? 'interlock-off'
+         : 'pending');
     }
     setDot('ic-il-hf', s.tx_allow_hf);
     setDot('ic-il-vu', s.tx_allow_vu);
