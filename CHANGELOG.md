@@ -4,6 +4,33 @@ All notable changes to Radio Gateway.
 
 ## [Unreleased]
 
+## [3.8.5] -- 2026-05-25
+
+Follow-up to 3.8.0 — the IC-7100 panel hit the bench and the gaps showed up immediately. This release closes them: TX audio actually leaves the radio, PTT refusals are visible in the GUI, the dashboard meter no longer lies when the squelch closes.
+
+### Fixed — IC-7100 TX path
+
+- **USB audio codec detection by VID:PID** — the PCM2901 in the IC-7100 doesn't put "IC-7100" in its ALSA name, so the endpoint's name-matching `_find_alsa_card()` was returning `None` and TX audio went to the void. Now reads `/proc/asound/cardN/usbid` and matches `08bb:2901`.
+- **Auto DATA-mode toggle around gateway-initiated PTT** — the radio's DATA-OFF MOD source is the front-panel mic; DATA-ON MOD is the USB codec. Gateway PTT now flips DATA on before keying and off after release, so the operator's manual mic still works between transmissions.
+- **Split-mode aware DATA toggle** — DATA mode is per-VFO/mode, so in split the gateway has to set it on both VFOs before keying. Plugin swaps VFOs, sets DATA on the inactive side, swaps back. Fixed silent carrier on split-mode TX.
+
+### Fixed — Visibility & feedback
+
+- **PTT route surfaces real ACKs** — `gateway_link.send_command_to_and_wait()` with `_cmd_id` correlation; refused PTT (TX interlock blocks HF) now returns `ok:false` to the GUI instead of optimistic `ok:true`. Previously the dashboard claimed PTT was engaged when the endpoint had rejected it.
+- **TX interlock state persists across endpoint restart** — `tx_allow_hf` and `vu` saved alongside other settings; surviving the link-endpoint restart cycle.
+- **Dashboard outer-frame meter stops freezing at last pre-squelch level** — `LinkAudioSource.audio_level` is only decayed inside `get_audio()` (called by the bus tick). The IC-7100 is wired as a sink-only endpoint, so the bus tick never touches it and the level froze at whatever `push_audio` last computed — which scales with signal strength, hence the "stuck S-meter" impression. New `meter_level()` returns 0 if no `push_audio` in the last 250 ms; `/status` uses it.
+- **RX audio gated on squelch state** — the IC-7100's USB codec streams unconditionally (no internal squelch like the kv4p/D75). Plugin's `get_audio()` now gates on `civ.squelch_open` so the bus meters track operator-relevant audio instead of the radio's open-codec noise floor.
+- **Faster S-meter on `/ic7100`** — piggybacked `get_smeter()` onto the meter loop's RX cadence (~3 Hz). Was unusably slow before.
+
+### Changed
+
+- **Interlock dashboard dots** — orange when TX is blocked, blue when enabled. Matches the rest of the panel's status-pill vocabulary.
+
+### Notes
+
+- `PTT_ACTIVATION_DELAY`, `PTT_TTS_DELAY`, `PTT_ANNOUNCEMENT_DELAY` bumped to 0.75 s in the gateway config to give the IC-7100 a touch more carrier-stabilize time before the first sample plays. Config tweak only; not a code change.
+- Restart the gateway after upgrading (Python modules load at start). The IC-7100 plugin needs redeployment to the endpoint host that runs it.
+
 ## [3.7.0] -- 2026-05-18
 
 ### Added — Distributed transcription pool
