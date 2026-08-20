@@ -312,6 +312,21 @@ class ManagerEngine:
         except Exception:
             out.append(f'transcription_raw: {raw[:300]}')
 
+        # Supervised child processes. Pre-collected because hourly.md requires
+        # cloudflared/mdns state in every report, and the prompt tells the run
+        # not to collect data itself — without this the only way to satisfy
+        # both was an extra tool call, i.e. two more turns of context re-read.
+        raw = _curl('http://localhost:8080/api/processes')
+        try:
+            d = json.loads(raw)
+            out.append(f'supervisor: {d.get("supervisor")}')
+            for name, pr in (d.get('processes') or {}).items():
+                psum = {k: pr.get(k) for k in
+                        ('state', 'pid', 'uptime', 'restart_count', 'last_exit')}
+                out.append(f'  process {name}: {json.dumps(psum)}')
+        except Exception:
+            out.append(f'processes_raw: {raw[:300]}')
+
         # Prometheus signals
         out.append('--- prometheus ---')
         prom_queries = [
