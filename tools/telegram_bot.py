@@ -46,6 +46,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -67,6 +68,9 @@ _CONFIG_KEYS = {
         'When you have completely finished and are ready to respond, '
         'call telegram_reply() with your response. Do not call it until done.'
     ),
+    # Seconds to wait for telegram_reply() after injecting a prompt before
+    # warning the user. 0 disables the watchdog.
+    'TELEGRAM_REPLY_TIMEOUT':       300,
     'ANNOUNCE_INPUT_HOST':          '127.0.0.1',
     'ANNOUNCE_INPUT_PORT':          9601,
     'AUDIO_SAMPLE_RATE':            48000,
@@ -307,6 +311,13 @@ def _inject(session: str, message: str, suffix: str) -> bool:
         with open(tmp, 'w') as f:
             f.write(full_prompt)
         # Use tmux load-buffer then paste-buffer for reliable injection
+        # Clear anything already typed in the prompt box, so a half-typed
+        # line (e.g. from /voice) can't get our prompt appended to it and
+        # submitted as one garbled request. C-u is verified to clear real
+        # input; when the box is empty it is a no-op, and it does NOT disturb
+        # the greyed-out placeholder showing the previous prompt.
+        subprocess.run(['tmux', 'send-keys', '-t', session, 'C-u'],
+                       check=True, timeout=3)
         subprocess.run(['tmux', 'load-buffer', tmp], check=True, timeout=3)
         subprocess.run(['tmux', 'paste-buffer', '-t', session], check=True, timeout=3)
         # paste-buffer wraps the text in bracketed-paste escapes. Claude Code's
@@ -319,6 +330,77 @@ def _inject(session: str, message: str, suffix: str) -> bool:
     except Exception as e:
         print(f'[telegram] tmux inject error: {e}', flush=True)
         return False
+
+
+def _read_status(path: str) -> dict:
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _capture_pane(session: str) -> str:
+    try:
+        r = subprocess.run(['tmux', 'capture-pane', '-p', '-t', session],
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout
+    except Exception:
+        return ''
+
+
+def _pane_answer(session: str) -> str:
+    """Best-effort extraction of Claude's last answer from the pane.
+
+    Claude Code prefixes assistant messages with a bullet, so take the last
+    such block and stop at the input box / status line below it. Returns ''
+    when nothing on screen looks like an answer.
+    """
+    lines = _capture_pane(session).splitlines()
+    start = None
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].lstrip().startswith('\u25cf'):
+            start = i
+            break
+    if start is None:
+        return ''
+    out = []
+    for ln in lines[start:]:
+        t = ln.rstrip()
+        stripped = t.lstrip()
+        # Input box border, prompt line, or the thinking indicator = end.
+        if stripped.startswith('\u2500') or stripped.startswith('\u276f') \
+                or stripped.startswith('\u273b'):
+            break
+        out.append(t)
+    return '\n'.join(out).strip().lstrip('\u25cf').strip()
+
+
+def _watch_for_reply(token: str, chat_id: int, session: str, status_file: str,
+                     baseline, question: str, timeout: int):
+    """Warn the user if Claude never calls telegram_reply().
+
+    That tool is the ONLY path back to the phone, so a missed call is
+    invisible: "answered but never sent" and "never ran" both look like
+    silence. telegram_reply() stamps last_reply_time in the status file, so
+    poll it; if it hasn't moved by the deadline, send whatever is on screen
+    rather than losing the answer entirely.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(5)
+        if _read_status(status_file).get('last_reply_time') != baseline:
+            return  # replied normally — stay quiet
+    answer = _pane_answer(session)
+    if answer:
+        body = ('\u26a0\ufe0f Claude answered but never called telegram_reply(), so it '
+                'was not sent. From the session:\n\n' + answer[:3000])
+    else:
+        body = (f'\u26a0\ufe0f No reply from Claude after {timeout}s for: '
+                f'{question[:80]!r}\nThe session may be stuck or awaiting input.')
+    _send_message(token, chat_id, body)
+    print(f'[telegram] reply watchdog fired after {timeout}s '
+          f'(answer_on_screen={bool(answer)})', flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +506,17 @@ def run():
 
                 print(f'[telegram] [{ts}] {text!r}', flush=True)
 
+                # Snapshot BEFORE injecting, so the watchdog compares against
+                # the reply that preceded this question.
+                reply_baseline = _read_status(status_file).get('last_reply_time')
                 tmux_ok = _inject(session, text, suffix)
+
+                if tmux_ok and cfg['TELEGRAM_REPLY_TIMEOUT'] > 0:
+                    threading.Thread(
+                        target=_watch_for_reply,
+                        args=(token, chat_id, session, status_file,
+                              reply_baseline, text, cfg['TELEGRAM_REPLY_TIMEOUT']),
+                        daemon=True).start()
 
                 _write_status(status_file, {
                     'last_message_time': ts,
