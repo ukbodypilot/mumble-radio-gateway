@@ -817,6 +817,8 @@ class WebConfigServer(_SysinfoMixin, _RoutingCmdsMixin, _CertsMixin):
                 '/packet/log':            'g:handle_packet_log',
                 '/api/endpoint/version':  'g:handle_endpoint_version',
                 '/api/endpoint/files':    'g:handle_endpoint_files',
+                '/api/winclient/version': 'g:handle_winclient_version',
+                '/api/winclient/files':   'g:handle_winclient_files',
                 '/api/tunnel/link-url':   'g:handle_tunnel_link_url',
                 '/api/gdrive/status':     'g:handle_gdrive_status',
                 '/api/gdrive/files':      'g:handle_gdrive_files',

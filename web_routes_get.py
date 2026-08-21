@@ -1447,6 +1447,60 @@ def handle_endpoint_files(handler, parent):
     handler.wfile.write(body)
 
 
+# ── Windows audio client self-update API ──
+
+# Deliberately SEPARATE from _ENDPOINT_FILES rather than an addition to it.
+# That list is hashed as a unit and its copy in tools/link_endpoint.py must
+# stay byte-identical; adding the Windows client there would change the shared
+# version hash and make every Linux endpoint download a bundle containing a
+# file it has no use for.
+_WINCLIENT_FILES = [
+    'windows_audio_client.py',
+]
+
+
+def _winclient_bundle():
+    """Read the Windows client files. Returns {name: bytes} for what exists."""
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    out = {}
+    for fname in _WINCLIENT_FILES:
+        path = os.path.join(_dir, fname)
+        if os.path.isfile(path):
+            with open(path, 'rb') as f:
+                out[fname] = f.read()
+    return out
+
+
+def handle_winclient_version(handler, parent):
+    """GET /api/winclient/version — hash of the Windows client for update check."""
+    import hashlib
+    h = hashlib.sha256()
+    files = {}
+    for fname, content in _winclient_bundle().items():
+        h.update(content)
+        files[fname] = len(content)
+    data = {'version': h.hexdigest()[:16], 'files': files}
+    body = json_mod.dumps(data).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def handle_winclient_files(handler, parent):
+    """GET /api/winclient/files — Windows client files as a base64 JSON bundle."""
+    import base64
+    bundle = {fname: base64.b64encode(content).decode()
+              for fname, content in _winclient_bundle().items()}
+    body = json_mod.dumps(bundle).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 # ── Google Drive + Tunnel URL API ──
 
 def handle_tunnel_link_url(handler, parent):

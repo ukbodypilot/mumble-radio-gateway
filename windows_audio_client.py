@@ -37,11 +37,19 @@ Keyboard controls (only act while this window is focused):
   RX (speaker):
     p      = play / mute
     [ / ]  = volume down / up 5%
+  DEVICES (swap a device on the fly — no restart, audio keeps running):
+    i      = pick the TX program feed input
+    k      = pick the operator mic input
+    o      = pick the RX speaker output
   d        = toggle diagnostics    Ctrl+C = quit
+
+Self-update: on startup the client asks the gateway whether it is running the
+current code and, if not, downloads and relaunches itself. Pass --no-update to
+skip the check (the relaunch adds it automatically so an update can't loop).
 
 Usage:
     pip install sounddevice numpy keyboard
-    python windows_audio_client.py [gateway_host]
+    python windows_audio_client.py [gateway_host] [--no-update]
 
 On first run the script will prompt for audio devices and gateway host,
 then save the selection to windows_audio_client.json alongside this script.
@@ -111,6 +119,21 @@ RESET = "\033[0m"
 BOLD = "\033[1m"
 
 CONFIG_FILENAME = "windows_audio_client.json"
+
+# Self-update: the gateway's web server (WEB_CONFIG_PORT, default 8080) serves
+# /api/winclient/version and /api/winclient/files. Overridable in the JSON
+# config as "web_port" / "update_enabled".
+DEFAULT_WEB_PORT = 8080
+UPDATE_FILES = ["windows_audio_client.py"]
+
+# Env var the parent uses to tell the relaunched child what it just did. The
+# child runs with --no-update so it never repeats the check, which would
+# otherwise leave it with nothing to show on the dashboard.
+UPDATE_ENV = "WAC_UPDATED_TO"
+
+# What the startup update check concluded, surfaced on the dashboard.
+# status: current | updated | failed | skipped | disabled | unknown
+UPDATE_STATE = {"version": "", "status": "unknown", "detail": ""}
 
 # ---------------------------------------------------------------------------
 # Config persistence
@@ -184,6 +207,11 @@ def _keyboard_listener_console(state):
 
 
 def _handle_key(ch, state):
+    # The picker is modal: while it is open it swallows every key, so a stray
+    # keystroke can't mute TX or step the voice effect behind the menu.
+    if state.get("picker") is not None:
+        _picker_key(ch, state)
+        return
     if ch == "l":
         state["tx_live"] = not state["tx_live"]
     elif ch == "p":
@@ -204,6 +232,13 @@ def _handle_key(ch, state):
     elif ch == "d":
         # toggle expanded diagnostics
         state["show_diag"] = not state.get("show_diag", False)
+    # --- on-the-fly device switching ---------------------------------------
+    elif ch == "i":
+        open_picker(state, "tx")
+    elif ch == "k":
+        open_picker(state, "mic")
+    elif ch == "o":
+        open_picker(state, "out")
     # --- mic / broadcast-mix controls --------------------------------------
     # Mic level is a GAIN that can boost above 100% (mics are quiet; the program
     # feed is near full-scale). Range 0–1000% in 10% steps; OS key-repeat ramps
@@ -361,6 +396,292 @@ def choose_output_device(cfg):
         except (ValueError, EOFError):
             pass
         print("Invalid selection, try again.")
+
+# ---------------------------------------------------------------------------
+# Self-update — pull newer client code from the gateway on startup
+# ---------------------------------------------------------------------------
+# Mirrors what the Linux link endpoints already do (tools/link_endpoint.py):
+# hash the local files, ask the gateway for its hash, and if they differ pull
+# the bundle and relaunch. The hash must be computed over UPDATE_FILES in the
+# same order the gateway uses in _WINCLIENT_FILES, or the two can never match
+# and every startup re-downloads.
+
+def _local_version():
+    """sha256 over the local copies of UPDATE_FILES, first 16 hex chars."""
+    import hashlib
+    h = hashlib.sha256()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for fname in UPDATE_FILES:
+        path = os.path.join(here, fname)
+        if os.path.isfile(path):
+            with open(path, "rb") as f:
+                h.update(f.read())
+    return h.hexdigest()[:16]
+
+
+def check_for_update(gateway_host, web_port):
+    """Ask the gateway for newer client code; write it if there is any.
+
+    Returns True when something changed and the caller should relaunch. Any
+    failure (gateway down, no web server, bad JSON) returns False — a failed
+    update check must never stop the client from starting.
+    """
+    import base64
+    import urllib.request
+
+    base = f"http://{gateway_host}:{web_port}"
+    try:
+        local = _local_version()
+        with urllib.request.urlopen(f"{base}/api/winclient/version", timeout=10) as r:
+            remote = json.loads(r.read())
+        remote_ver = remote.get("version", "")
+        if not remote_ver:
+            print("  [update] gateway returned no version — skipping")
+            UPDATE_STATE.update(status="failed", detail="gateway sent no version")
+            return False
+        if remote_ver == local:
+            print(f"  [update] up to date (v={local})")
+            UPDATE_STATE.update(status="current", detail="")
+            return False
+
+        print(f"  [update] new version available: local={local} remote={remote_ver}")
+        with urllib.request.urlopen(f"{base}/api/winclient/files", timeout=60) as r:
+            bundle = json.loads(r.read())
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        updated = 0
+        for fname in UPDATE_FILES:
+            b64 = bundle.get(fname)
+            if not b64:
+                continue
+            content = base64.b64decode(b64)
+            path = os.path.join(here, fname)
+            # Compare content, not just the version hash: this is what actually
+            # gates the write, so a stale hash can't cause a pointless relaunch.
+            try:
+                with open(path, "rb") as f:
+                    if f.read() == content:
+                        continue
+            except FileNotFoundError:
+                pass
+            with open(path, "wb") as f:
+                f.write(content)
+            updated += 1
+            print(f"  [update] updated {fname} ({len(content)} bytes)")
+
+        if not updated:
+            print("  [update] files unchanged despite version mismatch")
+            UPDATE_STATE.update(status="current",
+                                detail="version mismatch, files identical")
+            return False
+        UPDATE_STATE.update(version=remote_ver, status="updated", detail="")
+        return True
+    except Exception as e:
+        print(f"  [update] check failed: {type(e).__name__}: {e} — starting anyway")
+        UPDATE_STATE.update(status="failed", detail=f"{type(e).__name__}: {e}")
+        return False
+
+
+def verify_version_only(gateway_host, web_port):
+    """Ask the gateway for its version and compare — but never download or
+    relaunch. Used on the --no-update path so the dashboard can still tell the
+    truth about whether this code is current.
+
+    This is what stops the status line depending on the parent process having
+    cooperated: a client relaunched by an older build (which knew nothing about
+    UPDATE_ENV) can still confirm for itself that it is up to date.
+    """
+    import urllib.request
+    try:
+        local = _local_version()
+        with urllib.request.urlopen(
+                f"http://{gateway_host}:{web_port}/api/winclient/version",
+                timeout=10) as r:
+            remote = json.loads(r.read()).get("version", "")
+        if not remote:
+            UPDATE_STATE.update(status="failed", detail="gateway sent no version")
+        elif remote == local:
+            UPDATE_STATE.update(status="current", detail="")
+        else:
+            UPDATE_STATE.update(status="behind", detail=f"gateway has {remote}")
+    except Exception as e:
+        UPDATE_STATE.update(status="failed", detail=f"{type(e).__name__}: {e}")
+
+
+def relaunch():
+    """Restart this script with the same arguments plus --no-update.
+
+    os.execv on Windows is not a real exec — it spawns and lets the parent die,
+    which hands control back to the shell early and leaves the console in a bad
+    state. This client's whole UI is ANSI + msvcrt console input, so spawn a
+    child that inherits the console and exit cleanly instead.
+    """
+    argv = [a for a in sys.argv[1:] if a != "--no-update"] + ["--no-update"]
+    cmd = [sys.executable, os.path.abspath(__file__)] + argv
+    print(f"  [update] relaunching: {' '.join(cmd)}\n")
+    sys.stdout.flush()
+    # Passed by env rather than argv so it can't collide with the gateway-host
+    # positional or end up saved into the config.
+    env = dict(os.environ)
+    env[UPDATE_ENV] = UPDATE_STATE.get("version", "") or _local_version()
+    try:
+        import subprocess
+        subprocess.Popen(cmd, close_fds=False, env=env)
+    except Exception as e:
+        print(f"  [update] relaunch failed: {e}")
+        print("  Restart the client manually to pick up the new version.")
+        try:
+            input("\nPress Enter to exit ")
+        except Exception:
+            pass
+    sys.exit(0)
+
+def update_status_line():
+    """One coloured line describing the code version and the update check.
+
+    Always shows the version actually running (hashed from disk), so it stays
+    truthful even when the check never ran or failed.
+    """
+    ver = UPDATE_STATE.get("version") or "?"
+    status = UPDATE_STATE.get("status", "unknown")
+    detail = UPDATE_STATE.get("detail", "")
+    if status == "current":
+        tag = f"{GREEN}latest{RESET}"
+    elif status == "updated":
+        tag = f"{GREEN}latest{RESET} {CYAN}(just updated from the gateway){RESET}"
+    elif status == "behind":
+        tag = (f"{YELLOW}UPDATE AVAILABLE{RESET}{GRAY} — {detail}; "
+               f"restart without --no-update{RESET}")
+    elif status == "failed":
+        tag = f"{RED}UPDATE CHECK FAILED{RESET}{GRAY} — {detail}{RESET}"
+    elif status == "disabled":
+        tag = f"{GRAY}update check disabled in config{RESET}"
+    elif status == "skipped":
+        tag = f"{YELLOW}not checked{RESET}{GRAY} (--no-update){RESET}"
+    else:
+        tag = f"{GRAY}unknown{RESET}"
+    return f"  Version   : {WHITE}{ver}{RESET}  {tag}"
+
+# ---------------------------------------------------------------------------
+# Runtime device picker — swap an audio device without restarting
+# ---------------------------------------------------------------------------
+# i / k / o open a modal list over the dashboard. While state["picker"] is set
+# the keyboard thread routes EVERY key into the picker (so the normal hotkeys
+# can't fire behind the menu) and the display thread draws the list instead of
+# the meters. Choosing an entry only sets state["<kind>_dev_pending"]; the
+# thread that owns that stream picks it up on its next loop iteration and does
+# the close/reopen itself, so a PortAudio stream is only ever touched from the
+# thread that created it.
+
+PICKERS = {
+    "tx":  ("i", "TX PROGRAM FEED", "tx_dev",  False),
+    "mic": ("k", "OPERATOR MIC",    "mic_dev", False),
+    "out": ("o", "RX SPEAKER",      "rx_dev",  True),
+}
+
+
+def open_picker(state, kind):
+    """Build the device list for `kind` and put the UI into picker mode."""
+    _key, title, prefix, is_output = PICKERS[kind]
+    try:
+        items = list_output_devices() if is_output else list_input_devices()
+    except Exception as e:
+        state["picker_msg"] = f"{RED}device scan failed: {e}{RESET}"
+        return
+    if not items:
+        state["picker_msg"] = f"{RED}no {'output' if is_output else 'input'} devices found{RESET}"
+        return
+    # Start the highlight on whatever is in use right now.
+    cur_name = state.get(f"{prefix}_name")
+    sel = 0
+    for n, (_idx, name, _ch) in enumerate(items):
+        if name == cur_name:
+            sel = n
+            break
+    state["picker_msg"] = ""
+    state["picker"] = {
+        "kind": kind, "title": title, "prefix": prefix,
+        "items": items, "sel": sel, "typed": "", "error": "",
+    }
+
+
+def close_picker(state):
+    state["picker"] = None
+
+
+def _picker_commit(state, p):
+    """Hand the highlighted device to the owning thread and leave picker mode."""
+    items = p["items"]
+    if p["typed"]:
+        try:
+            n = int(p["typed"])
+        except ValueError:
+            n = 0
+        if not (1 <= n <= len(items)):
+            p["typed"] = ""
+            p["error"] = f"pick 1-{len(items)}"
+            return
+        p["sel"] = n - 1
+    idx, name, _ch = items[p["sel"]]
+    state[f"{p['kind']}_dev_pending"] = (idx, name)
+    state["picker_msg"] = f"{YELLOW}switching {p['title'].lower()} -> {name} ...{RESET}"
+    close_picker(state)
+
+
+def _picker_key(ch, state):
+    """Modal key handling — every keystroke lands here while the picker is open."""
+    p = state.get("picker")
+    if not p:
+        return
+    items = p["items"]
+    if ch in ("\x1b", "q"):                      # Esc / q — cancel, change nothing
+        state["picker_msg"] = ""
+        close_picker(state)
+    elif ch in ("\r", "\n"):
+        _picker_commit(state, p)
+    elif ch.isdigit():
+        # Typing digits moves the highlight; Enter commits. Keeping the digits
+        # instead of acting on the first one is what makes 1 and 12 both work.
+        p["typed"] = (p["typed"] + ch)[-3:]
+        p["error"] = ""
+        try:
+            n = int(p["typed"])
+        except ValueError:
+            n = 0
+        if 1 <= n <= len(items):
+            p["sel"] = n - 1
+    elif ch in ("\x08", "\x7f"):
+        p["typed"] = p["typed"][:-1]
+    elif ch == "j":
+        p["typed"] = ""
+        p["sel"] = (p["sel"] + 1) % len(items)
+    elif ch == "k":
+        p["typed"] = ""
+        p["sel"] = (p["sel"] - 1) % len(items)
+
+
+def render_picker(state):
+    """Full-screen frame for the picker (replaces the dashboard while open)."""
+    p = state.get("picker")
+    items = p["items"]
+    cur_name = state.get(f"{p['prefix']}_name")
+    out = ["\033[2J\033[H", f"{BOLD}Select {p['title']}{RESET}\n\n"]
+    for n, (idx, name, ch_count) in enumerate(items):
+        live = f"  {GREEN}(in use){RESET}" if name == cur_name else ""
+        row = f"{n + 1:3d}) {name}  (index {idx}, {ch_count}ch)"
+        if n == p["sel"]:
+            out.append(f"  {CYAN}{BOLD}> {row}{RESET}{live}\n")
+        else:
+            out.append(f"    {GRAY}{row}{RESET}{live}\n")
+    typed = f"   typed:{WHITE}{p['typed']}{RESET}" if p["typed"] else ""
+    err = f"   {RED}{p['error']}{RESET}" if p.get("error") else ""
+    out.append(
+        f"\n  {CYAN}j{RESET}/{CYAN}k{RESET} move   {CYAN}0-9{RESET} pick by number   "
+        f"{CYAN}Enter{RESET} use it   {CYAN}Esc{RESET} cancel{typed}{err}\n"
+        f"  {GRAY}Audio keeps running until you press Enter. Devices plugged in "
+        f"after this client started may not be listed.{RESET}\n"
+    )
+    return "".join(out)
 
 # ---------------------------------------------------------------------------
 # Level meter
@@ -905,39 +1226,16 @@ def _tx_thread_func(state, cfg, gateway_host, tx_port, in_dev_index, in_dev_name
     import queue
     tx_q = queue.Queue(maxsize=32)
 
-    # --- Determine native capture parameters --------------------------------
-    try:
-        dev_info = sd.query_devices(in_dev_index)
-        capture_rate = int(round(float(dev_info["default_samplerate"]))) or SAMPLE_RATE
-        max_in_ch = int(dev_info["max_input_channels"])
-    except Exception:
-        capture_rate = SAMPLE_RATE
-        max_in_ch = 1
-    capture_channels = 2 if max_in_ch >= 2 else 1
-    needs_resample = (capture_rate != SAMPLE_RATE)
-
-    # --- Set up resampler ---------------------------------------------------
-    resampler, resample_backend = (None, "none")
-    if needs_resample:
-        resampler, resample_backend = _make_resampler(capture_rate)
-        if resample_backend == "missing":
-            print(f"\n  WARNING: capture device runs at {capture_rate} Hz, gateway needs 48000 Hz.")
-            print("  No resampler available. Install one with:  pip install soxr")
-            print("  Audio will sound choppy until resampling is available.\n")
-
-    # Initialise resampling state (used by display + 'r' key toggle)
-    state["tx_capture_rate"] = float(capture_rate)
-    state["tx_capture_channels"] = capture_channels
-    state["tx_needs_resample"] = needs_resample
-    state["tx_resample_backend"] = resample_backend
     state.setdefault("tx_resample_enabled", True)
     state.setdefault("tx_xruns", 0)
     state.setdefault("tx_last_frames", 0)
 
-    # --- Stream setup -------------------------------------------------------
-    # TX_BLOCK_MS blocks at the capture rate (decoupled from the network/RX chunk
-    # size so we can run a low-latency capture without breaking RX).
-    capture_block = max(1, int(round(capture_rate * TX_BLOCK_MS / 1000.0)))
+    # Everything that depends on WHICH device is open lives here, because the
+    # device can change at runtime ('i' key). The processing loop below reads
+    # these on every chunk rather than closing over them.
+    cap = {"stream": None, "rate": SAMPLE_RATE, "channels": 1,
+           "needs_resample": False, "resampler": None, "backend": "none",
+           "index": in_dev_index, "name": in_dev_name}
 
     # Callback statistics (always visible in GUI)
     cb_stats = {
@@ -985,36 +1283,125 @@ def _tx_thread_func(state, cfg, gateway_host, tx_port, in_dev_index, in_dev_name
             cb_stats["q_drops"] = cb_stats.get("q_drops", 0) + 1
             state["tx_q_drops"] = cb_stats["q_drops"]
 
-    stream = sd.RawInputStream(
-        samplerate=capture_rate,
-        blocksize=capture_block,
-        device=in_dev_index,
-        channels=capture_channels,
-        dtype="int16",
-        latency=AUDIO_LATENCY,
-        callback=_tx_callback,
-    )
-    stream.start()
-    try:
-        state["tx_stream_rate"] = float(stream.samplerate)
-    except Exception:
-        state["tx_stream_rate"] = float(capture_rate)
-    state["tx_device_rate"] = float(capture_rate)
+    def _reset_cb_stats():
+        """Zero the capture stats so the effective-rate / gap readouts describe
+        the device that is open NOW, not an average across a device change."""
+        cb_stats.update(xruns=0, callbacks=0, total_frames=0, last_frames=0,
+                        last_status="", last_ts=None, gap_min=None, gap_max=None,
+                        gap_sum=0.0, gap_count=0, frames_hist={}, q_drops=0,
+                        started=time.monotonic())
+        state["tx_xruns"] = 0
+        state["tx_q_drops"] = 0
 
-    # One-time diagnostic dump (written to stderr so it survives the display
-    # thread's screen-clears in the scrollback)
-    try:
-        sys.stderr.write(
-            f"[tx] device={in_dev_name!r}\n"
-            f"[tx] requested: rate={capture_rate} channels={capture_channels} "
-            f"blocksize={capture_block}\n"
-            f"[tx] actual stream rate={stream.samplerate} latency={stream.latency}\n"
-            f"[tx] resample: needed={needs_resample} backend={resample_backend} "
-            f"enabled={state.get('tx_resample_enabled', True)}\n"
+    def _open_capture(dev_index, dev_name):
+        """Open `dev_index` at its native rate and build a matching resampler.
+
+        Raises if the device won't open — the caller decides what to fall back
+        to. On success `cap` describes the live stream.
+        """
+        try:
+            dev_info = sd.query_devices(dev_index)
+            rate = int(round(float(dev_info["default_samplerate"]))) or SAMPLE_RATE
+            max_in_ch = int(dev_info["max_input_channels"])
+        except Exception:
+            rate, max_in_ch = SAMPLE_RATE, 1
+        channels = 2 if max_in_ch >= 2 else 1
+        needs_resample = (rate != SAMPLE_RATE)
+        resampler, backend = (None, "none")
+        if needs_resample:
+            resampler, backend = _make_resampler(rate)
+            if backend == "missing":
+                sys.stderr.write(
+                    f"[tx] WARNING: {dev_name!r} captures at {rate} Hz, the gateway "
+                    f"needs 48000 Hz, and no resampler is installed (pip install soxr). "
+                    f"Audio will sound choppy.\n")
+
+        # TX_BLOCK_MS blocks at the capture rate (decoupled from the network/RX
+        # chunk size so we can run a low-latency capture without breaking RX).
+        block = max(1, int(round(rate * TX_BLOCK_MS / 1000.0)))
+        stream = sd.RawInputStream(
+            samplerate=rate,
+            blocksize=block,
+            device=dev_index,
+            channels=channels,
+            dtype="int16",
+            latency=AUDIO_LATENCY,
+            callback=_tx_callback,
         )
-        sys.stderr.flush()
-    except Exception:
-        pass
+        stream.start()
+        cap.update(stream=stream, rate=rate, channels=channels,
+                   needs_resample=needs_resample, resampler=resampler,
+                   backend=backend, index=dev_index, name=dev_name)
+
+        state["tx_capture_rate"] = float(rate)
+        state["tx_capture_channels"] = channels
+        state["tx_needs_resample"] = needs_resample
+        state["tx_resample_backend"] = backend
+        state["tx_dev_name"] = dev_name
+        try:
+            state["tx_stream_rate"] = float(stream.samplerate)
+        except Exception:
+            state["tx_stream_rate"] = float(rate)
+        state["tx_device_rate"] = float(rate)
+
+        # Diagnostic dump (stderr, so it survives the display thread's
+        # screen-clears in the scrollback)
+        try:
+            sys.stderr.write(
+                f"[tx] device={dev_name!r} (index {dev_index})\n"
+                f"[tx] requested: rate={rate} channels={channels} blocksize={block}\n"
+                f"[tx] actual stream rate={stream.samplerate} latency={stream.latency}\n"
+                f"[tx] resample: needed={needs_resample} backend={backend} "
+                f"enabled={state.get('tx_resample_enabled', True)}\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
+        return stream
+
+    def _switch_capture(dev_index, dev_name):
+        """Swap the program feed to another device without dropping the TCP
+        connection to the gateway. If the new device won't open we go back to
+        the one that was working rather than leaving TX dead."""
+        prev = (cap["index"], cap["name"])
+        old = cap["stream"]
+        if old is not None:
+            try:
+                old.stop()
+                old.close()
+            except Exception:
+                pass
+        # Drop whatever the old device left queued: those bytes are at the old
+        # rate and channel count, and processing them with the new device's
+        # parameters would garble a chunk.
+        while True:
+            try:
+                tx_q.get_nowait()
+            except queue.Empty:
+                break
+        _reset_cb_stats()
+        try:
+            _open_capture(dev_index, dev_name)
+        except Exception as e:
+            sys.stderr.write(f"[tx] switch to {dev_name!r} failed: {e}\n")
+            state["picker_msg"] = f"{RED}TX feed: {dev_name} — {e}{RESET}"
+            try:
+                _open_capture(*prev)
+                state["picker_msg"] += f"  {GRAY}(kept {prev[1]}){RESET}"
+            except Exception as e2:
+                sys.stderr.write(f"[tx] fallback to {prev[1]!r} FAILED: {e2}\n")
+                cap["stream"] = None
+                state["tx_error"] = str(e2)
+                state["picker_msg"] += f"  {RED}(old device gone too — press i){RESET}"
+            return
+        state["picker_msg"] = f"{GREEN}TX feed -> {dev_name}{RESET}"
+        cfg["tx_device_name"] = dev_name
+        try:
+            save_config(cfg)
+        except Exception:
+            pass
+
+    _open_capture(in_dev_index, in_dev_name)
 
     sock = None
     wav_writer = None
@@ -1037,6 +1424,12 @@ def _tx_thread_func(state, cfg, gateway_host, tx_port, in_dev_index, in_dev_name
     last_connect_attempt = 0.0
     try:
         while state["running"]:
+            # Device swap requested by the picker ('i'). Done here, on the
+            # thread that owns the stream, never from the keyboard thread.
+            pending = state.pop("tx_dev_pending", None)
+            if pending:
+                _switch_capture(*pending)
+
             # Non-blocking connect / reconnect: try every RECONNECT_INTERVAL
             # without blocking the audio-processing path, so the level meter
             # keeps updating even when the gateway is down.
@@ -1064,13 +1457,14 @@ def _tx_thread_func(state, cfg, gateway_host, tx_port, in_dev_index, in_dev_name
                 samples = np.frombuffer(pcm, dtype=np.int16)
 
                 # Downmix stereo → mono (avoid int16 overflow via int32)
-                if capture_channels == 2:
+                if cap["channels"] == 2:
                     samples = (samples.reshape(-1, 2).astype(np.int32)
                                .mean(axis=1).astype(np.int16))
 
                 # Resample to 48 kHz if needed and currently enabled
-                if needs_resample and state.get("tx_resample_enabled", True) and resampler is not None:
-                    out = _apply_resampler(resampler, resample_backend, samples)
+                if (cap["needs_resample"] and state.get("tx_resample_enabled", True)
+                        and cap["resampler"] is not None):
+                    out = _apply_resampler(cap["resampler"], cap["backend"], samples)
                     if out is None:
                         continue  # stateful backend still warming up
                     samples = out
@@ -1128,10 +1522,10 @@ def _tx_thread_func(state, cfg, gateway_host, tx_port, in_dev_index, in_dev_name
             # correct speed in either mode).
             want_wav = state.get("tx_wav_request", False)
             if want_wav and wav_writer is None:
-                resampling_now = (needs_resample
+                resampling_now = (cap["needs_resample"]
                                   and state.get("tx_resample_enabled", True)
-                                  and resampler is not None)
-                wav_rate = SAMPLE_RATE if resampling_now else capture_rate
+                                  and cap["resampler"] is not None)
+                wav_rate = SAMPLE_RATE if resampling_now else cap["rate"]
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 wav_path = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)),
@@ -1191,8 +1585,12 @@ def _tx_thread_func(state, cfg, gateway_host, tx_port, in_dev_index, in_dev_name
         print(f"\n  TX thread FATAL: {type(e).__name__}: {e}")
         traceback.print_exc()
     finally:
-        stream.stop()
-        stream.close()
+        if cap["stream"] is not None:
+            try:
+                cap["stream"].stop()
+                cap["stream"].close()
+            except Exception:
+                pass
         if sock:
             try:
                 sock.close()
@@ -1220,25 +1618,12 @@ def _mic_thread_func(state, cfg, mic_dev_index, mic_dev_name, mic_fifo):
     import queue
     mic_q = queue.Queue(maxsize=32)
 
-    try:
-        dev_info = sd.query_devices(mic_dev_index)
-        capture_rate = int(round(float(dev_info["default_samplerate"]))) or SAMPLE_RATE
-        max_in_ch = int(dev_info["max_input_channels"])
-    except Exception:
-        capture_rate = SAMPLE_RATE
-        max_in_ch = 1
-    capture_channels = 2 if max_in_ch >= 2 else 1
-    needs_resample = (capture_rate != SAMPLE_RATE)
-    resampler, backend = (None, "none")
-    if needs_resample:
-        resampler, backend = _make_resampler(capture_rate)
-
-    state["mic_capture_rate"] = float(capture_rate)
-    state["mic_capture_channels"] = capture_channels
-    state["mic_resample_backend"] = backend
     state.setdefault("mic_db", -100.0)
 
-    capture_block = max(1, int(round(capture_rate * TX_BLOCK_MS / 1000.0)))
+    # Per-device state, rebuilt whenever the mic is swapped at runtime ('k').
+    cap = {"stream": None, "rate": SAMPLE_RATE, "channels": 1,
+           "needs_resample": False, "resampler": None, "backend": "none",
+           "index": mic_dev_index, "name": mic_dev_name}
 
     def _cb(indata, frames, time_info, status):
         if status:
@@ -1248,44 +1633,115 @@ def _mic_thread_func(state, cfg, mic_dev_index, mic_dev_name, mic_fifo):
         except queue.Full:
             state["mic_q_drops"] = state.get("mic_q_drops", 0) + 1
 
-    try:
+    def _open_mic(dev_index, dev_name):
+        """Open `dev_index` at its native rate. Raises if it won't open."""
+        try:
+            dev_info = sd.query_devices(dev_index)
+            rate = int(round(float(dev_info["default_samplerate"]))) or SAMPLE_RATE
+            max_in_ch = int(dev_info["max_input_channels"])
+        except Exception:
+            rate, max_in_ch = SAMPLE_RATE, 1
+        channels = 2 if max_in_ch >= 2 else 1
+        needs_resample = (rate != SAMPLE_RATE)
+        resampler, backend = (None, "none")
+        if needs_resample:
+            resampler, backend = _make_resampler(rate)
+        block = max(1, int(round(rate * TX_BLOCK_MS / 1000.0)))
         stream = sd.RawInputStream(
-            samplerate=capture_rate,
-            blocksize=capture_block,
-            device=mic_dev_index,
-            channels=capture_channels,
+            samplerate=rate,
+            blocksize=block,
+            device=dev_index,
+            channels=channels,
             dtype="int16",
             latency=AUDIO_LATENCY,
             callback=_cb,
         )
         stream.start()
+        cap.update(stream=stream, rate=rate, channels=channels,
+                   needs_resample=needs_resample, resampler=resampler,
+                   backend=backend, index=dev_index, name=dev_name)
+        state["mic_capture_rate"] = float(rate)
+        state["mic_capture_channels"] = channels
+        state["mic_resample_backend"] = backend
+        state["mic_dev_name"] = dev_name
+        state["mic_error"] = ""
+        sys.stderr.write(
+            f"[mic] device={dev_name!r} rate={rate} "
+            f"ch={channels} block={block} resample={backend}\n"
+        )
+        sys.stderr.flush()
+        return stream
+
+    def _switch_mic(dev_index, dev_name):
+        """Swap the operator mic. Falls back to the previous device if the new
+        one won't open; if that fails too the thread stays alive with no stream
+        so you can pick a working device with 'k' instead of restarting."""
+        prev = (cap["index"], cap["name"])
+        old = cap["stream"]
+        if old is not None:
+            try:
+                old.stop()
+                old.close()
+            except Exception:
+                pass
+        cap["stream"] = None
+        # Old-rate bytes must not be processed with the new device's parameters.
+        while True:
+            try:
+                mic_q.get_nowait()
+            except queue.Empty:
+                break
+        mic_fifo.clear()
+        try:
+            _open_mic(dev_index, dev_name)
+        except Exception as e:
+            sys.stderr.write(f"[mic] switch to {dev_name!r} failed: {e}\n")
+            state["picker_msg"] = f"{RED}Mic: {dev_name} — {e}{RESET}"
+            state["mic_error"] = str(e)
+            try:
+                _open_mic(*prev)
+                state["picker_msg"] += f"  {GRAY}(kept {prev[1]}){RESET}"
+            except Exception as e2:
+                sys.stderr.write(f"[mic] fallback to {prev[1]!r} FAILED: {e2}\n")
+                state["mic_error"] = str(e2)
+                state["picker_msg"] += f"  {RED}(old mic gone too — press k){RESET}"
+            return
+        state["picker_msg"] = f"{GREEN}Mic -> {dev_name}{RESET}"
+        cfg["mic_device_name"] = dev_name
+        try:
+            save_config(cfg)
+        except Exception:
+            pass
+
+    try:
+        _open_mic(mic_dev_index, mic_dev_name)
     except Exception as e:
+        # Don't kill the thread — without it 'k' could never rescue a bad mic.
         sys.stderr.write(f"[mic] failed to open {mic_dev_name!r}: {e}\n")
         state["mic_error"] = str(e)
-        return
-
-    sys.stderr.write(
-        f"[mic] device={mic_dev_name!r} rate={capture_rate} "
-        f"ch={capture_channels} block={capture_block} resample={backend}\n"
-    )
-    sys.stderr.flush()
 
     cur_idx = -1          # which effect is currently instantiated
     cur_fx = None         # the live effect processor (stateful)
 
     try:
         while state["running"]:
+            # Device swap requested by the picker ('k'), handled on the thread
+            # that owns the stream.
+            pending = state.pop("mic_dev_pending", None)
+            if pending:
+                _switch_mic(*pending)
+
             try:
                 pcm = mic_q.get(timeout=0.1)
             except queue.Empty:
                 continue
             try:
                 samples = np.frombuffer(pcm, dtype=np.int16)
-                if capture_channels == 2:
+                if cap["channels"] == 2:
                     samples = (samples.reshape(-1, 2).astype(np.int32)
                                .mean(axis=1).astype(np.int16))
-                if needs_resample and resampler is not None:
-                    out = _apply_resampler(resampler, backend, samples)
+                if cap["needs_resample"] and cap["resampler"] is not None:
+                    out = _apply_resampler(cap["resampler"], cap["backend"], samples)
                     if out is None:
                         continue
                     samples = out
@@ -1312,11 +1768,12 @@ def _mic_thread_func(state, cfg, mic_dev_index, mic_dev_name, mic_fifo):
                 sys.stderr.write(f"[mic] processing error: {type(e).__name__}: {e}\n")
                 continue
     finally:
-        try:
-            stream.stop()
-            stream.close()
-        except Exception:
-            pass
+        if cap["stream"] is not None:
+            try:
+                cap["stream"].stop()
+                cap["stream"].close()
+            except Exception:
+                pass
         state["mic_db"] = -100.0
 
 
@@ -1338,12 +1795,33 @@ def _rx_thread_func(state, cfg, rx_port, out_dev_index, out_dev_name):
     listen_sock.listen(1)
     listen_sock.settimeout(1.0)
 
+    # Which speaker we're playing to. Changed at runtime by the picker ('o').
+    out_dev = {"index": out_dev_index, "name": out_dev_name}
+
+    def _take_out_pending():
+        """Consume a picker request. True means the caller must (re)open the
+        output stream; when no stream is open there's nothing else to do."""
+        pending = state.pop("out_dev_pending", None)
+        if not pending:
+            return False
+        out_dev["index"], out_dev["name"] = pending
+        state["rx_dev_name"] = pending[1]
+        state["picker_msg"] = f"{GREEN}RX speaker -> {pending[1]}{RESET}"
+        cfg["rx_device_name"] = pending[1]
+        try:
+            save_config(cfg)
+        except Exception:
+            pass
+        return True
+
     try:
         while state["running"]:
             # Accept a connection
             try:
                 conn, addr = listen_sock.accept()
             except socket.timeout:
+                # No stream open while we wait, so just record the choice.
+                _take_out_pending()
                 continue
             except OSError:
                 break
@@ -1369,27 +1847,65 @@ def _rx_thread_func(state, cfg, rx_port, out_dev_index, out_dev_name):
                 except _queue.Empty:
                     outdata[:] = b'\x00' * len(outdata)
 
-            out_stream = sd.RawOutputStream(
-                samplerate=SAMPLE_RATE,
-                blocksize=FRAMES_PER_BUFFER,
-                device=out_dev_index,
-                channels=CHANNELS,
-                dtype="int16",
-                latency=AUDIO_LATENCY,
-                callback=_rx_callback,
-            )
-            out_stream.start()
-            try:
-                state["rx_stream_rate"] = float(out_stream.samplerate)
-            except Exception:
-                state["rx_stream_rate"] = float(SAMPLE_RATE)
-            try:
-                state["rx_device_rate"] = float(sd.query_devices(out_dev_index)["default_samplerate"])
-            except Exception:
-                state["rx_device_rate"] = 0.0
+            def _open_out():
+                """Open the playback stream on whatever out_dev names now."""
+                st = sd.RawOutputStream(
+                    samplerate=SAMPLE_RATE,
+                    blocksize=FRAMES_PER_BUFFER,
+                    device=out_dev["index"],
+                    channels=CHANNELS,
+                    dtype="int16",
+                    latency=AUDIO_LATENCY,
+                    callback=_rx_callback,
+                )
+                st.start()
+                try:
+                    state["rx_stream_rate"] = float(st.samplerate)
+                except Exception:
+                    state["rx_stream_rate"] = float(SAMPLE_RATE)
+                try:
+                    state["rx_device_rate"] = float(
+                        sd.query_devices(out_dev["index"])["default_samplerate"])
+                except Exception:
+                    state["rx_device_rate"] = 0.0
+                state["rx_dev_name"] = out_dev["name"]
+                return st
+
+            out_stream = _open_out()
+            prev_dev = (out_dev["index"], out_dev["name"])
 
             try:
                 while state["running"]:
+                    # Speaker swap requested by the picker ('o'). Reopening
+                    # here keeps the gateway's TCP connection up — only the
+                    # audio device is torn down.
+                    if _take_out_pending():
+                        try:
+                            out_stream.stop()
+                            out_stream.close()
+                        except Exception:
+                            pass
+                        try:
+                            out_stream = _open_out()
+                        except Exception as e:
+                            sys.stderr.write(
+                                f"[rx] switch to {out_dev['name']!r} failed: {e}\n")
+                            state["picker_msg"] = (
+                                f"{RED}RX speaker: {out_dev['name']} — {e}{RESET}")
+                            # Fall back to the device that was working.
+                            out_dev["index"], out_dev["name"] = prev_dev
+                            state["rx_dev_name"] = prev_dev[1]
+                            try:
+                                out_stream = _open_out()
+                                state["picker_msg"] += f"  {GRAY}(kept {prev_dev[1]}){RESET}"
+                            except Exception as e2:
+                                sys.stderr.write(
+                                    f"[rx] fallback to {prev_dev[1]!r} FAILED: {e2}\n")
+                                state["picker_msg"] += (
+                                    f"  {RED}(old speaker gone too — press o){RESET}")
+                                break
+                        prev_dev = (out_dev["index"], out_dev["name"])
+
                     try:
                         hdr = _recv_exact(conn, 4)
                     except socket.timeout:
@@ -1493,6 +2009,23 @@ def _display_thread_func(state, gateway_host, tx_port, rx_port,
                          in_dev_name, out_dev_name, mic_dev_name=""):
     """Periodically redraw the status display."""
     while state["running"]:
+        # The picker is modal — draw it instead of the meters, and refresh
+        # faster so moving the highlight feels immediate.
+        if state.get("picker") is not None:
+            try:
+                sys.stdout.write(render_picker(state))
+                sys.stdout.flush()
+            except Exception:
+                pass
+            time.sleep(0.08)
+            continue
+
+        # Device names can change under us ('i' / 'k' / 'o'), so read the live
+        # ones rather than the values captured at startup.
+        in_dev_name = state.get("tx_dev_name") or in_dev_name
+        out_dev_name = state.get("rx_dev_name") or out_dev_name
+        mic_dev_name = state.get("mic_dev_name") or mic_dev_name
+
         # --- TX rate / resample status -------------------------------------
         cap_rate = state.get("tx_capture_rate", 0.0)
         cap_ch = state.get("tx_capture_channels", 0)
@@ -1643,6 +2176,11 @@ def _display_thread_func(state, gateway_host, tx_port, rx_port,
         else:
             conn_line = f"     Listening on port {rx_port} ...\n"
 
+        # Result of the last device swap (or the error that stopped it).
+        pmsg = state.get("picker_msg")
+        if pmsg:
+            conn_line += f"     {pmsg}\n"
+
         # Render full frame each refresh — no absolute cursor positioning
         # (avoids the meter rendering over a wrapped header line).
         frame = (
@@ -1655,6 +2193,7 @@ def _display_thread_func(state, gateway_host, tx_port, rx_port,
             f"              {rx_rate_str}\n"
             f"  Mic       : {mic_dev_name}\n"
             f"  Gateway   : {gateway_host}  (TX→{tx_port}  RX←{rx_port})\n"
+            f"{update_status_line()}\n"
             f"\n"
             f"  {BOLD}Controls{RESET}\n"
             f"   {WHITE}MIC{RESET}  your voice — mixed in only while you talk:\n"
@@ -1666,6 +2205,9 @@ def _display_thread_func(state, gateway_host, tx_port, rx_port,
             f"   {WHITE}RX {RESET}  speaker — audio received from the gateway:\n"
             f"        {CYAN}p{RESET} play/mute      {CYAN}[{RESET}/{CYAN}]{RESET} volume      "
             f"{CYAN}d{RESET} diagnostics            {CYAN}Ctrl+C{RESET} quit\n"
+            f"   {WHITE}DEV{RESET}  swap a device on the fly (audio keeps running):\n"
+            f"        {CYAN}i{RESET} TX feed        {CYAN}k{RESET} mic         "
+            f"{CYAN}o{RESET} RX speaker\n"
             f"\n"
             f"  TX  {tx_tag:>20s}  [{tx_bar}] {tx_sdb:+6.1f} dBFS  Vol:{tx_vol:3d}%\n"
             f"  RX  {rx_tag:>20s}  [{rx_bar}] {rx_sdb:+6.1f} dBFS  Vol:{rx_vol:3d}%\n"
@@ -1887,6 +2429,40 @@ def main():
     # --- Ports --------------------------------------------------------------
     tx_port = cfg.get("tx_port", DEFAULT_TX_PORT)
     rx_port = cfg.get("rx_port", DEFAULT_RX_PORT)
+    web_port = int(cfg.get("web_port", DEFAULT_WEB_PORT))
+
+    # --- Self-update --------------------------------------------------------
+    # Before any audio device is opened, so a relaunch never has to hand a
+    # device back to the OS. --no-update is set on the relaunch itself, which
+    # is what stops an update from looping.
+    if not cfg.get("update_enabled", True):
+        UPDATE_STATE.update(status="disabled")
+    elif "--no-update" in sys.argv[1:]:
+        if os.environ.get(UPDATE_ENV):
+            # The relaunch after a successful update.
+            UPDATE_STATE.update(status="updated")
+        else:
+            # A manual --no-update, or a relaunch by a build too old to set the
+            # marker. Confirm against the gateway rather than reporting
+            # "not checked" for code that may well be current.
+            UPDATE_STATE.update(status="skipped")
+            verify_version_only(gateway_host, web_port)
+    else:
+        cfg["gateway_host"] = gateway_host
+        cfg["web_port"] = web_port
+        try:
+            save_config(cfg)
+        except Exception:
+            pass
+        if check_for_update(gateway_host, web_port):
+            relaunch()
+
+    # Hash from disk, so the line reports the code that is actually running
+    # rather than whatever the check happened to report.
+    try:
+        UPDATE_STATE["version"] = _local_version()
+    except Exception:
+        pass
 
     # --- Audio devices ------------------------------------------------------
     # in_dev = program feed; mic = operator microphone (voice effects applied
@@ -1922,6 +2498,12 @@ def main():
         "tx_resample_enabled": True,
         "tx_xruns": 0,
         "tx_last_frames": 0,
+        # device picker ('i' / 'k' / 'o') — see PICKERS
+        "picker": None,
+        "picker_msg": "",
+        "tx_dev_name": in_dev_name,
+        "rx_dev_name": out_dev_name,
+        "mic_dev_name": mic_dev_name,
         # mic / broadcast-mix state
         "ptt_key": cfg.get("ptt_key", "space"),
         "ptt_held": False,
