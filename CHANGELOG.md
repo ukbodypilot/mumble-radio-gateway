@@ -35,6 +35,11 @@ Neither path tears anything down. A blocked write already trips the 1 s
 The recovery machinery was never the bug — the success message was. A teardown
 here would only add a third path racing the two that work.
 
+Regression test: `tests/test_stream_dead_uplink.py`. Case 4 is the load-bearing
+one — it proves that a `_bytes_sent` left over from the previous connection
+*would* confirm a dead link, so the zeroing in `_connect()` is what makes the
+check mean anything.
+
 The keepalive feeds the encoder every 50 ms whether or not the radio is busy,
 so a healthy 32 kbps mount hands the reader a 4096-byte chunk about once a
 second. 5 s is ~5x that margin and 15 s is ~15x, so a quiet channel never

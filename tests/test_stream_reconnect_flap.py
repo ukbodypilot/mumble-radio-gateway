@@ -19,6 +19,12 @@ S = audio_sources.StreamOutputSource
 class Fake:
     """Minimal stand-in wired to the real reconnect methods under test."""
     _trigger_reconnect = S._trigger_reconnect
+    # The worker now confirms a connect by watching bytes leave, so the real
+    # method has to come along too — stubbing it would test a path the
+    # gateway does not run. Note the AttributeError from omitting it is
+    # raised inside a daemon worker and SWALLOWED: the suite still exited 0
+    # while the code under test was dead. See [[feedback_silent_attribute_misses]].
+    _confirm_bytes_moving = S._confirm_bytes_moving
 
     def __init__(self, dns_down_for, legacy=False):
         self.legacy = legacy
@@ -38,6 +44,8 @@ class Fake:
         self._reconnect_backoff = 0.2         # scaled down from 5s
         self._mount_wait = 0.5                # scaled down from 15s
         self._mount_in_use = False
+        self._connect_confirm = 0.5           # scaled down from 5s
+        self._bytes_sent = 0
         self._start = time.monotonic()
         self._dns_down_for = dns_down_for
         # server-side mount state: who currently holds it
@@ -74,8 +82,21 @@ class Fake:
                 return
             self._mount_holder = 'me'
         self._mount_in_use = False
+        # Zeroed per connection exactly as the real _connect does, so
+        # _confirm_bytes_moving can never credit this attempt with the
+        # previous connection's traffic.
+        self._bytes_sent = 0
         self.connected = True
         self.successes += 1
+        # Stand in for the reader thread: on a healthy link the first MP3
+        # chunk reaches the socket well inside the confirmation window. This
+        # models the LINK working, which is the scenario this test is about —
+        # a link that connects but pushes nothing is test_stream_dead_uplink.
+        threading.Timer(0.05, self._push_bytes).start()
+
+    def _push_bytes(self):
+        if self.connected:
+            self._bytes_sent += 4096
 
 
 def legacy_trigger(self):

@@ -61,6 +61,11 @@ def new_src(enc):
     s._teardown_intentional = False
     s._supervisor_thread = None
     s._icecast_sock = None
+    # Added with the 2026-08-21 dead-uplink fix -- same rule as above.
+    s._connect_confirm = 0.5
+    s._flow_stale_after = 15.0
+    s._bytes_sent = 0
+    s._last_bytes_time = 0.0
     return s
 
 
