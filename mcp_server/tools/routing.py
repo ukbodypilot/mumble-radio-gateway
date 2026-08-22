@@ -41,6 +41,53 @@ def routing_levels() -> str:
 # ---------------------------------------------------------------------------
 # Connect / disconnect
 # ---------------------------------------------------------------------------
+def _classify(a, b):
+    """Work out whether a→b is source→bus or bus→sink, from the live graph.
+
+    This used to be a hardcoded sink-id set plus an endswith('_tx') fallback.
+    It had already drifted -- 'transcription' was missing, so connecting a bus
+    to it was classified source-bus and silently did the wrong thing -- and a
+    literal list of sink ids in an MCP tool is guaranteed to drift again every
+    time a plugin adds one. /routing/status already publishes the real
+    sources / busses / sinks, so ask.
+
+    Returns (connection_type, error_or_None).
+    """
+    try:
+        st = _get('/routing/status') or {}
+    except Exception as e:
+        return None, f"could not read the routing graph: {e}"
+    ids = {kind: {str(x.get('id')) for x in (st.get(kind) or []) if isinstance(x, dict)}
+           for kind in ('sources', 'busses', 'sinks')}
+    if b in ids['sinks'] and a in ids['busses']:
+        return 'bus-sink', None
+    if b in ids['busses'] and a in ids['sources']:
+        return 'source-bus', None
+    # Say what is actually wrong rather than guessing and failing downstream.
+    if a not in ids['sources'] | ids['busses']:
+        return None, (f"'{a}' is not a known source or bus. "
+                      f"Use routing_status() to list them.")
+    if b not in ids['busses'] | ids['sinks']:
+        return None, (f"'{b}' is not a known bus or sink. "
+                      f"Use routing_status() to list them.")
+    return None, (f"'{a}' → '{b}' is not a legal edge: connect a source to a "
+                  f"bus, or a bus to a sink.")
+
+
+def _edge_payload(cmd, connection_type, a, b):
+    """Build the /routing/cmd body for one edge.
+
+    The handler takes the roles by NAME -- source/bus/sink -- not from/to.
+    These tools sent {'from': ..., 'to': ...} instead, so every call landed on
+    the handler's final `return {'ok': False, 'error': 'specify source+bus or
+    bus+sink'}`: routing_connect and routing_disconnect had never once worked,
+    and they are the only callers of those two commands.
+    """
+    if connection_type == 'bus-sink':
+        return {'cmd': cmd, 'bus': a, 'sink': b}
+    return {'cmd': cmd, 'source': a, 'bus': b}
+
+
 @mcp.tool()
 def routing_connect(source_or_bus: str, bus_or_sink: str, connection_type: str = "auto") -> str:
     """
@@ -52,23 +99,17 @@ def routing_connect(source_or_bus: str, bus_or_sink: str, connection_type: str =
         connection_type: 'source-bus', 'bus-sink', or 'auto' (auto-detect based on IDs)
     """
     if connection_type == 'auto':
-        # Heuristic: if second arg looks like a sink, it's bus→sink
-        sink_ids = {'speaker', 'broadcastify', 'broadcastify_l', 'broadcastify_r',
-                    'mumble', 'remote_audio_tx',
-                    'kv4p_tx', 'aioc_tx', 'nul'}
-        if bus_or_sink in sink_ids or bus_or_sink.endswith('_tx'):
-            connection_type = 'bus-sink'
-        else:
-            connection_type = 'source-bus'
+        connection_type, err = _classify(source_or_bus, bus_or_sink)
+        if err:
+            return f"Error: {err}"
 
-    result = _post('/routing/cmd', {
-        'cmd': 'connect',
-        'type': connection_type,
-        'from': source_or_bus,
-        'to': bus_or_sink
-    })
+    result = _post('/routing/cmd',
+                   _edge_payload('connect', connection_type,
+                                 source_or_bus, bus_or_sink))
     if result.get('ok'):
         return f"Connected {source_or_bus} → {bus_or_sink} ({connection_type})"
+    # A refusal here is usually the one-bus-per-sink rule; the server's
+    # message already names the sink and the bus that holds it.
     return f"Error: {result.get('error', 'unknown')}"
 
 
@@ -83,20 +124,13 @@ def routing_disconnect(source_or_bus: str, bus_or_sink: str, connection_type: st
         connection_type: 'source-bus', 'bus-sink', or 'auto' (auto-detect)
     """
     if connection_type == 'auto':
-        sink_ids = {'speaker', 'broadcastify', 'broadcastify_l', 'broadcastify_r',
-                    'mumble', 'remote_audio_tx',
-                    'kv4p_tx', 'aioc_tx', 'nul'}
-        if bus_or_sink in sink_ids or bus_or_sink.endswith('_tx'):
-            connection_type = 'bus-sink'
-        else:
-            connection_type = 'source-bus'
+        connection_type, err = _classify(source_or_bus, bus_or_sink)
+        if err:
+            return f"Error: {err}"
 
-    result = _post('/routing/cmd', {
-        'cmd': 'disconnect',
-        'type': connection_type,
-        'from': source_or_bus,
-        'to': bus_or_sink
-    })
+    result = _post('/routing/cmd',
+                   _edge_payload('disconnect', connection_type,
+                                 source_or_bus, bus_or_sink))
     if result.get('ok'):
         return f"Disconnected {source_or_bus} → {bus_or_sink}"
     return f"Error: {result.get('error', 'unknown')}"
