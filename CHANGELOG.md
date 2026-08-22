@@ -59,6 +59,58 @@ The default is a neutral `Broadcastify Stream Alert`, not `Down`: a caller
 that forgets should get a vague subject rather than a confidently false one,
 which is precisely how the original read.
 
+### Added — a sink can only be fed by one bus
+
+The graph editor would happily draw a second bus into a sink, and nothing
+checked. Two buses never mix into a sink, and what happens instead depends on
+the sink:
+
+- Queue sinks (mumble, broadcastify, transcription, remote_audio_tx, speaker)
+  share ONE bounded deque keyed by sink_id in `_enqueue_sink`. Both buses
+  append and the drain thread sends each in turn, so the far end gets 50 ms
+  fragments of the two sources **alternating**, at twice real time, until the
+  queue backs up and drops.
+- `broadcastify_l` / `broadcastify_r` are a per-tick slot, not a queue: the
+  second bus overwrites the first within the tick and its audio is silently
+  discarded. (The two *sides* are separate sink ids, so the normal
+  dual-channel feed is unaffected — that is two buses into two sinks.)
+- Radio `*_tx` sinks are the worst. Every SoloBus builds its own `_PttWorker`
+  while `_get_radio_plugin` returns the SHARED plugin object, so two buses put
+  two PTT threads on one radio with private `_desired`/`_applied` state. When
+  the first bus unkeys, the radio drops carrier — and the second worker, which
+  only acts on a state CHANGE, never re-keys. The second bus then transmits
+  into an unkeyed radio for the rest of its transmission, logging nothing,
+  with every meter still moving.
+
+The rule now lives in `routing_rules.py` and is enforced three times: the
+editor refuses the drag and names the bus already holding the sink; the
+`connect` and `save_all` API paths refuse before writing; and BusManager warns
+on load but still builds the graph, because a routing mistake must not stop the
+gateway booting. `nul` is exempt — it discards audio and exists to park a bus.
+
+Mixing several sources is a within-bus operation (`mix_audio_streams`, with the
+ducking and priorities that go with it). Put the sources on one bus instead.
+
+Tests: `tests/test_routing_sink_conflicts.py`.
+
+### Fixed — routing_connect / routing_disconnect had never worked
+
+Both MCP tools posted `{'from', 'to'}` while `_routing_cmd_connect` reads
+`source` / `bus` / `sink`, so every call fell through to the handler's
+`specify source+bus or bus+sink` error. They are the only callers of those two
+commands — the routing UI saves via `save_all` — so neither the tools nor those
+handler branches had ever run.
+
+Their auto-detect was separately wrong: a hardcoded sink-id list that had
+already drifted, naming `kv4p_tx` (no longer a sink) and omitting
+`transcription`, which was therefore classified `source-bus`. It now reads the
+live graph from `/routing/status`. That also handles ids like `sdr2` and
+`webmic`, which name **both** a source and a bus — the target is tested first,
+since a sink target unambiguously means `bus-sink`. Unknown or illegal edges
+are now named rather than guessed at, and post nothing.
+
+Tests: `tests/test_mcp_routing_connect.py`.
+
 ## [4.5.0] -- 2026-08-03
 
 Links you ask for stay up, the browser mic is push-to-talk, and node numbers

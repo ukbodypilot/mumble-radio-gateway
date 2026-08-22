@@ -14,6 +14,7 @@ import threading
 import time
 
 from audio_util import AudioProcessor
+from routing_rules import find_sink_conflicts, describe_conflicts
 
 
 class _RoutingCmdsMixin:
@@ -80,6 +81,13 @@ class _RoutingCmdsMixin:
         elif bus and sink:
             conn = {'type': 'bus-sink', 'from': bus, 'to': sink}
             if conn not in connections:
+                # Refuse BEFORE appending: a sink fed by two buses does not
+                # mix, it interleaves or silently drops, and on a *_tx sink it
+                # strands the radio unkeyed mid-transmission. See
+                # routing_rules for the full mechanism.
+                _conflicts = find_sink_conflicts(connections + [conn])
+                if _conflicts:
+                    return {'ok': False, 'error': describe_conflicts(_conflicts)}
                 connections.append(conn)
                 for b in busses:
                     if b['id'] == bus and sink not in b.get('sinks', []):
@@ -116,6 +124,13 @@ class _RoutingCmdsMixin:
         new_connections = data.get('connections', [])
         bus_updates = data.get('bus_updates', {})
         layout = data.get('layout')
+        # The authoritative gate. The editor blocks these at drag time, but
+        # this path is also reachable from the HTTP API and a hand-edited
+        # graph, and nothing downstream survives the conflict gracefully.
+        _conflicts = find_sink_conflicts(new_connections)
+        if _conflicts:
+            print(f"  [routing] REFUSED save: {describe_conflicts(_conflicts)}")
+            return {'ok': False, 'error': describe_conflicts(_conflicts)}
         for b in busses:
             upd = bus_updates.get(b['id'], {})
             b['sources'] = upd.get('sources', [])

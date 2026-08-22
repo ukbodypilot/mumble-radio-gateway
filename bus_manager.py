@@ -16,6 +16,7 @@ import time
 
 import numpy as np
 
+from routing_rules import find_sink_conflicts
 from audio_bus import SoloBus, DuplexRepeaterBus, SimplexRepeaterBus, ListenBus, additive_mix
 from audio_util import AudioProcessor, pcm_level, update_level, apply_gain
 
@@ -900,6 +901,17 @@ class BusManager:
                 save_json(self._config_path, data)
             except Exception as _e:
                 print(f"  [BusManager] Migration save failed: {_e}")
+
+        # Warn, do NOT refuse. The save paths reject new conflicts, so a
+        # config that reaches here with one was hand-edited or predates the
+        # rule -- and refusing to build the graph would take the whole
+        # gateway down over a routing mistake. Loud on stdout is enough,
+        # and it names the sink so the fix is obvious.
+        for _cf in find_sink_conflicts(connections):
+            print(f"  [BusManager] WARNING: sink '{_cf['sink']}' is fed by "
+                  f"{len(_cf['busses'])} buses ({', '.join(_cf['busses'])}) — "
+                  f"they will NOT mix. Expect interleaved audio, and on a TX "
+                  f"sink a radio left unkeyed mid-transmission.")
 
         for bus_cfg in busses:
             bus_id = bus_cfg['id']

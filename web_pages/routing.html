@@ -482,6 +482,8 @@
 var editor;
 var _state = {};
 var _nodeMap = {}; // id -> drawflow node id
+// True while rebuildEditor() is restoring saved edges — see connectionCreated.
+var _restoringGraph = false;
 
 function setStatus(msg) { document.getElementById('statusBar').textContent = msg; }
 
@@ -972,7 +974,13 @@ function rebuildEditor() {
     }
   }
 
-  // Draw existing connections
+  // Draw existing connections. addConnection() fires connectionCreated for
+  // every restored edge, so suppress the validators: they exist to police
+  // what the USER draws. Without this, opening the page on a config that
+  // already has a conflict would silently delete an edge off the canvas,
+  // and the next save would quietly persist that deletion.
+  _restoringGraph = true;
+  try {
   for (var i = 0; i < _state.connections.length; i++) {
     var c = _state.connections[i];
     if (c.type === 'source-bus') {
@@ -989,6 +997,7 @@ function rebuildEditor() {
       }
     }
   }
+  } finally { _restoringGraph = false; }
 }
 
 // Add a new bus node
@@ -1080,6 +1089,7 @@ function saveRouting() {
 
 // Validate connections: only source→bus and bus→sink allowed
 editor.on('connectionCreated', function(info) {
+  if (_restoringGraph) return;   // restoring a saved graph, not a user action
   var fromNode = editor.drawflow.drawflow.Home.data[info.output_id];
   var toNode = editor.drawflow.drawflow.Home.data[info.input_id];
   if (!fromNode || !toNode) return;
@@ -1102,8 +1112,66 @@ editor.on('connectionCreated', function(info) {
             : toIsSource ? 'Cannot connect to a source input'
             : 'Invalid connection';
     setStatus(msg);
+    return;
+  }
+
+  // One bus per sink. Two buses do NOT mix into a sink: queue sinks
+  // interleave 50ms fragments of each and then start dropping, the
+  // broadcastify L/R slots silently overwrite, and a *_tx sink ends up with
+  // two PTT workers on one radio — when the first unkeys, the second keeps
+  // transmitting into a radio that is no longer keyed. The server refuses
+  // these too; this just stops the drag before it looks like it worked.
+  if (fromIsBus && toIsSink) {
+    // addNode() stores {id: s.id} as the node's data — the sink id itself.
+    var sinkId = (toNode.data && toNode.data.id) || '';
+    // NUL discards audio, so any number of buses may park on it.
+    if (sinkId !== 'nul') {
+      var feeders = busFeedersOf(toNode, info.input_class);
+      if (feeders.length > 1) {
+        setTimeout(function() {
+          editor.removeSingleConnection(info.output_id, info.input_id, info.output_class, info.input_class);
+        }, 0);
+        var otherId = null;
+        for (var fi = 0; fi < feeders.length; fi++) {
+          if (feeders[fi] !== String(info.output_id)) { otherId = feeders[fi]; break; }
+        }
+        setStatus('"' + (sinkId || 'that sink') + '" is already fed by ' + busLabel(otherId) +
+                  ' — a sink takes one bus. Put both sources on one bus and let it mix them.');
+      }
+    }
   }
 });
+
+// drawflow node id -> our 'bus-x' / 'sink-x' / 'src-x' id
+function reverseNodeId(nodeId) {
+  for (var key in _nodeMap) {
+    if (String(_nodeMap[key]) === String(nodeId)) return key;
+  }
+  return null;
+}
+
+// Drawflow node ids of every BUS currently wired into this sink input,
+// including the connection that just fired connectionCreated.
+function busFeedersOf(sinkNode, inputClass) {
+  var out = [];
+  var inputs = (sinkNode && sinkNode.inputs) || {};
+  var inp = inputs[inputClass] || inputs['input_1'];
+  var conns = (inp && inp.connections) || [];
+  for (var i = 0; i < conns.length; i++) {
+    var id = String(conns[i].node);
+    if (out.indexOf(id) < 0) out.push(id);
+  }
+  return out;
+}
+
+function busLabel(nodeId) {
+  var ourId = nodeId ? reverseNodeId(nodeId) : null;
+  if (!ourId) return 'another bus';
+  var list = (_state && _state.busses) || [];
+  var b = list.filter(function(x) { return 'bus-' + x.id === ourId; })[0];
+  return '"' + ((b && (b.name || b.id)) || ourId.substring(4)) + '"';
+}
+
 
 // Handle node deletion
 editor.on('nodeRemoved', function(nodeId) {
