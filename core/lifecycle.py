@@ -374,7 +374,15 @@ class _LifecycleMixin:
             if (so and getattr(self.config, 'ENABLE_STREAM_OUTPUT', False) and
                     current_time - self._last_stream_health_check > 30):
                 self._last_stream_health_check = current_time
-                if so.connected:
+                # `connected` alone is the handshake, not the stream: during
+                # the 2026-08-21 uplink stall it stayed True through 2.5
+                # minutes of zero throughput and this loop cheerfully printed
+                # "Stream recovered" (and emailed it) five times. data_flowing
+                # additionally requires that bytes actually reached the server
+                # recently; it falls back to `connected` on an older stream
+                # object that has no such property.
+                _up = getattr(so, 'data_flowing', so.connected)
+                if _up:
                     if not self._stream_was_connected:
                         self._stream_was_connected = True
                         print("  [Broadcastify] Stream healthy")
@@ -383,15 +391,21 @@ class _LifecycleMixin:
                         rc = getattr(so, '_reconnect_count', 0)
                         print(f"  [Broadcastify] Stream recovered (after {rc} reconnect attempts)")
                         self.notify("Broadcastify stream recovered", level='info')
-                        self._send_stream_alert("Broadcastify stream recovered.")
+                        self._send_stream_alert(
+                            "Broadcastify stream recovered.",
+                            subject="Broadcastify Stream Recovered")
                     self._stream_drop_alerted = False
                 elif self._stream_was_connected and not self._stream_drop_alerted:
-                    # Stream was connected but now it's not
+                    # Stream was connected but now it is not — which now
+                    # includes a socket that is up but stalled. That is the
+                    # point: a mount pushing nothing IS down.
                     self._stream_drop_alerted = True
                     rc = getattr(so, '_reconnect_count', 0)
                     print(f"  [Broadcastify] Stream dropped! (reconnect attempts: {rc})")
                     self.notify("Broadcastify stream dropped", level='error')
-                    self._send_stream_alert("Broadcastify stream dropped and is reconnecting.")
+                    self._send_stream_alert(
+                        "Broadcastify stream dropped and is reconnecting.",
+                        subject="Broadcastify Stream Down")
                 elif not so.connected and not so._was_connected and not getattr(so, '_reconnecting', False):
                     # Initial connection failed at startup (e.g. DNS was down) — keep retrying
                     print("  [Broadcastify] Retrying initial connection...")

@@ -3056,11 +3056,18 @@ class StreamOutputSource:
         self._reconnect_superseded = 0
         self._reconnect_wedged = 0
         # Watchdog patience before a reconnect worker is declared wedged.
+        # This is the BASE budget: _connect_confirm is added to it
+        # in _trigger_reconnect: the confirmation wait happens inside the
+        # worker, and a watchdog that fires because of it would declare every
+        # slow-but-fine reconnect "wedged".
         self._reconnect_wedge_timeout = 30.0
         self._reader_thread = None
         self._keepalive_thread = None
         self._last_audio_time = 0  # monotonic time of last real audio push
         self._bytes_sent = 0
+        # Monotonic time of the last byte written to the Icecast socket.
+        # 0 until the first byte of the first connection goes out.
+        self._last_bytes_time = 0.0
         self._connect_time = 0
         self._reconnect_backoff = 5
         # Longer wait used only after a "403 Mountpoint in use" rejection, i.e.
@@ -3104,6 +3111,18 @@ class StreamOutputSource:
         # encoder is reaped long before the reconnect delay elapses.
         self._encoder_write_timeout = float(
             getattr(config, 'STREAM_ENCODER_WRITE_TIMEOUT', 1.0))
+        # How long a fresh connection gets to push its first byte before we
+        # stop calling it a success. The keepalive feeds the encoder every
+        # SILENCE_INTERVAL (50 ms) whether or not the radio is busy, so a
+        # healthy 32 kbps mount hands the reader a 4096-byte chunk about once
+        # a second -- 5 s is ~5x that, and a quiet channel is NOT a reason for
+        # this to come up empty.
+        self._connect_confirm = float(
+            getattr(config, 'STREAM_CONNECT_CONFIRM', 5.0))
+        # Longest gap between outgoing bytes that still counts as flowing.
+        # Compared against the same ~1 s cadence, so this is 15x margin.
+        self._flow_stale_after = float(
+            getattr(config, 'STREAM_FLOW_STALE_AFTER', 15.0))
 
         if config.ENABLE_STREAM_OUTPUT:
             self._connect()
@@ -3290,6 +3309,11 @@ class StreamOutputSource:
                         if self._icecast_sock is sock:
                             sock.sendall(data)
                             self._bytes_sent += len(data)
+                            # Timestamp of the last byte that actually reached
+                            # the server. `connected` only ever meant "the
+                            # SOURCE handshake was accepted", which is not the
+                            # same claim — see _confirm_bytes_moving.
+                            self._last_bytes_time = time.monotonic()
                             # Count bytes HERE, at the point they actually go
                             # out. This used to be done in
                             # stream_stats.get_stream_stats(), which has no
@@ -3375,6 +3399,9 @@ class StreamOutputSource:
         self._connect_time = time.time()
         self._last_audio_time = time.monotonic()
         self._bytes_sent = 0
+        # Start the flow clock now: a connection one tick old has not gone
+        # stale, it simply has not had time to push anything yet.
+        self._last_bytes_time = time.monotonic()
 
         # Keepalive: feed silence to encoder when no real audio arrives
         if not self._keepalive_thread or not self._keepalive_thread.is_alive():
@@ -3569,11 +3596,26 @@ class StreamOutputSource:
                         self._connect()
                     except Exception as e:
                         print(f"  [Broadcastify] _connect() raised: {e}")
-                    if self.connected:
-                        print(f"  [Broadcastify] Reconnected successfully (attempt #{count})")
-                    else:
+                    if not self.connected:
                         print(f"  [Broadcastify] Reconnect failed (attempt #{count})")
                         self._note_error(f"reconnect failed (attempt #{count})")
+                    elif self._confirm_bytes_moving(count):
+                        pass   # _confirm_bytes_moving logs the success itself
+                    else:
+                        # Handshake accepted, nothing moving. Deliberately NOT
+                        # torn down here: a blocked write trips the 1 s
+                        # _encoder_write deadline and _on_encoder_wedged
+                        # already reaps and retries, with _supervisor_loop as
+                        # the backstop. Both fired correctly throughout the
+                        # 2026-08-21 stall -- the only thing broken was this
+                        # message calling it a success. A teardown here would
+                        # be a third recovery path racing the two that work.
+                        print(f"  [Broadcastify] Attempt #{count} connected but "
+                              f"no data moved in {self._connect_confirm:g}s — "
+                              f"NOT counting this as recovered")
+                        self._note_error(
+                            f"attempt #{count} connected but pushed 0 bytes in "
+                            f"{self._connect_confirm:g}s")
                 finally:
                     self._connect_lock.release()
             finally:
@@ -3595,7 +3637,8 @@ class StreamOutputSource:
         # encoder/socket, but the stream as a whole recovers instead of
         # staying dark.
         def _watchdog():
-            worker.join(timeout=self._reconnect_wedge_timeout)
+            budget = self._reconnect_wedge_timeout + self._connect_confirm
+            worker.join(timeout=budget)
             if worker.is_alive():
                 # Release the flag so recovery is not held hostage by this
                 # worker, AND bump the epoch so the worker retires on wake.
@@ -3613,7 +3656,7 @@ class StreamOutputSource:
                     ep = self._reconnect_epoch
                 self._reconnect_wedged += 1
                 print(f"  [Broadcastify] Reconnect attempt #{count} wedged >"
-                      f"{self._reconnect_wedge_timeout:g}s — releasing flag "
+                      f"{budget:g}s — releasing flag "
                       f"(epoch now {ep}; attempt #{count} will retire on wake)")
         threading.Thread(target=_watchdog, daemon=True,
                          name="Broadcastify-reconnect-wd").start()
@@ -3633,6 +3676,58 @@ class StreamOutputSource:
                 self._last_audio_time = time.monotonic()
         if not ok:
             self._on_encoder_wedged()
+
+    def _confirm_bytes_moving(self, count):
+        """Wait for a just-established connection to actually push bytes.
+
+        `self.connected` only ever meant "the Icecast SOURCE handshake was
+        accepted". That is a much weaker claim than "the stream is back", and
+        on 2026-08-21 the difference cost ten minutes of dead air: the uplink
+        stalled, ten reconnect attempts each completed their handshake, and
+        every one of them logged "Reconnected successfully" while
+        rg_stream_bytes_sent_total sat at a flat +0 for 2.5 of those minutes.
+        TCP connected, Icecast accepted, not one payload byte moved. The log
+        said recovered, the byte counter said dark, and only the counter was
+        right -- the incident was invisible in the log and obvious in
+        Prometheus.
+
+        _connect() resets _bytes_sent to 0, so any advance seen here belongs
+        to THIS connection and cannot be inherited from the last one.
+
+        Returns True (and logs the success) once bytes move, False if the
+        window expires, the connection drops again, or we are shutting down.
+        """
+        started = time.monotonic()
+        deadline = started + self._connect_confirm
+        while time.monotonic() < deadline:
+            if self._shutdown:
+                return False
+            if not self.connected:
+                return False       # dropped again mid-confirmation
+            if self._bytes_sent > 0:
+                took = time.monotonic() - started
+                print(f"  [Broadcastify] Reconnected successfully (attempt "
+                      f"#{count}) — {self._bytes_sent} bytes on the wire "
+                      f"in {took:.1f}s")
+                return True
+            time.sleep(0.1)
+        return False
+
+    @property
+    def data_flowing(self):
+        """True when bytes reached the server recently enough to count as up.
+
+        The companion to _confirm_bytes_moving for callers that poll rather
+        than watch a single reconnect -- see the health check in
+        core/lifecycle.py, which made the same connected-means-healthy
+        assumption and so reported "Stream recovered" five times during the
+        same stall.
+        """
+        if not self.connected:
+            return False
+        if not self._last_bytes_time:
+            return False
+        return (time.monotonic() - self._last_bytes_time) < self._flow_stale_after
 
     def _on_encoder_wedged(self):
         """Encoder stopped accepting PCM — reap it and start recovery.

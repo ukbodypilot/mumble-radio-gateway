@@ -2,6 +2,58 @@
 
 All notable changes to Radio Gateway.
 
+## [Unreleased]
+
+### Fixed — "Reconnected successfully" now means bytes actually moved
+
+`self.connected` on the Broadcastify source only ever meant "the Icecast
+SOURCE handshake was accepted", but three places read it as "the stream is
+up". On 2026-08-21 the uplink stalled for ten minutes and the difference
+became the whole story: ten reconnect attempts each completed their handshake
+and each logged `Reconnected successfully`, while `rg_stream_bytes_sent_total`
+sat at a flat **+0 for 2.5 of those minutes**. TCP connected, Icecast
+accepted, not one payload byte moved. The 30 s health check agreed, printing
+`Stream recovered` and emailing it five times. The incident was invisible in
+the log and obvious in Prometheus — and only Prometheus was right.
+
+Two claims now require evidence:
+
+- `_confirm_bytes_moving()` holds a fresh connection for up to
+  `STREAM_CONNECT_CONFIRM` (5 s) waiting for `_bytes_sent` — which `_connect()`
+  zeroes, so the advance cannot be inherited from the previous connection — to
+  leave 0. It logs the success with the byte count and how long it took, or
+  reports `connected but no data moved in Ns — NOT counting this as
+  recovered`.
+- A new `data_flowing` property requires a byte to have reached the server
+  within `STREAM_FLOW_STALE_AFTER` (15 s), and the health check in
+  `core/lifecycle.py` uses it in place of bare `connected`. A mount pushing
+  nothing is down, and now alerts as down.
+
+Neither path tears anything down. A blocked write already trips the 1 s
+`_encoder_write` deadline, `_on_encoder_wedged` reaps and retries, and
+`_supervisor_loop` backstops it; both fired correctly throughout the stall.
+The recovery machinery was never the bug — the success message was. A teardown
+here would only add a third path racing the two that work.
+
+The keepalive feeds the encoder every 50 ms whether or not the radio is busy,
+so a healthy 32 kbps mount hands the reader a 4096-byte chunk about once a
+second. 5 s is ~5x that margin and 15 s is ~15x, so a quiet channel never
+trips either check. The reconnect watchdog budget gains `STREAM_CONNECT_CONFIRM`
+to cover the confirmation wait, which happens inside the worker it watches.
+
+### Fixed — recovery emails no longer arrive titled "Stream Down"
+
+`_send_stream_alert` hardcoded the subject `Broadcastify Stream Down` for
+every alert it sent, recovery included. The body was right and the subject was
+wrong, and the subject is the half you see in a phone notification — so the
+2026-08-21 stall sent ten "Down" mails in ten minutes, five of which were
+actually announcing successful recoveries. It takes a `subject` now, and both
+callers in `core/lifecycle.py` pass one.
+
+The default is a neutral `Broadcastify Stream Alert`, not `Down`: a caller
+that forgets should get a vague subject rather than a confidently false one,
+which is precisely how the original read.
+
 ## [4.5.0] -- 2026-08-03
 
 Links you ask for stay up, the browser mic is push-to-talk, and node numbers
