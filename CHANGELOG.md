@@ -111,6 +111,45 @@ are now named rather than guessed at, and post nothing.
 
 Tests: `tests/test_mcp_routing_connect.py`.
 
+### Fixed — which SINK KIND you wired decided whether PTT worked
+
+A source that never asserts the PTT flag could key a link endpoint but never a
+plugin radio. `RemoteAudioSource` ends every path with `return raw, False`, and
+that was enough for the CM5, because `bus_manager`'s deliver loop keys link
+endpoints from **audio level alone** (`LINK_AUTO_PTT_THRESHOLD`), consulting no
+flag. A plugin radio like the TH-9800 owns no such path — it is keyed only by
+`SoloBus`, from the source's flag — so the identical source on the identical
+bus type produced audio, moved every meter, and never once keyed the radio.
+Nothing was logged, because no key was ever *requested*.
+
+`SoloBus.tick` Phase 2 now falls back to keying on TX audio level, using the
+same 0-100 scale and the same default threshold as link endpoints, so both sink
+kinds behave alike. `AUTO_PTT_THRESHOLD` overrides it; `0` restores flag-only
+keying.
+
+It belongs in the bus, not the deliver loop: the bus already owns `_PttWorker`
+for its radios, and a second keyer on the same radio is the two-owners bug that
+[the one-bus-per-sink rule](#) exists to prevent.
+
+Three guards, each pinned by a test:
+
+- **`_tx_only` only.** A radio that came from a *source* is RX+TX, and keying it
+  on the level of audio it just received keys it from its own receiver.
+- **`tx_muted` honoured**, so this cannot newly key a muted radio.
+- **Flag beats level.** A flag-asserting source still keys when quiet — the
+  level trigger is a fallback, never a gate on the existing path.
+
+The `PTT ON via <radio>` log line now names which trigger fired — `(flag)` or
+`(level)` — so this is diagnosable from the first commit rather than as a
+follow-up.
+
+Link endpoints keyed by a bus switch from deliver-loop VOX to an explicit PTT
+command, and their hold becomes `PTT_RELEASE_DELAY` (1.0 s) rather than
+`LINK_AUTO_PTT_HOLD` (0.5 s) — a slightly longer tail, consistent with every
+other bus-keyed transmission.
+
+Tests: `tests/test_solobus_auto_ptt.py`.
+
 ## [4.5.0] -- 2026-08-03
 
 Links you ask for stay up, the browser mic is push-to-talk, and node numbers

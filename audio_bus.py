@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from audio_util import pcm_db, apply_gain
+from audio_util import pcm_db, apply_gain, pcm_rms, rms_to_level
 
 
 # ---------------------------------------------------------------------------
@@ -883,6 +883,13 @@ class SoloBus(AudioBus):
         self._ptt_active = False
         self._ptt_hold_until = 0.0
         self._ptt_release_delay = float(getattr(config, 'PTT_RELEASE_DELAY', 1.0))
+        # Level (0-100) at which TX audio keys the radio on its own, for
+        # sources that never assert the PTT flag. Defaults to the link
+        # endpoints' existing threshold so both sink kinds behave alike; 0
+        # disables and restores flag-only keying. See Phase 2 in tick().
+        self._auto_ptt_level = float(getattr(
+            config, 'AUTO_PTT_THRESHOLD',
+            getattr(config, 'LINK_AUTO_PTT_THRESHOLD', 10)))
         self.call_count = 0
         # Serialised off-tick PTT for every TX radio on this bus (primary +
         # extras), applied strictly in request order. See _PttWorker.
@@ -990,13 +997,39 @@ class SoloBus(AudioBus):
                 tx_audio = mix_audio_streams(tx_audio, audio)
 
         # ── Phase 2: PTT management ──
+        # Level-triggered fallback. A source that never asserts the PTT flag
+        # -- RemoteAudioSource ends every path with `return raw, False` --
+        # could still key a LINK endpoint, because bus_manager's deliver loop
+        # keys those from audio level alone (LINK_AUTO_PTT_THRESHOLD). A
+        # plugin radio such as the TH-9800 owns no such path: it is keyed
+        # ONLY from here, so the identical source produced audio on the bus,
+        # moved every meter, and never once keyed the radio. Same bus type,
+        # same wiring, silently different behaviour depending on whether the
+        # sink happened to be a link endpoint or a plugin.
+        #
+        # Closed here rather than by adding a level trigger to the deliver
+        # loop: this bus already owns _PttWorker for its radios, and a second
+        # keyer on the same radio is the two-owners bug all over again.
+        #
+        # Gated on _tx_only. When the radio came from a SOURCE it is RX+TX,
+        # and keying it on the level of audio it just received would key it
+        # from its own receiver. tx_muted is honoured so this cannot newly
+        # key a radio the operator has muted.
+        _ptt_trigger = 'flag'
+        if (not ptt_needed and tx_audio is not None and self._radio is not None
+                and self._auto_ptt_level > 0 and self._tx_only
+                and not getattr(self._radio, 'tx_muted', False)):
+            if rms_to_level(pcm_rms(tx_audio)) >= self._auto_ptt_level:
+                ptt_needed = True
+                _ptt_trigger = 'level'
+
         # PTT calls (CAT RTS switch, HID write) can block for 150-600ms,
         # stalling ALL buses.  Fire-and-forget in a background thread.
         if ptt_needed:
             self._ptt_hold_until = current_time + self._ptt_release_delay
             if not self._ptt_active and self._radio:
                 self._ptt_active = True
-                print(f"  [SoloBus:{self.name}] PTT ON via {self._radio.name if hasattr(self._radio, 'name') else type(self._radio).__name__}")
+                print(f"  [SoloBus:{self.name}] PTT ON via {self._radio.name if hasattr(self._radio, 'name') else type(self._radio).__name__} ({_ptt_trigger})")
                 self._fire_ptt(True)
 
         if self._ptt_active and current_time > self._ptt_hold_until:
