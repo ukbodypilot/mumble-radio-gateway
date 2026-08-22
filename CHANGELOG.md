@@ -128,8 +128,8 @@ kinds behave alike. `AUTO_PTT_THRESHOLD` overrides it; `0` restores flag-only
 keying.
 
 It belongs in the bus, not the deliver loop: the bus already owns `_PttWorker`
-for its radios, and a second keyer on the same radio is the two-owners bug that
-[the one-bus-per-sink rule](#) exists to prevent.
+for its radios, and a second keyer on the same radio is the two-owners bug the
+one-bus-per-sink rule exists to prevent.
 
 Three guards, each pinned by a test:
 
