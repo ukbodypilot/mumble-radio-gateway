@@ -182,6 +182,42 @@ and are unchanged: silence still counts as applied.
 
 Tests: `tests/test_th9800_ptt_confirm.py`.
 
+### Added — TX-path counters on the TH-9800 (audio dropped before the radio)
+
+`put_audio()` feeds a `deque(maxlen=16)` that **silently discards its oldest
+chunk** when the writer thread falls behind, and it bypasses
+`BusManager._enqueue_sink`, so `aioc_tx` never appears in `/sinkstats`. A stall
+or an overflow on the TX path was completely invisible. On 2026-08-22 a 50/50
+mark-space stutter while transmitting could not be attributed to queue
+starvation vs USB contention, because there was no number for either.
+
+Queue: `tx_enqueued`, `tx_drops`, `tx_depth_max`, `tx_depth_now`. The drop is
+detected **before** the append — a full deque displaces silently, so checking
+afterwards always reads "not full". The first overflow logs once and names the
+cause; later drops go to the counter instead of spamming the log.
+
+Hardware write: `tx_written`, `tx_write_ms_max`, `tx_write_ms_avg`,
+`tx_write_errors`. Timed **even when the write raises** — a write that blocks
+and then fails is exactly the USB-contention case worth seeing, and timing only
+successes would hide it.
+
+All eight are in `get_status()`. Reading them:
+
+- `tx_drops` climbing → the bus outruns the writer; audio is discarded before
+  it reaches the radio.
+- `tx_drops` flat but `tx_write_ms_max` in the tens of ms → the AIOC write is
+  stalling. One bus tick is 50 ms, so anything near that is the `arecord` RX
+  reader and the TX writer fighting over the same `hw:` device. The RX reader
+  is **not** gated during PTT.
+- Both quiet during a stutter → the cause is downstream of the gateway.
+
+Instrumentation only: the RX reader is not gated, the queue depth is unchanged,
+and `arecord` still uses raw `hw:`. Those are plausible fixes for something not
+yet measured, and applying one now would make the next stutter harder to
+attribute, not easier.
+
+Tests: `tests/test_th9800_tx_counters.py`.
+
 ## [4.5.0] -- 2026-08-03
 
 Links you ask for stay up, the browser mic is push-to-talk, and node numbers

@@ -84,6 +84,20 @@ class TH9800Plugin:
         self._output_stream = None
         self._aioc_available = False
         self._tx_queue = None           # TX audio queue for non-blocking writes
+        # TX path instrumentation. put_audio() feeds a deque(maxlen=16) that
+        # SILENTLY discards the oldest chunk when the writer thread falls
+        # behind, and it bypasses BusManager._enqueue_sink, so aioc_tx never
+        # appears in /sinkstats -- a stall or an overflow here was completely
+        # invisible. A 50/50 mark-space stutter on 2026-08-22 could not be
+        # attributed to starvation vs USB contention for exactly this reason.
+        self._tx_enqueued = 0
+        self._tx_drops = 0            # chunks displaced unsent by maxlen
+        self._tx_written = 0
+        self._tx_depth_max = 0
+        self._tx_write_ms_max = 0.0   # worst single _output_stream.write()
+        self._tx_write_ms_total = 0.0
+        self._tx_write_errors = 0
+        self._tx_drops_logged = False
         self._tx_thread = None
 
         # CAT control
@@ -276,8 +290,21 @@ class TH9800Plugin:
             if self._config.OUTPUT_VOLUME != 1.0:
                 arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
                 pcm = np.clip(arr * self._config.OUTPUT_VOLUME, -32768, 32767).astype(np.int16).tobytes()
-            # Queue for writer thread — never blocks the caller
+            # Queue for writer thread — never blocks the caller.
+            # The drop has to be detected UP FRONT: a full deque displaces its
+            # oldest element on append without telling anyone.
             _qd = len(self._tx_queue)
+            if _qd >= self._tx_queue.maxlen:
+                self._tx_drops += 1
+                if not self._tx_drops_logged:
+                    self._tx_drops_logged = True
+                    print(f"  [TH-9800] TX queue full ({_qd}/{self._tx_queue.maxlen}) "
+                          f"— dropping audio; the writer thread is not keeping up "
+                          f"with the AIOC. Further drops are counted in "
+                          f"tx_drops rather than logged.")
+            if _qd > self._tx_depth_max:
+                self._tx_depth_max = _qd
+            self._tx_enqueued += 1
             self._tx_queue.append(pcm)
             _st = self._stream_trace
             if _st:
@@ -303,13 +330,22 @@ class TH9800Plugin:
             _st = self._stream_trace
             if _st:
                 _st.record('aioc_tx', 'hw_write', pcm, len(self._tx_queue))
+            _t0 = time.monotonic()
             try:
                 try:
                     self._output_stream.write(pcm, exception_on_overflow=False)
                 except TypeError:
                     self._output_stream.write(pcm)
+                self._tx_written += 1
             except Exception:
-                pass
+                self._tx_write_errors += 1
+            # Timed even on failure: a write that blocks and THEN raises is
+            # exactly the USB-contention case worth seeing. The RX reader holds
+            # the same hw: device via arecord and is not gated during PTT.
+            _ms = (time.monotonic() - _t0) * 1000.0
+            self._tx_write_ms_total += _ms
+            if _ms > self._tx_write_ms_max:
+                self._tx_write_ms_max = _ms
 
     def execute(self, cmd):
         """Handle commands: ptt, mute, status, power_relay, cat_cmd."""
@@ -353,6 +389,18 @@ class TH9800Plugin:
             'tx_audio_level': getattr(self, 'tx_audio_level', 0),
             'muted': self.muted,
             'stream_restarts': self._stream_restart_count,
+            # TX path health. drops > 0 means audio was discarded before it
+            # ever reached the radio; tx_write_ms_max in the tens of ms means
+            # the AIOC write is stalling (one bus tick is 50 ms).
+            'tx_enqueued': self._tx_enqueued,
+            'tx_drops': self._tx_drops,
+            'tx_written': self._tx_written,
+            'tx_depth_max': self._tx_depth_max,
+            'tx_depth_now': len(self._tx_queue) if self._tx_queue is not None else 0,
+            'tx_write_ms_max': round(self._tx_write_ms_max, 2),
+            'tx_write_ms_avg': round(
+                self._tx_write_ms_total / self._tx_written, 3) if self._tx_written else 0.0,
+            'tx_write_errors': self._tx_write_errors,
         }
         if self._cat_client:
             d['cat_connected'] = self._cat_client._connected
