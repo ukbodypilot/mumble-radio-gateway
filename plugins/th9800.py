@@ -107,6 +107,11 @@ class TH9800Plugin:
         # with the CAT drain paused (CAT dead until the next cycle) or apply
         # the OFF before a slow ON completed — a stuck transmitter.
         self._ptt_lock = threading.RLock()
+        # Did the last applied PTT state actually reach the radio? Only the
+        # software (CAT) path can currently tell; relay/AIOC report nothing.
+        self._ptt_ok = True
+        self._ptt_failures = 0
+        self._ptt_last_error = ''
 
         # Audio processing
         self._processor = None
@@ -314,7 +319,10 @@ class TH9800Plugin:
 
         if action == 'ptt':
             state = bool(cmd.get('state', False))
-            self._set_ptt(state)
+            ok = self._set_ptt(state)
+            if ok is False:
+                return {"ok": False, "ptt": self._ptt_active,
+                        "error": self._ptt_last_error or 'PTT not confirmed'}
             return {"ok": True, "ptt": state}
         elif action == 'mute':
             self.muted = not self.muted
@@ -337,6 +345,9 @@ class TH9800Plugin:
             'plugin': self.name,
             'aioc_available': self._aioc_available,
             'ptt_active': self._ptt_active,
+            'ptt_confirmed': self._ptt_ok,
+            'ptt_failures': self._ptt_failures,
+            'ptt_last_error': self._ptt_last_error,
             'ptt_method': self._ptt_method,
             'audio_level': self.audio_level,
             'tx_audio_level': getattr(self, 'tx_audio_level', 0),
@@ -690,16 +701,28 @@ class TH9800Plugin:
         all off-tick or already tolerant of the 150-600ms this can take.
         """
         with self._ptt_lock:
-            if state_on == self._ptt_active:
+            # Skip the no-op only when the state we are already in actually
+            # REACHED the radio. After a failure, repeating the same request
+            # must retry rather than return "already there" -- that guard is
+            # how the CAT server's own stale mirror silently swallowed keys.
+            if state_on == self._ptt_active and self._ptt_ok:
                 return
             if self._ptt_method == 'relay':
-                self._ptt_via_relay(state_on)
+                ok = self._ptt_via_relay(state_on)
             elif self._ptt_method == 'software':
-                self._ptt_via_software(state_on)
+                ok = self._ptt_via_software(state_on)
             else:
-                self._ptt_via_aioc(state_on)
+                ok = self._ptt_via_aioc(state_on)
+            # relay/aioc report nothing; treat silence as success so only the
+            # software path's semantics change here.
+            self._ptt_ok = True if ok is None else bool(ok)
+            # _ptt_active tracks what we ASKED for, and is updated even when
+            # the key failed: the unkey that follows must always be attempted.
+            # Never leave a path where we believe we are unkeyed while the
+            # radio might be transmitting.
             self._ptt_active = state_on
             self._ptt_change_time = time.monotonic()
+            return self._ptt_ok
 
     def _ptt_via_aioc(self, state_on):
         """PTT via AIOC HID GPIO with RTS relay switching.
@@ -779,17 +802,59 @@ class TH9800Plugin:
             self._relay_ptt.set_state(state_on)
 
     def _ptt_via_software(self, state_on):
-        """PTT via CAT TCP !ptt command."""
+        """PTT via CAT TCP !ptt command. Returns True only if the radio agreed.
+
+        The reply used to be thrown away, so a key that never happened was
+        indistinguishable from one that did: _set_ptt marked the radio keyed,
+        execute() returned {"ok": True}, and the dashboard, /status and MCP all
+        reported a transmission that did not exist. The server has plenty to
+        say -- "serial not connected" when the FTDI link is down (which RF
+        ingress on 2m does to this radio), or the resulting PTT state -- and
+        none of it was being read.
+
+        The reply is echoed, e.g. `CMD{ptt[off]} False`, so the state is the
+        LAST whitespace token; the echo itself contains "on"/"off" and must not
+        be matched on.
+        """
         if not self._cat_client:
-            return
+            self._note_ptt_failure(state_on, 'no CAT client')
+            return False
         try:
             self._cat_client._pause_drain()
             try:
-                self._cat_client._send_cmd("!ptt on" if state_on else "!ptt off")
+                resp = self._cat_client._send_cmd(
+                    "!ptt on" if state_on else "!ptt off")
             finally:
                 self._cat_client._drain_paused = False
         except Exception as e:
-            print(f"  [TH-9800] PTT CAT error: {e}")
+            self._note_ptt_failure(state_on, f'CAT error: {e}')
+            return False
+
+        if not resp:
+            self._note_ptt_failure(state_on, 'no reply from CAT server')
+            return False
+        if 'serial not connected' in resp.lower():
+            self._note_ptt_failure(state_on, 'serial not connected')
+            return False
+        token = resp.strip().split()[-1].strip().lower()
+        if token not in ('true', 'false'):
+            self._note_ptt_failure(state_on, f'unparsable reply: {resp!r}')
+            return False
+        if (token == 'true') != bool(state_on):
+            # The radio reports the opposite of what we asked. Most likely the
+            # server's mic_ptt mirror and the radio have diverged.
+            self._note_ptt_failure(
+                state_on, f'radio reports PTT={token}, asked for {state_on}')
+            return False
+        self._ptt_last_error = ''
+        return True
+
+    def _note_ptt_failure(self, state_on, why):
+        """Record and log a PTT that did not reach the radio."""
+        self._ptt_failures += 1
+        self._ptt_last_error = f"{'key' if state_on else 'unkey'}: {why}"
+        print(f"  [TH-9800] PTT {'ON' if state_on else 'OFF'} FAILED — {why} "
+              f"(failures={self._ptt_failures})")
 
     def _pulse_power_relay(self):
         """Momentary pulse on radio power relay."""

@@ -150,6 +150,38 @@ other bus-keyed transmission.
 
 Tests: `tests/test_solobus_auto_ptt.py`.
 
+### Fixed — a PTT that never reached the radio no longer reports success
+
+`_ptt_via_software` threw the CAT server's reply away, so a key that never
+happened was indistinguishable from one that did: `_set_ptt` marked the radio
+keyed, `execute()` returned `{"ok": True}`, and the dashboard, `/status` and MCP
+all reported a transmission that did not exist. The server had plenty to say —
+`serial not connected` when the FTDI link is down, which RF ingress on 2m does
+to this radio — and none of it was read.
+
+The reply is now parsed and the verdict honoured. Replies are echoed
+(`CMD{ptt[off]} False`), so the state is the **last** whitespace token; the echo
+itself contains `on`/`off` and must not be matched on. A missing, empty,
+unparsable or `serial not connected` reply is a failure, as is the radio
+reporting the opposite of what was asked (the server's `mic_ptt` mirror and the
+radio having diverged).
+
+Two safety properties, both pinned by tests:
+
+- **A failed attempt is retried, not swallowed.** The old `if state_on ==
+  self._ptt_active: return` guard made a repeat request a no-op — the same
+  stale-mirror trap the CAT server itself has. It now skips only when the
+  current state actually *reached* the radio.
+- **`_ptt_active` still tracks what was ASKED for**, even on failure, so the
+  unkey that follows is always attempted. There is no path where the gateway
+  believes it is unkeyed while the radio might still be transmitting.
+
+`get_status()` gains `ptt_confirmed`, `ptt_failures` and `ptt_last_error`, and
+failures print `PTT ON FAILED — <reason>`. Relay and AIOC paths report nothing
+and are unchanged: silence still counts as applied.
+
+Tests: `tests/test_th9800_ptt_confirm.py`.
+
 ## [4.5.0] -- 2026-08-03
 
 Links you ask for stay up, the browser mic is push-to-talk, and node numbers
