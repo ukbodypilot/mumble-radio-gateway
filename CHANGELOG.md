@@ -201,7 +201,13 @@ Hardware write: `tx_written`, `tx_write_ms_max`, `tx_write_ms_avg`,
 and then fails is exactly the USB-contention case worth seeing, and timing only
 successes would hide it.
 
-All eight are in `get_status()`. Reading them:
+All eight are in the plugin's `get_status()` **and mirrored into `/status` as
+`th9800_tx`** — `get_status()` is reachable only via
+`execute({'cmd': 'status'})`, which no web route or MCP tool calls, so counters
+living there alone would have been unreadable. Instrumentation nothing can read
+is decoration.
+
+Reading them:
 
 - `tx_drops` climbing → the bus outruns the writer; audio is discarded before
   it reaches the radio.

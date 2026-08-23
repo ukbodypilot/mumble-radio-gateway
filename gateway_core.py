@@ -597,6 +597,31 @@ class RadioGateway(_LifecycleMixin, _TransmitMixin, _StreamMixin,
         elif getattr(self.config, 'ENABLE_CAT_CONTROL', False):
             cat_state = 'disconnected'
 
+        # TH-9800 TX path health. The plugin's own get_status() is reachable
+        # only through execute({'cmd': 'status'}), which no web route or MCP
+        # tool calls -- counters added there alone would have been unreadable,
+        # which is how instrumentation quietly becomes decoration. Pulled in
+        # here so /status carries them.
+        th9800_tx = {}
+        _th = getattr(self, 'th9800_plugin', None)
+        if _th is not None:
+            # Plain counters, copied as-is. getattr with a default keeps this
+            # working against a plugin build that predates them.
+            for _k in ('tx_enqueued', 'tx_drops', 'tx_written', 'tx_depth_max',
+                       'tx_write_errors', 'ptt_confirmed', 'ptt_failures',
+                       'ptt_last_error'):
+                _v = getattr(_th, '_' + _k, None)
+                if _v is not None:
+                    th9800_tx[_k] = _v
+            # Derived: current depth, and the write timings rounded for display.
+            _q = getattr(_th, '_tx_queue', None)
+            th9800_tx['tx_depth_now'] = len(_q) if _q is not None else 0
+            th9800_tx['tx_write_ms_max'] = round(
+                getattr(_th, '_tx_write_ms_max', 0.0), 2)
+            _w = th9800_tx.get('tx_written') or 0
+            _tot = getattr(_th, '_tx_write_ms_total', 0.0)
+            th9800_tx['tx_write_ms_avg'] = round(_tot / _w, 3) if _w else 0.0
+
         # Build file status
         file_slots = {}
         if self.playback_source:
@@ -665,6 +690,7 @@ class RadioGateway(_LifecycleMixin, _TransmitMixin, _StreamMixin,
             'cat': cat_state,
             'cat_reliability': cat_reliability,
             'cat_vol': cat_vol,
+            'th9800_tx': th9800_tx,
             'relay_pressing': getattr(self, '_relay_radio_pressing', False),
             'sdr1_enabled': bool(self.sdr_plugin and self.sdr_plugin.tuner1_enabled),
             'sdr2_enabled': bool(self.sdr_plugin and self.sdr_plugin.tuner2_enabled),
