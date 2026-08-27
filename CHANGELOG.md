@@ -1384,36 +1384,6 @@ The gateway can now bridge into the AllStar network as a first-class audio sourc
 
 ## [3.8.5] -- 2026-05-25
 
-### Added — AllStarLink (USRP) bridge
-
-- **`plugins/usrp.py`** — in-gateway USRP/DVSwitch plugin. Full-duplex 8 kHz↔48 kHz bridge (scipy `resample_poly` ×6), paced 20 ms sender with keyup/unkey framing, bounded RX/TX queues, RX + TX level meters. Wire format: 32 B header (`USRP` + 7 big-endian int32) + 160×int16 LE @ 8 kHz.
-- **Runtime node control via AMI** — short-lived authenticated sessions to the bridge node's Asterisk Manager Interface issue `rpt cmd <node> ilink …`: connect (transceive/monitor), disconnect one, disconnect all, and `rpt lstats`/`rpt nodes` for status. The target node is chosen at runtime, not baked into config.
-- **`/usrp` control panel** — connect to any node, **per-node Disconnect** on your *direct* links, a read-only "in conference (via a hub)" list for nodes reached *through* a hub, most-recently-connected link sorted to the top, and live RX/TX/COS status. Plus a **nav link** (Radios ▸ AllStar) and a dual-lane **"ASL"** RX/TX meter in the top frame.
-- **Bridge-node recipe** — [`docs/allstar_bridge.md`](docs/allstar_bridge.md): a headless ASL3 container (`asl3-asterisk`, no DAHDI), `rxchannel = USRP/…`, registered node, AMI user, reboot-persistent. Node-to-node linking is permissionless, so it reaches the whole ASL3 network.
-- **Config** — `ENABLE_USRP`, `USRP_REMOTE_HOST/PORT`, `USRP_LISTEN_PORT`, `USRP_NODE`, `USRP_AMI_HOST/PORT/USER/SECRET`.
-
-### Changed — plugin platform is now generic over discovered plugins
-
-- **`web_routes()` dispatch is finally wired.** Registration existed since the Phase-2 refactor but `web_server` never consulted `_plugin_web_routes`; `do_GET` **and** `do_POST` now do, so any plugin can serve its own pages/endpoints.
-- **Routing UI, level meters, and bus radio resolution enumerate `_external_plugins`** (capability-driven) instead of hardcoded `sdr_plugin`/`th9800_plugin` refs — a discovered plugin with `audio_rx`/`audio_tx` now appears as an RX source and `<id>_tx` sink, gets node meters (`/routing/levels`, `/status`), and is reachable as a bus TX radio. Future in-tree plugins get all of this for free.
-
-### Fixed — surfaced during AllStar bring-up
-
-- Plugin **discovery aborted** ("`'X' object has no attribute 'name'`") when an external plugin lacked a `.name` attr — `sync_listen_bus` builds bus slots that read `source.name`. Plugins now require it.
-- `/usrp` **link list parsed empty** — app_rpt prefixes nodes with a status letter (`T55553`), defeating a `\b(\d+)\b` regex. Now matches digit runs not bordered by digits.
-- **No Disconnect buttons** — AMI wraps CLI output as `Output: <line>`, so the `rpt lstats` line-parser saw `Output:` as token 0 and found zero direct links. The `Output:` envelope is now stripped in `_ami_command`.
-- **External-plugin TX meter froze** at the last level — the bus only decays the built-in radios' `tx_audio_level`; the USRP plugin now self-decays its own (mirrors the RX decay in `get_audio`).
-
-### Added — soundboard
-
-- Real-sample soundboard on `/controls`; `tools/fetch_freesound_farts.py` fetches CC0 clips via the Freesound API (key from env / `gateway_config.txt`, `audio/farts/` gitignored).
-
-### Notes
-
-- One interop limitation: nodes running older/HamVOIP-style app_rpt can drop the link (~10 s) when the app_rpt `newkey` handshake doesn't complete — a remote-node-side issue, not the bridge (verified: the bridge connects and holds to ASL3 nodes/hubs across both monitor and transceive). HamVOIP itself is ARM/Pi-image-only and won't run on x86 or a CM5/Pi5, so there's no local workaround short of a HamVOIP-supported Pi.
-
-## [3.8.5] -- 2026-05-25
-
 Follow-up to 3.8.0 — the IC-7100 panel hit the bench and the gaps showed up immediately. This release closes them: TX audio actually leaves the radio, PTT refusals are visible in the GUI, the dashboard meter no longer lies when the squelch closes.
 
 ### Fixed — IC-7100 TX path
