@@ -4,6 +4,47 @@ All notable changes to Radio Gateway.
 
 ## [Unreleased]
 
+### Fixed — a config value could not contain a `#`
+
+`PACKET_APRS_SYMBOL` could not be set from `gateway_config.txt` at all. Its
+default `/#` — the standard APRS digipeater symbol — read back as `/`, because
+the parser treated every `#` as the start of an inline comment. Quoting did not
+help either: surrounding quotes were stripped *before* the comment split, so
+`"/#"` truncated exactly the same way. Setting the key did something other than
+what it said, with no error anywhere.
+
+`parse_config_value()` now applies three rules in order:
+
+1. **A quoted value is literal.** Everything between the opening quote and the
+   matching closing quote is the value; anything after it is discarded. An
+   unterminated quote is left as-is rather than swallowing the rest of the line.
+2. **`#` starts a comment only at the start of a value or after whitespace.**
+   `foo # note` comments; `/#` does not.
+3. **Text inside `{braces}` is exempt**, nesting included — smart-announce
+   prompts use `#` inside brace expressions.
+
+Rule 2 is what makes this safe to land on live configs. Verified rather than
+assumed: running the old and new parsers over the gateway's own
+`gateway_config.txt` produces **identical values for all 384 keys**, and over
+the example template the only difference is `PACKET_APRS_SYMBOL: '/' -> '/#'`
+— the bug itself. `PACKET_APRS_SYMBOL = /#` is restored to the template,
+uncommented.
+
+The **write** side is the other half of the same bug. `_save_config` rewrites
+the entire config file whenever the web form is saved, emitting bare
+`KEY = value`, so a reader fix alone would still lose data the next time you
+pressed Save. Both halves now live in a new `config_format.py`:
+`format_config_value()` quotes a value exactly when `parse_config_value()`
+would not give it back unchanged — using the reader itself as the oracle, so
+there is no second copy of the rules to forget to update, and the other ~400
+keys stay unquoted and readable.
+
+Tests: `tests/test_config_value_parsing.py` — 18 parser cases, twelve
+round-trip cases, and three end-to-end through `Config.load_config()`.
+`unspaced hash kept` and `spaced comment` pin the two directions of rule 2
+against each other, because a rule that fixes one by breaking the other is not
+a fix.
+
 ## [4.6.0] -- 2026-08-27
 
 Claims that used to be taken on trust now require evidence: a reconnect is not

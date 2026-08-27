@@ -19,6 +19,7 @@ import math as _math_mod
 import re
 import numpy as np
 
+from config_format import format_config_value
 from audio_sources import generate_cw_pcm, AudioProcessor
 from smart_announce import SmartAnnouncementManager
 from cat_client import RadioCATClient
@@ -1279,7 +1280,11 @@ class WebConfigServer(_SysinfoMixin, _RoutingCmdsMixin, _CertsMixin):
                 # Format booleans consistently
                 if isinstance(val, bool):
                     val = str(val).lower()
-                lines.append(f'{key} = {val}\n')
+                # Quote anything the reader would not give back unchanged --
+                # a value containing ' #' would otherwise be truncated at the
+                # next load, silently losing whatever followed. See
+                # config_format.format_config_value.
+                lines.append(f'{key} = {format_config_value(val)}\n')
 
         # Write atomically via temp file
         tmp_path = config_path + '.tmp'

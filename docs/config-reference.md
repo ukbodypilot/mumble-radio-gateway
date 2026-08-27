@@ -87,14 +87,21 @@ Some features have keys that live OUTSIDE `gateway_config.txt` because they're h
 
 ## Value gotchas
 
-The loader is a hand-rolled line parser, not `configparser`. Two consequences:
+The loader is a hand-rolled line parser, not `configparser`. What that means
+for values:
 
-- **`#` always starts a comment**, even mid-value, and quoting does not help —
-  surrounding quotes are stripped *before* the comment split. So a value
-  containing `#` cannot be expressed at all. The one key this bites is
-  `PACKET_APRS_SYMBOL`, whose default `/#` is unreachable from the file; it is
-  left commented in the template so the code default applies. The single
-  exception is text inside `{braces}`, kept intact for smart-announce prompts.
+- **`#` starts a comment only at the start of a value or after whitespace.**
+  `CALLSIGN = N0CALL   # my note` comments; `PACKET_APRS_SYMBOL = /#` does
+  not — the `#` is part of the symbol. Before v4.6.1 any `#` was treated as a
+  comment, which made `/#` (the standard APRS digipeater symbol, and the code
+  default) impossible to set: it silently read back as `/`.
+- **Quoting makes a value literal.** Everything between the opening quote and
+  the matching closing quote is the value, and anything after it is discarded
+  — so `PACKET_APRS_COMMENT = "Radio # Gateway"  # a note` yields
+  `Radio # Gateway`. Use this when a value contains a `#` after a space. An
+  unterminated quote is left as-is rather than swallowing the rest of the line.
+- **Text inside `{braces}` is exempt** from comment stripping, nesting
+  included — smart-announce prompts use `#` inside brace expressions.
 - **An empty value means "use the default"**, not "use empty string" — a key
   whose value is blank after comment-stripping is skipped entirely. This is
   also what makes blanking a secret in the web config form mean *keep the
@@ -102,6 +109,15 @@ The loader is a hand-rolled line parser, not `configparser`. Two consequences:
 
 `[section]` headers are **cosmetic**. The parser skips them, so a key works
 wherever you put it; the sections exist purely to group things for humans.
+
+Both halves live in [`config_format.py`](../config_format.py) so they cannot
+drift: `parse_config_value()` reads, and `format_config_value()` writes,
+quoting a value only when the reader would not give it back unchanged. That
+matters because the web config form **rewrites the whole file** on save — a
+reader fix alone would still lose data the next time you pressed Save.
+Pinned by
+[`tests/test_config_value_parsing.py`](../tests/test_config_value_parsing.py),
+which asserts the round trip is lossless.
 
 ## Defaults & types
 

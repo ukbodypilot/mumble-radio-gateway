@@ -1170,11 +1170,10 @@ PACKET_UDP_RX_PORT = 7355
 
 # APRS
 PACKET_APRS_BEACON_INTERVAL = 600   # seconds between position beacons
-# APRS symbol. NOTE: a value containing '#' cannot be expressed here — the
-# loader strips everything after '#' as an inline comment, so `/#` would be
-# read as `/`. Left commented so the code default ('/#', the standard
-# digipeater symbol) applies. Use this key only for symbols without a '#'.
-# PACKET_APRS_SYMBOL = /-
+# APRS symbol, two glyphs: table then symbol. '/#' is the standard digipeater.
+# A '#' only starts a comment when preceded by whitespace, so this is safe
+# unquoted; quote it ("/#") if you prefer to be explicit.
+PACKET_APRS_SYMBOL = /#
 PACKET_APRS_COMMENT = Radio Gateway
 PACKET_APRS_IS = false              # also feed APRS-IS over the internet
 PACKET_APRS_IS_SERVER = noam.aprs2.net

@@ -111,6 +111,9 @@ except ImportError:
     print("Install it with: sudo apt-get install python3-pyaudio")
     sys.exit(1)
 
+from config_format import parse_config_value
+
+
 class Config:
     """Configuration loaded from gateway_config.txt"""
     def __init__(self, config_file="gateway_config.txt"):
@@ -608,25 +611,8 @@ class Config:
                     if '=' in line:
                         key, value = line.split('=', 1)
                         key = key.strip()
-                        value = value.strip()
+                        value = parse_config_value(value)
 
-                        # Strip surrounding quotes from string values
-                        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-                            value = value[1:-1]
-
-                        # Strip inline comments (everything after #),
-                        # but preserve # inside {braces} (used by smart announce prompts)
-                        if '#' in value:
-                            brace_start = value.find('{')
-                            if brace_start != -1 and value.rfind('}') > brace_start:
-                                # Has braces — only strip comments outside the braces
-                                before_brace = value[:brace_start]
-                                if '#' in before_brace:
-                                    value = before_brace.split('#')[0].strip()
-                                # else: # is inside braces, keep it
-                            else:
-                                value = value.split('#')[0].strip()
-                        
                         # Skip if value is empty after stripping comments
                         if not value:
                             continue

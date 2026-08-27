@@ -105,12 +105,14 @@ radio-gateway/
 ├── gateway_setup.py            phased initialization helpers
 ├── gateway_mcp.py              MCP server entry point (156 tools, stdio)
 ├── web_server.py               HTTP/WS server + config UI
+├── config_format.py            gateway_config.txt value read/write rules (quoting, inline comments)
 ├── web_routes_*.py             per-domain POST handlers (transcribe / radio / audio / text / system / voice / manager / automation)
 ├── audio_bus.py, bus_manager.py        bus mixer
 ├── audio_sources.py            all source/sink classes
 ├── transcriber.py, transcribe_engine.py    ASR + pool dispatcher
 ├── manager_engine.py           Fleet Manager scheduler
-├── th9800_plugin.py, kv4p_plugin.py, sdr_plugin.py, ic7100_link_plugin.py    radio plugins
+├── plugins/                    radio plugins (th9800, sdr, packet, usrp, usrp2)
+├── tools/*_link_plugin.py      link-endpoint plugins (d75, kv4p, ic7100), deployed to the endpoint host
 ├── gateway_link.py             link endpoint protocol + server
 ├── loop_recorder.py            per-bus continuous recording
 ├── packet_radio.py             Direwolf TNC + Pat client
