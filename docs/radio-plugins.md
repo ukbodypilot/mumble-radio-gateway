@@ -17,7 +17,7 @@ Yaesu FTM-9800 dual-band quad-receiver. Connected via **AIOC** (All-In-One-Cable
 
 **Web UI**: `/radio` — full front-panel emulation plus signal meters and per-VFO frequency display.
 
-**Source**: [`th9800_plugin.py`](../th9800_plugin.py) · **Config**: `[radio]`, `[ptt]`, `[cat]` in `gateway_config.txt`.
+**Source**: [`plugins/th9800.py`](../plugins/th9800.py) · **Config**: `[radio]`, `[ptt]`, `[cat]` in `gateway_config.txt`.
 
 ## TH-D75
 
@@ -53,7 +53,7 @@ KV4P-HT — open-source SA818/DRA818-based 2 m / 70 cm handheld interface board.
 
 **Web UI**: `/kv4p` — frequency display, all controls in a single panel, signal + audio meters.
 
-**Source**: [`kv4p_plugin.py`](../kv4p_plugin.py) · **Config**: `[kv4p]` in `gateway_config.txt`.
+**Source**: [`kv4p_endpoints.py`](../kv4p_endpoints.py) + [`tools/kv4p_link_plugin.py`](../tools/kv4p_link_plugin.py) · **Config**: `[kv4p]` in `gateway_config.txt`.
 
 ## RSPduo SDR
 
@@ -68,7 +68,7 @@ SDRplay RSPduo via the SDRplay API + `rtl_airband` for AM/NBFM/WBFM demod and au
 
 **Web UI**: `/sdr` — mode selector, per-tuner controls, per-channel signal meters and config. Frequency entry accepts plain decimal MHz (`146.520`).
 
-**Source**: [`sdr_plugin.py`](../sdr_plugin.py) · **Config**: `[sdr]` in `gateway_config.txt`.
+**Source**: [`plugins/sdr.py`](../plugins/sdr.py) · **Config**: `[sdr1]` / `[sdr2]` in `gateway_config.txt`.
 
 ## AllStar (USRP)
 
@@ -103,6 +103,8 @@ The gateway's routing engine treats every plugin as both a source and a sink (so
 
 ## Source pointers
 
-- Built-in plugins live in the project root: `th9800_plugin.py`, `kv4p_plugin.py`, `sdr_plugin.py`
+- Built-in plugins live in `plugins/`: `th9800.py`, `sdr.py`, `packet.py`, `usrp.py`, `usrp2.py`.
+  KV4P is a **link-endpoint** plugin, not a local one — `kv4p_endpoints.py` on the
+  gateway side and `tools/kv4p_link_plugin.py` on the endpoint.
 - Link endpoint plugins live in `tools/` and are deployed to the endpoint host
 - Plugin auto-discovery from `plugins/` directory — see [plugin-development.md](plugin-development.md)

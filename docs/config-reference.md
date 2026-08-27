@@ -57,7 +57,24 @@ The installer copies the example to `gateway_config.txt` if one doesn't exist. T
 | `[web]` | Web UI port, theme, auth |
 | `[ddns]` | DDNS updater (No-IP, Dynu) |
 | `[cat]` | TH-9800 CAT control startup commands |
+| `[kv4p]` | KV4P HT — frequency, squelch, CTCSS, levels, per-source processing |
+| `[d75_processing]` | Per-source processing overrides for the Kenwood TH-D75 |
+| `[packet]` | Packet TNC / APRS / Winlink (see [packet-radio.md](packet-radio.md)) |
+| `[automation]` | Scheduled automation engine — window, task cap, repeater list |
+| `[adsb]` | ADS-B map page — `ADSB_PORT` (dump1090-fa's own HTTP port) |
+| `[usbip]` | Attach USB devices from another machine over USB/IP |
 | `[advanced]` | Tunable thresholds, watchdogs, debug |
+
+### Deprecated keys
+
+These still appear in older `gateway_config.txt` files. Nothing reads them —
+setting them has no effect. They are commented out in the template.
+
+| Key | Why | Use instead |
+|-----|-----|-------------|
+| `START_TH9800_CAT` | Was read by `start.sh`, which no longer exists | — |
+| `TH9800_CAT_HEADLESS` | Same | — |
+| `SDR2_PRIORITY` | Superseded by a single ordering key | `SDR_PRIORITY_ORDER` in `[sdr1]` |
 
 ## Feature-specific keys not in the .ini
 
@@ -68,11 +85,29 @@ Some features have keys that live OUTSIDE `gateway_config.txt` because they're h
 - **Routing config** — bus topology lives in `routing_config.json`, edited via the visual editor at `/routing`. Not in the .ini.
 - **Loop recorder retention** — per-bus, edited in the routing UI.
 
+## Value gotchas
+
+The loader is a hand-rolled line parser, not `configparser`. Two consequences:
+
+- **`#` always starts a comment**, even mid-value, and quoting does not help —
+  surrounding quotes are stripped *before* the comment split. So a value
+  containing `#` cannot be expressed at all. The one key this bites is
+  `PACKET_APRS_SYMBOL`, whose default `/#` is unreachable from the file; it is
+  left commented in the template so the code default applies. The single
+  exception is text inside `{braces}`, kept intact for smart-announce prompts.
+- **An empty value means "use the default"**, not "use empty string" — a key
+  whose value is blank after comment-stripping is skipped entirely. This is
+  also what makes blanking a secret in the web config form mean *keep the
+  stored value*.
+
+`[section]` headers are **cosmetic**. The parser skips them, so a key works
+wherever you put it; the sections exist purely to group things for humans.
+
 ## Defaults & types
 
 The example file has the canonical default for every key as its initial value, and a comment explaining what the key does. When in doubt: read the example. It's the only place that won't drift out of sync with the parser.
 
-Where a key is intentionally blank (e.g. `MUMBLE_PASSWORD =`), the gateway falls back to a sensible default — see the loader in [`gateway_config.py`](../gateway_config.py) for the resolution order.
+Where a key is intentionally blank (e.g. `MUMBLE_PASSWORD =`), the gateway falls back to a sensible default — see the loader in `Config.load_config()` in [`radio_gateway.py`](../radio_gateway.py) for the resolution order.
 
 ## Adding a new config key
 

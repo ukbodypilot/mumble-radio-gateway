@@ -46,6 +46,48 @@ Each bus can independently expose:
 
 Toggle from the bus's node. Disabled streams cost nothing — no encoder is started until at least one consumer.
 
+## Broadcastify uplink health: connected is not flowing
+
+`stream_output.connected` means exactly one thing — **the Icecast SOURCE
+handshake was accepted**. It has never meant "audio is reaching listeners", and
+three places used to read it as if it did.
+
+On 2026-08-21 the difference cost ten minutes of dead air. The uplink stalled;
+ten reconnect attempts each completed their handshake and each logged
+`Reconnected successfully`, while `rg_stream_bytes_sent_total` sat at a flat
+**+0 for 2.5 of those minutes**. TCP connected, Icecast accepted, not one
+payload byte moved. The 30 s health check agreed, printed `Stream recovered`
+and emailed it five times. The incident was invisible in the log and obvious in
+Prometheus — and only Prometheus was right.
+
+Two claims now require evidence:
+
+- **`_confirm_bytes_moving()`** holds a freshly established connection for up
+  to `STREAM_CONNECT_CONFIRM` waiting for `_bytes_sent` to leave 0 before
+  calling the reconnect a success. `_connect()` zeroes that counter, so the
+  advance cannot be inherited from the previous connection. It logs the byte
+  count and how long it took, or reports `connected but no data moved in Ns —
+  NOT counting this as recovered`.
+- **`data_flowing`** requires a byte to have reached the server within
+  `STREAM_FLOW_STALE_AFTER`. The health check in `core/lifecycle.py` uses it in
+  place of bare `connected`, so a mount pushing nothing is treated as down and
+  alerts as down.
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `STREAM_CONNECT_CONFIRM` | `5.0` | Seconds a new connection has to move its first byte before the reconnect is called a failure |
+| `STREAM_FLOW_STALE_AFTER` | `15.0` | Seconds without a byte on the wire after which `data_flowing` goes false |
+
+Reconnects are also **serialised**. Concurrent workers previously raced, and a
+reader bound to shared state would tear down its own *successor's* connection —
+2026-08-19 logged 1850 reconnects in 3 h 42 m, with out-of-order attempt
+numbers as the tell.
+
+**Diagnosing:** a reconnect counter stuck at `0` means nothing ever *tried* —
+the recovery path itself is wedged, which is a different bug from a failing
+reconnect. Plot the raw byte counter, not a rate, when you need to tell a stall
+from a slow feed.
+
 ## Speaker mode
 
 Three modes — set in the routing UI:
@@ -81,6 +123,66 @@ and `SDR_REBROADCAST_PTT_HOLD`) was **removed in 2026-07**. It keyed the radio
 from the main loop and wrote audio to a PortAudio stream the gateway stopped
 opening in 2026-03 when AIOC TX moved into `TH9800Plugin` — so from then on it
 transmitted a dead carrier. Routing supersedes it entirely.
+
+## One bus per sink
+
+**A sink may be fed by at most one bus.** The routing UI refuses the second
+edge and the HTTP API rejects a config that contains one; `routing_rules.py`
+holds the check, shared by the UI, the API and `BusManager` so all three agree.
+
+This is not a stylistic rule. Two buses into one sink never mix — what happens
+instead depends on the sink kind, and none of the outcomes are what the graph
+suggests:
+
+| Sink kind | What actually happens |
+|-----------|----------------------|
+| Queue sinks (`mumble`, `broadcastify`, `transcription`, `remote_audio_tx`, `speaker`) | Both buses append into **one** bounded deque keyed by `sink_id`. The drain thread sends each payload in turn, so the far end receives 50 ms fragments of the two sources **alternating**, at twice real-time, until the queue backs up and drops |
+| `broadcastify_l` / `broadcastify_r` | A per-tick slot, not a queue. The second bus **overwrites** the first within the same tick and its audio is silently discarded |
+| Radio `*_tx` sinks | The worst case. Every `SoloBus` builds its own `_PttWorker`, but `_get_radio_plugin` returns the **shared** plugin object — two PTT threads driving one radio with private `_desired`/`_applied` state. When the first bus unkeys the radio drops carrier; the second worker still believes it is keyed, and its loop only acts on a *change*, so it never re-keys. **The second bus then transmits into an unkeyed radio for the rest of its transmission**, logging nothing, with every meter still moving |
+
+Mixing several sources is a **within-bus** operation (`mix_audio_streams`, with
+the ducking and priorities that go with it). Put the sources on one bus instead.
+
+The null sink (`nul`) is exempt — it discards audio and exists to park a bus,
+so any number of buses may point at it.
+
+## PTT: the sink kind decides the keying mechanism
+
+Two different mechanisms key a transmitter, and which one applies depends on
+what kind of sink you wired:
+
+- **Link endpoints** are keyed by `bus_manager`'s deliver loop from **audio
+  level** alone, once the bus exceeds `LINK_AUTO_PTT_THRESHOLD`.
+- **Plugin radios** (TH-9800, KV4P, D75, …) are keyed from `SoloBus.tick()`
+  Phase 2, historically from the source's **PTT flag** only.
+
+That asymmetry was a silent trap. A source that never asserts the flag —
+`RemoteAudioSource` ends every path with `return raw, False` — would happily
+key a link endpoint while a plugin radio on the identical wiring never keyed at
+all. The audio reached the bus, every meter moved, and the radio sat there.
+Same bus type, same graph, different behaviour depending only on the sink.
+
+Since v4.6.0 `SoloBus` applies a **level trigger as a fallback** for plugin
+radios: if the source asserts no PTT flag but the mixed TX audio exceeds
+`AUTO_PTT_THRESHOLD` (default: whatever `LINK_AUTO_PTT_THRESHOLD` is, so both
+sink kinds behave alike), the bus keys anyway. Set it to `0` to restore
+flag-only keying.
+
+Two guards apply:
+
+- It is gated on `_tx_only`. A radio that came from a **source** is RX+TX, and
+  keying it on the level of audio it just received would key it from its own
+  receiver.
+- `tx_muted` is honoured, so the fallback can never newly key a radio the
+  operator has muted.
+
+The trigger is implemented in the bus rather than in the deliver loop
+deliberately: the bus already owns `_PttWorker` for its radios, and a second
+keyer on the same radio is the two-owners bug above all over again.
+
+**Diagnosing:** no `PTT ON` line at all means the key was never *requested* —
+look here. A `PTT ON` that produces no carrier is a hardware or plugin problem
+instead.
 
 ## Bus tick architecture
 

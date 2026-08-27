@@ -145,6 +145,40 @@ p.cleanup()
 | Audio sounds wrong | Wrong sample rate or format | Resample to 48kHz 16-bit mono in _rx_loop |
 | Level meter stuck at 0 | Not updating self.audio_level | Compute RMS in get_audio (see template) |
 | Plugin not in routing UI | Not connected in routing config | Add source node and connection in routing UI |
+| Radio never keys, but meters move | Source never asserts the PTT flag | The bus keys plugin radios from the flag; see PTT keying below. Check `AUTO_PTT_THRESHOLD` is not `0` |
+
+---
+
+### PTT keying: know which mechanism drives your plugin
+
+A plugin radio and a link endpoint are keyed by **different code paths**, and
+the difference is easy to trip over when writing a plugin or a source.
+
+- A **link endpoint** is keyed by `bus_manager`'s deliver loop from audio
+  **level** — once the bus exceeds `LINK_AUTO_PTT_THRESHOLD`, it keys.
+- A **plugin radio** is keyed from `SoloBus.tick()` Phase 2, driven by the
+  source's **PTT flag** (the second element of the `(audio, ptt)` tuple your
+  source returns).
+
+So a source that returns `ptt=False` on every path still keys a link endpoint,
+but historically never keyed a plugin radio at all — identical wiring, silently
+different result. Since v4.6.0 the bus applies a **level trigger as a fallback**
+for plugin radios (`AUTO_PTT_THRESHOLD`, defaulting to
+`LINK_AUTO_PTT_THRESHOLD`), so both sink kinds now behave alike. It is gated on
+`_tx_only` — an RX+TX radio is never keyed from the level of audio it just
+received — and honours `tx_muted`.
+
+**If you are writing a source**, assert the PTT flag when you mean to transmit.
+The level fallback is a safety net, not the contract.
+
+**If you are writing a plugin**, expect to be keyed through `set_ptt()` from a
+`_PttWorker` thread owned by the bus. Never spawn a second keyer for the same
+radio: two owners with private `_desired`/`_applied` state is a known failure
+mode — see [audio-routing.md](audio-routing.md#one-bus-per-sink).
+
+**Diagnosing:** no `PTT ON` line at all means the key was never *requested*. A
+`PTT ON` with no carrier means the request reached your plugin and the hardware
+path is at fault.
 
 ---
 

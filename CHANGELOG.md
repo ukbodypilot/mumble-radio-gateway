@@ -4,6 +4,216 @@ All notable changes to Radio Gateway.
 
 ## [Unreleased]
 
+## [4.6.0] -- 2026-08-27
+
+Claims that used to be taken on trust now require evidence: a reconnect is not
+a recovery until bytes move, a PTT is not a key until the radio hears it, and a
+sink fed by two buses is refused rather than silently mangled. Plus the config
+form stops handing secrets to the browser, and the manager stops burning 68M
+tokens to ask a 3k-token question.
+
+### Security — the config form was shipping secrets to the browser
+
+`type="password"` masked the six sensitive keys **visually** while the real
+value still sat in `value="..."` — readable via View Source by anyone who could
+load `/config`, which has no auth. They now render as empty text inputs.
+
+Not `type="password"` with a blank value either: that made Chrome treat
+`/config` as a login page and fire password-reuse warnings on the rotating
+`trycloudflare` hostname. There is no login here, so there is no password field.
+
+Blank now means **keep the stored value** — `handle_config_form` drops empty
+sensitive keys before `_save_config`, which falls back to the current config.
+Without that half, every config save would have wiped all six secrets.
+
+`DDNS_PASSWORD` was being rendered in clear and is now in `_SENSITIVE_KEYS`.
+
+### Fixed — reconnect workers were murdering each other's connections
+
+The 2026-08-19 flap: **1850 reconnect attempts in 3 h 42 m**, with attempt
+numbers printing out of order (#79, #83, #72, #85) because ~8 workers were live
+at once. `_connect()` writes shared instance state (`_encoder`,
+`_icecast_sock`, `connected`), so concurrent workers corrupted each other — one
+connects, the next one's `close()` drops that fresh connection, and its own
+connect is then refused `403 Mountpoint in use` by the server still holding the
+mount.
+
+- `_connect_lock` serialises the destructive half (close + `_connect`). It is
+  held across a network round trip, so it stays separate from `_reconnect_lock`,
+  which guards a bool for microseconds — merging them would block the trigger
+  path behind the connect path.
+- `_reconnect_epoch` retires workers the watchdog has superseded rather than
+  letting them touch a connection that is no longer theirs.
+- `_reader()` binds the encoder and socket of **its** connection via default
+  args. It used to re-read `self._encoder` every iteration, so a surviving
+  reader from the old connection would drain the NEW encoder's stdout into the
+  NEW socket — two readers, one pipe, interleaved MP3 frames.
+- `superseded`/`wedged` counters are exported through `get_status()`, because
+  the only other evidence the fix works is an absence of log spam, which is
+  indistinguishable from the feature never running.
+
+### Changed — manager checks run as one-shot `claude -p`
+
+Manager runs were pasted into a long-lived Claude TUI that never exited. One
+session ran Jul 29 – Aug 6 (9 days, 297 turns) with context growing
+monotonically 41k → 403k tokens. It cost 42.9M cache-read + 24.9M cache-write +
+266k output ≈ **68M tokens to move ~174k tokens of actual content** — roughly
+390× amplification.
+
+The cache-write half is the real cost, and it is not about verbose logs. Runs
+are an hour apart, past the prompt-cache TTL, so each hourly check re-wrote the
+entire accumulated history at the 1.25× premium just to ask a ~3k-token
+question: single late-life runs paid 290k, 348k and 371k cache-write tokens.
+Trimming log output attacks the 174k and does nothing about the 390×.
+
+Nothing needed that continuity — `_build_prompt` already inlines the whole
+snapshot and the answer returns via `manager_reports.jsonl` keyed by `run_id`.
+`_run_oneshot` spawns a fresh process per run, so the growth is structurally
+impossible. `MANAGER_RUN_MODE=tmux` keeps the old path as `_run_via_tmux`.
+
+Failure handling is stricter than the polling loop it replaces: timeout,
+missing binary, and clean-exit-without-report each write an elevated report
+carrying the real stderr rather than hanging 600 s in silence.
+
+New keys: `MANAGER_RUN_MODE`, `MANAGER_CLAUDE_BIN`, `MANAGER_CLAUDE_MODEL`,
+`MANAGER_MAX_TURNS`. Documented in [`docs/fleet-manager.md`](docs/fleet-manager.md).
+
+### Changed — the supervised-process table is pre-collected in the hourly snapshot
+
+`hourly.md` requires cloudflared/mDNS state in every report — they have no
+other check anywhere — but the hourly prompt tells the run not to collect data
+itself. The only way to satisfy both was a `processes_status` tool call, and in
+a one-shot run every tool call is another full re-read of the ~43k context.
+
+`/api/processes` is now part of the snapshot (+520 tokens), so a healthy hourly
+check needs no probes at all: read, threshold, append the report. Measured on
+live runs: **4 turns / 172.7k tokens → 2 turns / 85.7k**.
+
+### Added — Windows client: live device switching and self-update
+
+Device switching (`i` = TX feed, `k` = mic, `o` = RX speaker) opens a modal
+list over the dashboard; audio keeps running until a choice is committed.
+
+The picker never touches a PortAudio stream. Selecting only sets
+`state["<kind>_dev_pending"]`; the thread that owns that stream consumes it on
+its next loop iteration and does the close/reopen itself, so a stream is only
+ever manipulated from the thread that created it. Each switch rebuilds the new
+device's native rate, channel count, block size and resampler, and drains the
+capture queue first — bytes captured at the old rate would be garbled by the
+new device's parameters. A device that won't open falls back to the one that
+was working. The mic thread no longer exits when a device fails to open, which
+previously made it impossible to pick a replacement without restarting.
+
+Self-update mirrors what the Linux link endpoints already do: hash the local
+files, compare with the gateway, pull the bundle and relaunch. The gateway
+serves it from `/api/winclient/{version,files}`, kept as a **separate manifest**
+from `_ENDPOINT_FILES` — that list is hashed as a unit and its copy in
+`tools/link_endpoint.py` must stay byte-identical, so adding the Windows client
+there would change the shared hash and push a useless bundle to every endpoint.
+
+New page: [`docs/windows-client.md`](docs/windows-client.md).
+
+### Added — the web mic ducks local playback while keyed
+
+On a speakerphone the dashboard's own playback is acoustically coupled back
+into the browser mic, so the operator hears themselves returned. Holding MIC
+(or Space) now silences local output for the duration of the hold.
+
+The PCM player's gain node covers PCM, AS1 and AS2 together — the AS taps feed
+their RX audio into the PCM stream rather than playing separately — and the MP3
+`<audio>` element is muted alongside it.
+
+- `_wsApplyGain()` is the single writer of the PCM gain, so a slider drag
+  mid-over can't un-duck the stream.
+- A 15 ms ramp rather than a step, which would click on a live stream.
+- `.muted` rather than `.volume`, leaving the user's slider value intact.
+- Duck on press, not on session open, so nothing leaks while `getUserMedia` is
+  still prompting.
+- `micTeardown` and the `getUserMedia` rejection clear `_micKeyed` directly,
+  bypassing `micRelease` — both un-duck explicitly, otherwise a dropped socket
+  or a denied prompt would strand the dashboard permanently silent.
+
+### Fixed — DDNS updated unconditionally, and could not see hostname expiry
+
+The updater POSTed to No-IP every cycle regardless of whether the public IP had
+changed, so the interval had been pushed to 30000 s (8 h 20 m) to stay under
+their abuse threshold — at the cost of up to 8 h of stale DNS after a change.
+
+It now polls the public IP via `DDNS_CHECKIP_URL` and only calls the provider
+when it actually differs, plus a forced update every `DDNS_FORCE_INTERVAL` as a
+safety net. The interval drops to 300 s: **change detection goes from ~8 h to
+≤5 min while provider traffic falls from ~3/day to roughly one per month.**
+
+Failures back off exponentially (6 h cap). Fatal codes (`nohost`, `badauth`,
+`abuse`, …) start at the cap since they never self-heal — without this a dead
+hostname would send 288 `nohost` calls/day, worse than before.
+
+`DDNS_VERIFY_DNS` adds independent verification: resolve the hostname and
+compare against our real public IP, emailing after `DDNS_MISMATCH_GRACE`
+consecutive bad checks and again on recovery. This deliberately does **not**
+trust the provider's response — a No-IP DDNS Key updates whatever hostname it
+is bound to and ignores the hostname parameter, so an expired name can return
+`nochg` while resolving to nothing. That is how the previous failure went
+unnoticed.
+
+New keys: `DDNS_CHECKIP_URL`, `DDNS_FORCE_INTERVAL`, `DDNS_VERIFY_DNS`,
+`DDNS_MISMATCH_GRACE`, `DDNS_ALERT_INTERVAL`, `DDNS_UPDATE_INTERVAL`.
+
+### Fixed — a Telegram answer composed but never sent looked identical to silence
+
+`telegram_reply()` is the only path from the tmux session back to the phone, so
+a missed call is invisible: "answered but never sent" and "never ran" both look
+like silence. That cost a real answer — the session composed a full reply in
+the pane and never sent it, and nothing anywhere recorded a problem.
+
+After injecting a prompt, a watchdog thread polls the `last_reply_time` that
+`telegram_reply()` stamps into the status file. If it hasn't moved within
+`TELEGRAM_REPLY_TIMEOUT` (new, default 300 s, 0 disables), the bot sends the
+last assistant block from the pane so the answer still reaches the user. When
+nothing on screen looks like an answer it reports the silence and echoes the
+question instead.
+
+`_inject` also sends `C-u` before pasting, so a half-typed line in the prompt
+box cannot get the injected prompt appended to it and submitted as one garbled
+request.
+
+### Fixed — tests exhausted /tmp's inode table, and two stubs silently disabled a suite
+
+`test_soundboard_categories.py` called `tempfile.mkdtemp()` without cleanup, and
+each case pre-creates one stub file per pool entry (~780) to keep
+`_fill_soundboard_slots` off the network. One run leaked 144 directories and
+~64,000 inodes.
+
+Repeated runs filled the inode table — 2,035,767 inodes, 100% used, ~3000 stale
+dirs — while `df -h` still showed **gigabytes free**, because the stub files are
+empty. Every process writing to `/tmp` then failed with `No space left on
+device`, and the test itself started failing because it could not create files,
+which reads as a code regression rather than a full disk.
+
+All suites now share `tests/_tmpdirs.py`, which closes a gap the earlier
+per-file helpers shared: `atexit` does **not** run when a runner's timeout kills
+the process, and these suites are slow enough to be killed in practice. A run
+killed mid-way is exactly when the most directories are outstanding. Three
+mechanisms, because one is not enough:
+
+| Mechanism | Covers |
+|-----------|--------|
+| `atexit` | Normal exit, including a non-zero exit after a failure |
+| `SIGTERM`/`SIGINT` | Runner timeouts; re-raised with the default handler so the exit status still reflects the signal |
+| Stale sweep | `SIGKILL` cannot be trapped, so each run removes same-prefix dirs older than an hour |
+
+Every suite now measures **+0 inodes and 0 leftover directories**, verified
+including a SIGTERM mid-run.
+
+Separately, `tests/test_stream_dead_uplink.py` pins the 2026-08-21 stall, and
+adding it exposed that the two hand-rolled stubs were missing the new
+attributes. Omitting them did **not** fail the suite:
+`test_stream_reconnect_flap` raised `AttributeError` inside the reconnect worker
+*and* inside the watchdog thread, both daemon threads, so both tracebacks were
+swallowed and the suite exited 0 while the code under test was dead. The
+visible symptom was the FIXED row quietly dropping to `attempts=1/wedged=0` —
+which reads as an improvement. It was the watchdog never running at all.
+
 ### Fixed — "Reconnected successfully" now means bytes actually moved
 
 `self.connected` on the Broadcastify source only ever meant "the Icecast
@@ -223,6 +433,33 @@ yet measured, and applying one now would make the next stutter harder to
 attribute, not easier.
 
 Tests: `tests/test_th9800_tx_counters.py`.
+
+### Documentation
+
+Every `docs/*.md` page was reviewed against the code for this release.
+
+- **New** [`docs/windows-client.md`](docs/windows-client.md) — the Windows
+  operator position had 826 lines of client code and no user-facing page.
+- [`docs/fleet-manager.md`](docs/fleet-manager.md) — the architecture diagram
+  still showed `tmux send-keys` as *the* execution mechanism; it now describes
+  one-shot `claude -p` with the tmux path documented as a fallback.
+- [`docs/audio-routing.md`](docs/audio-routing.md) — new sections for the
+  one-bus-per-sink rule, the PTT sink-kind asymmetry, and Broadcastify uplink
+  health (`connected` is not `flowing`).
+- [`docs/plugin-development.md`](docs/plugin-development.md) — PTT keying is now
+  part of the documented plugin contract.
+- [`docs/web-ui.md`](docs/web-ui.md) — mic ducking.
+- [`README.md`](README.md) — the "What's new" list stopped at v4.2; v4.3–v4.5
+  were never added.
+- [`examples/gateway_config.txt`](examples/gateway_config.txt) — **131 keys were
+  missing**, including whole subsystems (KV4P, PACKET, USRP2, D75, SDR_PROC,
+  AUTOMATION, GPS, USBIP, ADSB). Every key the code reads — via the defaults
+  dict *or* `getattr` — is now present, in 39 sections. Three keys nothing reads
+  (`START_TH9800_CAT`, `TH9800_CAT_HEADLESS` — both orphaned when `start.sh` was
+  removed — and `SDR2_PRIORITY`, superseded by `SDR_PRIORITY_ORDER`) are
+  commented out and marked deprecated.
+- [`docs/index.md`](docs/index.md) — `endpoint_logs_design.md` and
+  `windows-client-audio-investigation.md` were never listed.
 
 ## [4.5.0] -- 2026-08-03
 

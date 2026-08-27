@@ -20,6 +20,7 @@ Pick the path that matches what you're trying to do.
 | [transcription-pool.md](transcription-pool.md) | Multi-machine ASR (Moonshine + Whisper) |
 | [audio-routing.md](audio-routing.md) | Bus mixer, processing chain, streaming, speaker modes |
 | [radio-plugins.md](radio-plugins.md) | TH-9800 / TH-D75 / KV4P / SDR / link endpoints (FTM-150, IC-7100) |
+| [windows-client.md](windows-client.md) | Windows operator position — program feed + mic, live device switching, self-update |
 | [allstar_bridge.md](allstar_bridge.md) | AllStarLink bridge node + in-gateway USRP plugin + `/usrp` panel |
 | [packet-radio.md](packet-radio.md) | Packet TNC + APRS + Winlink email |
 | [loop-recorder.md](loop-recorder.md) | Per-bus rolling buffer + scrubback |
@@ -32,6 +33,7 @@ Pick the path that matches what you're trying to do.
 |-----|---------------|
 | [plugin-development.md](plugin-development.md) | Building a new radio plugin (bus-based interface) |
 | [gateway_link.md](gateway_link.md) | Link endpoint protocol — connect remote radios over TCP |
+| [endpoint_logs_design.md](endpoint_logs_design.md) | How every link endpoint's stdout/stderr is captured under `logs/endpoints/` |
 | [mixer-v2-design.md](mixer-v2-design.md) | Audio routing architecture: buses, sinks, processors |
 
 ## 📜 I want to understand a past decision
@@ -41,6 +43,7 @@ Pick the path that matches what you're trying to do.
 | [history/audio-quality-research.md](history/audio-quality-research.md) | RNNoise vs DeepFilterNet evaluation notes |
 | [history/mixer-v2-progress.md](history/mixer-v2-progress.md) | v2 mixer build log + decision history |
 | [history/ftm150-reverse-engineering.md](history/ftm150-reverse-engineering.md) | FTM-150 control head RE notes (project shelved) |
+| [windows-client-audio-investigation.md](windows-client-audio-investigation.md) | Why the Windows client produced silent chunks, and the 44.1 kHz + soxr fix |
 | [../CHANGELOG.md](../CHANGELOG.md) | Versioned release notes |
 
 ## 🎨 Conventions for these docs

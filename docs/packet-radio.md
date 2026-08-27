@@ -7,7 +7,7 @@ The gateway uses **Direwolf** as a software TNC and **[Pat](https://getpat.io)**
 ```
 Gateway                              FTM-150 Endpoint (mx machine, 192.168.2.134)
 ─────────                            ─────────────────────────────────────────
-packet_radio.py                      AIOCPlugin (link_endpoint.py)
+plugins/packet.py                    AIOCPlugin (link_endpoint.py)
   ├ KISS TCP client                    ├ audio mode  → forwards RX audio to gateway
   ├ AGW client (port 8010)             ├ data  mode  → starts Direwolf subprocess
   ├ APRS decoder                       │                Direwolf reads audio, decodes
@@ -85,7 +85,7 @@ See [config-reference.md](config-reference.md) for the full `[packet]` section.
 
 ## Source pointers
 
-- [`packet_radio.py`](../packet_radio.py) — gateway-side packet manager (KISS client, APRS decoder, Pat wrapper, mode switching)
+- [`plugins/packet.py`](../plugins/packet.py) — gateway-side packet manager (KISS client, APRS decoder, Pat wrapper, mode switching)
 - [`web_routes_radio.py`](../web_routes_radio.py) — `handle_packet_cmd` + `_winlink_compose` / `_winlink_connect` helpers
 - [`web_pages/packet.html`](../web_pages/packet.html) — `/packet` page
 - [`tools/link_endpoint.py`](../tools/link_endpoint.py) — endpoint-side mode switching + Direwolf launcher

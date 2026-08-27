@@ -104,7 +104,7 @@ Nothing in the above section requires editing Python, restarting the gateway, or
    │    ▼ every hour / once a day                            │
    │  Read hourly.md or daily.md                             │
    │    │                                                    │
-   │    ▼ tmux send-keys → claude-gateway session            │
+   │    ▼ spawn a fresh `claude -p` process (oneshot)        │
    │  Claude reads the task doc + SYSTEM_MANIFEST.md         │
    │    │                                                    │
    │    ▼ does the checks, optionally fixes things           │
@@ -119,6 +119,38 @@ Nothing in the above section requires editing Python, restarting the gateway, or
    │                                                          │
    └────────────────────────────────────────────────────────┘
 ```
+
+### How the check is executed
+
+Each run is a **fresh `claude -p` process** (`MANAGER_RUN_MODE = oneshot`, the
+default since v4.6.0). The engine builds the whole prompt, spawns the process,
+and blocks until it exits; the answer comes back through `manager_reports.jsonl`
+keyed by `run_id`, not through the process's stdout.
+
+A fresh process per run is deliberate. The manager contract is already
+stateless — `_build_prompt` inlines the entire snapshot — so reusing a
+conversation buys nothing and costs a great deal. The previous design pasted
+each prompt into a long-lived `claude-gateway` tmux session; because runs are an
+hour apart (past the prompt-cache TTL), every run re-sent *and* re-cached the
+whole accumulated history. One 9-day session burned **~68M tokens to move ~174k
+tokens of actual content**, with the final hourly checks paying ~370k
+cache-write tokens apiece. A new process each time makes that growth
+structurally impossible.
+
+If the run exits without appending its report line, the engine tries to salvage
+a JSON object printed to stdout before giving up and writing an error report.
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `MANAGER_RUN_MODE` | `oneshot` | `oneshot` = fresh `claude -p` per run. `tmux` = legacy paste-into-session mode, kept as a fallback only |
+| `MANAGER_CLAUDE_BIN` | `claude` | Path to the Claude Code binary |
+| `MANAGER_CLAUDE_MODEL` | `sonnet` | Model for manager runs |
+| `MANAGER_MAX_TURNS` | `40` | Hard cap on tool-use turns per run |
+
+**The `tmux` fallback is not recommended.** Besides the token cost, a large
+pasted prompt can swallow the submitting Enter, leaving the prompt sitting
+unsent until the run times out. `_send_to_tmux` retries the Enter to work around
+this; `oneshot` avoids the problem entirely.
 
 ## Files
 

@@ -71,6 +71,27 @@ annunciator on the landing page so everything is visible at one glance.
   gateway dead-mans a lapsed key refresh and enforces a 120 s TOT on the bus
   thread, because a lost `pointerup` or a slammed lid must not be able to
   strand a transmitter. See `WebMicSource` in `audio_sources.py`.
+- **Holding MIC ducks every local output** for the duration of the hold. On a
+  speakerphone the dashboard's own playback is acoustically coupled back into
+  the browser mic, so without this the operator hears themselves returned. Two
+  outputs are silenced: the PCM player's gain node — which also covers the
+  AS1/AS2 taps, since those feed their RX audio into the PCM stream rather
+  than playing separately — and the MP3 `<audio>` element, which is the one
+  genuinely separate output. Details that matter if you touch it:
+  - `_wsApplyGain()` is the **single writer** of the PCM gain. Slider value
+    and TX duck are two independent inputs to one gain; writing
+    `.gain.value` directly from either would let a slider drag mid-over
+    un-duck the stream and put the speakerphone back in the mic.
+  - The duck is a 15 ms ramp, not a step — an abrupt gain change on a live
+    stream clicks.
+  - The MP3 element uses `.muted`, not `.volume`, so the user's slider value
+    survives the hold.
+  - Ducking happens on **press**, not on session open, so nothing leaks while
+    `getUserMedia` is still prompting.
+  - `micTeardown` and the `getUserMedia` rejection path clear `_micKeyed`
+    directly and un-duck explicitly, bypassing `micRelease`. Otherwise a
+    dropped socket or a denied permission prompt would strand the dashboard
+    permanently silent.
 - Static pages are read from disk per request: editing a page under
   `web_pages/` goes live on refresh. Adding a **route** means editing
   `_STATIC_PAGES` (pages) or the `_GET_*`/`_POST_*` dispatch tables

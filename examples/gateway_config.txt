@@ -49,18 +49,30 @@
 
 
 [startup]
-# Startup script options (used by start.sh, not the gateway itself)
+# Startup options.
 
-# Launch TH-9800 CAT control on startup
-START_TH9800_CAT = false
-
-# Run TH-9800 CAT headless (no GUI, no dearpygui dependency)
-# Requires: pyserial, pyserial-asyncio
-TH9800_CAT_HEADLESS = false
+# DEPRECATED — these two were read by start.sh, which no longer exists. No
+# code reads them today, so setting either has no effect. Kept commented so an
+# existing config that still carries them is easy to recognise.
+# START_TH9800_CAT = false
+# TH9800_CAT_HEADLESS = false
 
 # Open Claude Code in a new terminal on startup
 START_CLAUDE_CODE = false
 
+
+
+# ─── Feature toggles not listed above ───
+ENABLE_TH9800 = false          # Alias for ENABLE_CAT_CONTROL
+ENABLE_D75 = false             # Kenwood TH-D75 over Bluetooth RFCOMM + SCO
+ENABLE_KV4P = false            # KV4P HT (SA818/DRA818) on a USB serial port
+ENABLE_GATEWAY_LINK = false    # Accept remote link endpoints (see docs/gateway_link.md)
+ENABLE_PACKET = false          # Packet TNC / APRS / Winlink (see docs/packet-radio.md)
+ENABLE_AUTOMATION = false      # Scheduled automation engine
+ENABLE_ADSB = true             # ADS-B map page (needs dump1090-fa)
+ENABLE_USBIP = true            # Attach remote USB devices over USB/IP
+ENABLE_USRP2 = false           # Second AllStar USRP instance (AS2)
+ENABLE_WEB_MONITOR = true      # Web UI. Turning this off leaves no control surface
 
 [mumble]
 # Mumble server connection
@@ -78,6 +90,15 @@ MUMBLE_BITRATE = 72000
 MUMBLE_VBR = true
 
 
+
+# ─── Tuning ───
+MUMBLE_JITTER_BUFFER = 10           # ms of jitter buffer on the Mumble client
+MAX_MUMBLE_BUFFER_SECONDS = 1.0     # hard cap on queued TX audio before dropping
+MUMBLE_LOOP_RATE = 0.01             # seconds per client loop iteration
+MUMBLE_STEREO = false               # send stereo to Mumble
+MUMBLE_RECONNECT = true             # reconnect automatically when the link drops
+MUMBLE_DEBUG = false                # verbose pymumble logging
+
 [radio]
 # Radio interface (AIOC)
 
@@ -92,6 +113,10 @@ AIOC_OUTPUT_DEVICE =
 # CM108 GPIO channel for PTT (2=standard AIOC, try 1-3 if PTT doesn't work)
 AIOC_PTT_CHANNEL = 3
 
+
+
+# Which radio receives playback / TTS / announcements: th9800, d75, or kv4p
+TX_RADIO = th9800
 
 [audio]
 # Audio format and buffering
@@ -180,6 +205,18 @@ LINK_JITTER_PREFILL = 4
 REMOTE_AUDIO_JITTER_PREFILL = 8
 
 
+
+# Bus level (0-100) at which TX audio keys a PLUGIN radio on its own, for
+# sources that never assert the PTT flag (the Windows remote-audio client is
+# one). Defaults to LINK_AUTO_PTT_THRESHOLD so plugin radios and link
+# endpoints behave alike. 0 = flag-only keying, the pre-v4.6.0 behaviour.
+# See docs/audio-routing.md.
+# AUTO_PTT_THRESHOLD = 10
+
+
+# Hard cap (seconds) on a manually-keyed transmission
+MANUAL_PTT_MAX_SECS = 300
+
 [vad]
 # Voice activity detection — controls Radio RX -> Mumble
 
@@ -194,6 +231,11 @@ VAD_ATTACK = 0.02        # Seconds to activate
 VAD_RELEASE = 1           # Seconds to hold after silence
 VAD_MIN_DURATION = 0.1    # Minimum transmission length (seconds)
 
+
+
+# Legacy dB-envelope thresholds for the two non-radio paths
+MUMBLE_VAD_THRESHOLD = -40.0
+MONITOR_VAD_THRESHOLD = -40.0
 
 [vox]
 # Voice-operated switch — alternative to VAD
@@ -221,6 +263,15 @@ HIGHPASS_CUTOFF_FREQ = 300    # Hz (300=good for voice)
 ENABLE_AGC = false
 
 
+
+
+# ─── Filters not listed above ───
+ENABLE_LOWPASS_FILTER = false
+LOWPASS_CUTOFF_FREQ = 3000
+ENABLE_NOTCH_FILTER = false
+NOTCH_FREQ = 1000
+NOTCH_Q = 30.0
+ENABLE_ECHO_CANCELLATION = false
 
 [sdr1]
 # SDR receiver 1
@@ -252,12 +303,36 @@ SDR_WATCHDOG_MAX_RESTARTS = 5   # Max recovery attempts (then stays silent)
 SDR_WATCHDOG_MODPROBE = false   # Stage 3: requires sudoers NOPASSWD entry for modprobe
 
 
+
+# ─── SDR-wide ───
+# 'dual'  = master + slave tuner (RSPduo)
+# 'single'= one tuner, multiple channels
+SDR_MODE = dual
+
+# Which SDR ducks the other: sdr1 / sdr2 / equal
+SDR_PRIORITY_ORDER = sdr1
+
+# ─── Per-source processing overrides (applies to BOTH SDRs) ───
+# When unset, SDR sources use the global [processing] settings.
+SDR_PROC_ENABLE_HPF = true
+SDR_PROC_HPF_CUTOFF = 300
+SDR_PROC_ENABLE_LPF = false
+SDR_PROC_LPF_CUTOFF = 3000
+SDR_PROC_ENABLE_NOISE_GATE = false
+SDR_PROC_NOISE_GATE_THRESHOLD = -40
+SDR_PROC_NOISE_GATE_ATTACK = 0.01
+SDR_PROC_NOISE_GATE_RELEASE = 0.1
+SDR_PROC_ENABLE_NOTCH = false
+SDR_PROC_NOTCH_FREQ = 1000
+SDR_PROC_NOTCH_Q = 30.0
+
 [sdr2]
 # SDR receiver 2
 
 ENABLE_SDR2 = false
 SDR2_DEVICE_NAME = pw:sdr_capture2
-SDR2_PRIORITY = 2
+# DEPRECATED — superseded by SDR_PRIORITY_ORDER in [sdr1]. Nothing reads this.
+# SDR2_PRIORITY = 2
 SDR2_DUCK = true
 SDR2_MIX_RATIO = 1.0
 SDR2_DISPLAY_GAIN = 1.0
@@ -301,6 +376,14 @@ SDR_SIGNAL_THRESHOLD = -70.0
 # solo bus -> <radio>_tx. See docs/audio-routing.md.)
 
 
+
+# Seconds after a duck ends before the same source may duck again
+REDUCK_INHIBIT_TIME = 2.0
+
+# Start muted at boot
+SDR_MUTE_DEFAULT = false
+SDR2_MUTE_DEFAULT = false
+
 [remote]
 # Remote audio link (TCP)
 #
@@ -331,6 +414,14 @@ REMOTE_AUDIO_DISPLAY_GAIN = 1.0    # Client: status bar sensitivity
 REMOTE_AUDIO_AUDIO_BOOST = 1.0     # Client: volume boost (1.0=no change)
 REMOTE_AUDIO_RECONNECT_INTERVAL = 5.0  # Server: seconds between reconnect attempts
 
+
+
+# ─── Link endpoints (docs/gateway_link.md) ───
+LINK_PORT = 9700                # TCP port remote endpoints connect in on
+LINK_AUDIO_BOOST = 1.0          # RX volume multiplier for link audio
+LINK_AUDIO_DISPLAY_GAIN = 1.0   # meter sensitivity only, does not affect audio
+LINK_AUDIO_DUCK = false         # duck link audio under higher-priority sources
+LINK_AUDIO_PRIORITY = 3         # ducking priority (lower number = higher priority)
 
 [announce]
 # Announcement input (TCP port 9601)
@@ -437,6 +528,10 @@ CW_VOLUME = 1.0       # CW-specific volume (PLAYBACK_VOLUME also applies)
 #   Formats: .mp3, .wav, .ogg, .flac, .m4a
 
 
+
+# WAV/MP3 played before scheduled announcements (blank = none)
+PLAYBACK_ANNOUNCEMENT_FILE =
+
 [tts]
 # Text-to-speech and text commands
 #
@@ -482,6 +577,12 @@ SPEAKER_OUTPUT_DEVICE =
 SPEAKER_VOLUME = 1.0
 SPEAKER_START_MUTED = true  # Start muted (unmute at runtime)
 
+
+
+# 'virtual' = metering only, no audio device opened
+# 'auto'    = try to open a device, fall back to virtual
+# 'real'    = require a device, fail loudly if absent
+SPEAKER_MODE = virtual
 
 [streaming]
 # Broadcastify / Icecast streaming
@@ -534,6 +635,30 @@ STREAM_DUAL_CHANNEL = true
 # failures use the normal backoff instead of this longer wait.
 STREAM_MOUNT_WAIT = 15
 
+
+
+# Restart the encoder when the input has been idle this long (seconds)
+STREAM_RESTART_IDLE_TIME = 3
+
+# Minimum seconds between encoder restarts
+STREAM_RESTART_INTERVAL = 60
+
+
+# ─── Uplink health (docs/audio-routing.md) ───
+# `connected` only means the Icecast handshake was accepted, never that audio
+# is moving. These two make both claims require evidence.
+
+# Seconds a NEW connection has to put its first byte on the wire before the
+# reconnect is treated as failed rather than "Reconnected successfully".
+STREAM_CONNECT_CONFIRM = 5.0
+
+# Seconds without a byte reaching the server after which the feed counts as
+# down, even while the socket is still open.
+STREAM_FLOW_STALE_AFTER = 15.0
+
+# Seconds a blocking write to the encoder pipe may take before the encoder is
+# declared wedged and reaped.
+STREAM_ENCODER_WRITE_TIMEOUT = 1.0
 
 [transcription]
 # Live speech-to-text over received audio. Two engines are supported and both
@@ -603,6 +728,17 @@ TRANSCRIBE_ALLOW_WORKER_REGISTRATION = true
 TRANSCRIBE_WORKER_TTL_SECS = 90
 
 
+
+# Rolling searchable transcript log (FTS5)
+ENABLE_TRANSCRIPTION_LOG = true
+TRANSCRIPTION_LOG_PATH =                 # blank = default location under the gateway dir
+
+# Comma-separated words that raise an alert when transcribed
+TRANSCRIPTION_ALERT_KEYWORDS =
+
+# Override the pool and send every job to one fixed worker URL
+TRANSCRIBE_REMOTE_URL =
+
 [echolink]
 # EchoLink integration (via TheLinkBox)
 #
@@ -642,6 +778,17 @@ USRP_AMI_PORT = 5038
 USRP_AMI_USER =                # AMI user (manager.conf on the bridge node)
 USRP_AMI_SECRET =              # AMI secret — keep this file out of git
 
+
+
+# ─── Second AllStar instance (AS2) — set ENABLE_USRP2 = true ───
+USRP2_NODE = 0
+USRP2_REMOTE_HOST = 127.0.0.1
+USRP2_REMOTE_PORT = 32002
+USRP2_LISTEN_PORT = 34002
+USRP2_AMI_HOST =                # blank = same host as USRP2_REMOTE_HOST
+USRP2_AMI_PORT = 5038
+USRP2_AMI_USER =
+USRP2_AMI_SECRET =
 
 [relay]
 # Relay control (CH340 USB relays)
@@ -712,6 +859,20 @@ SMART_ANNOUNCE_3_VOICE = 1
 SMART_ANNOUNCE_3_TARGET_SECS = 15
 
 
+
+# ─── Per-announcement overrides (1-3) ───
+# MODE: 'auto' = run on schedule, 'manual' = web UI trigger only
+# TOP_TEXT / TAIL_TEXT: spoken before/after the generated text (blank = global)
+SMART_ANNOUNCE_1_MODE = auto
+SMART_ANNOUNCE_1_TOP_TEXT =
+SMART_ANNOUNCE_1_TAIL_TEXT =
+SMART_ANNOUNCE_2_MODE = auto
+SMART_ANNOUNCE_2_TOP_TEXT =
+SMART_ANNOUNCE_2_TAIL_TEXT =
+SMART_ANNOUNCE_3_MODE = auto
+SMART_ANNOUNCE_3_TOP_TEXT =
+SMART_ANNOUNCE_3_TAIL_TEXT =
+
 [telegram]
 # Telegram bot — control the gateway from your phone via plain English.
 # Messages are injected into a running Claude Code tmux session which
@@ -750,6 +911,13 @@ MANAGER_MAX_TURNS = 40                   # hard cap on tool-use turns per run
 TELEGRAM_STATUS_FILE = /tmp/tg_status.json
 TELEGRAM_PROMPT_SUFFIX = When you have completely finished, call telegram_reply() with your response. Do not call it until done.
 
+
+
+# Seconds to wait for the Claude session to call telegram_reply() before the
+# bot falls back to sending the last assistant block from the pane itself.
+# A missed call is otherwise invisible — "answered but never sent" and "never
+# ran" both look like silence. 0 disables the watchdog.
+TELEGRAM_REPLY_TIMEOUT = 300
 
 [web]
 # Web-based configuration editor and live dashboard
@@ -791,6 +959,17 @@ EMAIL_APP_PASSWORD =               # Gmail app password (16 chars, not your regu
 EMAIL_RECIPIENT =                  # Recipient (blank = same as sender)
 EMAIL_ON_STARTUP = true            # Send status email when gateway starts
 
+
+
+# Display name at the top of the dashboard (blank = none)
+GATEWAY_NAME =
+
+# Dashboard colour theme: grey, blue, red, green, purple, amber, teal, pink
+WEB_THEME = grey
+
+
+# Volume applied to the browser monitor player
+WEB_MONITOR_VOLUME = 1.0
 
 [ddns]
 # Dynamic DNS (No-IP compatible)
@@ -911,6 +1090,141 @@ SUPERVISE_DARKICE = false
 # Same idea for a local mumble-server instance: gateway supervises it instead
 # of leaving it to systemd.
 SUPERVISE_MUMBLE = false
+
+
+# Per-chunk buffer accounting in the log — very noisy, diagnostics only
+BUFFER_MANAGEMENT_VERBOSE = false
+
+# Default timeout (seconds) for outbound network calls
+NETWORK_TIMEOUT = 10
+
+
+[kv4p]
+# KV4P HT (SA818/DRA818 module on a USB serial port). ENABLE_KV4P = true.
+KV4P_PORT = /dev/ttyUSB0
+KV4P_FREQ = 146.520              # RX frequency (MHz)
+KV4P_TX_FREQ = 0.0               # TX frequency (0 = same as RX)
+KV4P_BANDWIDTH = 1               # 0 = narrow (12.5 kHz), 1 = wide (25 kHz)
+KV4P_SQUELCH = 4                 # 0-8
+KV4P_HIGH_POWER = true
+KV4P_CTCSS_RX = 0                # RX CTCSS tone code (0 = none)
+KV4P_CTCSS_TX = 0                # TX CTCSS tone code (0 = none)
+KV4P_SMETER = true               # report S-meter readings
+KV4P_RECONNECT_INTERVAL = 5.0    # seconds between reconnect attempts
+
+# Levels
+KV4P_AUDIO_BOOST = 1.0           # RX volume multiplier
+KV4P_AUDIO_DISPLAY_GAIN = 1.0    # meter sensitivity only
+KV4P_AUDIO_DUCK = true           # duck under a higher-priority source
+KV4P_AUDIO_PRIORITY = 2
+
+# Per-source processing overrides
+KV4P_PROC_ENABLE_HPF = true
+KV4P_PROC_HPF_CUTOFF = 300
+KV4P_PROC_ENABLE_LPF = false
+KV4P_PROC_LPF_CUTOFF = 3000
+KV4P_PROC_ENABLE_NOISE_GATE = false
+KV4P_PROC_NOISE_GATE_THRESHOLD = -40
+KV4P_PROC_NOISE_GATE_ATTACK = 0.01
+KV4P_PROC_NOISE_GATE_RELEASE = 0.1
+KV4P_PROC_ENABLE_NOTCH = false
+KV4P_PROC_NOTCH_FREQ = 1000
+KV4P_PROC_NOTCH_Q = 30.0
+
+
+[d75_processing]
+# Per-source processing overrides for the Kenwood TH-D75 (ENABLE_D75 = true).
+# The D75's own connection settings live in the web UI, not here.
+D75_PROC_ENABLE_HPF = true
+D75_PROC_HPF_CUTOFF = 300
+D75_PROC_ENABLE_LPF = false
+D75_PROC_LPF_CUTOFF = 3000
+D75_PROC_ENABLE_NOISE_GATE = false
+D75_PROC_NOISE_GATE_THRESHOLD = -40
+D75_PROC_NOISE_GATE_ATTACK = 0.01
+D75_PROC_NOISE_GATE_RELEASE = 0.1
+D75_PROC_ENABLE_NOTCH = false
+D75_PROC_NOTCH_FREQ = 1000
+D75_PROC_NOTCH_Q = 30.0
+
+
+[packet]
+# Packet TNC, APRS and Winlink. ENABLE_PACKET = true.
+# Full walk-through: docs/packet-radio.md
+PACKET_CALLSIGN = N0CALL
+PACKET_SSID = 0
+PACKET_MODEM = 1200               # baud: 1200 or 9600
+PACKET_DIREWOLF_PATH = /usr/bin/direwolf
+PACKET_LOOPBACK_CARD = Loopback_1
+PACKET_DIGIPEAT = true
+
+# Which radio carries packet. Blank = first plugin advertising AUDIO+PTT.
+PACKET_RADIO_ENDPOINT =
+PACKET_REMOTE_TNC =               # host:port of an external TNC, if any
+
+# Ports
+PACKET_AGW_PORT = 8000
+PACKET_KISS_PORT = 8001
+PACKET_PAT_PORT = 8082            # Winlink (pat) web UI
+PACKET_UDP_RX_PORT = 7355
+
+# APRS
+PACKET_APRS_BEACON_INTERVAL = 600   # seconds between position beacons
+# APRS symbol. NOTE: a value containing '#' cannot be expressed here — the
+# loader strips everything after '#' as an inline comment, so `/#` would be
+# read as `/`. Left commented so the code default ('/#', the standard
+# digipeater symbol) applies. Use this key only for symbols without a '#'.
+# PACKET_APRS_SYMBOL = /-
+PACKET_APRS_COMMENT = Radio Gateway
+PACKET_APRS_IS = false              # also feed APRS-IS over the internet
+PACKET_APRS_IS_SERVER = noam.aprs2.net
+PACKET_APRS_IS_PASSCODE =
+
+
+[automation]
+# Scheduled automation engine. ENABLE_AUTOMATION = true.
+AUTOMATION_START_TIME = 06:00        # daily start (HH:MM)
+AUTOMATION_END_TIME = 23:00          # daily end (HH:MM)
+AUTOMATION_MAX_TASK_DURATION = 600   # max seconds per task
+AUTOMATION_SCHEME_FILE = automation_scheme.txt
+AUTOMATION_RECORDINGS_DIR = recordings
+
+# RepeaterBook CSV for distance-sorted repeater selection
+AUTOMATION_REPEATER_FILE =
+AUTOMATION_REPEATER_LAT = 0.0
+AUTOMATION_REPEATER_LON = 0.0
+
+
+[adsb]
+# ADS-B map page. ENABLE_ADSB = true. Needs dump1090-fa serving its own HTTP.
+# 30080 avoids colliding with the gateway on 8080.
+ADSB_PORT = 30080
+
+
+[usbip]
+# Attach USB devices from another machine over USB/IP. ENABLE_USBIP = true.
+USBIP_SERVER =                    # IP or hostname of the USB/IP server
+USBIP_DEVICES =                   # comma-separated bus ids, e.g. "1-1.4,1-1.3"
+
+
+[gps]
+# Serial GPS for position beaconing. ENABLE_GPS = true.
+ENABLE_GPS = false
+GPS_PORT =                        # e.g. /dev/ttyACM0
+GPS_BAUD = 9600
+
+
+[repeater_db]
+# RepeaterBook lookup used by the automation engine and the repeater panel.
+ENABLE_REPEATER_DB = false
+REPEATER_RADIUS_KM = 50           # search radius around the configured home position
+REPEATER_PTT_HOLD = 1.0           # seconds to hold PTT when keying a found repeater
+
+
+[simplex]
+# Simplex-repeater bus: record-then-play-back through one radio.
+SIMPLEX_TAIL_TIME = 1.0           # seconds of tail after the input drops
+SIMPLEX_MAX_BUFFER = 30.0         # max seconds recorded before playback is forced
 
 
 # ============================================================================
