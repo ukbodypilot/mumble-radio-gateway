@@ -150,9 +150,14 @@ def _build_host(log, sandbox):
     _fake_module('plugin_loader', discover_plugins=_discover)
 
     import core.lifecycle as L
+    from core.monitor import _MonitorMixin
+    from core.audio_restart import _AudioRestartMixin
     L.__file__ = os.path.join(sandbox, 'core', 'lifecycle.py')   # redirect repo_root
 
-    class Host(L._LifecycleMixin):
+    # Compose the same mixins RadioGateway does, in the same order. Using
+    # _LifecycleMixin alone would still pass, and would therefore not notice a
+    # split that forgot to wire the others into gateway_core.
+    class Host(L._LifecycleMixin, _MonitorMixin, _AudioRestartMixin):
         def __init__(self):
             self.config = Cfg()
             self.running = True
@@ -355,10 +360,43 @@ def _(log):
     assert True   # enforced by _assert_sandboxed() before run(); see below
 
 
+def _check_composition():
+    """The real RadioGateway must still expose everything lifecycle.py used to.
+
+    core/lifecycle.py was split (monitor + audio_restart extracted). A split
+    that moves a method out but forgets to add its mixin to the RadioGateway
+    bases fails only at runtime, on the first call -- for status_monitor_loop
+    that is the supervisor thread dying silently one second after startup.
+    """
+    import gateway_core
+    cls = gateway_core.RadioGateway
+    out = []
+    for meth, expect in [('run', '_LifecycleMixin'),
+                         ('cleanup', '_LifecycleMixin'),
+                         ('notify', '_LifecycleMixin'),
+                         ('status_monitor_loop', '_MonitorMixin'),
+                         ('_charger_should_be_on', '_MonitorMixin'),
+                         ('restart_audio_input', '_AudioRestartMixin'),
+                         ('restart_pyaudio', '_AudioRestartMixin')]:
+        owner = next((c.__name__ for c in cls.__mro__ if meth in c.__dict__), None)
+        ok = owner == expect
+        out.append((ok, f'{meth} resolves from {expect}'
+                        + ('' if ok else f' (got {owner})')))
+    return out
+
+
 def main():
+    # Composition is checked FIRST: _run_lifecycle() installs a fake
+    # `gateway_core` in sys.modules (run() imports LogWriter from it), which
+    # would shadow the real module this check needs.
+    failed = 0
+    for ok, label in _check_composition():
+        print(f"  {'PASS' if ok else 'FAIL'}  {label}")
+        if not ok:
+            failed += 1
+
     log, sandbox = _run_lifecycle()
 
-    failed = 0
     for name, fn in CHECKS:
         try:
             fn(log)

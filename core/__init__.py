@@ -13,4 +13,6 @@ from core.setup_audio_mumble import _SetupAudioMumbleMixin  # noqa: F401
 from core.mumble_io import _MumbleIOMixin               # noqa: F401
 from core.transmit import _TransmitMixin                # noqa: F401
 from core.stream import _StreamMixin                    # noqa: F401
+from core.audio_restart import _AudioRestartMixin      # noqa: F401
+from core.monitor import _MonitorMixin                 # noqa: F401
 from core.lifecycle import _LifecycleMixin              # noqa: F401

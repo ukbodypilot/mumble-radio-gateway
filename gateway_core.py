@@ -253,10 +253,13 @@ from core.setup_audio_mumble import _SetupAudioMumbleMixin
 from core.mumble_io import _MumbleIOMixin
 from core.transmit import _TransmitMixin
 from core.stream import _StreamMixin
+from core.audio_restart import _AudioRestartMixin
+from core.monitor import _MonitorMixin
 from core.lifecycle import _LifecycleMixin
 
 
-class RadioGateway(_LifecycleMixin, _TransmitMixin, _StreamMixin,
+class RadioGateway(_LifecycleMixin, _MonitorMixin, _AudioRestartMixin,
+                   _TransmitMixin, _StreamMixin,
                    _MumbleIOMixin, _SetupAudioMumbleMixin, _USBAudioMixin,
                    _PTTMixin, _AudioProcMixin):
     def __init__(self, config):
