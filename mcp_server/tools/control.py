@@ -605,21 +605,17 @@ def broadcastify_status() -> str:
     server/mount, encoder format (bitrate, sample rate, mono vs the
     dual-channel two-scanner feed), throughput, and the last error.
 
-    The audio is encoded in-process and written straight to Icecast — the
-    'darkice_*' key names below are historical, from when an external
-    DarkIce process did the encoding. There is no DarkIce here any more.
+    The audio is encoded in-process and written straight to Icecast — there
+    is no external DarkIce process involved.
     """
     data = _get('/status')
     if 'error' in data:
         return f"Error: {data['error']}"
-    stats = data.get('darkice_stats') or {}
+    stats = data.get('encoder_stats') or {}
 
     lines = [
         f"streaming_enabled : {data.get('streaming_enabled', False)}",
         f"stream_connected  : {data.get('stream_connected', False)}",
-        f"encoder_running   : {data.get('darkice_running', False)}",
-        f"encoder_pid       : {data.get('darkice_pid')}",
-        f"encoder_restarts  : {data.get('darkice_restarts', 0)}",
         f"stream_restarts   : {data.get('stream_restarts', 0)}",
         f"stream_health     : {data.get('stream_health', False)}",
     ]
@@ -651,25 +647,6 @@ def broadcastify_status() -> str:
         else:
             lines.append("last_error        : none")
     return '\n'.join(lines)
-
-
-@mcp.tool()
-def broadcastify_control(action: str) -> str:
-    """
-    Start, stop, or restart the Broadcastify / DarkIce stream encoder.
-
-    Args:
-        action: 'start'   — start if not running
-                'stop'    — stop and disable auto-restart watchdog
-                'restart' — stop then start
-    """
-    action = action.lower().strip()
-    if action not in ('start', 'stop', 'restart'):
-        return "Error: action must be 'start', 'stop', or 'restart'"
-    result = _post('/darkicecmd', {'cmd': action})
-    if result.get('ok'):
-        return result.get('msg', f"Stream {action} OK")
-    return f"Failed: {result.get('msg', result.get('error', 'unknown'))}"
 
 
 # ---------------------------------------------------------------------------

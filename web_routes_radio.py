@@ -1,4 +1,4 @@
-"""POST handlers for radio plugins: D75 / KV4P / CAT / SDR / Darkice / Packet / Link."""
+"""POST handlers for radio plugins: D75 / KV4P / CAT / SDR / Packet / Link."""
 
 """POST route handlers extracted from web_server.py."""
 
@@ -578,63 +578,6 @@ def handle_sdrcmd(handler, parent):
         handler.wfile.write(json_mod.dumps(result).encode('utf-8'))
     except BrokenPipeError:
         pass
-    return
-
-def handle_darkicecmd(handler, parent):
-    """POST /darkicecmd"""
-    length = int(handler.headers.get('Content-Length', 0))
-    body = handler.rfile.read(length).decode('utf-8')
-    result = {'ok': False}
-    try:
-        data = json_mod.loads(body)
-        cmd = data.get('cmd', '')
-        gw = parent.gateway
-        if gw:
-            if cmd == 'start':
-                if not gw._find_darkice_pid():
-                    gw._restart_darkice()
-                    result = {'ok': True, 'msg': 'DarkIce started'}
-                else:
-                    result = {'ok': True, 'msg': 'DarkIce already running'}
-            elif cmd == 'stop':
-                pid = gw._find_darkice_pid()
-                if pid:
-                    import signal as sig_mod
-                    try:
-                        os.kill(pid, sig_mod.SIGTERM)
-                        time.sleep(1)
-                        # Check if still alive
-                        if gw._find_darkice_pid():
-                            os.kill(pid, sig_mod.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    gw._darkice_pid = None
-                    gw._darkice_was_running = False  # Prevent auto-restart
-                    result = {'ok': True, 'msg': 'DarkIce stopped'}
-                else:
-                    result = {'ok': True, 'msg': 'DarkIce not running'}
-            elif cmd == 'restart':
-                pid = gw._find_darkice_pid()
-                if pid:
-                    import signal as sig_mod
-                    try:
-                        os.kill(pid, sig_mod.SIGTERM)
-                        time.sleep(1)
-                        if gw._find_darkice_pid():
-                            os.kill(pid, sig_mod.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    gw._darkice_pid = None
-                    time.sleep(1)
-                gw._restart_darkice()
-                gw._darkice_was_running = True  # Re-enable auto-restart
-                result = {'ok': True, 'msg': 'DarkIce restarted'}
-    except Exception as e:
-        result = {'ok': False, 'msg': str(e)}
-    handler.send_response(200)
-    handler.send_header('Content-Type', 'application/json')
-    handler.end_headers()
-    handler.wfile.write(json_mod.dumps(result).encode('utf-8'))
     return
 
 def handle_packet_cmd(handler, parent):

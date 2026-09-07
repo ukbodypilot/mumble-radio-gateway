@@ -451,7 +451,7 @@ def processes_status() -> str:
     """
     List every long-running process supervised by the gateway: kv4p loopback
     endpoints, cloudflared, pat, mDNS publisher, direwolf (when packet is in
-    data mode), darkice/mumble (if SUPERVISE_* opt-ins are on). Each entry
+    data mode), mumble (if SUPERVISE_MUMBLE is on). Each entry
     has state/pid/uptime/restart_count/last_exit/adopted.
     """
     return json.dumps(_get('/api/processes'), indent=2)
@@ -665,7 +665,6 @@ def process_control(service: str, action: str) -> str:
 
     Args:
         service: Service to control — one of:
-                 'darkice'  — Broadcastify/Icecast streaming daemon
                  'sdr'      — SDR receiver (rtl_airband)
                  'd75'      — D75 CAT proxy service (d75-cat.service)
         action:  One of 'start', 'stop', 'restart'.
@@ -676,16 +675,7 @@ def process_control(service: str, action: str) -> str:
     if action not in ('start', 'stop', 'restart'):
         return "Error: action must be 'start', 'stop', or 'restart'"
 
-    if service == 'darkice':
-        if action == 'start':
-            result = _post('/darkicecmd', {'cmd': 'start'})
-        elif action == 'stop':
-            result = _post('/darkicecmd', {'cmd': 'stop'})
-        else:
-            result = _post('/darkicecmd', {'cmd': 'restart'})
-        return f"DarkIce {action}: {'OK' if result.get('ok') else result.get('error', 'failed')}"
-
-    elif service == 'sdr':
+    if service == 'sdr':
         if action == 'stop':
             result = _post('/sdrcmd', {'cmd': 'stop'})
         else:  # start or restart both restart rtl_airband
@@ -703,7 +693,7 @@ def process_control(service: str, action: str) -> str:
         return f"D75 {action}: {'OK' if result.get('ok') else result.get('error', 'failed')}"
 
     else:
-        return f"Error: unknown service '{service}' — use darkice, sdr, or d75"
+        return f"Error: unknown service '{service}' — use sdr or d75"
 
 
 # ---------------------------------------------------------------------------

@@ -93,7 +93,7 @@ class _SetupAudioMumbleMixin:
             print("  SECONDARY MODE — this machine is not the active gateway")
             print("  Reason: Broadcastify feed already live on another server")
             print("  Mumble: DISABLED (username would conflict)")
-            print("  DarkIce: DISABLED (mountpoint already occupied)")
+            print("  Stream encoder: DISABLED (mountpoint already occupied)")
             print("  Audio bridge (FFmpeg/loopback) still running.")
             print("=" * 60)
             return True
@@ -217,7 +217,7 @@ class _SetupAudioMumbleMixin:
                 print("  SECONDARY MODE — this machine is not the active gateway")
                 print(f"  Reason: Mumble username '{self.config.MUMBLE_USERNAME}' already connected")
                 print("  Mumble: DISABLED (username conflict)")
-                print("  Hint: DarkIce may also fail if the Broadcastify feed is already live.")
+                print("  Hint: the stream encoder may also fail if the Broadcastify feed is already live.")
                 print("=" * 60)
                 return True
             print(f"\n✗ MUMBLE CONNECTION FAILED: {e}")

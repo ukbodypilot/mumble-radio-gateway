@@ -115,7 +115,7 @@ class _LifecycleMixin:
             print(f"  [Warning] Could not set up log file: {e}", file=sys.stderr)
 
         # Clean up stale /tmp log files from previous runs
-        for tmp_log in ['/tmp/th9800_cat.log', '/tmp/darkice.log', '/tmp/ffmpeg.log']:
+        for tmp_log in ['/tmp/th9800_cat.log', '/tmp/ffmpeg.log']:
             try:
                 if os.path.exists(tmp_log):
                     sz = os.path.getsize(tmp_log)

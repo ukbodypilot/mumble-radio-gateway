@@ -474,13 +474,6 @@ class RadioGateway(_LifecycleMixin, _MonitorMixin, _AudioRestartMixin,
         self.mumble_server_1 = None  # MumbleServerManager instance
         self.mumble_server_2 = None  # MumbleServerManager instance
 
-        # DarkIce process monitoring (auto-restart if it dies)
-        self._darkice_pid = None          # PID when initially detected
-        self._darkice_was_running = False  # True if DarkIce was alive at startup
-        self._darkice_restart_count = 0
-        self._last_darkice_check = 0
-        self._darkice_stats_cache = None   # Cached stats dict
-        self._darkice_stats_time = 0       # Last stats fetch timestamp
 
         # Broadcastify stream health monitoring
         self._stream_was_connected = False  # Set True once stream connects
@@ -761,9 +754,6 @@ class RadioGateway(_LifecycleMixin, _MonitorMixin, _AudioRestartMixin,
             'streaming_enabled': bool(getattr(self.config, 'ENABLE_STREAM_OUTPUT', False)),
             'stream_connected': bool(getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
             'stream_pipe_ok': bool(getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
-            'darkice_running': bool(getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
-            'darkice_pid': self._darkice_pid,
-            'darkice_restarts': self._darkice_restart_count,
             'stream_restarts': getattr(getattr(self, 'stream_output', None), '_reconnect_count', 0),
             # Reconnect-storm instrumentation. A rising 'superseded' count is
             # the fix working (late workers retiring instead of clobbering a
@@ -772,7 +762,7 @@ class RadioGateway(_LifecycleMixin, _MonitorMixin, _AudioRestartMixin,
             'stream_reconnect_superseded': getattr(getattr(self, 'stream_output', None), '_reconnect_superseded', 0),
             'stream_reconnect_wedged': getattr(getattr(self, 'stream_output', None), '_reconnect_wedged', 0),
             'stream_health': bool(getattr(self, 'stream_output', None) and getattr(self.stream_output, 'connected', False)),
-            'darkice_stats': self._get_stream_stats(),
+            'encoder_stats': self._get_stream_stats(),
             'notifications': list(self._notifications),
             'automation_enabled': bool(self.automation_engine),
             'automation_task': self.automation_engine._current_task if self.automation_engine else None,

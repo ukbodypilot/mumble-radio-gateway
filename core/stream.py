@@ -21,32 +21,9 @@ import time
 
 
 class _StreamMixin:
-    def _find_darkice_pid(self):
-        from stream_stats import find_darkice_pid
-        return find_darkice_pid(self)
-    def _get_darkice_stats(self):
-        from stream_stats import get_darkice_stats
-        return get_darkice_stats(self)
     def _get_stream_stats(self):
         from stream_stats import get_stream_stats
         return get_stream_stats(self)
-    def _get_darkice_stats_cached(self):
-        from stream_stats import get_darkice_stats_cached
-        return get_darkice_stats_cached(self)
-    def _restart_darkice(self):
-        # If supervised, delegate to the supervisor (which respawns the
-        # process itself). Otherwise fall back to the legacy spawn-and-pray
-        # implementation used by external systemd users.
-        if bool(getattr(self.config, 'SUPERVISE_DARKICE', False)) \
-                and self.process_supervisor:
-            try:
-                self.process_supervisor.restart('darkice')
-                self._darkice_restart_count += 1
-                return
-            except KeyError:
-                pass
-        from stream_stats import restart_darkice
-        restart_darkice(self)
 
     def _send_stream_alert(self, message, subject=None):
         """Send Broadcastify stream alert via email and Telegram.

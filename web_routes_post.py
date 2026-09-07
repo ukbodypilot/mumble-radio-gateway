@@ -14,7 +14,7 @@ from web_routes_transcribe  import (
 )
 from web_routes_radio  import (
     handle_d75cmd, handle_ic7100cmd, handle_kv4pcmd, handle_linkcmd, handle_catcmd,
-    handle_sdrcmd, handle_darkicecmd, handle_packet_cmd,
+    handle_sdrcmd, handle_packet_cmd,
 )
 from web_routes_audio  import (
     handle_testloop, handle_bgm, handle_announcer, handle_mixer, handle_proc_toggle,

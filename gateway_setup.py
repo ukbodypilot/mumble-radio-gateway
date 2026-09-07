@@ -752,29 +752,15 @@ def setup_ddns(gw):
 
 
 def setup_supervised_streamers(gw):
-    """Register darkice / mumble-server with ProcessSupervisor when opted in.
+    """Register mumble-server with ProcessSupervisor when opted in.
 
-    Defaults are off — both services keep their existing systemd-managed
-    behaviour. When SUPERVISE_DARKICE=true (or SUPERVISE_MUMBLE=true), the
-    gateway becomes the supervisor, restarts the service on death, and the
-    auto-restart loops in stream_stats.py / monitor code stop firing.
+    Default is off — the service keeps its existing systemd-managed
+    behaviour. When SUPERVISE_MUMBLE=true, the gateway becomes the
+    supervisor and restarts the service on death.
     """
     sup = getattr(gw, 'process_supervisor', None)
     if not sup:
         return
-
-    if bool(getattr(gw.config, 'SUPERVISE_DARKICE', False)):
-        try:
-            sup.add(
-                'darkice',
-                ['darkice', '-c', '/etc/darkice.cfg'],
-                restart=True, backoff=(5, 60),
-            )
-            print("  [Stream] darkice supervised (auto-restart on death)")
-        except ValueError:
-            pass
-        except Exception as e:
-            print(f"  [Stream] darkice supervisor add failed: {e}")
 
     if bool(getattr(gw.config, 'SUPERVISE_MUMBLE', False)):
         # mumble-server-gw1.service / -gw2 are still defined; flipping this

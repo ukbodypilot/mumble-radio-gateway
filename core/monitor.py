@@ -102,18 +102,6 @@ class _MonitorMixin:
                 if self.th9800_plugin:
                     self.th9800_plugin.check_watchdog()
             
-            # DarkIce health check (every 10s — pgrep spawns a process)
-            if (self._darkice_was_running and
-                    self.config.ENABLE_STREAM_OUTPUT and
-                    current_time - self._last_darkice_check > 10):
-                self._last_darkice_check = current_time
-                pid = self._find_darkice_pid()
-                if not pid:
-                    print("\n\u26a0 DarkIce has stopped — restarting...")
-                    self._restart_darkice()
-                elif pid != self._darkice_pid:
-                    self._darkice_pid = pid  # PID changed (external restart)
-
             # Broadcastify stream health check (every 30s)
             so = getattr(self, 'stream_output', None)
             if (so and getattr(self.config, 'ENABLE_STREAM_OUTPUT', False) and

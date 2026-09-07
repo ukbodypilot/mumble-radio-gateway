@@ -187,7 +187,7 @@ createStatusPoller(function(s) {
   handleNotifications(s);
   setPanelOff('bc-panel', !s.streaming_enabled);
   if(s.streaming_enabled){
-    var ds=s.darkice_stats||{};
+    var ds=s.encoder_stats||{};
     var conn=ds.connected||s.stream_connected;
     document.getElementById('bc-status-badge').innerHTML='<span class="'+(conn?'green':'red')+(conn?' pulse':'')+flashCls('bc_conn',!!conn)+'">'+(conn?'LIVE':'OFF')+'</span>';
     var bh='';

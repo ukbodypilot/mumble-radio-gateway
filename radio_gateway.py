@@ -497,7 +497,6 @@ class Config:
             # ProcessSupervisor opt-ins. Default false → existing systemd /
             # manual handling stays in charge. Setting true makes the gateway
             # supervise the service: respawn on death, status in /processes.
-            'SUPERVISE_DARKICE': False,
             'SUPERVISE_MUMBLE': False,
             # Email notifications (Gmail SMTP)
             'ENABLE_EMAIL': False,
@@ -699,11 +698,6 @@ def _pre_flight(config):
 
     # 1. Kill stale processes
     print(f"[{time.strftime('%H:%M:%S')}] [1/4] Checking for stale processes...")
-    for proc in ['darkice']:
-        try:
-            _run(['pkill', '-9', proc])
-        except Exception:
-            pass
     # Kill stale gateway (but not us)
     try:
         result = _run(['pgrep', '-f', 'radio_gateway.py'])

@@ -951,7 +951,6 @@ class WebConfigServer(_SysinfoMixin, _RoutingCmdsMixin, _CertsMixin):
                 '/refreshsounds':              'p:handle_refreshsounds',
                 '/soundboard/categories':      'p:handle_soundboard_categories',
                 '/tts/engine':                 'p:handle_tts_engine',
-                '/darkicecmd':                 'p:handle_darkicecmd',
                 '/recordingsdelete':           'p:handle_recordingsdelete',
                 '/telegramcmd':                'p:handle_telegramcmd',
                 '/open_tmux':                  'p:handle_open_tmux',

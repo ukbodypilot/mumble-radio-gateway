@@ -90,7 +90,7 @@ createStatusPoller(function(s) {
 
   // Stream chip
   if (s.streaming_enabled) {
-    var ds = s.darkice_stats || {};
+    var ds = s.encoder_stats || {};
     var conn = ds.connected || s.stream_connected;
     setChip('chip-stream', conn ? 'ok' : 'err', conn ? 'LIVE' : 'DOWN', conn);
   } else setChip('chip-stream', 'off', 'off');
